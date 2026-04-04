@@ -25,17 +25,17 @@ use crate::tui::{
     domain::{Job, SortColumn, SortOrder},
     event::{Event, UiData},
     ui::search_box::render_search_box,
+    ui::vertical_scrollbar::render_scrollbar,
 };
 
 use ratatui::style::Color;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Rect},
     style::Style,
     text::Text,
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
 };
 
@@ -114,7 +114,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     app.jobs_data.sort_jobs(&mut sorted_jobs);
 
     if !sorted_jobs.is_empty() {
-        let mut scroll_state = ScrollbarState::new((sorted_jobs.len() - 1) * 2);
+        let mut scroll_state = app.jobs_data.scrollbar_state;
         let mut table_state = app.jobs_data.table_state;
         render_jobs_table(
             f,
@@ -258,18 +258,4 @@ fn render_job_status_cell(job: &Job) -> Cell<'_> {
     };
     let text = Text::from(job.status.clone()).style(Style::default().fg(color));
     Cell::from(text.centered())
-}
-
-fn render_scrollbar(frame: &mut Frame, area: Rect, scroll_state: &mut ScrollbarState) {
-    frame.render_stateful_widget(
-        Scrollbar::default()
-            .orientation(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None),
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        }),
-        scroll_state,
-    );
 }

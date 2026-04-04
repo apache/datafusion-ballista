@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ratatui::widgets::TableState;
+use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone, Debug)]
@@ -41,6 +41,7 @@ pub enum SortColumn {
 pub struct JobsData {
     pub jobs: Vec<Job>,
     pub table_state: TableState,
+    pub scrollbar_state: ScrollbarState,
     pub sort_column: SortColumn,
     pub sort_order: crate::tui::domain::SortOrder,
 }
@@ -50,6 +51,7 @@ impl Default for JobsData {
         Self {
             jobs: Vec::new(),
             table_state: TableState::default(),
+            scrollbar_state: ScrollbarState::new(0).position(0),
             sort_column: SortColumn::None,
             sort_order: crate::tui::domain::SortOrder::Ascending,
         }
@@ -168,6 +170,9 @@ impl JobsData {
         } else {
             self.table_state.select(Some(0));
         }
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.get_selected_job_index().unwrap_or(0));
     }
 
     pub fn scroll_up(&mut self) {
@@ -185,5 +190,8 @@ impl JobsData {
         } else {
             self.table_state.select(Some(self.jobs.len() - 1));
         }
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.get_selected_job_index().unwrap_or(0));
     }
 }

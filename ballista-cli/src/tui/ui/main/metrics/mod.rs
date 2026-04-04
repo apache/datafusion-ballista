@@ -21,18 +21,18 @@ use crate::tui::{
     domain::Metric,
     event::{Event, UiData},
     ui::search_box::render_search_box,
+    ui::vertical_scrollbar::render_scrollbar,
 };
 use prometheus_parse::HistogramCount;
 
 use ratatui::style::Color;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Rect},
     style::Style,
     text::Text,
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
 };
 
@@ -75,7 +75,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     render_search_box(f, rects[0], app);
 
     if !filtered_metrics.is_empty() {
-        let mut scroll_state = ScrollbarState::new((filtered_metrics.len() - 1) * 2);
+        let mut scroll_state = app.metrics_data.scrollbar_state;
         let mut table_state = app.metrics_data.table_state;
         render_metrics_table(f, rects[1], &filtered_metrics, &mut table_state);
         render_scrollbar(f, rects[1], &mut scroll_state);
@@ -170,18 +170,4 @@ fn histogram_cell(histograms: &[HistogramCount]) -> Cell<'_> {
         data.push(item);
     }
     Cell::from(Text::from(format!("Histogram: {}", data.join(", "))))
-}
-
-fn render_scrollbar(frame: &mut Frame, area: Rect, scroll_state: &mut ScrollbarState) {
-    frame.render_stateful_widget(
-        Scrollbar::default()
-            .orientation(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None),
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        }),
-        scroll_state,
-    );
 }

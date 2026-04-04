@@ -22,6 +22,7 @@ mod help_overlay;
 mod main;
 mod scheduler_info_popup;
 mod search_box;
+mod vertical_scrollbar;
 
 use crate::tui::app::App;
 use crate::tui::ui::header::render_header;

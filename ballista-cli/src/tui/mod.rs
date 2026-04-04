@@ -26,6 +26,7 @@ mod ui;
 
 use app::App;
 use event::{Event, EventHandler};
+use ratatui::widgets::ScrollbarState;
 use std::time::Duration;
 use terminal::TuiWrapper;
 
@@ -71,14 +72,20 @@ pub async fn tui_main() -> TuiResult<()> {
                             };
                     },
                     UiData::Metrics(metrics) => {
+                            let old_scrollbar_position = app.metrics_data.scrollbar_state.get_position();
+                            let scrollbar_state = ScrollbarState::new(metrics.len()).position(old_scrollbar_position);
                             app.metrics_data = MetricsData {
                                 metrics,
+                                scrollbar_state,
                                 table_state: app.metrics_data.table_state
                             };
                     }
                     UiData::Jobs(jobs) => {
+                            let old_scrollbar_position = app.jobs_data.scrollbar_state.get_position();
+                            let scrollbar_state = ScrollbarState::new(jobs.len()).position(old_scrollbar_position);
                             app.jobs_data = JobsData {
                                 jobs,
+                                scrollbar_state,
                                 table_state: app.jobs_data.table_state,
                                 sort_column: app.jobs_data.sort_column,
                                 sort_order: app.jobs_data.sort_order

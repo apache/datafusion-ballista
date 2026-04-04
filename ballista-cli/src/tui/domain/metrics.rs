@@ -16,7 +16,7 @@
 // under the License.
 
 use prometheus_parse::Sample;
-use ratatui::widgets::TableState;
+use ratatui::widgets::{ScrollbarState, TableState};
 use std::str::FromStr;
 
 /// A Prometheus metric
@@ -28,10 +28,21 @@ pub struct Metric {
     pub help: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct MetricsData {
     pub metrics: Vec<Metric>,
+    pub scrollbar_state: ScrollbarState,
     pub table_state: TableState,
+}
+
+impl Default for MetricsData {
+    fn default() -> Self {
+        Self {
+            metrics: vec![],
+            scrollbar_state: ScrollbarState::new(0),
+            table_state: TableState::default(),
+        }
+    }
 }
 
 impl MetricsData {
@@ -58,6 +69,10 @@ impl MetricsData {
         } else {
             self.table_state.select(Some(0));
         }
+
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.get_selected_metric_index().unwrap_or(0));
     }
 
     pub fn scroll_up(&mut self) {
@@ -75,6 +90,10 @@ impl MetricsData {
         } else {
             self.table_state.select(Some(self.metrics.len() - 1));
         }
+
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.get_selected_metric_index().unwrap_or(0));
     }
 }
 
@@ -101,8 +120,10 @@ impl FromStr for MetricsData {
             metrics.push(metric);
         }
 
+        let len = metrics.len();
         Ok(MetricsData {
             metrics,
+            scrollbar_state: ScrollbarState::new(len),
             table_state: ratatui::widgets::TableState::default(), // dummy state that is ignored
         })
     }
