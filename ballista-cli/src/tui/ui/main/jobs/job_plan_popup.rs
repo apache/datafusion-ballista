@@ -95,7 +95,6 @@ fn render_plans(
 
     let paragraph = Paragraph::new(plan)
         .block(block)
-        .wrap(Wrap { trim: false })
         .scroll((app.job_plan_popup_scroll, 0));
 
     f.render_widget(paragraph, area);
