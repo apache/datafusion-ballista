@@ -200,7 +200,7 @@ impl App {
                     self.job_dot_scroll = self.job_dot_scroll.saturating_sub(1);
                 }
                 KeyCode::Down => {
-                    self.job_dot_scroll += 1;
+                    self.job_dot_scroll = self.job_dot_scroll.saturating_add(1);;
                 }
                 _ => {
                     self.job_dot_popup = None;
