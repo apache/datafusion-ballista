@@ -98,21 +98,23 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
         let line = Line::from(vec![first_char, rest_chars.into()]);
         let text = Text::from(line);
 
-        let mut paragraph = Paragraph::new(text)
-            .style(Style::default().dark_gray())
-            .block(block.clone())
-            .alignment(Alignment::Center);
-
         let is_active = (app.is_dashboard_view() && *menu_item == "Dashboard")
             || (app.is_jobs_view() && *menu_item == "Jobs")
             || (app.is_metrics_view() && *menu_item == "Metrics");
 
-        if is_active && app.is_scheduler_up() {
+        let style = if is_active && app.is_scheduler_up() {
             block = block
                 .border_style(Style::default().white())
                 .border_type(BorderType::Thick);
-            paragraph = paragraph.style(Style::default().white()).block(block);
-        }
+            Style::default().white()
+        } else {
+            Style::default().dark_gray()
+        };
+
+        let paragraph = Paragraph::new(text)
+            .style(style)
+            .block(block.clone())
+            .alignment(Alignment::Center);
 
         f.render_widget(paragraph, chunks[index]);
     }
