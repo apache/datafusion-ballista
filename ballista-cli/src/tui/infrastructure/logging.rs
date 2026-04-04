@@ -28,7 +28,8 @@ use tracing_subscriber::EnvFilter;
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if initialization succeeds, or an error if it fails.
+/// Returns `Ok(())` if file setup succeeds. Subscriber init failures are logged
+/// to stderr but do not cause an error return (a global subscriber may already exist).
 pub fn init_file_logger(log_file_prefix: &str, default_level: &str) -> TuiResult<()> {
     let dir_name = "logs";
     std::fs::create_dir_all(dir_name)?;
