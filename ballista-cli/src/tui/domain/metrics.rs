@@ -48,7 +48,7 @@ impl MetricsData {
             self.table_state.select(None);
             return;
         }
-        
+
         if let Some(selected) = self.get_selected_metric_index() {
             if selected < self.metrics.len() - 1 {
                 self.table_state.select(Some(selected + 1));

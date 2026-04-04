@@ -728,7 +728,9 @@ impl Interceptor for BallistaGrpcMetadataInterceptor {
                     HeaderName::from_bytes(k.as_bytes())
                         .map_err(|e| Status::invalid_argument(e.to_string()))?,
                     v.parse().map_err(|_e| {
-                        Status::invalid_argument(format!("{v} is not a valid header value"))
+                        Status::invalid_argument(format!(
+                            "{v} is not a valid header value"
+                        ))
                     })?,
                 );
             }

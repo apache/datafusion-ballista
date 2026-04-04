@@ -22,7 +22,7 @@ use serde::Deserialize;
 pub struct Job {
     pub job_id: String,
     pub job_name: String,
-    pub status: String,     // Running, Completed, Failed, Canceled
+    pub status: String, // Running, Completed, Failed, Canceled
     pub start_time: i64,
     pub num_stages: usize,
     pub completed_stages: usize,
