@@ -22,6 +22,7 @@ use axum::{
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::DATAFUSION_VERSION;
+use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -92,12 +93,49 @@ struct CancelJobResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
+pub struct TaskSummary {
+    /// task id
+    pub task_id: u32,
+    /// partition id
+    pub partition_id: u32,
+    /// Scheduler schedule time
+    pub scheduled_time: u64,
+    /// Scheduler launch time
+    pub launch_time: u64,
+    /// The time the Executor start to run the task
+    pub start_exec_time: u64,
+    /// The time the Executor finish the task
+    pub end_exec_time: u64,
+    /// total execution time
+    pub exec_duration: u64,
+    /// Scheduler side finish time
+    pub finish_time: u64,
+    /// Number of input rows
+    pub input_rows: usize,
+    /// Number of output rows
+    pub output_rows: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DurationStats {
+    pub min: u64,
+    pub p25: u64,
+    pub median: u64,
+    pub p75: u64,
+    pub max: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct QueryStageSummary {
     pub stage_id: String,
     pub stage_status: String,
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: String,
+    pub stage_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_duration_stats: Option<DurationStats>,
+    pub tasks: Vec<Option<TaskSummary>>,
 }
 
 pub async fn get_scheduler_state<
@@ -346,9 +384,13 @@ pub async fn get_query_stages<
                     input_rows: 0,
                     output_rows: 0,
                     elapsed_compute: "".to_string(),
+                    tasks: vec![],
+                    task_duration_stats: None,
+                    stage_plan: None
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
+                        summary.stage_plan = Some(displayable(running_stage.plan.as_ref()).indent(false).to_string());
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -364,8 +406,53 @@ pub async fn get_query_stages<
                             .as_ref()
                             .map(|m| get_elapsed_compute_nanos(m.as_slice()))
                             .unwrap_or_default();
+                        summary.tasks = running_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                task_info.as_ref().map(|info| {
+                                    let partition_metrics = running_stage
+                                        .stage_metrics
+                                        .as_deref()
+                                        .and_then(|m| m.get(partition_id));
+                                    let input_rows = partition_metrics
+                                        .map(|m| {
+                                            get_combined_count(
+                                                std::slice::from_ref(m),
+                                                "input_rows",
+                                            )
+                                        })
+                                        .unwrap_or(0);
+                                    let output_rows = partition_metrics
+                                        .map(|m| {
+                                            get_combined_count(
+                                                std::slice::from_ref(m),
+                                                "output_rows",
+                                            )
+                                        })
+                                        .unwrap_or(0);
+
+                                    let start_exec_time = info.start_exec_time as u64;
+                                    let end_exec_time = info.end_exec_time as u64;
+                                    TaskSummary {
+                                        task_id: info.task_id as u32,
+                                        partition_id: partition_id as u32,
+                                        scheduled_time: info.scheduled_time as u64,
+                                        launch_time: info.launch_time as u64,
+                                        start_exec_time,
+                                        end_exec_time,
+                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                        finish_time: info.finish_time as u64,
+                                        input_rows,
+                                        output_rows,
+                                    }
+                                })
+                            })
+                            .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
+                        summary.stage_plan = Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string());
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -376,9 +463,50 @@ pub async fn get_query_stages<
                         );
                         summary.elapsed_compute =
                             get_elapsed_compute_nanos(&completed_stage.stage_metrics);
+
+                        summary.tasks = completed_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                let partition_metrics =
+                                    completed_stage.stage_metrics.get(partition_id);
+                                let input_rows = partition_metrics
+                                    .map(|m| {
+                                        get_combined_count(
+                                            std::slice::from_ref(m),
+                                            "input_rows",
+                                        )
+                                    })
+                                    .unwrap_or(0);
+                                let output_rows = partition_metrics
+                                    .map(|m| {
+                                        get_combined_count(
+                                            std::slice::from_ref(m),
+                                            "output_rows",
+                                        )
+                                    })
+                                    .unwrap_or(0);
+                                let start_exec_time = task_info.start_exec_time as u64;
+                                let end_exec_time = task_info.end_exec_time as u64;
+                                Some(TaskSummary {
+                                    task_id: task_info.task_id as u32,
+                                    partition_id: partition_id as u32,
+                                    scheduled_time: task_info.scheduled_time as u64,
+                                    launch_time: task_info.launch_time as u64,
+                                    start_exec_time,
+                                    end_exec_time,
+                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                    finish_time: task_info.finish_time as u64,
+                                    input_rows,
+                                    output_rows,
+                                })
+                            })
+                            .collect();
                     }
                     _ => {}
                 }
+                summary.task_duration_stats = task_duration_stats(&summary.tasks);
                 summary
             })
             .collect();
@@ -387,6 +515,30 @@ pub async fn get_query_stages<
     } else {
         Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
+}
+
+fn percentile_duration(sorted: &[u64], pct: f64) -> u64 {
+    let idx = ((pct / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn task_duration_stats(tasks: &[Option<TaskSummary>]) -> Option<DurationStats> {
+    let mut durations: Vec<u64> =
+        tasks.iter().flatten().map(|t| t.exec_duration).collect();
+
+    if durations.is_empty() {
+        return None;
+    }
+
+    durations.sort_unstable();
+
+    Some(DurationStats {
+        min: durations[0],
+        p25: percentile_duration(&durations, 25.0),
+        median: percentile_duration(&durations, 50.0),
+        p75: percentile_duration(&durations, 75.0),
+        max: *durations.last().unwrap(),
+    })
 }
 
 fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, String) {
