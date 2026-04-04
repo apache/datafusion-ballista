@@ -20,7 +20,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     let Some((details, tab)) = &app.job_plan_popup else {
