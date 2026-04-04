@@ -22,6 +22,7 @@ use axum::{
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::DATAFUSION_VERSION;
+use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -131,6 +132,7 @@ pub struct QueryStageSummary {
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: String,
+    pub stage_plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_duration_stats: Option<DurationStats>,
     pub tasks: Vec<Option<TaskSummary>>,
@@ -384,9 +386,11 @@ pub async fn get_query_stages<
                     elapsed_compute: "".to_string(),
                     tasks: vec![],
                     task_duration_stats: None,
+                    stage_plan: None
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
+                        summary.stage_plan = Some(displayable(running_stage.plan.as_ref()).indent(false).to_string());
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -448,6 +452,7 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
+                        summary.stage_plan = Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string());
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
