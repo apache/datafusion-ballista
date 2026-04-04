@@ -116,12 +116,23 @@ pub struct TaskSummary {
 }
 
 #[derive(Debug, serde::Serialize)]
+pub struct DurationStats {
+    pub min: u64,
+    pub p25: u64,
+    pub median: u64,
+    pub p75: u64,
+    pub max: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct QueryStageSummary {
     pub stage_id: String,
     pub stage_status: String,
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_duration_stats: Option<DurationStats>,
     pub tasks: Vec<Option<TaskSummary>>,
 }
 
@@ -372,6 +383,7 @@ pub async fn get_query_stages<
                     output_rows: 0,
                     elapsed_compute: "".to_string(),
                     tasks: vec![],
+                    task_duration_stats: None,
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
@@ -489,6 +501,7 @@ pub async fn get_query_stages<
                     }
                     _ => {}
                 }
+                summary.task_duration_stats = task_duration_stats(&summary.tasks);
                 summary
             })
             .collect();
@@ -497,6 +510,30 @@ pub async fn get_query_stages<
     } else {
         Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
+}
+
+fn percentile_duration(sorted: &[u64], pct: f64) -> u64 {
+    let idx = ((pct / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn task_duration_stats(tasks: &[Option<TaskSummary>]) -> Option<DurationStats> {
+    let mut durations: Vec<u64> =
+        tasks.iter().flatten().map(|t| t.exec_duration).collect();
+
+    if durations.is_empty() {
+        return None;
+    }
+
+    durations.sort_unstable();
+
+    Some(DurationStats {
+        min: durations[0],
+        p25: percentile_duration(&durations, 25.0),
+        median: percentile_duration(&durations, 50.0),
+        p75: percentile_duration(&durations, 75.0),
+        max: *durations.last().unwrap(),
+    })
 }
 
 fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, String) {
