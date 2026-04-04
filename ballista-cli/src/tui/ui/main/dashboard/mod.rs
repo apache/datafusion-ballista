@@ -51,30 +51,23 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
-    let scheduler_state = match app.http_client.get_scheduler_state().await {
-        Ok(state) => Some(state),
-        Err(e) => {
-            tracing::error!("Failed to load the scheduler state: {e:?}");
-            None
-        }
-    };
-    let executors_data = match app.http_client.get_executors().await {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::error!("Failed to load the executors data: {e:?}");
-            vec![]
-        }
-    };
-    let jobs_data = match app.http_client.get_jobs().await {
-        Ok(data) => {
-            tracing::trace!("Loaded jobs:\n{data:?}");
-            data
-        }
-        Err(e) => {
-            tracing::error!("Failed to load the jobs data: {e:?}");
-            vec![]
-        }
-    };
+    let (scheduler_result, executors_result, jobs_result) = tokio::join!(
+        app.http_client.get_scheduler_state(),
+        app.http_client.get_executors(),
+        app.http_client.get_jobs(),
+    );
+
+    let scheduler_state = scheduler_result
+        .map_err(|e| tracing::error!("Failed to load the scheduler state: {e:?}"))
+        .ok();
+    let executors_data = executors_result.unwrap_or_else(|e| {
+        tracing::error!("Failed to load the executors data: {e:?}");
+        vec![]
+    });
+    let jobs_data = jobs_result.unwrap_or_else(|e| {
+        tracing::error!("Failed to load the jobs data: {e:?}");
+        vec![]
+    });
 
     app.send_event(Event::DataLoaded {
         data: UiData::Dashboard(scheduler_state, executors_data, jobs_data),
