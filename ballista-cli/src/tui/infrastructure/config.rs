@@ -46,7 +46,8 @@ http:
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
         let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+            .unwrap_or_else(|| std::path::PathBuf::from(".config"))
             .join("ballista");
 
         let s = Config::builder()
