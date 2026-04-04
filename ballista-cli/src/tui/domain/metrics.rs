@@ -97,7 +97,12 @@ impl MetricsData {
     }
 }
 
-impl FromStr for MetricsData {
+// Newtype struct for parsing the HTTP response into a vec
+pub(crate) struct MetricsResponse {
+    pub metrics: Vec<Metric>,
+}
+
+impl FromStr for MetricsResponse {
     type Err = std::io::Error;
 
     fn from_str(http_response: &str) -> Result<Self, Self::Err> {
@@ -120,11 +125,6 @@ impl FromStr for MetricsData {
             metrics.push(metric);
         }
 
-        let len = metrics.len();
-        Ok(MetricsData {
-            metrics,
-            scrollbar_state: ScrollbarState::new(len),
-            table_state: ratatui::widgets::TableState::default(), // dummy state that is ignored
-        })
+        Ok(MetricsResponse { metrics })
     }
 }

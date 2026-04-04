@@ -23,7 +23,7 @@ use std::time::Duration;
 use crate::tui::{
     TuiResult,
     domain::{
-        CancelJobResponse, ExecutorsData, Job, JobDetails, Metric, MetricsData,
+        CancelJobResponse, ExecutorsData, Job, JobDetails, Metric, MetricsResponse,
         SchedulerState,
     },
     error::TuiError,
@@ -123,8 +123,8 @@ impl HttpClient {
     pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
         let url = self.url("metrics");
         let body: String = self.text(&url).await?;
-        let metrics = body.parse::<MetricsData>().map_err(TuiError::from)?;
-        Ok(metrics.metrics)
+        let response = body.parse::<MetricsResponse>().map_err(TuiError::from)?;
+        Ok(response.metrics)
     }
 
     async fn text(&self, url: &str) -> TuiResult<String> {
