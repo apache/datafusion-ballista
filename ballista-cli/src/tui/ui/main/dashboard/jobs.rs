@@ -41,14 +41,12 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
             let mut queued_jobs = 0;
 
             for job in jobs {
-                if job.job_status.eq_ignore_ascii_case("Running") {
-                    running_jobs += 1;
-                } else if job.job_status.starts_with("Completed") {
-                    completed_jobs += 1;
-                } else if job.job_status.starts_with("Failed") {
-                    failed_jobs += 1;
-                } else if job.job_status.eq_ignore_ascii_case("Queued") {
-                    queued_jobs += 1;
+                match job.status.as_str() {
+                    "Running" => running_jobs += 1,
+                    "Completed" => completed_jobs += 1,
+                    "Failed" => failed_jobs += 1,
+                    "Queued" => queued_jobs += 1,
+                    _ => {}
                 }
             }
 
