@@ -17,10 +17,10 @@
 
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
+use ballista_core::execution_plans::create_shuffle_path;
 use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
-use std::path::Path;
 use std::pin::Pin;
 use tokio_util::io::ReaderStream;
 
@@ -58,18 +58,14 @@ use tonic::{Request, Response, Status, Streaming};
 /// It supports both decoded streaming via `do_get` and optimized block transfer
 /// via the `IO_BLOCK_TRANSPORT` action.
 #[derive(Clone)]
-pub struct BallistaFlightService {}
+pub struct BallistaFlightService {
+    work_dir: String,
+}
 
 impl BallistaFlightService {
     /// Creates a new BallistaFlightService instance.
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for BallistaFlightService {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(work_dir: String) -> Self {
+        Self { work_dir }
     }
 }
 
@@ -100,21 +96,33 @@ impl FlightService for BallistaFlightService {
 
         match &action {
             BallistaAction::FetchPartition {
-                path, partition_id, ..
+                job_id,
+                stage_id,
+                partition_id,
+                file_id,
+                is_sort_shuffle,
+                ..
             } => {
-                debug!("FetchPartition reading partition {partition_id} from {path}");
-                let data_path = Path::new(path);
+                let path = create_shuffle_path(
+                    &self.work_dir,
+                    job_id,
+                    *stage_id,
+                    *partition_id,
+                    *file_id,
+                    *is_sort_shuffle,
+                )
+                .map_err(|e| {
+                    Status::internal(format!("I/O error, can't create shuffle path: {e}"))
+                })?;
+                debug!("FetchPartition reading partition {partition_id} from {path:?}");
 
                 // Check if this is a sort-based shuffle output
-                if is_sort_shuffle_output(data_path) {
-                    debug!("Detected sort-based shuffle format for {path}");
-                    let index_path = get_index_path(data_path);
-                    let stream = stream_sort_shuffle_partition(
-                        data_path,
-                        &index_path,
-                        *partition_id,
-                    )
-                    .map_err(|e| from_ballista_err(&e))?;
+                if is_sort_shuffle_output(&path) {
+                    debug!("Detected sort-based shuffle format for {path:?}");
+                    let index_path = get_index_path(path.as_path());
+                    let stream =
+                        stream_sort_shuffle_partition(&path, &index_path, *partition_id)
+                            .map_err(|e| from_ballista_err(&e))?;
 
                     let schema = stream.schema();
                     // Map DataFusionError to FlightError
@@ -136,10 +144,10 @@ impl FlightService for BallistaFlightService {
                 }
 
                 // Standard hash-based shuffle - read the entire file
-                let file = File::open(path)
+                let file = File::open(&path)
                     .map_err(|e| {
                         BallistaError::General(format!(
-                            "Failed to open partition file at {path}: {e:?}"
+                            "Failed to open partition file at {path:?}: {e:?}"
                         ))
                     })
                     .map_err(|e| from_ballista_err(&e))?;
@@ -251,14 +259,34 @@ impl FlightService for BallistaFlightService {
                     decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
 
                 match &action {
-                    BallistaAction::FetchPartition { path, .. } => {
-                        debug!("FetchPartition reading {path}");
-                        let data_path = Path::new(path);
+                    BallistaAction::FetchPartition {
+                        job_id,
+                        stage_id,
+                        partition_id,
+                        file_id,
+                        is_sort_shuffle,
+                        ..
+                    } => {
+                        let path = create_shuffle_path(
+                            &self.work_dir,
+                            job_id,
+                            *stage_id,
+                            *partition_id,
+                            *file_id,
+                            *is_sort_shuffle,
+                        )
+                        .map_err(|e| {
+                            Status::internal(format!(
+                                "I/O error, can't create shuffle path: {e}"
+                            ))
+                        })?;
+
+                        debug!("FetchPartition reading {path:?}");
 
                         // Block transport doesn't support sort-based shuffle because it
                         // transfers the entire file, which contains all partitions.
                         // Use flight transport (do_get) for sort-based shuffle.
-                        if is_sort_shuffle_output(data_path) {
+                        if is_sort_shuffle_output(&path) {
                             return Err(Status::unimplemented(
                                 "IO_BLOCK_TRANSPORT does not support sort-based shuffle. \
                                  Set ballista.shuffle.remote_read_prefer_flight=true to use \
@@ -271,7 +299,7 @@ impl FlightService for BallistaFlightService {
                         })?;
 
                         debug!(
-                            "streaming file: {} with size: {}",
+                            "streaming file: {:?} with size: {}",
                             path,
                             file.metadata().await?.len()
                         );

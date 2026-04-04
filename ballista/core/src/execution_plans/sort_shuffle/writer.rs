@@ -34,6 +34,7 @@ use super::buffer::PartitionBuffer;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::spill::SpillManager;
+use crate::execution_plans::create_shuffle_path;
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use datafusion::arrow::array::{
@@ -312,10 +313,12 @@ impl SortShuffleWriterExec {
                 if num_rows > 0 {
                     results.push(ShuffleWritePartition {
                         partition_id: part_id as u64,
-                        path: data_path.to_string_lossy().to_string(),
+                        //path: data_path.to_string_lossy().to_string(),
                         num_batches,
                         num_rows,
                         num_bytes,
+                        file_id: Some(input_partition as u64),
+                        is_sort_shuffle: true,
                     });
                 }
             }
@@ -535,10 +538,13 @@ impl ExecutionPlan for SortShuffleWriterExec {
         let schema = result_schema();
 
         let schema_captured = schema.clone();
+        let job_id = self.job_id.to_string();
+        let work_dir = self.work_dir.to_string();
+        let stage_id = self.stage_id;
         let fut_stream = self
             .clone()
             .execute_shuffle_write(partition, context)
-            .and_then(|part_loc| async move {
+            .and_then(move |part_loc| async move {
                 // Build metadata result batch
                 let num_writers = part_loc.len();
                 let mut partition_builder = UInt32Builder::with_capacity(num_writers);
@@ -549,7 +555,18 @@ impl ExecutionPlan for SortShuffleWriterExec {
                 let mut num_bytes_builder = UInt64Builder::with_capacity(num_writers);
 
                 for loc in &part_loc {
-                    path_builder.append_value(loc.path.clone());
+                    path_builder.append_value(
+                        create_shuffle_path(
+                            &work_dir,
+                            &job_id,
+                            stage_id,
+                            partition,
+                            loc.file_id,
+                            true,
+                        )?
+                        .to_string_lossy(),
+                    );
+
                     partition_builder.append_value(loc.partition_id as u32);
                     num_rows_builder.append_value(loc.num_rows);
                     num_batches_builder.append_value(loc.num_batches);

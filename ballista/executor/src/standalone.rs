@@ -130,7 +130,7 @@ pub async fn new_standalone_executor_from_builder(
         None,
     ));
 
-    let service = BallistaFlightService::new();
+    let service = BallistaFlightService::new(work_dir);
     let server = FlightServiceServer::new(service)
         .max_decoding_message_size(max_message_size)
         .max_encoding_message_size(max_message_size);

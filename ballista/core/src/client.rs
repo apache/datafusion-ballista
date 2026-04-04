@@ -119,11 +119,13 @@ impl BallistaClient {
     /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
     ///
     /// This method is to be used for direct connection to the executor holding the required shuffle partition.
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_partition(
         &mut self,
         executor_id: &str,
         partition_id: &PartitionId,
-        path: &str,
+        file_id: Option<u64>,
+        is_sort_shuffle: bool,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
         let host = self.host.to_owned();
@@ -131,9 +133,10 @@ impl BallistaClient {
         self.fetch_partition_proxied(
             executor_id,
             partition_id,
+            file_id,
+            is_sort_shuffle,
             &host,
             port,
-            path,
             flight_transport,
         )
         .await
@@ -146,22 +149,25 @@ impl BallistaClient {
     /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
     ///
     /// This method should be used if the request may be proxied.
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_partition_proxied(
         &mut self,
         executor_id: &str,
         partition_id: &PartitionId,
+        file_id: Option<u64>,
+        is_sort_shuffle: bool,
         host: &str,
         port: u16,
-        path: &str,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
         let action = Action::FetchPartition {
             job_id: partition_id.job_id.clone(),
             stage_id: partition_id.stage_id,
             partition_id: partition_id.partition_id,
-            path: path.to_owned(),
             host: host.to_owned(),
             port,
+            file_id,
+            is_sort_shuffle,
         };
 
         let result = if flight_transport {

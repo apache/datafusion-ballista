@@ -32,6 +32,7 @@ use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::error;
 use std::io::BufWriter;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
@@ -162,11 +163,11 @@ pub fn default_config_producer() -> SessionConfig {
 /// Stream data to disk in Arrow IPC format
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
-    path: &str,
+    path: &Path,
     disk_write_metric: &metrics::Time,
 ) -> Result<PartitionStats> {
     let file = BufWriter::new(File::create(path).map_err(|e| {
-        error!("Failed to create partition file at {path}: {e:?}");
+        error!("Failed to create partition file at {path:?}: {e:?}");
         BallistaError::IoError(e)
     })?);
 
