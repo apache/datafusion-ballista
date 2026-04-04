@@ -35,11 +35,6 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
 
     match &app.dashboard_data.jobs_data {
         jobs if !jobs.is_empty() => {
-            if jobs.is_empty() {
-                f.render_widget(no_jobs(block), area);
-                return;
-            }
-
             let mut running_jobs = 0;
             let mut completed_jobs = 0;
             let mut failed_jobs = 0;

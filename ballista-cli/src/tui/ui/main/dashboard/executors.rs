@@ -35,11 +35,6 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
 
     match &app.dashboard_data.executors_data {
         executors if !executors.is_empty() => {
-            if executors.is_empty() {
-                f.render_widget(no_live_executors(block), area);
-                return;
-            }
-
             let items: Vec<ListItem> = executors
                 .iter()
                 .map(|ex| {
