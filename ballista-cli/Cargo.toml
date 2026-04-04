@@ -41,6 +41,7 @@ dotparser = { version = "0.3.0", optional = true }
 env_logger = { workspace = true }
 futures = { version = "0.3.31", optional = true }
 mimalloc = { workspace = true }
+percent-encoding = { version = "2.3.2", optional = true }
 prometheus-parse = { version = "0.2", optional = true }
 ratatui = { version = "0.30.0", optional = true }
 reqwest = { version = "0.13.1", features = ["json"], optional = true }
@@ -54,4 +55,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 tui-big-text = { version = "0.8.2", optional = true }
 
 [features]
-tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender", "dep:tui-big-text"]
+tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures", "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender", "dep:tui-big-text"]

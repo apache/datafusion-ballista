@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -100,7 +101,7 @@ impl HttpClient {
             stage_plan: Option<String>,
         }
 
-        let url = format!("{}/api/job/{}", self.scheduler_url, job_id);
+        let url = format!("{}/api/job/{}", self.scheduler_url, self.url_encode(job_id));
         let resp = self.json::<JobDetailResponse>(&url).await?;
         Ok(JobDetails {
             job_id: job_id.to_string(),
@@ -111,7 +112,11 @@ impl HttpClient {
     }
 
     pub async fn get_job_dot(&self, job_id: &str) -> TuiResult<String> {
-        let url = format!("{}/api/job/{}/dot", self.scheduler_url, job_id);
+        let url = format!(
+            "{}/api/job/{}/dot",
+            self.scheduler_url,
+            self.url_encode(job_id)
+        );
         self.text(&url).await
     }
 
@@ -168,5 +173,9 @@ impl HttpClient {
 
     fn url(&self, path: &str) -> String {
         format!("{}/api/{}", self.scheduler_url, path)
+    }
+
+    fn url_encode(&self, job_id: &str) -> String {
+        percent_encode(job_id.as_bytes(), NON_ALPHANUMERIC).to_string()
     }
 }

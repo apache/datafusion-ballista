@@ -1005,6 +1005,7 @@ dependencies = [
  "env_logger",
  "futures",
  "mimalloc",
+ "percent-encoding",
  "prometheus-parse",
  "ratatui",
  "reqwest 0.13.2",
