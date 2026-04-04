@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod details;
 mod dot_parser;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
@@ -102,25 +101,12 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
-    let rects = if let Some(job_details) = &app.job_details {
-        let vertical = Layout::vertical([
-            Constraint::Length(3),      // Search box
-            Constraint::Min(5),         // Table
-            Constraint::Percentage(40), // Job Details
-            Constraint::Length(4),      // Scrollbar padding
-        ]);
-        let r = vertical.split(area);
-        let details_area = r[2];
-        details::render_job_details(f, details_area, job_details);
-        r
-    } else {
-        let vertical = Layout::vertical([
-            Constraint::Length(3), // Search box
-            Constraint::Min(5),    // Table
-            Constraint::Length(4), // Scrollbar padding
-        ]);
-        vertical.split(area)
-    };
+    let rects = Layout::vertical([
+        Constraint::Length(3), // Search box
+        Constraint::Min(5),    // Table
+        Constraint::Length(4), // Scrollbar padding
+    ])
+    .split(area);
 
     render_search_box(f, rects[0], app);
 
