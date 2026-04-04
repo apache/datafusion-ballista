@@ -46,7 +46,19 @@ impl std::fmt::Display for TuiError {
     }
 }
 
-impl std::error::Error for TuiError {}
+impl std::error::Error for TuiError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            TuiError::Reqwest(err) => Some(err),
+            TuiError::Json(err) => Some(err),
+            TuiError::IO(err) => Some(err),
+            TuiError::SendError(err) => Some(err.as_ref()),
+            TuiError::Config(err) => Some(err.as_ref()),
+            TuiError::Tracing(err) => Some(err.as_ref()),
+            TuiError::DataFusion(err) => Some(err.as_ref()),
+        }
+    }
+}
 
 impl From<reqwest::Error> for TuiError {
     fn from(err: reqwest::Error) -> Self {
