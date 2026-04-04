@@ -29,34 +29,20 @@ pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
         enabled_features.push("rest-api".to_string());
         let mut disabled_features = Vec::new();
 
-        if scheduler_state.prometheus_support {
-            enabled_features.push("prometheus-metrics".to_string());
-        } else {
-            disabled_features.push("prometheus-metrics".to_string());
-        }
+        let features = [
+            (scheduler_state.prometheus_support, "prometheus-metrics"),
+            (scheduler_state.keda_support, "keda-scaler"),
+            (scheduler_state.spark_support, "spark-compat"),
+            (scheduler_state.substrait_support, "substrait"),
+            (scheduler_state.graphviz_support, "graphviz-support"),
+        ];
 
-        if scheduler_state.keda_support {
-            enabled_features.push("keda-scaler".to_string());
-        } else {
-            disabled_features.push("keda-scaler".to_string());
-        }
-
-        if scheduler_state.spark_support {
-            enabled_features.push("spark-compat".to_string());
-        } else {
-            disabled_features.push("spark-compat".to_string());
-        }
-
-        if scheduler_state.substrait_support {
-            enabled_features.push("substrait".to_string());
-        } else {
-            disabled_features.push("substrait".to_string());
-        }
-
-        if scheduler_state.graphviz_support {
-            enabled_features.push("graphviz-support".to_string());
-        } else {
-            disabled_features.push("graphviz-support".to_string());
+        for (enabled, name) in features {
+            if enabled {
+                enabled_features.push(name.to_string());
+            } else {
+                disabled_features.push(name.to_string());
+            }
         }
 
         let mut info_text = vec![
