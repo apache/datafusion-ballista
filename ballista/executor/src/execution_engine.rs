@@ -31,6 +31,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::prelude::SessionConfig;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
@@ -51,6 +52,7 @@ pub trait ExecutionEngine: Sync + Send {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
+        config: &SessionConfig,
     ) -> Result<Arc<dyn QueryStageExecutor>>;
 }
 
@@ -89,6 +91,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
+        _config: &SessionConfig,
     ) -> Result<Arc<dyn QueryStageExecutor>> {
         let plan = plan
             .transform(|p| {
