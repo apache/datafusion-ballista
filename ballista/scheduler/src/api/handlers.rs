@@ -92,12 +92,35 @@ struct CancelJobResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
+pub struct TaskSummary {
+    /// task id
+    pub task_id: u32,
+    /// partition id
+    pub partition_id: u32,
+    /// Scheduler schedule time
+    pub scheduled_time: u64,
+    /// Scheduler launch time
+    pub launch_time: u64,
+    /// The time the Executor start to run the task
+    pub start_exec_time: u64,
+    /// The time the Executor finish the task
+    pub end_exec_time: u64,
+    /// total execution time
+    pub total_exec_time: u64,
+    /// Scheduler side finish time
+    pub finish_time: u64,
+    /// Number of output rows
+    pub output_rows: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct QueryStageSummary {
     pub stage_id: String,
     pub stage_status: String,
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: String,
+    pub tasks: Vec<Option<TaskSummary>>,
 }
 
 pub async fn get_scheduler_state<
@@ -346,6 +369,7 @@ pub async fn get_query_stages<
                     input_rows: 0,
                     output_rows: 0,
                     elapsed_compute: "".to_string(),
+                    tasks: vec![],
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
@@ -364,6 +388,40 @@ pub async fn get_query_stages<
                             .as_ref()
                             .map(|m| get_elapsed_compute_nanos(m.as_slice()))
                             .unwrap_or_default();
+                        summary.tasks = running_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                task_info.as_ref().map(|info| {
+                                    let output_rows = running_stage
+                                        .stage_metrics
+                                        .as_deref()
+                                        .and_then(|m| m.get(partition_id))
+                                        .map(|m| {
+                                            get_combined_count(
+                                                std::slice::from_ref(m),
+                                                "output_rows",
+                                            )
+                                        })
+                                        .unwrap_or(0);
+
+                                    let start_exec_time = info.start_exec_time as u64;
+                                    let end_exec_time = info.end_exec_time as u64;
+                                    TaskSummary {
+                                        task_id: info.task_id as u32,
+                                        partition_id: partition_id as u32,
+                                        scheduled_time: info.scheduled_time as u64,
+                                        launch_time: info.launch_time as u64,
+                                        start_exec_time,
+                                        end_exec_time,
+                                        total_exec_time: end_exec_time.saturating_sub(start_exec_time),
+                                        finish_time: info.finish_time as u64,
+                                        output_rows,
+                                    }
+                                })
+                            })
+                            .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
                         summary.input_rows = get_combined_count(
@@ -376,6 +434,37 @@ pub async fn get_query_stages<
                         );
                         summary.elapsed_compute =
                             get_elapsed_compute_nanos(&completed_stage.stage_metrics);
+
+                        summary.tasks = completed_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                let output_rows = completed_stage
+                                    .stage_metrics
+                                    .get(partition_id)
+                                    .map(|m| {
+                                        get_combined_count(
+                                            std::slice::from_ref(m),
+                                            "output_rows",
+                                        )
+                                    })
+                                    .unwrap_or(0);
+                                let start_exec_time = task_info.start_exec_time as u64;
+                                let end_exec_time = task_info.end_exec_time as u64;
+                                Some(TaskSummary {
+                                    task_id: task_info.task_id as u32,
+                                    partition_id: partition_id as u32,
+                                    scheduled_time: task_info.scheduled_time as u64,
+                                    launch_time: task_info.launch_time as u64,
+                                    start_exec_time,
+                                    end_exec_time,
+                                    total_exec_time: end_exec_time.saturating_sub(start_exec_time),
+                                    finish_time: task_info.finish_time as u64,
+                                    output_rows,
+                                })
+                            })
+                            .collect();
                     }
                     _ => {}
                 }
