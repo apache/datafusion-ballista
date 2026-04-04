@@ -45,8 +45,6 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     config: Arc<SchedulerConfig>,
-    #[cfg(feature = "riffle")]
-    riffle_lifecycle: Option<Arc<crate::riffle_lifecycle::RiffleLifecycleManager>>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
@@ -55,21 +53,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         config: Arc<SchedulerConfig>,
     ) -> Self {
-        #[cfg(feature = "riffle")]
-        let riffle_lifecycle = {
-            let ballista_config =
-                ballista_core::config::BallistaConfig::default();
-            crate::riffle_lifecycle::RiffleLifecycleManager::from_ballista_config(
-                &ballista_config,
-            )
-        };
-
         Self {
             state,
             metrics_collector,
             config,
-            #[cfg(feature = "riffle")]
-            riffle_lifecycle,
         }
     }
     #[cfg(feature = "rest-api")]
@@ -189,12 +176,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 info!("Job {job_id} submitted");
 
-                // Register with Riffle and start heartbeat
-                #[cfg(feature = "riffle")]
-                if let Some(ref riffle) = self.riffle_lifecycle {
-                    riffle.on_job_start(&job_id).await;
-                }
-
                 if self.state.config.is_push_staged_scheduling() {
                     event_sender
                         .post_event(QueryStageSchedulerEvent::ReviveOffers)
@@ -232,12 +213,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 info!("Job {job_id} success");
 
-                // Unregister from Riffle and stop heartbeat
-                #[cfg(feature = "riffle")]
-                if let Some(ref riffle) = self.riffle_lifecycle {
-                    riffle.on_job_end(&job_id).await;
-                }
-
                 if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
                     error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
                 }
@@ -253,12 +228,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {job_id} running failed");
-
-                // Unregister from Riffle and stop heartbeat
-                #[cfg(feature = "riffle")]
-                if let Some(ref riffle) = self.riffle_lifecycle {
-                    riffle.on_job_end(&job_id).await;
-                }
 
                 match self
                     .state
@@ -291,12 +260,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job {job_id} Cancelled");
-
-                // Unregister from Riffle and stop heartbeat
-                #[cfg(feature = "riffle")]
-                if let Some(ref riffle) = self.riffle_lifecycle {
-                    riffle.on_job_end(&job_id).await;
-                }
 
                 match self.state.task_manager.cancel_job(&job_id).await {
                     Ok((running_tasks, _pending_tasks)) => {

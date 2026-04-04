@@ -243,11 +243,12 @@ message PartitionLocation {
   ExecutorMetadata executor_meta = 3;
   PartitionStats partition_stats = 4;
   string path = 5;
-  // Riffle remote shuffle fields (empty when using local shuffle)
-  string riffle_app_id = 6;
-  int32 riffle_shuffle_id = 7;
-  string riffle_server_host = 8;
-  int32 riffle_server_port = 9;
+  // Remote shuffle service fields (empty when using local shuffle).
+  // Used by external shuffle service extensions (e.g., Riffle/Uniffle, Celeborn).
+  string remote_shuffle_app_id = 6;
+  int32 remote_shuffle_id = 7;
+  string remote_shuffle_server_host = 8;
+  int32 remote_shuffle_server_port = 9;
 }
 
 // Unique identifier for a materialized partition of data
@@ -457,11 +458,11 @@ message ShuffleWritePartition {
   uint64 num_batches = 3;
   uint64 num_rows = 4;
   uint64 num_bytes = 5;
-  // Riffle remote shuffle fields (empty when using local shuffle)
-  string riffle_app_id = 6;
-  int32 riffle_shuffle_id = 7;
-  string riffle_server_host = 8;
-  int32 riffle_server_port = 9;
+  // Remote shuffle service fields (empty when using local shuffle).
+  string remote_shuffle_app_id = 6;
+  int32 remote_shuffle_id = 7;
+  string remote_shuffle_server_host = 8;
+  int32 remote_shuffle_server_port = 9;
 }
 
 message TaskStatus {

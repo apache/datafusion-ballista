@@ -124,25 +124,25 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                 })?
                 .into(),
             path: self.path,
-            riffle_app_id: if self.riffle_app_id.is_empty() {
+            remote_shuffle_app_id: if self.remote_shuffle_app_id.is_empty() {
                 None
             } else {
-                Some(self.riffle_app_id)
+                Some(self.remote_shuffle_app_id)
             },
-            riffle_shuffle_id: if self.riffle_shuffle_id == 0 {
+            remote_shuffle_id: if self.remote_shuffle_id == 0 {
                 None
             } else {
-                Some(self.riffle_shuffle_id)
+                Some(self.remote_shuffle_id)
             },
-            riffle_server_host: if self.riffle_server_host.is_empty() {
+            remote_shuffle_server_host: if self.remote_shuffle_server_host.is_empty() {
                 None
             } else {
-                Some(self.riffle_server_host)
+                Some(self.remote_shuffle_server_host)
             },
-            riffle_server_port: if self.riffle_server_port == 0 {
+            remote_shuffle_server_port: if self.remote_shuffle_server_port == 0 {
                 None
             } else {
-                Some(self.riffle_server_port)
+                Some(self.remote_shuffle_server_port)
             },
         })
     }

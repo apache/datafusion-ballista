@@ -251,10 +251,10 @@ impl ShuffleWriterExec {
                         num_batches: stats.num_batches.unwrap_or(0),
                         num_rows: stats.num_rows.unwrap_or(0),
                         num_bytes: stats.num_bytes.unwrap_or(0),
-                        riffle_app_id: String::new(),
-                        riffle_shuffle_id: 0,
-                        riffle_server_host: String::new(),
-                        riffle_server_port: 0,
+                        remote_shuffle_app_id: String::new(),
+                        remote_shuffle_id: 0,
+                        remote_shuffle_server_host: String::new(),
+                        remote_shuffle_server_port: 0,
                     }])
                 }
 
@@ -345,10 +345,10 @@ impl ShuffleWriterExec {
                                 num_batches: w.num_batches as u64,
                                 num_rows: w.num_rows as u64,
                                 num_bytes,
-                                riffle_app_id: String::new(),
-                                riffle_shuffle_id: 0,
-                                riffle_server_host: String::new(),
-                                riffle_server_port: 0,
+                                remote_shuffle_app_id: String::new(),
+                                remote_shuffle_id: 0,
+                                remote_shuffle_server_host: String::new(),
+                                remote_shuffle_server_port: 0,
                             });
                         }
                     }

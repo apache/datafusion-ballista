@@ -296,10 +296,10 @@ pub fn default_task_runner() -> impl TaskRunner {
                 num_batches: 1,
                 num_rows: 1,
                 num_bytes: 1,
-                riffle_app_id: String::new(),
-                riffle_shuffle_id: 0,
-                riffle_server_host: String::new(),
-                riffle_server_port: 0,
+                remote_shuffle_app_id: String::new(),
+                remote_shuffle_id: 0,
+                remote_shuffle_server_host: String::new(),
+                remote_shuffle_server_port: 0,
             })
             .collect();
 
@@ -1205,10 +1205,10 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
             num_batches: 1,
             num_rows: 1,
             num_bytes: 1,
-            riffle_app_id: String::new(),
-            riffle_shuffle_id: 0,
-            riffle_server_host: String::new(),
-            riffle_server_port: 0,
+            remote_shuffle_app_id: String::new(),
+            remote_shuffle_id: 0,
+            remote_shuffle_server_host: String::new(),
+            remote_shuffle_server_port: 0,
         })
     }
 
@@ -1248,10 +1248,10 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
             num_batches: 1,
             num_rows: 1,
             num_bytes: 1,
-            riffle_app_id: String::new(),
-            riffle_shuffle_id: 0,
-            riffle_server_host: String::new(),
-            riffle_server_port: 0,
+            remote_shuffle_app_id: String::new(),
+            remote_shuffle_id: 0,
+            remote_shuffle_server_host: String::new(),
+            remote_shuffle_server_port: 0,
         })
     }
 

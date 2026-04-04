@@ -41,7 +41,6 @@ default = ["arrow-ipc-optimizations"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
-riffle = ["dep:ballista-riffle"]
 spark-compat = ["dep:datafusion-spark"]
 
 [dependencies]
@@ -49,7 +48,6 @@ arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { version = "1.8.13", optional = true }
 aws-credential-types = { version = "1.2.0", optional = true }
-ballista-riffle = { path = "../riffle", optional = true }
 chrono = { version = "0.4", default-features = false }
 clap = { workspace = true, optional = true }
 datafusion = { workspace = true }

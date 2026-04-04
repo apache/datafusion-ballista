@@ -362,7 +362,7 @@ fn create_shuffle_writer_with_config(
                 ballista_config.shuffle_sort_based_batch_size(),
             );
 
-            let mut writer = SortShuffleWriterExec::try_new(
+            let writer = SortShuffleWriterExec::try_new(
                 job_id.to_owned(),
                 stage_id,
                 plan,
@@ -370,19 +370,6 @@ fn create_shuffle_writer_with_config(
                 Partitioning::Hash(exprs, partition_count),
                 sort_config,
             )?;
-
-            // If Riffle shuffle backend is configured, attach the config so
-            // executors can connect to the coordinator at execution time
-            #[cfg(feature = "riffle")]
-            if ballista_config.shuffle_backend() == "riffle" {
-                let riffle_config = ballista_riffle::config::RiffleConfig {
-                    coordinator_host: ballista_config.riffle_coordinator_host(),
-                    coordinator_port: ballista_config.riffle_coordinator_port() as u16,
-                    app_id: job_id.to_owned(),
-                    ..Default::default()
-                };
-                writer = writer.with_riffle_config(riffle_config);
-            }
 
             return Ok(Arc::new(writer));
         }

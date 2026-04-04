@@ -1749,25 +1749,25 @@ pub(crate) fn partition_to_location(
                 Some(shuffle.num_bytes),
             ),
             path: shuffle.path,
-            riffle_app_id: if shuffle.riffle_app_id.is_empty() {
+            remote_shuffle_app_id: if shuffle.remote_shuffle_app_id.is_empty() {
                 None
             } else {
-                Some(shuffle.riffle_app_id)
+                Some(shuffle.remote_shuffle_app_id)
             },
-            riffle_shuffle_id: if shuffle.riffle_shuffle_id == 0 {
+            remote_shuffle_id: if shuffle.remote_shuffle_id == 0 {
                 None
             } else {
-                Some(shuffle.riffle_shuffle_id)
+                Some(shuffle.remote_shuffle_id)
             },
-            riffle_server_host: if shuffle.riffle_server_host.is_empty() {
+            remote_shuffle_server_host: if shuffle.remote_shuffle_server_host.is_empty() {
                 None
             } else {
-                Some(shuffle.riffle_server_host)
+                Some(shuffle.remote_shuffle_server_host)
             },
-            riffle_server_port: if shuffle.riffle_server_port == 0 {
+            remote_shuffle_server_port: if shuffle.remote_shuffle_server_port == 0 {
                 None
             } else {
-                Some(shuffle.riffle_server_port)
+                Some(shuffle.remote_shuffle_server_port)
             },
         })
         .collect()

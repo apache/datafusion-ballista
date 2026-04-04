@@ -372,15 +372,16 @@ pub struct PartitionLocation {
     pub partition_stats: ::core::option::Option<PartitionStats>,
     #[prost(string, tag = "5")]
     pub path: ::prost::alloc::string::String,
-    /// Riffle remote shuffle fields (empty when using local shuffle)
+    /// Remote shuffle service fields (empty when using local shuffle).
+    /// Used by external shuffle service extensions (e.g., Riffle/Uniffle, Celeborn).
     #[prost(string, tag = "6")]
-    pub riffle_app_id: ::prost::alloc::string::String,
+    pub remote_shuffle_app_id: ::prost::alloc::string::String,
     #[prost(int32, tag = "7")]
-    pub riffle_shuffle_id: i32,
+    pub remote_shuffle_id: i32,
     #[prost(string, tag = "8")]
-    pub riffle_server_host: ::prost::alloc::string::String,
+    pub remote_shuffle_server_host: ::prost::alloc::string::String,
     #[prost(int32, tag = "9")]
-    pub riffle_server_port: i32,
+    pub remote_shuffle_server_port: i32,
 }
 /// Unique identifier for a materialized partition of data
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -708,15 +709,15 @@ pub struct ShuffleWritePartition {
     pub num_rows: u64,
     #[prost(uint64, tag = "5")]
     pub num_bytes: u64,
-    /// Riffle remote shuffle fields (empty when using local shuffle)
+    /// Remote shuffle service fields (empty when using local shuffle).
     #[prost(string, tag = "6")]
-    pub riffle_app_id: ::prost::alloc::string::String,
+    pub remote_shuffle_app_id: ::prost::alloc::string::String,
     #[prost(int32, tag = "7")]
-    pub riffle_shuffle_id: i32,
+    pub remote_shuffle_id: i32,
     #[prost(string, tag = "8")]
-    pub riffle_server_host: ::prost::alloc::string::String,
+    pub remote_shuffle_server_host: ::prost::alloc::string::String,
     #[prost(int32, tag = "9")]
-    pub riffle_server_port: i32,
+    pub remote_shuffle_server_port: i32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskStatus {

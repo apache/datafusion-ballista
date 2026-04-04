@@ -350,10 +350,10 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             specification: ExecutorSpecification { task_slots: 0 },
         },
         path: "".to_string(),
-        riffle_app_id: None,
-        riffle_shuffle_id: None,
-        riffle_server_host: None,
-        riffle_server_port: None,
+        remote_shuffle_app_id: None,
+        remote_shuffle_id: None,
+        remote_shuffle_server_host: None,
+        remote_shuffle_server_port: None,
         // next few properties are needed
         partition_stats: PartitionStats::new(
             Some(threshold_num_rows as u64 / 128),
@@ -384,10 +384,10 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             specification: ExecutorSpecification { task_slots: 0 },
         },
         path: "".to_string(),
-        riffle_app_id: None,
-        riffle_shuffle_id: None,
-        riffle_server_host: None,
-        riffle_server_port: None,
+        remote_shuffle_app_id: None,
+        remote_shuffle_id: None,
+        remote_shuffle_server_host: None,
+        remote_shuffle_server_port: None,
         // next few properties are needed
         partition_stats: PartitionStats::new(
             Some(threshold_num_rows as u64 * 2),

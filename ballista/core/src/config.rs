@@ -79,12 +79,8 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
 /// Should client use tls connection
 pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
-/// Configuration key for shuffle backend: "local" or "riffle".
+/// Configuration key for shuffle backend: "local" or custom extension name.
 pub const BALLISTA_SHUFFLE_BACKEND: &str = "ballista.shuffle.backend";
-/// Riffle coordinator hostname.
-pub const BALLISTA_RIFFLE_COORDINATOR_HOST: &str = "ballista.riffle.coordinator.host";
-/// Riffle coordinator gRPC port.
-pub const BALLISTA_RIFFLE_COORDINATOR_PORT: &str = "ballista.riffle.coordinator.port";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -171,17 +167,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::Boolean,
                          Some(false.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_BACKEND.to_string(),
-                         "Shuffle backend: 'local' for local disk, 'riffle' for remote Riffle/Uniffle service".to_string(),
+                         "Shuffle backend: 'local' for local disk, or a custom extension name".to_string(),
                          DataType::Utf8,
                          Some("local".to_string())),
-        ConfigEntry::new(BALLISTA_RIFFLE_COORDINATOR_HOST.to_string(),
-                         "Riffle coordinator hostname for remote shuffle".to_string(),
-                         DataType::Utf8,
-                         Some("localhost".to_string())),
-        ConfigEntry::new(BALLISTA_RIFFLE_COORDINATOR_PORT.to_string(),
-                         "Riffle coordinator gRPC port".to_string(),
-                         DataType::UInt16,
-                         Some("19999".to_string()))
     ];
     entries
         .into_iter()
@@ -397,19 +385,9 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
     }
 
-    /// Returns the shuffle backend: "local" or "riffle".
+    /// Returns the shuffle backend: "local" or a custom extension name.
     pub fn shuffle_backend(&self) -> String {
         self.get_string_setting(BALLISTA_SHUFFLE_BACKEND)
-    }
-
-    /// Returns the Riffle coordinator hostname.
-    pub fn riffle_coordinator_host(&self) -> String {
-        self.get_string_setting(BALLISTA_RIFFLE_COORDINATOR_HOST)
-    }
-
-    /// Returns the Riffle coordinator gRPC port.
-    pub fn riffle_coordinator_port(&self) -> usize {
-        self.get_usize_setting(BALLISTA_RIFFLE_COORDINATOR_PORT)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
