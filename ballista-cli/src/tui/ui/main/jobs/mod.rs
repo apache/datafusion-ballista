@@ -248,13 +248,17 @@ fn render_job_percent_completion_cell(job: &Job) -> Cell<'_> {
 }
 
 fn render_job_stage_completion_cell(job: &Job) -> Cell<'_> {
-    let stages_completion = job.completed_stages as f32 / job.num_stages as f32;
-    let stage_completion = format!(
-        "{:.2}% ({} / {})",
-        stages_completion * 100.0,
-        job.completed_stages,
-        job.num_stages
-    );
+    let stage_completion = if job.num_stages == 0 {
+        format!("0.00% ({} / {})", job.completed_stages, job.num_stages)
+    } else {
+        let stages_completion = job.completed_stages as f32 / job.num_stages as f32;
+        format!(
+            "{:.2}% ({} / {})",
+            stages_completion * 100.0,
+            job.completed_stages,
+            job.num_stages
+        )
+    };
     Cell::from(Text::from(stage_completion).centered())
 }
 
