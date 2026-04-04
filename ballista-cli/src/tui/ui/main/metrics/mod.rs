@@ -79,16 +79,14 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
         let mut table_state = app.metrics_data.table_state;
         render_metrics_table(f, rects[1], &filtered_metrics, &mut table_state);
         render_scrollbar(f, rects[1], &mut scroll_state);
+    } else if are_metrics_enabled(app) {
+        render_no_metrics(f, rects[1], "No metrics.");
     } else {
-        if !are_metrics_enabled(app) {
-            render_no_metrics(
-                f,
-                rects[1],
-                "The scheduler is built with 'prometheus_metric' feature disabled.",
-            );
-        } else {
-            render_no_metrics(f, rects[1], "No metrics.");
-        }
+        render_no_metrics(
+            f,
+            rects[1],
+            "The scheduler is built with 'prometheus_metric' feature disabled.",
+        );
     }
 }
 
