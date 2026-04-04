@@ -46,6 +46,11 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+jupyter = [
+    "ipython>=8.0.0",
+]
+
 [project.urls]
 homepage = "https://datafusion.apache.org/ballista"
 documentation = "https://datafusion.apache.org/ballista"
