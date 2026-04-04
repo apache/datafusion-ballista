@@ -124,6 +124,26 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                 })?
                 .into(),
             path: self.path,
+            riffle_app_id: if self.riffle_app_id.is_empty() {
+                None
+            } else {
+                Some(self.riffle_app_id)
+            },
+            riffle_shuffle_id: if self.riffle_shuffle_id == 0 {
+                None
+            } else {
+                Some(self.riffle_shuffle_id)
+            },
+            riffle_server_host: if self.riffle_server_host.is_empty() {
+                None
+            } else {
+                Some(self.riffle_server_host)
+            },
+            riffle_server_port: if self.riffle_server_port == 0 {
+                None
+            } else {
+                Some(self.riffle_server_port)
+            },
         })
     }
 }

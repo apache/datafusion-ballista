@@ -997,6 +997,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "ballista-riffle",
  "chrono",
  "clap 4.6.0",
  "datafusion",
@@ -1080,6 +1081,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-riffle"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "dashmap",
+ "log",
+ "prost",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "ballista-scheduler"
 version = "53.0.0"
 dependencies = [
@@ -1087,6 +1103,7 @@ dependencies = [
  "async-trait",
  "axum",
  "ballista-core",
+ "ballista-riffle",
  "clap 4.6.0",
  "dashmap",
  "datafusion",

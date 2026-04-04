@@ -79,6 +79,10 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
             executor_meta: Some(self.executor_meta.into()),
             partition_stats: Some(self.partition_stats.into()),
             path: self.path,
+            riffle_app_id: self.riffle_app_id.unwrap_or_default(),
+            riffle_shuffle_id: self.riffle_shuffle_id.unwrap_or(0),
+            riffle_server_host: self.riffle_server_host.unwrap_or_default(),
+            riffle_server_port: self.riffle_server_port.unwrap_or(0),
         })
     }
 }

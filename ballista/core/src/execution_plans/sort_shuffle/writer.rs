@@ -84,6 +84,11 @@ pub struct SortShuffleWriterExec {
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties
     properties: Arc<PlanProperties>,
+    /// Optional Riffle config for remote shuffle (coordinator connection info).
+    /// When set, the executor connects to the coordinator at execution time,
+    /// gets server assignments, and pushes data to assigned servers.
+    #[cfg(feature = "riffle")]
+    riffle_config: Option<ballista_riffle::config::RiffleConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +160,8 @@ impl SortShuffleWriterExec {
             config,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
+            #[cfg(feature = "riffle")]
+            riffle_config: None,
         })
     }
 
@@ -186,6 +193,16 @@ impl SortShuffleWriterExec {
             .partition_count()
     }
 
+    /// Set the Riffle config for remote shuffle.
+    #[cfg(feature = "riffle")]
+    pub fn with_riffle_config(
+        mut self,
+        config: ballista_riffle::config::RiffleConfig,
+    ) -> Self {
+        self.riffle_config = Some(config);
+        self
+    }
+
     /// Execute the sort-based shuffle write for a single input partition.
     pub fn execute_shuffle_write(
         self,
@@ -199,6 +216,8 @@ impl SortShuffleWriterExec {
         let job_id = self.job_id.clone();
         let stage_id = self.stage_id;
         let partitioning = self.shuffle_output_partitioning.clone();
+        #[cfg(feature = "riffle")]
+        let riffle_config = self.riffle_config.clone();
 
         async move {
             let now = Instant::now();
@@ -267,18 +286,59 @@ impl SortShuffleWriterExec {
                 .finish_writers()
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            // Finalize: write consolidated output file
+            // Finalize: write to Riffle or local disk
+            #[cfg(feature = "riffle")]
+            let use_riffle = riffle_config.is_some();
+            #[cfg(not(feature = "riffle"))]
+            let use_riffle = false;
+
             let timer = metrics.write_time.timer();
-            let (data_path, index_path, partition_stats) = finalize_output(
-                &work_dir,
-                &job_id,
-                stage_id,
-                input_partition,
-                &mut buffers,
-                &mut spill_manager,
-                &schema,
-                &config,
-            )?;
+            let results: Vec<ShuffleWritePartition> = if use_riffle {
+                #[cfg(feature = "riffle")]
+                {
+                    let riffle_cfg = riffle_config.as_ref().unwrap();
+                    finalize_output_riffle(
+                        riffle_cfg,
+                        stage_id as i32,
+                        &mut buffers,
+                        &mut spill_manager,
+                        &schema,
+                        &config,
+                    )
+                    .await?
+                }
+                #[cfg(not(feature = "riffle"))]
+                unreachable!()
+            } else {
+                let (data_path, _index_path, stats) = finalize_output(
+                    &work_dir,
+                    &job_id,
+                    stage_id,
+                    input_partition,
+                    &mut buffers,
+                    &mut spill_manager,
+                    &schema,
+                    &config,
+                )?;
+                let result_path = data_path.to_string_lossy().to_string();
+                stats
+                    .into_iter()
+                    .filter(|(_, _, num_rows, _)| *num_rows > 0)
+                    .map(|(part_id, num_batches, num_rows, num_bytes)| {
+                        ShuffleWritePartition {
+                            partition_id: part_id as u64,
+                            path: result_path.clone(),
+                            num_batches,
+                            num_rows,
+                            num_bytes,
+                            riffle_app_id: String::new(),
+                            riffle_shuffle_id: 0,
+                            riffle_server_host: String::new(),
+                            riffle_server_port: 0,
+                        }
+                    })
+                    .collect()
+            };
             timer.done();
 
             // Update metrics
@@ -287,7 +347,7 @@ impl SortShuffleWriterExec {
                 .spill_bytes
                 .add(spill_manager.total_bytes_spilled() as usize);
 
-            let total_rows: u64 = partition_stats.iter().map(|(_, _, r, _)| *r).sum();
+            let total_rows: u64 = results.iter().map(|r| r.num_rows).sum();
             metrics.output_rows.add(total_rows as usize);
 
             // Cleanup spill files
@@ -297,28 +357,14 @@ impl SortShuffleWriterExec {
 
             info!(
                 "Sort shuffle write for partition {} completed in {} seconds. \
-                 Output: {:?}, Index: {:?}, Spills: {}, Spill bytes: {}",
+                 Partitions: {}, Spills: {}, Spill bytes: {}, Riffle: {}",
                 input_partition,
                 now.elapsed().as_secs(),
-                data_path,
-                index_path,
+                results.len(),
                 spill_manager.total_spills(),
-                spill_manager.total_bytes_spilled()
+                spill_manager.total_bytes_spilled(),
+                use_riffle,
             );
-
-            // Build result - one entry per output partition that has data
-            let mut results = Vec::new();
-            for (part_id, num_batches, num_rows, num_bytes) in partition_stats {
-                if num_rows > 0 {
-                    results.push(ShuffleWritePartition {
-                        partition_id: part_id as u64,
-                        path: data_path.to_string_lossy().to_string(),
-                        num_batches,
-                        num_rows,
-                        num_bytes,
-                    });
-                }
-            }
 
             Ok(results)
         }
@@ -459,6 +505,264 @@ fn finalize_output(
     Ok((data_path, index_path, partition_stats))
 }
 
+/// Serializes a chunk of batches to IPC bytes and pushes to a Riffle server.
+/// Returns the block_id assigned by the client.
+#[cfg(feature = "riffle")]
+async fn push_chunk_to_riffle(
+    client: &ballista_riffle::client::RiffleClient,
+    shuffle_id: i32,
+    partition_id: i32,
+    batches: &[datafusion::arrow::record_batch::RecordBatch],
+    schema: &SchemaRef,
+    server_host: &str,
+    server_port: i32,
+) -> Result<i64> {
+    use ballista_riffle::serde::record_batches_to_ipc_bytes;
+
+    let ipc_bytes = record_batches_to_ipc_bytes(batches, schema)
+        .map_err(|e| DataFusionError::Execution(format!("IPC serialization error: {e}")))?;
+
+    let require_size = ipc_bytes.len() as i32;
+    let require_buffer_id = client
+        .require_buffer(shuffle_id, require_size, vec![partition_id], server_host, server_port)
+        .await
+        .map_err(|e| {
+            DataFusionError::Execution(format!(
+                "Riffle require_buffer error on {server_host}:{server_port}: {e}"
+            ))
+        })?;
+
+    let block_id = client
+        .send_shuffle_data(
+            shuffle_id, require_buffer_id, partition_id,
+            ipc_bytes, 0, server_host, server_port,
+        )
+        .await
+        .map_err(|e| {
+            DataFusionError::Execution(format!(
+                "Riffle send_data error on {server_host}:{server_port}: {e}"
+            ))
+        })?;
+
+    Ok(block_id)
+}
+
+/// Finalizes shuffle output by pushing each partition's data to its assigned
+/// Riffle shuffle server.
+///
+/// The coordinator assigns partition ranges to different shuffle servers.
+/// Each partition's data is pushed to its designated server, enabling
+/// distributed shuffle storage where reducers read from a single server
+/// rather than all mappers.
+#[cfg(feature = "riffle")]
+async fn finalize_output_riffle(
+    riffle_config: &ballista_riffle::config::RiffleConfig,
+    shuffle_id: i32,
+    buffers: &mut [PartitionBuffer],
+    spill_manager: &mut SpillManager,
+    schema: &SchemaRef,
+    config: &SortShuffleConfig,
+) -> Result<Vec<ShuffleWritePartition>> {
+    use ballista_riffle::serde::record_batches_to_ipc_bytes;
+    use std::collections::HashMap;
+
+    let num_partitions = buffers.len();
+    let mut results = Vec::with_capacity(num_partitions);
+
+    // Connect to Riffle coordinator (executor creates client at execution time)
+    let client = ballista_riffle::client::RiffleClient::connect(riffle_config.clone())
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("Riffle connect error: {e}")))?;
+
+    // Get server assignments from coordinator: which server handles which partitions
+    // (register_application and heartbeat are managed by the scheduler)
+    let assignments = client
+        .get_shuffle_assignments(shuffle_id, num_partitions as i32)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("Riffle assignment error: {e}")))?;
+
+    if assignments.is_empty() {
+        return Err(DataFusionError::Execution(
+            "No shuffle server assignments from Riffle coordinator".to_string(),
+        ));
+    }
+
+    // Build partition_id → (server_host, server_port) mapping
+    let mut partition_to_server: HashMap<i32, (String, i32)> = HashMap::new();
+    for assignment in &assignments {
+        let server = assignment.server.first().ok_or_else(|| {
+            DataFusionError::Execution(
+                "Assignment has no server".to_string(),
+            )
+        })?;
+        for part_id in assignment.start_partition..=assignment.end_partition {
+            partition_to_server.insert(part_id, (server.ip.clone(), server.port));
+        }
+    }
+
+    // Collect unique servers
+    let mut unique_servers: Vec<(String, i32)> = partition_to_server
+        .values()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_servers.sort();
+
+    // Register shuffle with EACH server that will receive data
+    for (server_host, server_port) in &unique_servers {
+        client
+            .register_shuffle(shuffle_id, num_partitions as i32, server_host, *server_port)
+            .await
+            .map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "Riffle register error on {server_host}:{server_port}: {e}"
+                ))
+            })?;
+    }
+
+    debug!(
+        "Registered shuffle {} with {} servers for {} partitions",
+        shuffle_id,
+        unique_servers.len(),
+        num_partitions
+    );
+
+    // Track block IDs per server for reporting
+    let mut server_block_ids: HashMap<(String, i32), Vec<(i32, Vec<i64>)>> = HashMap::new();
+
+    // Push each partition's data to its ASSIGNED server
+    for (partition_id, buffer) in buffers.iter_mut().enumerate() {
+        let mut all_batches = Vec::new();
+        let mut partition_rows: u64 = 0;
+        let mut partition_batches: u64 = 0;
+        let mut partition_bytes: u64 = 0;
+
+        // Collect spill data
+        if let Some(reader) = spill_manager
+            .open_spill_reader(partition_id)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        {
+            for batch_result in reader {
+                let batch = batch_result?;
+                partition_rows += batch.num_rows() as u64;
+                partition_bytes += batch.get_array_memory_size() as u64;
+                partition_batches += 1;
+                all_batches.push(batch);
+            }
+        }
+
+        // Collect buffered data
+        let buffered_batches = buffer.take_batches_coalesced(config.batch_size);
+        for batch in buffered_batches {
+            partition_rows += batch.num_rows() as u64;
+            partition_bytes += batch.get_array_memory_size() as u64;
+            partition_batches += 1;
+            all_batches.push(batch);
+        }
+
+        // Look up which server this partition is assigned to
+        let (server_host, server_port) =
+            partition_to_server.get(&(partition_id as i32)).ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "No server assignment for partition {partition_id}"
+                ))
+            })?;
+
+        results.push(ShuffleWritePartition {
+            partition_id: partition_id as u64,
+            path: String::new(),
+            num_batches: partition_batches,
+            num_rows: partition_rows,
+            num_bytes: partition_bytes,
+            riffle_app_id: riffle_config.app_id.clone(),
+            riffle_shuffle_id: shuffle_id,
+            riffle_server_host: server_host.clone(),
+            riffle_server_port: *server_port,
+        });
+
+        if all_batches.is_empty() {
+            continue;
+        }
+
+        // Chunk large partitions into multiple blocks to stay under gRPC limits.
+        // Accumulate batches until estimated size exceeds max_block_size, then flush.
+        let max_block_size = riffle_config.max_block_size;
+        let mut chunk = Vec::new();
+        let mut chunk_size: usize = 0;
+        let mut block_ids_for_partition = Vec::new();
+
+        for batch in all_batches {
+            let batch_size = batch.get_array_memory_size();
+            // Flush current chunk if adding this batch would exceed limit
+            // (but always include at least one batch per chunk)
+            if !chunk.is_empty() && chunk_size + batch_size > max_block_size {
+                let block_id = push_chunk_to_riffle(
+                    &client, shuffle_id, partition_id as i32,
+                    &chunk, schema, server_host, *server_port,
+                ).await?;
+                block_ids_for_partition.push(block_id);
+                chunk.clear();
+                chunk_size = 0;
+            }
+            chunk_size += batch_size;
+            chunk.push(batch);
+        }
+
+        // Flush remaining chunk
+        if !chunk.is_empty() {
+            let block_id = push_chunk_to_riffle(
+                &client, shuffle_id, partition_id as i32,
+                &chunk, schema, server_host, *server_port,
+            ).await?;
+            block_ids_for_partition.push(block_id);
+        }
+
+        // Track block IDs per server for reporting
+        server_block_ids
+            .entry((server_host.clone(), *server_port))
+            .or_default()
+            .push((partition_id as i32, block_ids_for_partition.clone()));
+
+        debug!(
+            "Pushed partition {} to Riffle {}:{} ({} batches, {} rows, {} bytes, {} blocks)",
+            partition_id, server_host, server_port,
+            partition_batches, partition_rows, partition_bytes,
+            block_ids_for_partition.len()
+        );
+    }
+
+    // Report shuffle results and commit on EACH server
+    for ((server_host, server_port), block_ids) in &server_block_ids {
+        // Report which blocks were written
+        client
+            .report_shuffle_result(
+                shuffle_id,
+                block_ids.clone(),
+                server_host,
+                *server_port,
+            )
+            .await
+            .map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "Riffle report error on {server_host}:{server_port}: {e}"
+                ))
+            })?;
+
+        // Commit (best-effort — not all Riffle versions support this)
+        if let Err(e) = client
+            .commit_shuffle_task(shuffle_id, server_host, *server_port)
+            .await
+        {
+            debug!("Riffle commit on {server_host}:{server_port} (non-fatal): {e}");
+        }
+        // Note: finish_shuffle and unregister are managed by the scheduler's
+        // RiffleLifecycleManager at job completion/failure
+    }
+
+    Ok(results)
+}
+
 impl DisplayAs for SortShuffleWriterExec {
     fn fmt_as(
         &self,
@@ -512,14 +816,19 @@ impl ExecutionPlan for SortShuffleWriterExec {
                 )
             })?;
 
-            Ok(Arc::new(SortShuffleWriterExec::try_new(
+            let mut new_exec = SortShuffleWriterExec::try_new(
                 self.job_id.clone(),
                 self.stage_id,
                 input,
                 self.work_dir.clone(),
                 self.shuffle_output_partitioning.clone(),
                 self.config.clone(),
-            )?))
+            )?;
+            #[cfg(feature = "riffle")]
+            {
+                new_exec.riffle_config = self.riffle_config.clone();
+            }
+            Ok(Arc::new(new_exec))
         } else {
             Err(DataFusionError::Plan(
                 "SortShuffleWriterExec expects single child".to_owned(),
