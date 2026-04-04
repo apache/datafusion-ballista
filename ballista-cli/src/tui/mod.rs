@@ -57,7 +57,7 @@ pub async fn tui_main() -> TuiResult<()> {
                 match maybe_event {
                     Some(Event::Key(key)) => app.on_key(key).await?,
                     Some(Event::Tick) => app.on_tick().await,
-                    Some(Event::DataLoaded { .. }) => {},
+                    Some(evt) => tracing::debug!("Unexpected event: {evt:?}"),
                     None => break,
                 }
             }
