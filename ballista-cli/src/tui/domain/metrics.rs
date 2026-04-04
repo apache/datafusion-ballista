@@ -44,6 +44,11 @@ impl MetricsData {
     }
 
     pub fn scroll_down(&mut self) {
+        if self.metrics.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
+        
         if let Some(selected) = self.get_selected_metric_index() {
             if selected < self.metrics.len() - 1 {
                 self.table_state.select(Some(selected + 1));
@@ -56,6 +61,11 @@ impl MetricsData {
     }
 
     pub fn scroll_up(&mut self) {
+        if self.metrics.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
+
         if let Some(selected) = self.get_selected_metric_index() {
             if selected == 0 {
                 self.table_state.select(None);
