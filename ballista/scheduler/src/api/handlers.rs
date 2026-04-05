@@ -515,7 +515,7 @@ pub async fn get_query_stages<
                                 let end_exec_time = task_info.end_exec_time as u64;
                                 let task_status = (&task_info.task_status).into();
                                 Some(TaskSummary {
-                                    task_id: task_info.task_id,
+                                    id: task_info.task_id,
                                     partition_id: partition_id as u32,
                                     scheduled_time: task_info.scheduled_time as u64,
                                     launch_time: task_info.launch_time as u64,
