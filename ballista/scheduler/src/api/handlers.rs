@@ -21,6 +21,7 @@ use axum::{
 };
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
+use ballista_core::serde::protobuf::task_status;
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
@@ -33,6 +34,7 @@ use graphviz_rust::{
     printer::PrinterContext,
 };
 use http::{StatusCode, header::CONTENT_TYPE};
+use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,20 +97,22 @@ struct CancelJobResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct TaskSummary {
     /// task id
-    pub task_id: u32,
+    pub task_id: usize,
+    /// Task status
+    pub task_status: TaskStatus,
     /// partition id
     pub partition_id: u32,
     /// Scheduler schedule time
     pub scheduled_time: u64,
-    /// Scheduler launch time
+    /// Scheduler launch time (ms since epoch)
     pub launch_time: u64,
-    /// The time the Executor start to run the task
+    /// The time the Executor start to run the task (ms since epoch)
     pub start_exec_time: u64,
-    /// The time the Executor finish the task
+    /// The time the Executor finish the task (ms since epoch)
     pub end_exec_time: u64,
-    /// total execution time
+    /// total execution time (ms)
     pub exec_duration: u64,
-    /// Scheduler side finish time
+    /// Scheduler side finish time (ms since epoch)
     pub finish_time: u64,
     /// Number of input rows
     pub input_rows: usize,
@@ -116,8 +120,25 @@ pub struct TaskSummary {
     pub output_rows: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub enum TaskStatus {
+    Running,
+    Successful,
+    Failed,
+}
+
+impl From<&task_status::Status> for TaskStatus {
+    fn from(value: &task_status::Status) -> Self {
+        match value {
+            task_status::Status::Running(_) => TaskStatus::Running,
+            task_status::Status::Failed(_) => TaskStatus::Failed,
+            task_status::Status::Successful(_) => TaskStatus::Successful,
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
-pub struct DurationStats {
+pub struct Percentiles {
     pub min: u64,
     pub p25: u64,
     pub median: u64,
@@ -132,9 +153,12 @@ pub struct QueryStageSummary {
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_duration_stats: Option<DurationStats>,
+    pub task_duration_percentiles: Option<Percentiles>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_input_percentiles: Option<Percentiles>,
     pub tasks: Vec<Option<TaskSummary>>,
 }
 
@@ -385,8 +409,9 @@ pub async fn get_query_stages<
                     output_rows: 0,
                     elapsed_compute: "".to_string(),
                     tasks: vec![],
-                    task_duration_stats: None,
-                    stage_plan: None
+                    task_duration_percentiles: None,
+                    task_input_percentiles: None,
+                    stage_plan: None,
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
@@ -416,27 +441,27 @@ pub async fn get_query_stages<
                                         .stage_metrics
                                         .as_deref()
                                         .and_then(|m| m.get(partition_id));
-                                    let input_rows = partition_metrics
-                                        .map(|m| {
-                                            get_combined_count(
-                                                std::slice::from_ref(m),
-                                                "input_rows",
-                                            )
-                                        })
-                                        .unwrap_or(0);
-                                    let output_rows = partition_metrics
-                                        .map(|m| {
-                                            get_combined_count(
-                                                std::slice::from_ref(m),
-                                                "output_rows",
-                                            )
-                                        })
-                                        .unwrap_or(0);
+                                    let (input_rows, output_rows) = partition_metrics
+                                    .map(|m| {
+                                        let input = get_combined_count(
+                                            std::slice::from_ref(m),
+                                            "input_rows",
+                                        );
+                                        let output = get_combined_count(
+                                            std::slice::from_ref(m),
+                                            "output_rows",
+                                        );
+                                        (input,output)
+                                    })
+                                    .unwrap_or((0,0));
 
                                     let start_exec_time = info.start_exec_time as u64;
                                     let end_exec_time = info.end_exec_time as u64;
+
+                                    let task_status: TaskStatus = (&info.task_status).into();
+
                                     TaskSummary {
-                                        task_id: info.task_id as u32,
+                                        task_id: info.task_id,
                                         partition_id: partition_id as u32,
                                         scheduled_time: info.scheduled_time as u64,
                                         launch_time: info.launch_time as u64,
@@ -446,6 +471,7 @@ pub async fn get_query_stages<
                                         finish_time: info.finish_time as u64,
                                         input_rows,
                                         output_rows,
+                                        task_status
                                     }
                                 })
                             })
@@ -471,26 +497,25 @@ pub async fn get_query_stages<
                             .map(|(partition_id, task_info)| {
                                 let partition_metrics =
                                     completed_stage.stage_metrics.get(partition_id);
-                                let input_rows = partition_metrics
+                                let (input_rows, output_rows) = partition_metrics
                                     .map(|m| {
-                                        get_combined_count(
+                                        let input = get_combined_count(
                                             std::slice::from_ref(m),
                                             "input_rows",
-                                        )
-                                    })
-                                    .unwrap_or(0);
-                                let output_rows = partition_metrics
-                                    .map(|m| {
-                                        get_combined_count(
+                                        );
+                                        let output = get_combined_count(
                                             std::slice::from_ref(m),
                                             "output_rows",
-                                        )
+                                        );
+                                        (input,output)
                                     })
-                                    .unwrap_or(0);
+                                    .unwrap_or((0,0));
+
                                 let start_exec_time = task_info.start_exec_time as u64;
                                 let end_exec_time = task_info.end_exec_time as u64;
+                                let task_status = (&task_info.task_status).into();
                                 Some(TaskSummary {
-                                    task_id: task_info.task_id as u32,
+                                    task_id: task_info.task_id,
                                     partition_id: partition_id as u32,
                                     scheduled_time: task_info.scheduled_time as u64,
                                     launch_time: task_info.launch_time as u64,
@@ -500,13 +525,15 @@ pub async fn get_query_stages<
                                     finish_time: task_info.finish_time as u64,
                                     input_rows,
                                     output_rows,
+                                    task_status
                                 })
                             })
                             .collect();
                     }
                     _ => {}
                 }
-                summary.task_duration_stats = task_duration_stats(&summary.tasks);
+                summary.task_duration_percentiles = task_duration_percentiles(&summary.tasks);
+                summary.task_input_percentiles = task_input_percentiles(&summary.tasks);
                 summary
             })
             .collect();
@@ -522,7 +549,29 @@ fn percentile_duration(sorted: &[u64], pct: f64) -> u64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
-fn task_duration_stats(tasks: &[Option<TaskSummary>]) -> Option<DurationStats> {
+fn task_input_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentiles> {
+    let mut durations: Vec<u64> = tasks
+        .iter()
+        .flatten()
+        .map(|t| t.input_rows as u64)
+        .collect();
+
+    if durations.is_empty() {
+        return None;
+    }
+
+    durations.sort_unstable();
+
+    Some(Percentiles {
+        min: durations[0],
+        p25: percentile_duration(&durations, 25.0),
+        median: percentile_duration(&durations, 50.0),
+        p75: percentile_duration(&durations, 75.0),
+        max: *durations.last().unwrap(),
+    })
+}
+
+fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentiles> {
     let mut durations: Vec<u64> =
         tasks.iter().flatten().map(|t| t.exec_duration).collect();
 
@@ -532,7 +581,7 @@ fn task_duration_stats(tasks: &[Option<TaskSummary>]) -> Option<DurationStats> {
 
     durations.sort_unstable();
 
-    Some(DurationStats {
+    Some(Percentiles {
         min: durations[0],
         p25: percentile_duration(&durations, 25.0),
         median: percentile_duration(&durations, 50.0),
