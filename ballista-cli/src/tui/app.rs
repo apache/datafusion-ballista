@@ -496,3 +496,199 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::domain::{SchedulerState, jobs::Job};
+
+    fn make_app() -> App {
+        let settings =
+            Settings::new().expect("Settings::new should succeed with defaults");
+        App::new(settings).expect("App::new should succeed with valid settings")
+    }
+
+    fn make_job(id: &str, status: &str) -> Job {
+        Job {
+            job_id: id.to_string(),
+            job_name: format!("Job {id}"),
+            status: status.to_string(),
+            start_time: 0,
+            num_stages: 1,
+            completed_stages: 0,
+            percent_complete: 0,
+        }
+    }
+
+    fn make_scheduler_state() -> SchedulerState {
+        SchedulerState {
+            started: 0,
+            version: "0.1.0".to_string(),
+            datafusion_version: "40.0.0".to_string(),
+            substrait_support: false,
+            keda_support: false,
+            prometheus_support: false,
+            graphviz_support: false,
+            spark_support: false,
+            scheduling_policy: "round-robin".to_string(),
+        }
+    }
+
+    // --- Initial state tests ---
+
+    #[test]
+    fn new_app_starts_in_jobs_view() {
+        let app = make_app();
+        assert!(app.is_jobs_view());
+        assert!(!app.is_executors_view());
+        assert!(!app.is_metrics_view());
+    }
+
+    #[test]
+    fn new_app_scheduler_is_not_up() {
+        let app = make_app();
+        assert!(!app.is_scheduler_up());
+    }
+
+    #[test]
+    fn new_app_should_not_quit() {
+        let app = make_app();
+        assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn new_app_is_not_edit_mode() {
+        let app = make_app();
+        assert!(!app.is_edit_mode());
+    }
+
+    // --- Scheduler state ---
+
+    #[test]
+    fn is_scheduler_up_when_scheduler_state_is_some() {
+        let mut app = make_app();
+        app.executors_data.scheduler_state = Some(make_scheduler_state());
+        assert!(app.is_scheduler_up());
+    }
+
+    // --- Job helper methods ---
+
+    #[test]
+    fn has_no_selected_job_when_empty() {
+        let app = make_app();
+        assert!(!app.has_selected_job());
+    }
+
+    #[test]
+    fn has_more_than_one_job_false_when_empty() {
+        let app = make_app();
+        assert!(!app.has_more_than_one_job());
+    }
+
+    #[test]
+    fn has_more_than_one_job_true_with_two_jobs() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running"), make_job("j2", "Running")];
+        assert!(app.has_more_than_one_job());
+    }
+
+    #[test]
+    fn has_selected_completed_job_true_when_completed_job_selected() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Completed")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.has_selected_completed_job());
+    }
+
+    #[test]
+    fn has_selected_completed_job_false_for_running_job() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(!app.has_selected_completed_job());
+    }
+
+    // --- sort_jobs_by toggle tests ---
+
+    #[test]
+    fn sort_jobs_by_new_column_sets_ascending() {
+        let mut app = make_app();
+        app.sort_jobs_by(JobsSortColumn::Id);
+        assert_eq!(app.jobs_data.sort_column, JobsSortColumn::Id);
+        assert_eq!(app.jobs_data.sort_order, SortOrder::Ascending);
+    }
+
+    #[test]
+    fn sort_jobs_by_same_column_ascending_toggles_to_descending() {
+        let mut app = make_app();
+        app.sort_jobs_by(JobsSortColumn::Name);
+        app.sort_jobs_by(JobsSortColumn::Name);
+        assert_eq!(app.jobs_data.sort_column, JobsSortColumn::Name);
+        assert_eq!(app.jobs_data.sort_order, SortOrder::Descending);
+    }
+
+    #[test]
+    fn sort_jobs_by_same_column_descending_resets_to_none() {
+        let mut app = make_app();
+        app.sort_jobs_by(JobsSortColumn::Status);
+        app.sort_jobs_by(JobsSortColumn::Status);
+        app.sort_jobs_by(JobsSortColumn::Status);
+        assert_eq!(app.jobs_data.sort_column, JobsSortColumn::None);
+    }
+
+    // --- sort_executors_by toggle tests ---
+
+    #[test]
+    fn sort_executors_by_new_column_sets_ascending() {
+        let mut app = make_app();
+        app.sort_executors_by(ExecutorsSortColumn::Host);
+        assert_eq!(app.executors_data.sort_column, ExecutorsSortColumn::Host);
+        assert_eq!(app.executors_data.sort_order, SortOrder::Ascending);
+    }
+
+    #[test]
+    fn sort_executors_by_same_column_ascending_toggles_to_descending() {
+        let mut app = make_app();
+        app.sort_executors_by(ExecutorsSortColumn::Id);
+        app.sort_executors_by(ExecutorsSortColumn::Id);
+        assert_eq!(app.executors_data.sort_column, ExecutorsSortColumn::Id);
+        assert_eq!(app.executors_data.sort_order, SortOrder::Descending);
+    }
+
+    #[test]
+    fn sort_executors_by_same_column_descending_resets_to_none() {
+        let mut app = make_app();
+        app.sort_executors_by(ExecutorsSortColumn::LastSeen);
+        app.sort_executors_by(ExecutorsSortColumn::LastSeen);
+        app.sort_executors_by(ExecutorsSortColumn::LastSeen);
+        assert_eq!(app.executors_data.sort_column, ExecutorsSortColumn::None);
+    }
+
+    // --- sort_metrics_by toggle tests ---
+
+    #[test]
+    fn sort_metrics_by_new_column_sets_ascending() {
+        let mut app = make_app();
+        app.sort_metrics_by(MetricsSortColumn::Name);
+        assert_eq!(app.metrics_data.sort_column, MetricsSortColumn::Name);
+        assert_eq!(app.metrics_data.sort_order, SortOrder::Ascending);
+    }
+
+    #[test]
+    fn sort_metrics_by_same_column_ascending_toggles_to_descending() {
+        let mut app = make_app();
+        app.sort_metrics_by(MetricsSortColumn::Name);
+        app.sort_metrics_by(MetricsSortColumn::Name);
+        assert_eq!(app.metrics_data.sort_column, MetricsSortColumn::Name);
+        assert_eq!(app.metrics_data.sort_order, SortOrder::Descending);
+    }
+
+    #[test]
+    fn sort_metrics_by_same_column_descending_resets_to_none() {
+        let mut app = make_app();
+        app.sort_metrics_by(MetricsSortColumn::Name);
+        app.sort_metrics_by(MetricsSortColumn::Name);
+        app.sort_metrics_by(MetricsSortColumn::Name);
+        assert_eq!(app.metrics_data.sort_column, MetricsSortColumn::None);
+    }
+}

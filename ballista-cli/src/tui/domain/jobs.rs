@@ -224,3 +224,371 @@ impl JobsData {
             .position(self.get_selected_job_index().unwrap_or(0));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::domain::SortOrder;
+
+    fn make_job(
+        id: &str,
+        name: &str,
+        status: &str,
+        start_time: i64,
+        num_stages: usize,
+        completed_stages: usize,
+        percent_complete: u8,
+    ) -> Job {
+        Job {
+            job_id: id.to_string(),
+            job_name: name.to_string(),
+            status: status.to_string(),
+            start_time,
+            num_stages,
+            completed_stages,
+            percent_complete,
+        }
+    }
+
+    fn make_jobs_data(
+        jobs: Vec<Job>,
+        sort_column: SortColumn,
+        sort_order: SortOrder,
+    ) -> JobsData {
+        JobsData {
+            jobs,
+            sort_column,
+            sort_order,
+            ..JobsData::new()
+        }
+    }
+
+    // --- sort_jobs tests ---
+
+    #[test]
+    fn sort_by_none_preserves_order() {
+        let jobs = vec![
+            make_job("c", "Charlie", "Running", 3, 1, 0, 0),
+            make_job("a", "Alpha", "Running", 1, 1, 0, 0),
+            make_job("b", "Beta", "Running", 2, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "c");
+        assert_eq!(refs[1].job_id, "a");
+        assert_eq!(refs[2].job_id, "b");
+    }
+
+    #[test]
+    fn sort_by_id_ascending() {
+        let jobs = vec![
+            make_job("c", "C", "Running", 3, 1, 0, 0),
+            make_job("a", "A", "Running", 1, 1, 0, 0),
+            make_job("b", "B", "Running", 2, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Id, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "a");
+        assert_eq!(refs[1].job_id, "b");
+        assert_eq!(refs[2].job_id, "c");
+    }
+
+    #[test]
+    fn sort_by_id_descending() {
+        let jobs = vec![
+            make_job("a", "A", "Running", 1, 1, 0, 0),
+            make_job("c", "C", "Running", 3, 1, 0, 0),
+            make_job("b", "B", "Running", 2, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Id, SortOrder::Descending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "c");
+        assert_eq!(refs[1].job_id, "b");
+        assert_eq!(refs[2].job_id, "a");
+    }
+
+    #[test]
+    fn sort_by_name_ascending() {
+        let jobs = vec![
+            make_job("1", "Zeta", "Running", 1, 1, 0, 0),
+            make_job("2", "Alpha", "Running", 2, 1, 0, 0),
+            make_job("3", "Mu", "Running", 3, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Name, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_name, "Alpha");
+        assert_eq!(refs[1].job_name, "Mu");
+        assert_eq!(refs[2].job_name, "Zeta");
+    }
+
+    #[test]
+    fn sort_by_name_descending() {
+        let jobs = vec![
+            make_job("1", "Alpha", "Running", 1, 1, 0, 0),
+            make_job("2", "Zeta", "Running", 2, 1, 0, 0),
+            make_job("3", "Mu", "Running", 3, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Name, SortOrder::Descending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_name, "Zeta");
+        assert_eq!(refs[1].job_name, "Mu");
+        assert_eq!(refs[2].job_name, "Alpha");
+    }
+
+    #[test]
+    fn sort_by_status_ascending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 1, 1, 0, 0),
+            make_job("2", "B", "Completed", 2, 1, 0, 0),
+            make_job("3", "C", "Failed", 3, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Status, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].status, "Completed");
+        assert_eq!(refs[1].status, "Failed");
+        assert_eq!(refs[2].status, "Running");
+    }
+
+    #[test]
+    fn sort_by_status_descending() {
+        let jobs = vec![
+            make_job("1", "A", "Completed", 1, 1, 0, 0),
+            make_job("2", "B", "Running", 2, 1, 0, 0),
+            make_job("3", "C", "Failed", 3, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Status, SortOrder::Descending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].status, "Running");
+        assert_eq!(refs[1].status, "Failed");
+        assert_eq!(refs[2].status, "Completed");
+    }
+
+    #[test]
+    fn sort_by_percent_complete_ascending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 1, 1, 0, 75),
+            make_job("2", "B", "Running", 2, 1, 0, 25),
+            make_job("3", "C", "Running", 3, 1, 0, 50),
+        ];
+        let data =
+            make_jobs_data(jobs, SortColumn::PercentComplete, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].percent_complete, 25);
+        assert_eq!(refs[1].percent_complete, 50);
+        assert_eq!(refs[2].percent_complete, 75);
+    }
+
+    #[test]
+    fn sort_by_percent_complete_descending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 1, 1, 0, 25),
+            make_job("2", "B", "Running", 2, 1, 0, 75),
+            make_job("3", "C", "Running", 3, 1, 0, 50),
+        ];
+        let data =
+            make_jobs_data(jobs, SortColumn::PercentComplete, SortOrder::Descending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].percent_complete, 75);
+        assert_eq!(refs[1].percent_complete, 50);
+        assert_eq!(refs[2].percent_complete, 25);
+    }
+
+    #[test]
+    fn sort_by_start_time_ascending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 300, 1, 0, 0),
+            make_job("2", "B", "Running", 100, 1, 0, 0),
+            make_job("3", "C", "Running", 200, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::StartTime, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].start_time, 100);
+        assert_eq!(refs[1].start_time, 200);
+        assert_eq!(refs[2].start_time, 300);
+    }
+
+    #[test]
+    fn sort_by_start_time_descending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 100, 1, 0, 0),
+            make_job("2", "B", "Running", 300, 1, 0, 0),
+            make_job("3", "C", "Running", 200, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::StartTime, SortOrder::Descending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].start_time, 300);
+        assert_eq!(refs[1].start_time, 200);
+        assert_eq!(refs[2].start_time, 100);
+    }
+
+    // --- selected_job tests ---
+
+    #[test]
+    fn selected_job_no_selection_returns_none() {
+        let jobs = vec![make_job("j1", "Job One", "Running", 1, 1, 0, 0)];
+        let data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        assert!(data.selected_job("").is_none());
+    }
+
+    #[test]
+    fn selected_job_returns_correct_job() {
+        let jobs = vec![
+            make_job("j1", "Job One", "Running", 1, 1, 0, 0),
+            make_job("j2", "Job Two", "Running", 2, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(1));
+        let job = data.selected_job("").unwrap();
+        assert_eq!(job.job_id, "j2");
+    }
+
+    #[test]
+    fn selected_job_filters_by_search_term_on_id() {
+        let jobs = vec![
+            make_job("abc-123", "Job One", "Running", 1, 1, 0, 0),
+            make_job("xyz-456", "Job Two", "Running", 2, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(0));
+        // Only "xyz-456" matches the search; index 0 in filtered list is that job
+        let job = data.selected_job("xyz").unwrap();
+        assert_eq!(job.job_id, "xyz-456");
+    }
+
+    #[test]
+    fn selected_job_filters_by_search_term_on_name() {
+        let jobs = vec![
+            make_job("j1", "Query Alpha", "Running", 1, 1, 0, 0),
+            make_job("j2", "Query Beta", "Running", 2, 1, 0, 0),
+            make_job("j3", "Other Job", "Running", 3, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(1));
+        // Filtered by "beta": only "Query Beta" matches, index 0
+        let job = data.selected_job("beta");
+        assert!(job.is_none()); // index 1 out of bounds in filtered list of 1
+
+        data.table_state.select(Some(0));
+        let job = data.selected_job("beta").unwrap();
+        assert_eq!(job.job_id, "j2");
+    }
+
+    #[test]
+    fn selected_job_search_is_case_insensitive() {
+        let jobs = vec![make_job("j1", "My QUERY", "Running", 1, 1, 0, 0)];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(0));
+        assert!(data.selected_job("query").is_some());
+        assert!(data.selected_job("QUERY").is_some());
+        assert!(data.selected_job("Query").is_some());
+    }
+
+    #[test]
+    fn selected_job_no_match_returns_none() {
+        let jobs = vec![make_job("j1", "Job One", "Running", 1, 1, 0, 0)];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(0));
+        assert!(data.selected_job("nonexistent").is_none());
+    }
+
+    // --- scroll_down tests ---
+
+    #[test]
+    fn scroll_down_empty_list_stays_none() {
+        let mut data = JobsData::new();
+        data.scroll_down();
+        assert_eq!(data.table_state.selected(), None);
+    }
+
+    #[test]
+    fn scroll_down_with_no_selection_selects_first() {
+        let jobs = vec![
+            make_job("j1", "A", "Running", 1, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.scroll_down();
+        assert_eq!(data.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn scroll_down_advances_selection() {
+        let jobs = vec![
+            make_job("j1", "A", "Running", 1, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 0, 0),
+            make_job("j3", "C", "Running", 3, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(0));
+        data.scroll_down();
+        assert_eq!(data.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn scroll_down_at_last_item_deselects() {
+        let jobs = vec![
+            make_job("j1", "A", "Running", 1, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(1));
+        data.scroll_down();
+        assert_eq!(data.table_state.selected(), None);
+    }
+
+    // --- scroll_up tests ---
+
+    #[test]
+    fn scroll_up_empty_list_stays_none() {
+        let mut data = JobsData::new();
+        data.scroll_up();
+        assert_eq!(data.table_state.selected(), None);
+    }
+
+    #[test]
+    fn scroll_up_with_no_selection_selects_last() {
+        let jobs = vec![
+            make_job("j1", "A", "Running", 1, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 0, 0),
+            make_job("j3", "C", "Running", 3, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.scroll_up();
+        assert_eq!(data.table_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn scroll_up_moves_selection_back() {
+        let jobs = vec![
+            make_job("j1", "A", "Running", 1, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(1));
+        data.scroll_up();
+        assert_eq!(data.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn scroll_up_at_first_item_deselects() {
+        let jobs = vec![
+            make_job("j1", "A", "Running", 1, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 0, 0),
+        ];
+        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
+        data.table_state.select(Some(0));
+        data.scroll_up();
+        assert_eq!(data.table_state.selected(), None);
+    }
+}
