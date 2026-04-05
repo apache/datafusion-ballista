@@ -252,3 +252,137 @@ fn arrow_connector(total_width: usize, arrow_col: usize, style: Style) -> Line<'
         Span::raw(" ".repeat(after)),
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- truncate_to_width ---
+
+    #[test]
+    fn truncate_shorter_than_max_unchanged() {
+        assert_eq!(truncate_to_width("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length_unchanged() {
+        assert_eq!(truncate_to_width("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_longer_adds_ellipsis() {
+        assert_eq!(truncate_to_width("hello world", 6), "hello…");
+    }
+
+    #[test]
+    fn truncate_max_zero_is_empty() {
+        assert_eq!(truncate_to_width("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_max_one_is_first_char_no_ellipsis() {
+        assert_eq!(truncate_to_width("abc", 1), "a");
+    }
+
+    #[test]
+    fn truncate_max_two_is_one_char_plus_ellipsis() {
+        assert_eq!(truncate_to_width("abc", 2), "a…");
+    }
+
+    // --- node_top_border ---
+
+    #[test]
+    fn top_border_no_connect_has_only_dashes() {
+        let style = Style::default();
+        let line = node_top_border(4, 2, false, style);
+        let content = line.spans[0].content.as_ref();
+        assert_eq!(content, " ┌────┐ ");
+        assert!(!content.contains('┴'));
+    }
+
+    #[test]
+    fn top_border_with_connect_has_junction() {
+        let style = Style::default();
+        let line = node_top_border(4, 2, true, style);
+        let content = line.spans[0].content.as_ref();
+        assert!(content.contains('┴'), "expected ┴ in {content:?}");
+        assert_eq!(content, " ┌──┴─┐ ");
+    }
+
+    #[test]
+    fn top_border_zero_width_no_panic() {
+        let style = Style::default();
+        let line = node_top_border(0, 0, true, style);
+        // connect_top branch requires inner_w > 0, so falls back to plain border
+        assert_eq!(line.spans[0].content.as_ref(), " ┌┐ ");
+    }
+
+    // --- node_bottom_border ---
+
+    #[test]
+    fn bottom_border_no_connect_has_only_dashes() {
+        let style = Style::default();
+        let line = node_bottom_border(4, 2, false, style);
+        let content = line.spans[0].content.as_ref();
+        assert_eq!(content, " └────┘ ");
+        assert!(!content.contains('┬'));
+    }
+
+    #[test]
+    fn bottom_border_with_connect_has_junction() {
+        let style = Style::default();
+        let line = node_bottom_border(4, 2, true, style);
+        let content = line.spans[0].content.as_ref();
+        assert!(content.contains('┬'), "expected ┬ in {content:?}");
+        assert_eq!(content, " └──┬─┘ ");
+    }
+
+    #[test]
+    fn bottom_border_zero_width_no_panic() {
+        let style = Style::default();
+        let line = node_bottom_border(0, 0, true, style);
+        assert_eq!(line.spans[0].content.as_ref(), " └┘ ");
+    }
+
+    // --- node_text_row ---
+
+    #[test]
+    fn text_row_short_text_is_padded() {
+        let style = Style::default();
+        let line = node_text_row(10, "Hi", style, style);
+        // available = inner_w - 1 = 9; content = " Hi       " (1 leading + 8 trailing spaces)
+        let content = line.spans[1].content.as_ref();
+        assert_eq!(content.len(), 10); // 1 space + 9 chars padded
+        assert!(content.contains("Hi"));
+    }
+
+    #[test]
+    fn text_row_long_text_is_truncated() {
+        let style = Style::default();
+        let line = node_text_row(6, "Hello World", style, style);
+        // available = 5; truncated = "Hell…"; content = " Hell…"
+        let content = line.spans[1].content.as_ref();
+        assert!(
+            content.contains('…'),
+            "expected ellipsis in {content:?}"
+        );
+    }
+
+    // --- arrow_connector ---
+
+    #[test]
+    fn arrow_connector_middle_span_is_down_arrow() {
+        let style = Style::default();
+        let line = arrow_connector(10, 5, style);
+        assert_eq!(line.spans[1].content.as_ref(), "↓");
+    }
+
+    #[test]
+    fn arrow_connector_positions_arrow_correctly() {
+        let style = Style::default();
+        let line = arrow_connector(10, 3, style);
+        // before = 3 spaces, arrow, after = 10 - 3 - 1 = 6 spaces
+        assert_eq!(line.spans[0].content.as_ref(), "   ");
+        assert_eq!(line.spans[2].content.as_ref(), "      ");
+    }
+}

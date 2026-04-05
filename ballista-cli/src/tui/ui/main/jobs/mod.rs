@@ -268,3 +268,41 @@ fn render_job_status_cell(job: &Job) -> Cell<'_> {
     let text = Text::from(job.status.clone()).style(Style::default().fg(color));
     Cell::from(text.centered())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::domain::SortOrder;
+
+    #[test]
+    fn column_suffix_active_ascending_returns_up_arrow() {
+        assert_eq!(
+            column_suffix(&SortColumn::Id, &SortOrder::Ascending, &SortColumn::Id),
+            " ▲"
+        );
+    }
+
+    #[test]
+    fn column_suffix_active_descending_returns_down_arrow() {
+        assert_eq!(
+            column_suffix(&SortColumn::Id, &SortOrder::Descending, &SortColumn::Id),
+            " ▼"
+        );
+    }
+
+    #[test]
+    fn column_suffix_different_column_returns_empty() {
+        assert_eq!(
+            column_suffix(&SortColumn::Name, &SortOrder::Ascending, &SortColumn::Id),
+            ""
+        );
+    }
+
+    #[test]
+    fn column_suffix_none_vs_id_returns_empty() {
+        assert_eq!(
+            column_suffix(&SortColumn::None, &SortOrder::Ascending, &SortColumn::Id),
+            ""
+        );
+    }
+}
