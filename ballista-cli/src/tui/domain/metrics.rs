@@ -1,0 +1,156 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use crate::tui::domain::SortOrder;
+use prometheus_parse::Sample;
+use ratatui::widgets::{ScrollbarState, TableState};
+use std::str::FromStr;
+
+/// A Prometheus metric
+///
+/// Returned by the /api/metrics REST endpoint
+#[derive(Clone, Debug)]
+pub struct Metric {
+    pub sample: Sample,
+    pub help: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SortColumn {
+    None,
+    Name,
+}
+
+#[derive(Clone, Debug)]
+pub struct MetricsData {
+    pub metrics: Vec<Metric>,
+    pub scrollbar_state: ScrollbarState,
+    pub table_state: TableState,
+    pub sort_column: SortColumn,
+    pub sort_order: SortOrder,
+}
+
+impl Default for MetricsData {
+    fn default() -> Self {
+        Self {
+            metrics: vec![],
+            scrollbar_state: ScrollbarState::new(0),
+            table_state: TableState::default(),
+            sort_column: SortColumn::None,
+            sort_order: SortOrder::Ascending,
+        }
+    }
+}
+
+impl MetricsData {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn sort(&mut self) {
+        match self.sort_column {
+            SortColumn::Name => self.metrics.sort_by(|a, b| {
+                let cmp = a.sample.metric.cmp(&b.sample.metric);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::None => {}
+        }
+    }
+
+    fn get_selected_metric_index(&self) -> Option<usize> {
+        self.table_state.selected()
+    }
+
+    pub fn scroll_down(&mut self) {
+        if self.metrics.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
+
+        if let Some(selected) = self.get_selected_metric_index() {
+            if selected < self.metrics.len() - 1 {
+                self.table_state.select(Some(selected + 1));
+            } else {
+                self.table_state.select(None);
+            }
+        } else {
+            self.table_state.select(Some(0));
+        }
+
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.get_selected_metric_index().unwrap_or(0));
+    }
+
+    pub fn scroll_up(&mut self) {
+        if self.metrics.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
+
+        if let Some(selected) = self.get_selected_metric_index() {
+            if selected == 0 {
+                self.table_state.select(None);
+            } else {
+                self.table_state.select(Some(selected - 1));
+            }
+        } else {
+            self.table_state.select(Some(self.metrics.len() - 1));
+        }
+
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.get_selected_metric_index().unwrap_or(0));
+    }
+}
+
+// Newtype struct for parsing the HTTP response into a vec
+pub(crate) struct MetricsResponse {
+    pub metrics: Vec<Metric>,
+}
+
+impl FromStr for MetricsResponse {
+    type Err = std::io::Error;
+
+    fn from_str(http_response: &str) -> Result<Self, Self::Err> {
+        let mut metrics: Vec<Metric> = Vec::new();
+
+        let lines: Vec<std::io::Result<String>> = http_response
+            .lines()
+            .map(|line| Ok(line.to_string()))
+            .collect();
+        let scrape = prometheus_parse::Scrape::parse(lines.into_iter())?;
+        for sample in scrape.samples {
+            let metric = Metric {
+                sample: sample.clone(),
+                help: scrape
+                    .docs
+                    .get(&sample.metric)
+                    .unwrap_or(&String::new())
+                    .to_string(),
+            };
+            metrics.push(metric);
+        }
+        // metrics.sort_by(|a, b| a.sample.metric.cmp(&b.sample.metric));
+
+        Ok(MetricsResponse { metrics })
+    }
+}
