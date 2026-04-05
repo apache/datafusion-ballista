@@ -97,7 +97,7 @@ struct CancelJobResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct TaskSummary {
     /// task id
-    pub task_id: usize,
+    pub id: usize,
     /// Task status
     pub task_status: TaskStatus,
     /// partition id
