@@ -53,9 +53,10 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             " Jobs view:",
             Style::default().fg(Color::Yellow),
         )]),
-        Line::from(Span::styled("  s       Sort by Status", style)),
-        Line::from(Span::styled("  p       Sort by % Completed", style)),
-        Line::from(Span::styled("  t       Sort by Start time", style)),
+        Line::from(Span::styled(
+            "  1/2/... Sort by first/second/... column",
+            style,
+        )),
         Line::from(Span::styled(
             "  g       Dot graph if a completed job is selected",
             style,

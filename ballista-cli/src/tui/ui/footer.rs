@@ -38,9 +38,9 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             if app.is_jobs_view() {
                 if app.has_more_than_one_job() {
                     page_key_bindings.push(Span::from("[/] Search jobs, "));
-                    page_key_bindings.push(Span::from("[s] Sort by Status, "));
-                    page_key_bindings.push(Span::from("[p] Sort by % Completed, "));
-                    page_key_bindings.push(Span::from("[t] Sort by Start time, "));
+                    page_key_bindings.push(Span::from(
+                        "[1,2,3] Sort by first/second/third/... column, ",
+                    ));
                 }
                 if app.has_selected_job() {
                     page_key_bindings.push(Span::from("[g] View job stages, "));
@@ -52,6 +52,9 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 if !page_key_bindings.is_empty() {
                     page_key_bindings.insert(0, Span::from("Jobs key bindings: "));
                 }
+            } else if app.is_executors_view() {
+                page_key_bindings
+                    .push(Span::from("[1,2,...] Sort by first/second/... column, "));
             } else if app.is_metrics_view() {
                 page_key_bindings.push(Span::from("Metrics key bindings: "));
                 page_key_bindings.push(Span::from("[/] Search metrics, "));

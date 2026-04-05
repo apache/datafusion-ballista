@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::CancelJobResult;
+use crate::tui::domain::jobs::CancelJobResult;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};

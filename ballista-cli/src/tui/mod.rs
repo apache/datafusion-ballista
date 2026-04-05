@@ -30,7 +30,9 @@ use ratatui::widgets::ScrollbarState;
 use std::time::Duration;
 use terminal::TuiWrapper;
 
-use crate::tui::domain::{ExecutorsData, JobsData, MetricsData};
+use crate::tui::domain::{
+    executors::ExecutorsData, jobs::JobsData, metrics::MetricsData,
+};
 use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
@@ -65,11 +67,18 @@ pub async fn tui_main() -> TuiResult<()> {
                 if let Event::DataLoaded { data } = app_event {
                   match data {
                     UiData::Executors(state, executors, jobs) => {
+                            let old_scrollbar_position = app.executors_data.scrollbar_state.get_position();
+                            let scrollbar_state = ScrollbarState::new(executors.len()).position(old_scrollbar_position);
                             app.executors_data = ExecutorsData {
-                                scheduler_state: state,
                                 executors,
+                                scrollbar_state,
+                                table_state: app.executors_data.table_state,
+                                sort_column: app.executors_data.sort_column,
+                                sort_order: app.executors_data.sort_order,
+                                scheduler_state: state,
                                 jobs,
                             };
+                            app.executors_data.sort();
                     },
                     UiData::Metrics(metrics) => {
                             let old_scrollbar_position = app.metrics_data.scrollbar_state.get_position();

@@ -19,8 +19,13 @@ use crate::tui::TuiResult;
 use crate::tui::{
     TuiError,
     domain::{
-        CancelJobResult, ExecutorsData, JobDetails, JobsData, MetricsData, SortColumn,
-        SortOrder, StagesGraph,
+        SortOrder,
+        executors::{ExecutorsData, SortColumn as ExecutorsSortColumn},
+        jobs::{
+            CancelJobResult, JobDetails, JobsData, SortColumn as JobsSortColumn,
+            StagesGraph,
+        },
+        metrics::MetricsData,
     },
     event::Event,
     infrastructure::Settings,
@@ -283,14 +288,41 @@ impl App {
             KeyCode::Char('/') if self.is_jobs_view() || self.is_metrics_view() => {
                 self.input_mode = InputMode::Edit;
             }
-            KeyCode::Char('s') if self.is_jobs_view() => {
-                self.sort_jobs_by(SortColumn::Status);
+            KeyCode::Char('1') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Id);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::Host);
+                }
             }
-            KeyCode::Char('p') if self.is_jobs_view() => {
-                self.sort_jobs_by(SortColumn::PercentComplete);
+            KeyCode::Char('2') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Name);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::Id);
+                }
             }
-            KeyCode::Char('t') if self.is_jobs_view() => {
-                self.sort_jobs_by(SortColumn::StartTime);
+            KeyCode::Char('3') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Status);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::LastSeen);
+                }
+            }
+            KeyCode::Char('4') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StagesCompleted);
+                }
+            }
+            KeyCode::Char('5') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::PercentComplete);
+                }
+            }
+            KeyCode::Char('6') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StartTime);
+                }
             }
             KeyCode::Char('c')
                 if self.is_jobs_view() && self.input_mode == InputMode::View =>
@@ -301,6 +333,8 @@ impl App {
                 if self.is_jobs_view() {
                     self.jobs_data.scroll_down();
                     self.update_selected_job_details().await;
+                } else if self.is_executors_view() {
+                    self.executors_data.scroll_down();
                 } else if self.is_metrics_view() {
                     self.metrics_data.scroll_down();
                 }
@@ -309,6 +343,8 @@ impl App {
                 if self.is_jobs_view() {
                     self.jobs_data.scroll_up();
                     self.update_selected_job_details().await;
+                } else if self.is_executors_view() {
+                    self.executors_data.scroll_up();
                 } else if self.is_metrics_view() {
                     self.metrics_data.scroll_up();
                 }
@@ -365,20 +401,37 @@ impl App {
         }
     }
 
-    fn sort_jobs_by(&mut self, sort_column: SortColumn) {
+    fn sort_jobs_by(&mut self, sort_column: JobsSortColumn) {
         if self.jobs_data.sort_column == sort_column {
             match self.jobs_data.sort_order {
                 SortOrder::Ascending => {
                     self.jobs_data.sort_order = SortOrder::Descending;
                 }
                 SortOrder::Descending => {
-                    self.jobs_data.sort_column = SortColumn::None;
+                    self.jobs_data.sort_column = JobsSortColumn::None;
                 }
             }
         } else {
             self.jobs_data.sort_column = sort_column;
             self.jobs_data.sort_order = SortOrder::Ascending;
         }
+    }
+
+    fn sort_executors_by(&mut self, sort_column: ExecutorsSortColumn) {
+        if self.executors_data.sort_column == sort_column {
+            match self.executors_data.sort_order {
+                SortOrder::Ascending => {
+                    self.executors_data.sort_order = SortOrder::Descending;
+                }
+                SortOrder::Descending => {
+                    self.executors_data.sort_column = ExecutorsSortColumn::None;
+                }
+            }
+        } else {
+            self.executors_data.sort_column = sort_column;
+            self.executors_data.sort_order = SortOrder::Ascending;
+        }
+        self.executors_data.sort();
     }
 
     async fn cancel_selected_job(&mut self) {

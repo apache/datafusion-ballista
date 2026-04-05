@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::tui::app::{App, PlanTab};
+use crate::tui::domain::jobs::JobDetails;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
@@ -75,8 +76,8 @@ fn render_navigation(f: &mut Frame, area: Rect, tab: &PlanTab) {
 
 fn render_plans(
     f: &mut Frame,
-    area: ratatui::layout::Rect,
-    details: &crate::tui::domain::JobDetails,
+    area: Rect,
+    details: &JobDetails,
     tab: &PlanTab,
     app: &App,
 ) {

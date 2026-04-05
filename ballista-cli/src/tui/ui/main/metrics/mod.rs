@@ -18,7 +18,7 @@
 use crate::tui::{
     TuiResult,
     app::App,
-    domain::Metric,
+    domain::metrics::Metric,
     event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,

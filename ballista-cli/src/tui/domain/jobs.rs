@@ -32,9 +32,12 @@ pub struct Job {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SortColumn {
     None,
-    StartTime,
+    Id,
+    Name,
     Status,
+    StagesCompleted,
     PercentComplete,
+    StartTime,
 }
 
 #[derive(Clone, Debug)]
@@ -105,8 +108,34 @@ pub struct StagesGraph {
 impl JobsData {
     pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
         match self.sort_column {
+            SortColumn::Id => jobs.sort_by(|a, b| {
+                let cmp = a.job_id.cmp(&b.job_id);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::Name => jobs.sort_by(|a, b| {
+                let cmp = a.job_name.cmp(&b.job_name);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
             SortColumn::Status => jobs.sort_by(|a, b| {
                 let cmp = a.status.cmp(&b.status);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::StagesCompleted => jobs.sort_by(|a, b| {
+                let a_stages = a.completed_stages / a.num_stages;
+                let b_stages = b.completed_stages / b.num_stages;
+                let cmp = a_stages.cmp(&b_stages);
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {

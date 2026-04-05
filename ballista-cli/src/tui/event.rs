@@ -20,7 +20,10 @@ use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::tui::domain::{
-    Executor, Job, JobDetails, Metric, SchedulerState, StagesGraph,
+    SchedulerState,
+    executors::Executor,
+    jobs::{Job, JobDetails, StagesGraph},
+    metrics::Metric,
 };
 
 #[derive(Clone, Debug)]

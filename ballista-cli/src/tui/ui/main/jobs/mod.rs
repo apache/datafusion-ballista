@@ -22,7 +22,10 @@ pub mod job_plan_popup;
 use crate::tui::{
     TuiResult,
     app::App,
-    domain::{Job, SortColumn, SortOrder},
+    domain::{
+        SortOrder,
+        jobs::{Job, SortColumn},
+    },
     event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
@@ -139,6 +142,18 @@ fn render_no_jobs(f: &mut Frame, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+fn column_suffix(
+    active_sort_column: &SortColumn,
+    sort_order: &SortOrder,
+    sort_column: &SortColumn,
+) -> &'static str {
+    match (active_sort_column, sort_order) {
+        (sc, SortOrder::Ascending) if sc == sort_column => " ▲",
+        (sc, SortOrder::Descending) if sc == sort_column => " ▼",
+        _ => "",
+    }
+}
+
 fn render_jobs_table(
     frame: &mut Frame,
     area: Rect,
@@ -149,27 +164,21 @@ fn render_jobs_table(
 ) {
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
 
-    let status_suffix = match (sort_column, sort_order) {
-        (SortColumn::Status, SortOrder::Ascending) => " ▲",
-        (SortColumn::Status, SortOrder::Descending) => " ▼",
-        _ => "",
-    };
-    let percent_suffix = match (sort_column, sort_order) {
-        (SortColumn::PercentComplete, SortOrder::Ascending) => " ▲",
-        (SortColumn::PercentComplete, SortOrder::Descending) => " ▼",
-        _ => "",
-    };
-    let start_time_suffix = match (sort_column, sort_order) {
-        (SortColumn::StartTime, SortOrder::Ascending) => " ▲",
-        (SortColumn::StartTime, SortOrder::Descending) => " ▼",
-        _ => "",
-    };
+    let id_suffix = column_suffix(sort_column, sort_order, &SortColumn::Id);
+    let name_suffix = column_suffix(sort_column, sort_order, &SortColumn::Name);
+    let status_suffix = column_suffix(sort_column, sort_order, &SortColumn::Status);
+    let stages_suffix =
+        column_suffix(sort_column, sort_order, &SortColumn::StagesCompleted);
+    let percent_suffix =
+        column_suffix(sort_column, sort_order, &SortColumn::PercentComplete);
+    let start_time_suffix =
+        column_suffix(sort_column, sort_order, &SortColumn::StartTime);
 
     let header = [
-        "Id".to_string(),
-        "Name".to_string(),
+        format!("Id{id_suffix}"),
+        format!("Name{name_suffix}"),
         format!("Status{status_suffix}"),
-        "Stages Completed".to_string(),
+        format!("Stages Completes{stages_suffix}"),
         format!("Percent Completed{percent_suffix}"),
         format!("Start time{start_time_suffix}"),
     ]

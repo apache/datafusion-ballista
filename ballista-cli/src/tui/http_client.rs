@@ -23,8 +23,10 @@ use std::time::Duration;
 use crate::tui::{
     TuiResult,
     domain::{
-        CancelJobResponse, Executor, Job, JobDetails, Metric, MetricsResponse,
         SchedulerState,
+        executors::Executor,
+        jobs::{CancelJobResponse, Job, JobDetails},
+        metrics::{Metric, MetricsResponse},
     },
     error::TuiError,
     infrastructure::Settings,

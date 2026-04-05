@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::domain::{GraphNode, GraphStage, StagesGraph};
+use crate::tui::domain::jobs::{GraphNode, GraphStage, StagesGraph};
 use dotparser::{GraphEvent, dot};
 use std::collections::BTreeMap;
 

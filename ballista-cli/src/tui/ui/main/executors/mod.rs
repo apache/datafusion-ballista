@@ -18,7 +18,6 @@
 mod executors_table;
 mod jobs;
 
-use executors_table::render_executors_table;
 use jobs::render_jobs;
 
 use ratatui::{
@@ -45,7 +44,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     if app.is_scheduler_up() {
-        render_executors_table(f, chunks[0], app);
+        executors_table::render_executors(f, chunks[0], app);
         render_jobs(f, chunks[1], app);
     }
 }
