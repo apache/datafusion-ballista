@@ -99,7 +99,7 @@ pub struct TaskSummary {
     /// task id
     pub id: usize,
     /// Task status
-    pub task_status: TaskStatus,
+    pub status: TaskStatus,
     /// partition id
     pub partition_id: u32,
     /// Scheduler schedule time
