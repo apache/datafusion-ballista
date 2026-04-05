@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod dashboard;
+mod executors;
 mod jobs;
 mod metrics;
 
-pub(crate) use dashboard::*;
+pub(crate) use executors::*;
 pub(crate) use jobs::*;
 pub(crate) use metrics::*;
 

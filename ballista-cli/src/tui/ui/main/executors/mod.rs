@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod executors;
+mod executors_table;
 mod jobs;
 
-use executors::render_executors;
+use executors_table::render_executors_table;
 use jobs::render_jobs;
 
 use ratatui::{
@@ -33,7 +33,7 @@ use crate::tui::{
     event::{Event, UiData},
 };
 
-pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
+pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
 
     let chunks = Layout::default()
@@ -45,12 +45,12 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     if app.is_scheduler_up() {
-        render_executors(f, chunks[0], app);
+        render_executors_table(f, chunks[0], app);
         render_jobs(f, chunks[1], app);
     }
 }
 
-pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
+pub async fn load_executors_data(app: &App) -> TuiResult<()> {
     let (scheduler_result, executors_result, jobs_result) = tokio::join!(
         app.http_client.get_scheduler_state(),
         app.http_client.get_executors(),
@@ -70,7 +70,7 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
     });
 
     app.send_event(Event::DataLoaded {
-        data: UiData::Dashboard(scheduler_state, executors_data, jobs_data),
+        data: UiData::Executors(scheduler_state, executors_data, jobs_data),
     })
     .await
 }

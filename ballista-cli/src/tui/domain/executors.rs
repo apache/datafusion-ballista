@@ -19,7 +19,7 @@ use crate::tui::domain::Job;
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct ExecutorsData {
+pub struct Executor {
     pub host: String,
     pub port: u16,
     pub id: String,
@@ -27,18 +27,18 @@ pub struct ExecutorsData {
 }
 
 #[derive(Clone, Debug)]
-pub struct DashboardData {
+pub struct ExecutorsData {
     pub scheduler_state: Option<super::SchedulerState>,
-    pub executors_data: Vec<ExecutorsData>,
-    pub jobs_data: Vec<Job>,
+    pub executors: Vec<Executor>,
+    pub jobs: Vec<Job>,
 }
 
-impl DashboardData {
+impl ExecutorsData {
     pub fn new() -> Self {
         Self {
             scheduler_state: None,
-            executors_data: Vec::new(),
-            jobs_data: Vec::new(),
+            executors: Vec::new(),
+            jobs: Vec::new(),
         }
     }
 }

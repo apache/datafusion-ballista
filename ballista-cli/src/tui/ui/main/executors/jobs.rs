@@ -33,7 +33,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default().borders(Borders::ALL).title("Jobs");
 
-    match &app.dashboard_data.jobs_data {
+    match &app.executors_data.jobs {
         jobs if !jobs.is_empty() => {
             let mut running_jobs = 0;
             let mut completed_jobs = 0;

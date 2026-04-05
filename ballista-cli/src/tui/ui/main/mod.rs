@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod dashboard;
+mod executors;
 mod jobs;
 mod metrics;
 
-pub use dashboard::{load_dashboard_data, render_dashboard};
+pub use executors::{load_executors_data, render_executors};
 pub use jobs::{
     job_dot_popup, job_plan_popup, load_job_details, load_job_dot, load_jobs_data,
     render_jobs,

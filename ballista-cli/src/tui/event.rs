@@ -20,12 +20,12 @@ use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::tui::domain::{
-    ExecutorsData, Job, JobDetails, Metric, SchedulerState, StagesGraph,
+    Executor, Job, JobDetails, Metric, SchedulerState, StagesGraph,
 };
 
 #[derive(Clone, Debug)]
 pub enum UiData {
-    Dashboard(Option<SchedulerState>, Vec<ExecutorsData>, Vec<Job>),
+    Executors(Option<SchedulerState>, Vec<Executor>, Vec<Job>),
     Metrics(Vec<Metric>),
     Jobs(Vec<Job>),
     JobDetails(JobDetails),

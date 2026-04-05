@@ -28,10 +28,10 @@ use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
 pub use main::{
-    job_dot_popup, job_plan_popup, load_dashboard_data, load_job_details, load_job_dot,
+    job_dot_popup, job_plan_popup, load_executors_data, load_job_details, load_job_dot,
     load_jobs_data, load_metrics_data,
 };
-use main::{render_dashboard, render_jobs, render_metrics};
+use main::{render_executors, render_jobs, render_metrics};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -66,8 +66,8 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
-    if app.is_dashboard_view() {
-        render_dashboard(f, area, app);
+    if app.is_executors_view() {
+        render_executors(f, area, app);
     } else if app.is_jobs_view() {
         render_jobs(f, area, app);
     } else if app.is_metrics_view() {

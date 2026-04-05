@@ -28,7 +28,7 @@ use ratatui::{
 
 pub mod scheduler_state;
 
-const MENU_ITEMS: [&str; 3] = ["Dashboard", "Jobs", "Metrics"];
+const MENU_ITEMS: [&str; 3] = ["Jobs", "Executors", "Metrics"];
 const PERCENTAGE: u16 = 100 / MENU_ITEMS.len() as u16;
 const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
     [Constraint::Percentage(PERCENTAGE); MENU_ITEMS.len()];
@@ -98,7 +98,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
         let line = Line::from(vec![first_char, rest_chars.into()]);
         let text = Text::from(line);
 
-        let is_active = (app.is_dashboard_view() && *menu_item == "Dashboard")
+        let is_active = (app.is_executors_view() && *menu_item == "Executors")
             || (app.is_jobs_view() && *menu_item == "Jobs")
             || (app.is_metrics_view() && *menu_item == "Metrics");
 

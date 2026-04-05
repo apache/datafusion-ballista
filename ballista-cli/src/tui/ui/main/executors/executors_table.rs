@@ -24,7 +24,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
-pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
+pub fn render_executors_table(f: &mut Frame, area: Rect, app: &App) {
     fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {
         Paragraph::new("No live executors")
             .block(block.border_style(Style::new().red()))
@@ -33,7 +33,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default().borders(Borders::ALL).title("Executors");
 
-    match &app.dashboard_data.executors_data {
+    match &app.executors_data.executors {
         executors if !executors.is_empty() => {
             let items: Vec<ListItem> = executors
                 .iter()

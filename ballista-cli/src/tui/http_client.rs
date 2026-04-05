@@ -23,7 +23,7 @@ use std::time::Duration;
 use crate::tui::{
     TuiResult,
     domain::{
-        CancelJobResponse, ExecutorsData, Job, JobDetails, Metric, MetricsResponse,
+        CancelJobResponse, Executor, Job, JobDetails, Metric, MetricsResponse,
         SchedulerState,
     },
     error::TuiError,
@@ -54,9 +54,9 @@ impl HttpClient {
         self.json::<SchedulerState>(&url).await
     }
 
-    pub async fn get_executors(&self) -> TuiResult<Vec<ExecutorsData>> {
+    pub async fn get_executors(&self) -> TuiResult<Vec<Executor>> {
         let url = self.url("executors");
-        self.json::<Vec<ExecutorsData>>(&url).await
+        self.json::<Vec<Executor>>(&url).await
     }
 
     pub async fn get_jobs(&self) -> TuiResult<Vec<Job>> {

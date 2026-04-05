@@ -32,8 +32,8 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         global_key_bindings.push(Span::from("Global key bindings: "));
 
         if app.is_scheduler_up() {
-            global_key_bindings.push(Span::from("[d] Dashboard, "));
             global_key_bindings.push(Span::from("[j] Jobs, "));
+            global_key_bindings.push(Span::from("[e] Executors, "));
             global_key_bindings.push(Span::from("[m] Metrics, "));
             if app.is_jobs_view() {
                 if app.has_more_than_one_job() {

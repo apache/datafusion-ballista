@@ -30,7 +30,7 @@ use ratatui::widgets::ScrollbarState;
 use std::time::Duration;
 use terminal::TuiWrapper;
 
-use crate::tui::domain::{DashboardData, JobsData, MetricsData};
+use crate::tui::domain::{ExecutorsData, JobsData, MetricsData};
 use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
@@ -47,7 +47,7 @@ pub async fn tui_main() -> TuiResult<()> {
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
     app.set_event_tx(app_tx);
-    let _ = crate::tui::ui::load_dashboard_data(&app).await;
+    let _ = crate::tui::ui::load_executors_data(&app).await;
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;
@@ -64,11 +64,11 @@ pub async fn tui_main() -> TuiResult<()> {
             Some(app_event) = app_rx.recv() => {
                 if let Event::DataLoaded { data } = app_event {
                   match data {
-                    UiData::Dashboard(state, executors_data, jobs_data) => {
-                            app.dashboard_data = DashboardData {
+                    UiData::Executors(state, executors, jobs) => {
+                            app.executors_data = ExecutorsData {
                                 scheduler_state: state,
-                                executors_data,
-                                jobs_data,
+                                executors,
+                                jobs,
                             };
                     },
                     UiData::Metrics(metrics) => {

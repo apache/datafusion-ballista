@@ -91,7 +91,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn are_metrics_enabled(app: &App) -> bool {
-    if let Some(scheduler_state) = app.dashboard_data.scheduler_state.as_ref() {
+    if let Some(scheduler_state) = app.executors_data.scheduler_state.as_ref() {
         scheduler_state.prometheus_support
     } else {
         false

@@ -21,7 +21,7 @@ use ratatui::prelude::{Color, Line, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
-    if let Some(scheduler_state) = app.dashboard_data.scheduler_state.as_ref() {
+    if let Some(scheduler_state) = app.executors_data.scheduler_state.as_ref() {
         let area = crate::tui::ui::centered_rect(25, 35, f.area());
         f.render_widget(Clear, area);
 

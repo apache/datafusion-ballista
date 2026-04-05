@@ -19,7 +19,7 @@ use crate::tui::TuiResult;
 use crate::tui::{
     TuiError,
     domain::{
-        CancelJobResult, DashboardData, JobDetails, JobsData, MetricsData, SortColumn,
+        CancelJobResult, ExecutorsData, JobDetails, JobsData, MetricsData, SortColumn,
         SortOrder, StagesGraph,
     },
     event::Event,
@@ -31,13 +31,13 @@ use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
 use crate::tui::ui::{
-    load_dashboard_data, load_job_details, load_job_dot, load_jobs_data,
+    load_executors_data, load_job_details, load_job_dot, load_jobs_data,
     load_metrics_data,
 };
 
 #[derive(Debug, PartialEq)]
 enum Views {
-    Dashboard,
+    Executors,
     Jobs,
     Metrics,
 }
@@ -63,9 +63,9 @@ pub(crate) struct App {
     current_view: Views,
     input_mode: InputMode,
 
-    pub dashboard_data: DashboardData,
-    pub metrics_data: MetricsData,
     pub jobs_data: JobsData,
+    pub executors_data: ExecutorsData,
+    pub metrics_data: MetricsData,
 
     // Popups
     pub show_help: bool,
@@ -91,7 +91,7 @@ impl App {
         Ok(Self {
             should_quit: false,
             event_tx: None,
-            current_view: Views::Dashboard,
+            current_view: Views::Jobs,
             input_mode: InputMode::View,
             search_term: String::new(),
             show_help: false,
@@ -102,7 +102,7 @@ impl App {
             job_dot_scroll: 0,
             job_plan_popup: None,
             job_plan_popup_scroll: 0,
-            dashboard_data: DashboardData::new(),
+            executors_data: ExecutorsData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
             http_client: Arc::new(HttpClient::new(config)?),
@@ -110,11 +110,11 @@ impl App {
     }
 
     pub fn is_scheduler_up(&self) -> bool {
-        self.dashboard_data.scheduler_state.is_some()
+        self.executors_data.scheduler_state.is_some()
     }
 
-    pub fn is_dashboard_view(&self) -> bool {
-        self.current_view == Views::Dashboard
+    pub fn is_executors_view(&self) -> bool {
+        self.current_view == Views::Executors
     }
 
     pub fn is_jobs_view(&self) -> bool {
@@ -150,8 +150,8 @@ impl App {
     }
 
     pub async fn on_tick(&mut self) {
-        if self.is_dashboard_view() {
-            self.load_dashboard_data().await;
+        if self.is_executors_view() {
+            self.load_executors_data().await;
         } else if self.is_jobs_view() {
             self.load_jobs_data().await;
             let selected_job_id = self
@@ -268,9 +268,9 @@ impl App {
             KeyCode::Char('D') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
             }
-            KeyCode::Char('d') if self.is_scheduler_up() => {
-                self.current_view = Views::Dashboard;
-                self.load_dashboard_data().await;
+            KeyCode::Char('e') if self.is_scheduler_up() => {
+                self.current_view = Views::Executors;
+                self.load_executors_data().await;
             }
             KeyCode::Char('j') if self.is_scheduler_up() => {
                 self.current_view = Views::Jobs;
@@ -347,9 +347,9 @@ impl App {
         }
     }
 
-    async fn load_dashboard_data(&mut self) {
-        if let Err(e) = load_dashboard_data(self).await {
-            tracing::error!("Failed to load dashboard data on tick: {e:?}");
+    async fn load_executors_data(&mut self) {
+        if let Err(e) = load_executors_data(self).await {
+            tracing::error!("Failed to load executors data on tick: {e:?}");
         }
     }
 
