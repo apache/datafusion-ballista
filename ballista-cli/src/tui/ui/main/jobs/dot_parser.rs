@@ -135,7 +135,10 @@ mod tests {
         }"#;
         let graph = parse_dot("job1", dot);
         assert_eq!(graph.edges.len(), 1);
-        assert_eq!(graph.edges[0], ("stage_0".to_string(), "stage_1".to_string()));
+        assert_eq!(
+            graph.edges[0],
+            ("stage_0".to_string(), "stage_1".to_string())
+        );
     }
 
     #[test]

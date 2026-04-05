@@ -362,10 +362,7 @@ mod tests {
         let line = node_text_row(6, "Hello World", style, style);
         // available = 5; truncated = "Hell…"; content = " Hell…"
         let content = line.spans[1].content.as_ref();
-        assert!(
-            content.contains('…'),
-            "expected ellipsis in {content:?}"
-        );
+        assert!(content.contains('…'), "expected ellipsis in {content:?}");
     }
 
     // --- arrow_connector ---
