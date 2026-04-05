@@ -471,7 +471,7 @@ pub async fn get_query_stages<
                                         finish_time: info.finish_time as u64,
                                         input_rows,
                                         output_rows,
-                                        task_status
+                                        status: task_status
                                     }
                                 })
                             })
