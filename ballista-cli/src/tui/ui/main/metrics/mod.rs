@@ -18,7 +18,10 @@
 use crate::tui::{
     TuiResult,
     app::App,
-    domain::metrics::Metric,
+    domain::{
+        SortOrder,
+        metrics::{Metric, SortColumn},
+    },
     event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
@@ -77,7 +80,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     if !filtered_metrics.is_empty() {
         let mut scroll_state = app.metrics_data.scrollbar_state;
         let mut table_state = app.metrics_data.table_state;
-        render_metrics_table(f, rects[1], &filtered_metrics, &mut table_state);
+        render_metrics_table(f, rects[1], app, &filtered_metrics, &mut table_state);
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else if are_metrics_enabled(app) {
         render_no_metrics(f, rects[1], "No metrics.");
@@ -109,20 +112,42 @@ fn render_no_metrics(f: &mut Frame, area: Rect, reason: &str) {
     f.render_widget(paragraph, area);
 }
 
+fn column_suffix(
+    active_sort_column: &SortColumn,
+    sort_order: &SortOrder,
+    sort_column: &SortColumn,
+) -> &'static str {
+    match (active_sort_column, sort_order) {
+        (sc, SortOrder::Ascending) if sc == sort_column => " ▲",
+        (sc, SortOrder::Descending) if sc == sort_column => " ▼",
+        _ => "",
+    }
+}
+
 fn render_metrics_table(
     frame: &mut Frame,
     area: Rect,
+    app: &App,
     metrics: &[&Metric],
     state: &mut TableState,
 ) {
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
 
-    let header = ["Name", "Value", "Description"]
-        .into_iter()
-        .map(Cell::from)
-        .collect::<Row>()
-        .style(header_style)
-        .height(1);
+    let sort_column = &app.metrics_data.sort_column;
+    let sort_order = &app.metrics_data.sort_order;
+
+    let name_suffix = column_suffix(sort_column, sort_order, &SortColumn::Name);
+
+    let header = [
+        format!("Name{name_suffix}"),
+        "Value".to_string(),
+        "Description".to_string(),
+    ]
+    .into_iter()
+    .map(Cell::from)
+    .collect::<Row>()
+    .style(header_style)
+    .height(1);
 
     let rows = metrics.iter().enumerate().map(|(i, metric)| {
         use prometheus_parse::Value;

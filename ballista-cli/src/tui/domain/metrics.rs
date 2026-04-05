@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::domain::SortOrder;
 use prometheus_parse::Sample;
 use ratatui::widgets::{ScrollbarState, TableState};
 use std::str::FromStr;
@@ -28,11 +29,19 @@ pub struct Metric {
     pub help: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum SortColumn {
+    None,
+    Name,
+}
+
 #[derive(Clone, Debug)]
 pub struct MetricsData {
     pub metrics: Vec<Metric>,
     pub scrollbar_state: ScrollbarState,
     pub table_state: TableState,
+    pub sort_column: SortColumn,
+    pub sort_order: SortOrder,
 }
 
 impl Default for MetricsData {
@@ -41,6 +50,8 @@ impl Default for MetricsData {
             metrics: vec![],
             scrollbar_state: ScrollbarState::new(0),
             table_state: TableState::default(),
+            sort_column: SortColumn::None,
+            sort_order: SortOrder::Ascending,
         }
     }
 }
@@ -48,6 +59,20 @@ impl Default for MetricsData {
 impl MetricsData {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn sort(&mut self) {
+        match self.sort_column {
+            SortColumn::Name => self.metrics.sort_by(|a, b| {
+                let cmp = a.sample.metric.cmp(&b.sample.metric);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::None => {}
+        }
     }
 
     fn get_selected_metric_index(&self) -> Option<usize> {
@@ -124,7 +149,7 @@ impl FromStr for MetricsResponse {
             };
             metrics.push(metric);
         }
-        metrics.sort_by(|a, b| a.sample.metric.cmp(&b.sample.metric));
+        // metrics.sort_by(|a, b| a.sample.metric.cmp(&b.sample.metric));
 
         Ok(MetricsResponse { metrics })
     }

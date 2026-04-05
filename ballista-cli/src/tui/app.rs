@@ -26,6 +26,7 @@ use crate::tui::{
             StagesGraph,
         },
         metrics::MetricsData,
+        metrics::SortColumn as MetricsSortColumn,
     },
     event::Event,
     infrastructure::Settings,
@@ -293,6 +294,8 @@ impl App {
                     self.sort_jobs_by(JobsSortColumn::Id);
                 } else if self.is_executors_view() {
                     self.sort_executors_by(ExecutorsSortColumn::Host);
+                } else if self.is_metrics_view() {
+                    self.sort_metrics_by(MetricsSortColumn::Name);
                 }
             }
             KeyCode::Char('2') => {
@@ -432,6 +435,23 @@ impl App {
             self.executors_data.sort_order = SortOrder::Ascending;
         }
         self.executors_data.sort();
+    }
+
+    fn sort_metrics_by(&mut self, sort_column: MetricsSortColumn) {
+        if self.metrics_data.sort_column == sort_column {
+            match self.metrics_data.sort_order {
+                SortOrder::Ascending => {
+                    self.metrics_data.sort_order = SortOrder::Descending;
+                }
+                SortOrder::Descending => {
+                    self.metrics_data.sort_column = MetricsSortColumn::None;
+                }
+            }
+        } else {
+            self.metrics_data.sort_column = sort_column;
+            self.metrics_data.sort_order = SortOrder::Ascending;
+        }
+        self.metrics_data.sort();
     }
 
     async fn cancel_selected_job(&mut self) {

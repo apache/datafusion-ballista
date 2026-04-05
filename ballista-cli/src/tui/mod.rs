@@ -86,8 +86,11 @@ pub async fn tui_main() -> TuiResult<()> {
                             app.metrics_data = MetricsData {
                                 metrics,
                                 scrollbar_state,
-                                table_state: app.metrics_data.table_state
+                                table_state: app.metrics_data.table_state,
+                                sort_column: app.metrics_data.sort_column,
+                                sort_order: app.metrics_data.sort_order
                             };
+                            app.metrics_data.sort();
                     }
                     UiData::Jobs(jobs) => {
                             let old_scrollbar_position = app.jobs_data.scrollbar_state.get_position();
