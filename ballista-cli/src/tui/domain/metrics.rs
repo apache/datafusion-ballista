@@ -124,6 +124,7 @@ impl FromStr for MetricsResponse {
             };
             metrics.push(metric);
         }
+        metrics.sort_by(|a, b| a.sample.metric.cmp(&b.sample.metric));
 
         Ok(MetricsResponse { metrics })
     }
