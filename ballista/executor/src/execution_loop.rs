@@ -280,6 +280,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         stage_id as usize,
         plan,
         &executor.work_dir,
+        task_context.session_config(),
     )?;
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;

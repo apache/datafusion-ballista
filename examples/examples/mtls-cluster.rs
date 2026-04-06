@@ -392,9 +392,10 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // Start Flight service with mTLS for serving shuffle data
-    let flight_service = FlightServiceServer::new(BallistaFlightService::new())
-        .max_decoding_message_size(16 * 1024 * 1024)
-        .max_encoding_message_size(16 * 1024 * 1024);
+    let flight_service =
+        FlightServiceServer::new(BallistaFlightService::new(work_dir_str))
+            .max_decoding_message_size(16 * 1024 * 1024)
+            .max_encoding_message_size(16 * 1024 * 1024);
 
     // Spawn Flight server with TLS
     let server_tls = tls.server_tls_config();

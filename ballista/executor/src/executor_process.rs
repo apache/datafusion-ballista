@@ -378,6 +378,7 @@ pub async fn start_executor_process(
 
     // Graceful shutdown notification
     let shutdown_notification = ShutdownNotifier::new();
+    let flight_work_dir = work_dir.clone();
 
     if opt.job_data_clean_up_interval_seconds > 0 {
         let mut interval_time =
@@ -442,11 +443,12 @@ pub async fn start_executor_process(
     };
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
-
+    //let wd = work_dir.clone();
     service_handlers.push(match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
             flight_server_task(
+                flight_work_dir,
                 address,
                 shutdown,
                 opt.grpc_max_encoding_message_size as usize,
@@ -457,7 +459,12 @@ pub async fn start_executor_process(
         }
         Some(flight_provider) => {
             info!("Starting custom, user provided, arrow flight service");
-            (flight_provider)(address, shutdown, opt.grpc_server_config.clone())
+            (flight_provider)(
+                flight_work_dir,
+                address,
+                shutdown,
+                opt.grpc_server_config.clone(),
+            )
         }
     });
 
@@ -557,6 +564,7 @@ pub async fn start_executor_process(
 
 // Arrow flight service
 async fn flight_server_task(
+    work_dir: String,
     address: SocketAddr,
     mut grpc_shutdown: Shutdown,
     max_encoding_message_size: usize,
@@ -570,7 +578,7 @@ async fn flight_server_task(
 
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
-                FlightServiceServer::new(BallistaFlightService::new())
+                FlightServiceServer::new(BallistaFlightService::new(work_dir))
                     .max_decoding_message_size(max_decoding_message_size)
                     .max_encoding_message_size(max_encoding_message_size),
             )
@@ -811,7 +819,7 @@ mod tests {
     async fn test_arrow_flight_provider_ergonomics() {
         let config = crate::executor_process::ExecutorProcessConfig {
             override_arrow_flight_service: Some(std::sync::Arc::new(
-                move |address, mut grpc_shutdown, ballista_config| {
+                move |work_dir, address, mut grpc_shutdown, ballista_config| {
                     tokio::spawn(async move {
                         log::info!(
                             "custom arrow flight server listening on: {address:?}"
@@ -822,7 +830,9 @@ mod tests {
                         )
                         .add_service(
                             arrow_flight::flight_service_server::FlightServiceServer::new(
-                                crate::flight_service::BallistaFlightService::new(),
+                                crate::flight_service::BallistaFlightService::new(
+                                    work_dir,
+                                ),
                             ),
                         )
                         .serve_with_shutdown(address, grpc_shutdown.recv());

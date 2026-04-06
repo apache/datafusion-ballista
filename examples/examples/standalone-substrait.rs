@@ -415,7 +415,8 @@ impl SubstraitSchedulerClient {
             .fetch_partition(
                 &metadata.id,
                 &partition_id.into(),
-                &location.path,
+                location.file_id,
+                location.is_sort_shuffle,
                 flight_transport,
             )
             .await

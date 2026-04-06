@@ -349,13 +349,14 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             grpc_port: 0,
             specification: ExecutorSpecification { task_slots: 0 },
         },
-        path: "".to_string(),
         // next few properties are needed
         partition_stats: PartitionStats::new(
             Some(threshold_num_rows as u64 / 128),
             None,
             Some(threshold_byte_size as u64 / 128),
         ),
+        file_id: None,
+        is_sort_shuffle: false,
     };
     vec![vec![location]]
 }
@@ -379,13 +380,15 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             grpc_port: 0,
             specification: ExecutorSpecification { task_slots: 0 },
         },
-        path: "".to_string(),
+
         // next few properties are needed
         partition_stats: PartitionStats::new(
             Some(threshold_num_rows as u64 * 2),
             None,
             Some(threshold_byte_size as u64 * 2),
         ),
+        file_id: None,
+        is_sort_shuffle: false,
     };
     vec![vec![location]]
 }

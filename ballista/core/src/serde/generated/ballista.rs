@@ -351,12 +351,14 @@ pub struct FetchPartition {
     pub stage_id: u32,
     #[prost(uint32, tag = "3")]
     pub partition_id: u32,
-    #[prost(string, tag = "4")]
-    pub path: ::prost::alloc::string::String,
     #[prost(string, tag = "5")]
     pub host: ::prost::alloc::string::String,
     #[prost(uint32, tag = "6")]
     pub port: u32,
+    #[prost(uint64, optional, tag = "7")]
+    pub file_id: ::core::option::Option<u64>,
+    #[prost(bool, tag = "8")]
+    pub is_sort_shuffle: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
@@ -370,8 +372,10 @@ pub struct PartitionLocation {
     pub executor_meta: ::core::option::Option<ExecutorMetadata>,
     #[prost(message, optional, tag = "4")]
     pub partition_stats: ::core::option::Option<PartitionStats>,
-    #[prost(string, tag = "5")]
-    pub path: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "6")]
+    pub file_id: ::core::option::Option<u64>,
+    #[prost(bool, tag = "7")]
+    pub is_sort_shuffle: bool,
 }
 /// Unique identifier for a materialized partition of data
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -687,18 +691,20 @@ pub struct ExecutorLost {}
 pub struct ResultLost {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskKilled {}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShuffleWritePartition {
     #[prost(uint64, tag = "1")]
     pub partition_id: u64,
-    #[prost(string, tag = "2")]
-    pub path: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub num_batches: u64,
     #[prost(uint64, tag = "4")]
     pub num_rows: u64,
     #[prost(uint64, tag = "5")]
     pub num_bytes: u64,
+    #[prost(uint64, optional, tag = "6")]
+    pub file_id: ::core::option::Option<u64>,
+    #[prost(bool, tag = "7")]
+    pub is_sort_shuffle: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskStatus {

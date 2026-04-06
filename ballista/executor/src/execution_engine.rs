@@ -22,14 +22,16 @@
 //! for creating query stage executors from physical plans.
 
 use async_trait::async_trait;
-use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
+use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::utils;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::prelude::SessionConfig;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
@@ -50,6 +52,7 @@ pub trait ExecutionEngine: Sync + Send {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
+        config: &SessionConfig,
     ) -> Result<Arc<dyn QueryStageExecutor>>;
 }
 
@@ -88,7 +91,19 @@ impl ExecutionEngine for DefaultExecutionEngine {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
+        _config: &SessionConfig,
     ) -> Result<Arc<dyn QueryStageExecutor>> {
+        let plan = plan
+            .transform(|p| {
+                if let Some(reader) = p.as_any().downcast_ref::<ShuffleReaderExec>() {
+                    let reader = Arc::new(reader.change_work_dir(work_dir.to_string()));
+                    Ok(Transformed::yes(reader))
+                } else {
+                    Ok(Transformed::no(p))
+                }
+            })?
+            .data;
+
         // the query plan created by the scheduler always starts with a shuffle writer
         // (either ShuffleWriterExec or SortShuffleWriterExec)
         if let Some(shuffle_writer) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {

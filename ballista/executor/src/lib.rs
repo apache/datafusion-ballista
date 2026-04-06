@@ -64,13 +64,15 @@ use ballista_core::utils::GrpcServerConfig;
 
 /// [ArrowFlightServerProvider] provides a function which creates a new Arrow Flight server.
 ///
-/// The function should take two arguments:
+/// The function should take four arguments:
+/// [String] - executor work directory
 /// [SocketAddr] - the address to bind the server to
 /// [Shutdown] - a shutdown signal to gracefully shutdown the server
 /// [GrpcServerConfig] - the gRPC server configuration for timeout settings
 /// Returns a [tokio::task::JoinHandle] which will be registered as service handler
 ///
 pub type ArrowFlightServerProvider = dyn Fn(
+        String,
         SocketAddr,
         Shutdown,
         GrpcServerConfig,
