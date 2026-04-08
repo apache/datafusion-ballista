@@ -15,12 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+mod executors;
+mod jobs;
+mod metrics;
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
-
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+pub use executors::{load_executors_data, render_executors};
+pub use jobs::{
+    job_dot_popup, job_plan_popup, load_job_details, load_job_dot, load_jobs_data,
+    render_jobs,
+};
+pub use metrics::{load_metrics_data, render_metrics};

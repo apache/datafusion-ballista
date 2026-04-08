@@ -1,0 +1,183 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
+use reqwest::{Client, Response};
+use serde::de::DeserializeOwned;
+use std::time::Duration;
+
+use crate::tui::{
+    TuiResult,
+    domain::{
+        SchedulerState,
+        executors::Executor,
+        jobs::{CancelJobResponse, Job, JobDetails},
+        metrics::{Metric, MetricsResponse},
+    },
+    error::TuiError,
+    infrastructure::Settings,
+};
+
+pub struct HttpClient {
+    scheduler_url: String,
+    client: reqwest::Client,
+}
+
+impl HttpClient {
+    pub fn new(config: Settings) -> TuiResult<Self> {
+        Ok(Self {
+            scheduler_url: config.scheduler.url,
+            client: Client::builder()
+                .timeout(Duration::from_millis(config.http.timeout))
+                .build()?,
+        })
+    }
+
+    pub fn scheduler_url(&self) -> &str {
+        &self.scheduler_url
+    }
+
+    pub async fn get_scheduler_state(&self) -> TuiResult<SchedulerState> {
+        let url = self.url("state");
+        self.json::<SchedulerState>(&url).await
+    }
+
+    pub async fn get_executors(&self) -> TuiResult<Vec<Executor>> {
+        let url = self.url("executors");
+        self.json::<Vec<Executor>>(&url).await
+    }
+
+    pub async fn get_jobs(&self) -> TuiResult<Vec<Job>> {
+        let url = self.url("jobs");
+        self.json::<Vec<Job>>(&url).await.map(|mut jobs| {
+            jobs.sort_by(|a, b| b.start_time.cmp(&a.start_time)); // newest first
+            jobs
+        })
+    }
+
+    pub async fn cancel_job(&self, job_id: &str) -> TuiResult<CancelJobResponse> {
+        let url = format!("{}/api/job/{}", self.scheduler_url, job_id);
+        tracing::trace!("Going to PATCH {}", &url);
+        let response = self
+            .client
+            .patch(&url)
+            .send()
+            .await
+            .inspect_err(|err| tracing::error!("The HTTP PATCH request failed: {err:?}"))
+            .map_err(TuiError::from)?;
+
+        let response = response
+            .error_for_status()
+            .map_err(TuiError::from)
+            .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+
+        response
+            .json::<CancelJobResponse>()
+            .await
+            .map_err(TuiError::from)
+            .inspect(|data| tracing::trace!("Cancel response: {data:?}"))
+            .inspect_err(|err| {
+                tracing::error!("Failed to parse cancel response: {err:?}")
+            })
+    }
+
+    pub async fn get_job_details(&self, job_id: &str) -> TuiResult<JobDetails> {
+        #[derive(serde::Deserialize, Debug)]
+        struct JobDetailResponse {
+            logical_plan: Option<String>,
+            physical_plan: Option<String>,
+            stage_plan: Option<String>,
+        }
+
+        let url = format!("{}/api/job/{}", self.scheduler_url, self.url_encode(job_id));
+        let resp = self.json::<JobDetailResponse>(&url).await?;
+        Ok(JobDetails {
+            job_id: job_id.to_string(),
+            logical_plan: resp.logical_plan,
+            physical_plan: resp.physical_plan,
+            stage_plan: resp.stage_plan,
+        })
+    }
+
+    pub async fn get_job_dot(&self, job_id: &str) -> TuiResult<String> {
+        let url = format!(
+            "{}/api/job/{}/dot",
+            self.scheduler_url,
+            self.url_encode(job_id)
+        );
+        self.text(&url).await
+    }
+
+    pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
+        let url = self.url("metrics");
+        let body: String = self.text(&url).await?;
+        let response = body.parse::<MetricsResponse>().map_err(TuiError::from)?;
+        Ok(response.metrics)
+    }
+
+    async fn text(&self, url: &str) -> TuiResult<String> {
+        let response = self.get(url).await?;
+        let response = response
+            .error_for_status()
+            .map_err(TuiError::from)
+            .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+
+        response
+            .text()
+            .await
+            .map_err(TuiError::from)
+            .inspect(|data| tracing::trace!("Loaded: {data:?}"))
+            .inspect_err(|err| tracing::error!("The HTTP request failed: {err:?}"))
+    }
+
+    async fn json<R>(&self, url: &str) -> TuiResult<R>
+    where
+        R: std::fmt::Debug + DeserializeOwned,
+    {
+        let response = self.get(url).await?;
+        let response = response
+            .error_for_status()
+            .map_err(TuiError::from)
+            .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+
+        response
+            .json::<R>()
+            .await
+            .map_err(TuiError::from)
+            .inspect(|data| tracing::trace!("Loaded: {data:?}"))
+            .inspect_err(|err| tracing::error!("The HTTP request failed: {err:?}"))
+    }
+
+    async fn get(&self, url: &str) -> TuiResult<Response> {
+        tracing::trace!("Going to make a request to {}", &url);
+        self.client
+            .get(url)
+            .send()
+            .await
+            .inspect(|data| tracing::trace!("Got: {data:?}"))
+            .inspect_err(|err| tracing::error!("The HTTP GET request failed: {err:?}"))
+            .map_err(TuiError::from)
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/api/{}", self.scheduler_url, path)
+    }
+
+    fn url_encode(&self, job_id: &str) -> String {
+        percent_encode(job_id.as_bytes(), NON_ALPHANUMERIC).to_string()
+    }
+}

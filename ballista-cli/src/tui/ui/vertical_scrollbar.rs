@@ -15,12 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+use ratatui::Frame;
+use ratatui::layout::{Margin, Rect};
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
-
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+pub(crate) fn render_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    scroll_state: &mut ScrollbarState,
+) {
+    frame.render_stateful_widget(
+        Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼")),
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        }),
+        scroll_state,
+    );
+}
