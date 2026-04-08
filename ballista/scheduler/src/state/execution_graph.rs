@@ -1748,7 +1748,8 @@ pub(crate) fn partition_to_location(
                 Some(shuffle.num_batches),
                 Some(shuffle.num_bytes),
             ),
-            path: shuffle.path,
+            file_id: shuffle.file_id,
+            is_sort_shuffle: shuffle.is_sort_shuffle,
         })
         .collect()
 }

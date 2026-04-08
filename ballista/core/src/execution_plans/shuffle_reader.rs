@@ -51,6 +51,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::BufReader;
+use std::path::Path;
 use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
@@ -70,6 +71,7 @@ pub struct ShuffleReaderExec {
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
+    work_dir: Option<String>,
 }
 
 impl ShuffleReaderExec {
@@ -92,7 +94,20 @@ impl ShuffleReaderExec {
             partition,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
+            work_dir: None, // to be updated at the executor side
         })
+    }
+
+    /// changes work dir where shuffle files are located
+    pub fn change_work_dir(&self, work_dir: String) -> Self {
+        Self {
+            stage_id: self.stage_id,
+            schema: self.schema.clone(),
+            partition: self.partition.clone(),
+            metrics: self.metrics.clone(),
+            properties: self.properties.clone(),
+            work_dir: Some(work_dir),
+        }
     }
 }
 
@@ -189,7 +204,16 @@ impl ExecutionPlan for ShuffleReaderExec {
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
-        let response_receiver = send_fetch_partitions(partition_locations, config);
+
+        let work_dir = self
+            .work_dir
+            .as_ref()
+            .ok_or(DataFusionError::Configuration(
+                "ShuffleReader work dir should have been set by executor".to_owned(),
+            ))?;
+
+        let response_receiver =
+            send_fetch_partitions(work_dir, partition_locations, config);
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
@@ -374,19 +398,21 @@ impl Stream for AbortableReceiverStream {
 /// while remote partitions are fetched using the Arrow Flight client.
 /// If `force_remote_read` is true, all partitions are treated as remote.
 fn local_remote_read_split(
+    work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     force_remote_read: bool,
 ) -> (Vec<PartitionLocation>, Vec<PartitionLocation>) {
     if !force_remote_read {
         partition_locations
             .into_iter()
-            .partition(check_is_local_location)
+            .partition(|p| p.path(work_dir).map(|p| p.exists()).unwrap_or(false))
     } else {
         (vec![], partition_locations)
     }
 }
 
 fn send_fetch_partitions(
+    work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     config: &SessionConfig,
 ) -> AbortableReceiverStream {
@@ -398,6 +424,7 @@ fn send_fetch_partitions(
     let mut spawned_tasks: Vec<SpawnedTask<()>> = vec![];
 
     let (local_locations, remote_locations): (Vec<_>, Vec<_>) = local_remote_read_split(
+        work_dir,
         partition_locations,
         config.ballista_shuffle_reader_force_remote_read(),
     );
@@ -414,11 +441,11 @@ fn send_fetch_partitions(
     //
     // fetching local partitions (read from file)
     //
-
+    let work_dir = work_dir.to_string();
     spawned_tasks.push(SpawnedTask::spawn_blocking({
         move || {
             for p in local_locations {
-                let r = fetch_partition_local(&p, sort_shuffle_enabled);
+                let r = fetch_partition_local(&work_dir, &p, sort_shuffle_enabled);
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
                 }
@@ -463,10 +490,6 @@ fn send_fetch_partitions(
     AbortableReceiverStream::create(response_receiver, spawned_tasks)
 }
 
-fn check_is_local_location(location: &PartitionLocation) -> bool {
-    std::path::Path::new(location.path.as_str()).exists()
-}
-
 async fn new_ballista_client(
     host: &str,
     port: u16,
@@ -488,6 +511,8 @@ async fn fetch_partition_remote(
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
+    let file_id = location.file_id;
+    let is_sort_shuffle = location.is_sort_shuffle;
     let host = metadata.host.as_str();
     let port = metadata.port;
 
@@ -508,15 +533,22 @@ async fn fetch_partition_remote(
             })?;
 
     ballista_client
-        .fetch_partition(&metadata.id, partition_id, &location.path, prefer_flight)
+        .fetch_partition(
+            &metadata.id,
+            partition_id,
+            file_id,
+            is_sort_shuffle,
+            prefer_flight,
+        )
         .await
 }
 
 fn fetch_partition_local(
+    work_dir: &str,
     location: &PartitionLocation,
     sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-    let path = &location.path;
+    let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let data_path = std::path::Path::new(path);
@@ -548,7 +580,7 @@ fn fetch_partition_local(
             )
         });
     }
-
+    debug!("fetch local partition file: {data_path:?} ");
     // Standard hash-based shuffle - read the file directly
     let reader = fetch_partition_local_inner(path).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
@@ -563,10 +595,12 @@ fn fetch_partition_local(
 }
 
 fn fetch_partition_local_inner(
-    path: &str,
+    path: &Path,
 ) -> result::Result<StreamReader<BufReader<File>>, BallistaError> {
     let file = File::open(path).map_err(|e| {
-        BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
+        BallistaError::General(format!(
+            "Failed to open partition file at {path:?}: {e:?}"
+        ))
     })?;
     // TODO: make this configurable
     let file = BufReader::with_capacity(256 * 1024, file);
@@ -575,7 +609,7 @@ fn fetch_partition_local_inner(
         StreamReader::try_new(file, None)
             .map_err(|e| {
                 BallistaError::General(format!(
-                    "Failed to create new arrow StreamReader at {path}: {e:?}"
+                    "Failed to create new arrow StreamReader at {path:?}: {e:?}"
                 ))
             })?
             .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
@@ -677,7 +711,7 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::ShuffleWriterExec;
+    use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
     use crate::serde::scheduler::{ExecutorMetadata, ExecutorSpecification, PartitionId};
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
@@ -689,7 +723,6 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common;
-
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
 
@@ -788,7 +821,8 @@ mod tests {
                     num_batches: None,
                     num_bytes: Some(10),
                 },
-                path: "test_path".to_string(),
+                file_id: None,
+                is_sort_shuffle: false,
             })
         }
 
@@ -837,7 +871,8 @@ mod tests {
                     num_batches: None,
                     num_bytes: Some(10),
                 },
-                path: "test_path".to_string(),
+                file_id: None,
+                is_sort_shuffle: false,
             })
         }
 
@@ -887,7 +922,8 @@ mod tests {
                     num_batches: None,
                     num_bytes: Some(10),
                 },
-                path: "test_path".to_string(),
+                file_id: None,
+                is_sort_shuffle: false,
             })
         }
 
@@ -933,16 +969,20 @@ mod tests {
                     specification: ExecutorSpecification { task_slots: 1 },
                 },
                 partition_stats: Default::default(),
-                path: "test_path".to_string(),
+                file_id: None,
+                is_sort_shuffle: false,
             })
         }
+        let work_dir = TempDir::new().unwrap();
 
+        let work_dir = work_dir.path().to_str().unwrap().to_owned();
         let shuffle_reader_exec = ShuffleReaderExec::try_new(
             input_stage_id,
             vec![partitions],
             Arc::new(schema),
             Partitioning::UnknownPartitioning(4),
-        )?;
+        )?
+        .change_work_dir(work_dir);
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
 
@@ -995,7 +1035,7 @@ mod tests {
             .unwrap();
 
         // from to input partitions test the first one with two batches
-        let file_path = path.value(0);
+        let file_path = Path::new(path.value(0));
         let reader = fetch_partition_local_inner(file_path).unwrap();
 
         let mut stream: Pin<Box<dyn RecordBatchStream + Send>> =
@@ -1022,21 +1062,34 @@ mod tests {
             RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
                 .unwrap();
         let tmp_dir = tempdir().unwrap();
-        let file_path = tmp_dir.path().join("shuffle_data");
+        let work_dir = tmp_dir.path();
+
+        // job name and stage id are hard-coded
+        let file_path = create_shuffle_path(work_dir, "job", 1, 0, None, false).unwrap();
+
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
         let file = File::create(&file_path).unwrap();
         let mut writer = StreamWriter::try_new(file, &schema).unwrap();
         writer.write(&batch).unwrap();
         writer.finish().unwrap();
 
-        let partition_locations =
-            get_test_partition_locations(1, file_path.to_str().unwrap().to_string());
+        let partition_locations = get_test_partition_locations(1, None);
 
-        let (local, remote) = local_remote_read_split(partition_locations.clone(), false);
+        let (local, remote) = local_remote_read_split(
+            work_dir.to_string_lossy().as_ref(),
+            partition_locations.clone(),
+            false,
+        );
 
         assert!(!local.is_empty());
         assert!(remote.is_empty());
 
-        let (local, remote) = local_remote_read_split(partition_locations, true);
+        let (local, remote) = local_remote_read_split(
+            work_dir.to_string_lossy().as_ref(),
+            partition_locations,
+            true,
+        );
 
         assert!(local.is_empty());
         assert!(!remote.is_empty());
@@ -1049,20 +1102,31 @@ mod tests {
             RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
                 .unwrap();
         let tmp_dir = tempdir().unwrap();
-        let file_path = tmp_dir.path().join("shuffle_data");
-        let file = File::create(&file_path).unwrap();
-        let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-        writer.write(&batch).unwrap();
-        writer.finish().unwrap();
+        let work_dir = tmp_dir.path();
 
-        let partition_locations = get_test_partition_locations(
-            partition_num,
-            file_path.to_str().unwrap().to_string(),
-        );
+        for p in 0..partition_num {
+            // job name and stage id are hard-codded
+            let file_path =
+                create_shuffle_path(work_dir, "job", 1, p, None, false).unwrap();
+            // this unwrap should not be problem as
+            // this function never return root dir
+            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+            let file: File = File::create(&file_path).unwrap();
+
+            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista()
             .with_ballista_shuffle_reader_maximum_concurrent_requests(max_request_num);
 
-        let response_receiver = send_fetch_partitions(partition_locations, &config);
+        let response_receiver = send_fetch_partitions(
+            &work_dir.to_string_lossy(),
+            partition_locations,
+            &config,
+        );
 
         let stream = RecordBatchStreamAdapter::new(
             Arc::new(schema),
@@ -1073,7 +1137,10 @@ mod tests {
         assert_eq!(partition_num, result.len());
     }
 
-    fn get_test_partition_locations(n: usize, path: String) -> Vec<PartitionLocation> {
+    fn get_test_partition_locations(
+        n: usize,
+        file_id: Option<u64>,
+    ) -> Vec<PartitionLocation> {
         (0..n)
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
@@ -1090,7 +1157,8 @@ mod tests {
                     specification: ExecutorSpecification { task_slots: 12 },
                 },
                 partition_stats: Default::default(),
-                path: path.clone(),
+                file_id,
+                is_sort_shuffle: false,
             })
             .collect()
     }

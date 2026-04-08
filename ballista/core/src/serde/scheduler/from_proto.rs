@@ -55,9 +55,10 @@ impl TryInto<Action> for protobuf::Action {
                     job_id: fetch.job_id,
                     stage_id: fetch.stage_id as usize,
                     partition_id: fetch.partition_id as usize,
-                    path: fetch.path,
+                    file_id: fetch.file_id,
                     host: fetch.host,
                     port: fetch.port as u16,
+                    is_sort_shuffle: fetch.is_sort_shuffle,
                 })
             }
             _ => Err(BallistaError::General(
@@ -123,7 +124,8 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                     )
                 })?
                 .into(),
-            path: self.path,
+            file_id: self.file_id,
+            is_sort_shuffle: self.is_sort_shuffle,
         })
     }
 }

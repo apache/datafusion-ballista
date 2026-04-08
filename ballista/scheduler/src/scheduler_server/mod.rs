@@ -505,10 +505,11 @@ mod test {
                 for partition_id in 0..num_partitions {
                     partitions.push(ShuffleWritePartition {
                         partition_id: partition_id as u64,
-                        path: "some/path".to_string(),
                         num_batches: 1,
                         num_rows: 1,
                         num_bytes: 1,
+                        file_id: None,
+                        is_sort_shuffle: false,
                     })
                 }
 
@@ -549,7 +550,6 @@ mod test {
         assert_eq!(final_graph.output_locations().len(), 4);
 
         for output_location in final_graph.output_locations() {
-            assert_eq!(output_location.path, "some/path".to_owned());
             assert_eq!(output_location.executor_meta.host, "localhost1".to_owned())
         }
 
