@@ -24,11 +24,11 @@
 use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
 use sysinfo::System;
+use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
 use tonic::transport::Channel;
@@ -88,12 +88,15 @@ struct CuratorTaskStatus {
 struct ExecutorSystem {
     system: System,
     // Time-based refreshing to not waste CPU cycles too often
-    last_refresh: Instant
+    last_refresh: Instant,
 }
 
 impl ExecutorSystem {
     fn new() -> Self {
-        ExecutorSystem { system: System::new_all(), last_refresh: Instant::now() }
+        ExecutorSystem {
+            system: System::new_all(),
+            last_refresh: Instant::now(),
+        }
     }
 }
 
@@ -207,7 +210,6 @@ async fn register_executor(
         ))
     }
 }
-
 
 /// The executor's gRPC server that handles incoming task requests.
 ///
@@ -498,7 +500,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     // Getting system-wide executor metrics
     fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
         let mut executor_system = self.executor_system.lock().unwrap();
-        
         let should_refresh = {
             if executor_system.last_refresh.elapsed() >= Duration::from_millis(100) {
                 executor_system.last_refresh = Instant::now();
@@ -516,23 +517,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let total_memory = ExecutorMetric {
             metric: Some(executor_metric::Metric::TotalMemory(
-                executor_system.system.total_memory()
-            ))
+                executor_system.system.total_memory(),
+            )),
         };
         executor_metrics.push(total_memory);
 
-
         let available_memory = ExecutorMetric {
             metric: Some(executor_metric::Metric::AvailableMemory(
-                executor_system.system.available_memory()
-            ))
+                executor_system.system.available_memory(),
+            )),
         };
         executor_metrics.push(available_memory);
 
         let used_memory = ExecutorMetric {
             metric: Some(executor_metric::Metric::UsedMemory(
-                executor_system.system.used_memory()
-            ))
+                executor_system.system.used_memory(),
+            )),
         };
         executor_metrics.push(used_memory);
         executor_metrics
