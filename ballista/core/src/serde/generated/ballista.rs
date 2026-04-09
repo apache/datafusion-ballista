@@ -550,7 +550,7 @@ pub struct ExecutorHeartbeat {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
-    #[prost(oneof = "executor_metric::Metric", tags = "1")]
+    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3")]
     pub metric: ::core::option::Option<executor_metric::Metric>,
 }
 /// Nested message and enum types in `ExecutorMetric`.
@@ -560,6 +560,10 @@ pub mod executor_metric {
     pub enum Metric {
         #[prost(uint64, tag = "1")]
         AvailableMemory(u64),
+        #[prost(uint64, tag = "2")]
+        TotalMemory(u64),
+        #[prost(uint64, tag = "3")]
+        UsedMemory(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

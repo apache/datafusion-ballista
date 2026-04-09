@@ -366,6 +366,8 @@ message ExecutorMetric {
   // TODO add more metrics
   oneof metric {
     uint64 available_memory = 1;
+    uint64 total_memory = 2;
+    uint64 used_memory = 3;
   }
 }
 

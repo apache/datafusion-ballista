@@ -38,7 +38,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, warn, trace};
 use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
@@ -245,11 +245,12 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     );
     info!("Received task: [{task_identity}]");
 
-    log::trace!(
+    trace!(
         "Received task: [{}], task_properties: {:?}",
         task_identity,
         task.props
     );
+    
     let session_config = executor.produce_config();
     let session_config = session_config.update_from_key_value_pair(&task.props);
 

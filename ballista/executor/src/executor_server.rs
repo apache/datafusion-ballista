@@ -24,10 +24,11 @@
 use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use sysinfo::System;
 
 use log::{debug, error, info, warn};
 use tonic::transport::Channel;
@@ -80,6 +81,20 @@ struct CuratorTaskDefinition {
 struct CuratorTaskStatus {
     scheduler_id: String,
     task_status: TaskStatus,
+}
+
+// Wrap System to produce executor metrics
+#[derive(Debug)]
+struct ExecutorSystem {
+    system: System,
+    // Time-based refreshing to not waste CPU cycles too often
+    last_refresh: Instant
+}
+
+impl ExecutorSystem {
+    fn new() -> Self {
+        ExecutorSystem { system: System::new_all(), last_refresh: Instant::now() }
+    }
 }
 
 /// Starts the executor gRPC server and registers with the scheduler.
@@ -193,6 +208,7 @@ async fn register_executor(
     }
 }
 
+
 /// The executor's gRPC server that handles incoming task requests.
 ///
 /// This server implements the ExecutorGrpc trait and manages task execution,
@@ -207,6 +223,8 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     executor_env: ExecutorEnv,
     /// Codec for serializing/deserializing execution plans.
     codec: BallistaCodec<T, U>,
+    /// System-wide information about this running executor server instance.
+    executor_system: Arc<Mutex<ExecutorSystem>>,
     /// gRPC client for the scheduler this executor registered with.
     scheduler_to_register: SchedulerGrpcClient<Channel>,
     /// Cache of scheduler clients for communicating with multiple schedulers.
@@ -253,6 +271,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             executor_env,
             codec,
             scheduler_to_register,
+            executor_system: Arc::new(Mutex::new(ExecutorSystem::new())),
             schedulers: Default::default(),
             grpc_max_encoding_message_size,
             grpc_max_decoding_message_size,
@@ -476,12 +495,46 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         };
     }
 
-    // TODO populate with real metrics
+    // Getting system-wide executor metrics
     fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
-        let available_memory = ExecutorMetric {
-            metric: Some(executor_metric::Metric::AvailableMemory(u64::MAX)),
+        let mut executor_system = self.executor_system.lock().unwrap();
+        
+        let should_refresh = {
+            if executor_system.last_refresh.elapsed() >= Duration::from_millis(100) {
+                executor_system.last_refresh = Instant::now();
+                true
+            } else {
+                false
+            }
         };
-        let executor_metrics = vec![available_memory];
+
+        if should_refresh {
+            executor_system.system.refresh_all();
+        }
+
+        let mut executor_metrics = Vec::new();
+
+        let total_memory = ExecutorMetric {
+            metric: Some(executor_metric::Metric::TotalMemory(
+                executor_system.system.total_memory()
+            ))
+        };
+        executor_metrics.push(total_memory);
+
+
+        let available_memory = ExecutorMetric {
+            metric: Some(executor_metric::Metric::AvailableMemory(
+                executor_system.system.available_memory()
+            ))
+        };
+        executor_metrics.push(available_memory);
+
+        let used_memory = ExecutorMetric {
+            metric: Some(executor_metric::Metric::UsedMemory(
+                executor_system.system.used_memory()
+            ))
+        };
+        executor_metrics.push(used_memory);
         executor_metrics
     }
 }

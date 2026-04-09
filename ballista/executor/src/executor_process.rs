@@ -418,10 +418,14 @@ pub async fn start_executor_process(
     // Channels used to receive stop requests from Executor grpc service.
     let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
 
+    // Starting main executor process based on the TaskSchedulingPolicy
+    //
+    // PushStaged => starting new executor_server that waits for tasks from the schedule
+    // PullStaged => executor is polling the scheduler when it is idle (using semaphore)
     match scheduler_policy {
         TaskSchedulingPolicy::PushStaged => {
             service_handlers.push(
-                //If there is executor registration error during startup, return the error and stop early.
+                // If there is executor registration error during startup, return the error and stop early.
                 executor_server::startup(
                     scheduler.clone(),
                     opt.clone(),
@@ -443,7 +447,7 @@ pub async fn start_executor_process(
     };
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
-    //let wd = work_dir.clone();
+
     service_handlers.push(match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
