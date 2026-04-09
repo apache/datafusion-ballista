@@ -421,7 +421,7 @@ pub async fn start_executor_process(
     // Starting main executor process based on the TaskSchedulingPolicy
     //
     // PushStaged => starting new executor_server that waits for tasks from the schedule
-    // PullStaged => executor is polling the scheduler when it is idle (using semaphore)
+    // PullStaged => executor is polling the scheduler when it is idle
     match scheduler_policy {
         TaskSchedulingPolicy::PushStaged => {
             service_handlers.push(
