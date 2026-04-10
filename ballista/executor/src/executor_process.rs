@@ -31,6 +31,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use log::{error, info, warn};
+use sysinfo::{Disks, System};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
 use tokio::signal;
@@ -233,8 +234,31 @@ pub async fn start_executor_process(
     );
     info!("Executor id: {executor_id}");
     info!("Executor working directory: {work_dir}");
-    info!("Executor number of concurrent tasks: {concurrent_tasks}");
+    info!(
+        "Executor number of concurrent tasks (available CPU cores): {concurrent_tasks}"
+    );
     info!("Executor scheduling policy: {task_scheduling_policy:?}");
+
+    // Getting system-wide specs for executor registration
+    let system_name =
+        System::name().unwrap_or_else(|| String::from("Unknown system name"));
+    let os_ver =
+        System::os_version().unwrap_or_else(|| String::from("Unknown OS version"));
+    let os_ver_long = System::long_os_version()
+        .unwrap_or_else(|| String::from("Unknown long OS version"));
+    let kernel_ver = System::kernel_long_version();
+
+    let physical_core_count = System::physical_core_count().unwrap_or_else(|| 0) as u32;
+    let open_files_limit = System::open_files_limit().unwrap_or_else(|| 0) as u64;
+
+    let disks = Disks::new_with_refreshed_list();
+    let num_disks = disks.list().len() as u32;
+    let mut total_disk_space: u64 = 0;
+    let mut total_available_disk_space: u64 = 0;
+    for disk in &disks {
+        total_disk_space += disk.total_space();
+        total_available_disk_space += disk.available_space();
+    }
 
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
@@ -242,9 +266,32 @@ pub async fn start_executor_process(
         port: opt.port as u32,
         grpc_port: opt.grpc_port as u32,
         specification: Some(ExecutorSpecification {
-            resources: vec![ExecutorResource {
-                resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-            }],
+            system_name,
+            os_ver,
+            os_ver_long,
+            kernel_ver,
+            resources: vec![
+                ExecutorResource {
+                    resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
+                },
+                ExecutorResource {
+                    resource: Some(Resource::PhysicalCores(physical_core_count)),
+                },
+                ExecutorResource {
+                    resource: Some(Resource::NumDisks(num_disks)),
+                },
+                ExecutorResource {
+                    resource: Some(Resource::TotalDiskSpace(total_disk_space)),
+                },
+                ExecutorResource {
+                    resource: Some(Resource::TotalAvailableDiskSpace(
+                        total_available_disk_space,
+                    )),
+                },
+                ExecutorResource {
+                    resource: Some(Resource::OpenFilesLimit(open_files_limit)),
+                },
+            ],
         }),
     };
 
@@ -282,7 +329,7 @@ pub async fn start_executor_process(
     > = BallistaCodec::new(logical, physical);
 
     let executor = Arc::new(Executor::new(
-        executor_meta,
+        executor_meta.clone(),
         &work_dir,
         runtime_producer,
         config_producer,
@@ -516,17 +563,7 @@ pub async fn start_executor_process(
                 status: Some(ExecutorStatus {
                     status: Some(Status::Terminating(String::default())),
                 }),
-                metadata: Some(ExecutorRegistration {
-                    id: executor_id.clone(),
-                    host: opt.external_host.clone(),
-                    port: opt.port as u32,
-                    grpc_port: opt.grpc_port as u32,
-                    specification: Some(ExecutorSpecification {
-                        resources: vec![ExecutorResource {
-                            resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-                        }],
-                    }),
-                }),
+                metadata: Some(executor_meta),
             })
             .await
         {

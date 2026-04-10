@@ -593,20 +593,36 @@ pub mod executor_status {
 pub struct ExecutorSpecification {
     #[prost(message, repeated, tag = "1")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResource>,
+    #[prost(string, tag = "2")]
+    pub system_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub kernel_ver: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub os_ver: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub os_ver_long: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResource {
-    /// TODO add more resources
-    #[prost(oneof = "executor_resource::Resource", tags = "1")]
+    #[prost(oneof = "executor_resource::Resource", tags = "1, 2, 3, 4, 5, 6")]
     pub resource: ::core::option::Option<executor_resource::Resource>,
 }
 /// Nested message and enum types in `ExecutorResource`.
 pub mod executor_resource {
-    /// TODO add more resources
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
+        #[prost(uint32, tag = "2")]
+        PhysicalCores(u32),
+        #[prost(uint32, tag = "3")]
+        NumDisks(u32),
+        #[prost(uint64, tag = "4")]
+        TotalDiskSpace(u64),
+        #[prost(uint64, tag = "5")]
+        TotalAvailableDiskSpace(u64),
+        #[prost(uint64, tag = "6")]
+        OpenFilesLimit(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

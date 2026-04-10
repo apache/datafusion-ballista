@@ -126,10 +126,28 @@ pub struct ExecutorMetadata {
 }
 
 /// Specification of an executor, indicating executor resources, like total task slots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {
     /// Number of concurrent task slots available on this executor.
     pub task_slots: u32,
+    /// Number of physical cores available on this executor
+    pub physical_cores: u32,
+    /// Number of physical disks available on this executor
+    pub num_disks: u32,
+    /// Total disk space on this executor
+    pub total_disk_space: u64,
+    /// Total available disk space on this executor
+    pub total_available_disk_space: u64,
+    /// Open files limit on this executor
+    pub open_files_limit: u64,
+    /// System name
+    pub system_name: String,
+    /// Kernel version
+    pub kernel_ver: String,
+    /// OS version
+    pub os_ver: String,
+    /// OS version (long)
+    pub os_ver_long: String,
 }
 
 /// Available resources for an executor, including total and available task slots.

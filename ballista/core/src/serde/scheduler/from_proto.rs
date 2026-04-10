@@ -273,14 +273,44 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
 #[allow(clippy::from_over_into)]
 impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
     fn into(self) -> ExecutorSpecification {
-        let mut ret = ExecutorSpecification { task_slots: 0 };
+        let mut ret = ExecutorSpecification {
+            task_slots: 0,
+            physical_cores: 0,
+            num_disks: 0,
+            total_available_disk_space: 0,
+            total_disk_space: 0,
+            open_files_limit: 0,
+            system_name: self.system_name,
+            kernel_ver: self.kernel_ver,
+            os_ver: self.os_ver,
+            os_ver_long: self.os_ver_long,
+        };
         for resource in self.resources {
-            if let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
-                resource.resource
-            {
-                ret.task_slots = task_slots
+            match resource.resource {
+                Some(resource_spec) => match resource_spec {
+                    protobuf::executor_resource::Resource::TaskSlots(num_slots) => {
+                        ret.task_slots = num_slots
+                    }
+                    protobuf::executor_resource::Resource::PhysicalCores(num_cores) => {
+                        ret.physical_cores = num_cores
+                    }
+                    protobuf::executor_resource::Resource::NumDisks(num_disks) => {
+                        ret.num_disks = num_disks
+                    }
+                    protobuf::executor_resource::Resource::TotalDiskSpace(
+                        total_space,
+                    ) => ret.total_disk_space = total_space,
+                    protobuf::executor_resource::Resource::TotalAvailableDiskSpace(
+                        available_space,
+                    ) => ret.total_available_disk_space = available_space,
+                    protobuf::executor_resource::Resource::OpenFilesLimit(
+                        open_files_limit,
+                    ) => ret.open_files_limit = open_files_limit,
+                },
+                None => {}
             }
         }
+
         ret
     }
 }

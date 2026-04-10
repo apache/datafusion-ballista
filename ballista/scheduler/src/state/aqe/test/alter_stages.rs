@@ -347,7 +347,18 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification { task_slots: 0 },
+            specification: ExecutorSpecification {
+                task_slots: 0,
+                physical_cores: 1,
+                num_disks: 1,
+                total_disk_space: 8000,
+                total_available_disk_space: 4000,
+                open_files_limit: 0,
+                system_name: String::from("Generic system name"),
+                kernel_ver: String::from("Generic kernel version"),
+                os_ver: String::from("Generic OS version"),
+                os_ver_long: String::from("Generic long OS version"),
+            },
         },
         // next few properties are needed
         partition_stats: PartitionStats::new(
@@ -378,7 +389,18 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification { task_slots: 0 },
+            specification: ExecutorSpecification {
+                task_slots: 0,
+                physical_cores: 1,
+                num_disks: 1,
+                total_disk_space: 8000,
+                total_available_disk_space: 4000,
+                open_files_limit: 0,
+                system_name: String::from("Generic system name"),
+                kernel_ver: String::from("Generic kernel version"),
+                os_ver: String::from("Generic OS version"),
+                os_ver_long: String::from("Generic long OS version"),
+            },
         },
 
         // next few properties are needed
