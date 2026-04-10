@@ -61,10 +61,10 @@ use datafusion_proto::{logical_plan::AsLogicalPlan, physical_plan::AsExecutionPl
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
-use crate::config::ExecutorMetricCollectionPolicy;
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::{ExecutorProcessConfig, remove_job_dir};
+use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskExecutionTimes, as_task_status};
 
@@ -119,7 +119,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         config.grpc_max_encoding_message_size as usize,
         config.grpc_max_decoding_message_size as usize,
         config.override_create_grpc_client_endpoint.clone(),
-        config.metric_collection_policy.clone(),
+        config.metric_collection_policy,
     );
 
     // 1. Start executor grpc service
@@ -241,6 +241,7 @@ unsafe impl Sync for ExecutorEnv {}
 pub static TERMINATING: AtomicBool = AtomicBool::new(false);
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T, U> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         scheduler_to_register: SchedulerGrpcClient<Channel>,
         executor: Arc<Executor>,

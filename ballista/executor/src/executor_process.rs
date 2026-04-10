@@ -59,11 +59,11 @@ use ballista_core::utils::{
 };
 use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
 
-use crate::config::ExecutorMetricCollectionPolicy;
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
+use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
