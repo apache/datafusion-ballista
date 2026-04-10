@@ -248,8 +248,8 @@ pub async fn start_executor_process(
         .unwrap_or_else(|| String::from("Unknown long OS version"));
     let kernel_ver = System::kernel_long_version();
 
-    let physical_core_count = System::physical_core_count().unwrap_or_else(|| 0) as u32;
-    let open_files_limit = System::open_files_limit().unwrap_or_else(|| 0) as u64;
+    let physical_core_count = System::physical_core_count().unwrap_or(0) as u32;
+    let open_files_limit = System::open_files_limit().unwrap_or(0) as u64;
 
     let disks = Disks::new_with_refreshed_list();
     let num_disks = disks.list().len() as u32;

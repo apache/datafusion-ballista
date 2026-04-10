@@ -286,8 +286,8 @@ impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
             os_ver_long: self.os_ver_long,
         };
         for resource in self.resources {
-            match resource.resource {
-                Some(resource_spec) => match resource_spec {
+            if let Some(resource_spec) = resource.resource {
+                match resource_spec {
                     protobuf::executor_resource::Resource::TaskSlots(num_slots) => {
                         ret.task_slots = num_slots
                     }
@@ -306,8 +306,7 @@ impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
                     protobuf::executor_resource::Resource::OpenFilesLimit(
                         open_files_limit,
                     ) => ret.open_files_limit = open_files_limit,
-                },
-                None => {}
+                }
             }
         }
 
