@@ -333,6 +333,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut hash_file_count = 0;
         let mut hash_total_size = 0u64;
 
+        // Warmup iteration (discard result to avoid JIT/allocator initialization overhead)
+        {
+            let temp_dir = TempDir::new()?;
+            let work_dir = temp_dir.path().to_str().unwrap();
+            let _ =
+                benchmark_hash_shuffle(&data, schema.clone(), opt.partitions, work_dir)
+                    .await?;
+            println!("  Warmup iteration completed (not timed)");
+        }
+
         for i in 0..opt.iterations {
             let temp_dir = TempDir::new()?;
             let work_dir = temp_dir.path().to_str().unwrap();
@@ -379,6 +389,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut sort_times: Vec<Duration> = Vec::new();
         let mut sort_file_count = 0;
         let mut sort_total_size = 0u64;
+
+        // Warmup iteration (discard result to avoid JIT/allocator initialization overhead)
+        {
+            let temp_dir = TempDir::new()?;
+            let work_dir = temp_dir.path().to_str().unwrap();
+            let _ = benchmark_sort_shuffle(
+                &data,
+                schema.clone(),
+                opt.partitions,
+                work_dir,
+                buffer_size,
+                memory_limit,
+            )
+            .await?;
+            println!("  Warmup iteration completed (not timed)");
+        }
 
         for i in 0..opt.iterations {
             let temp_dir = TempDir::new()?;
