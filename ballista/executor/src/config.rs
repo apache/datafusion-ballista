@@ -26,6 +26,8 @@
 // as mentioned in https://github.com/apache/datafusion-ballista/issues/1271
 //
 #![allow(clippy::uninlined_format_args, clippy::unused_unit)]
+use std::fmt::Display;
+
 use ballista_core::error::BallistaError;
 
 use crate::executor_process::ExecutorProcessConfig;
@@ -142,6 +144,14 @@ pub struct Config {
         help = "The heartbeat interval in seconds to the scheduler for push-based task scheduling."
     )]
     pub executor_heartbeat_interval_seconds: u64,
+    /// Specifying which metrics should be collected and sent to scheduler
+    #[arg(
+        short = 'm',
+        long = "metrics",
+        default_value_t = ExecutorMetricCollectionPolicy::Off,
+        help = "Metric collection policy of this executor instance"
+    )]
+    pub metric_collection_policy: ExecutorMetricCollectionPolicy,
 }
 
 impl TryFrom<Config> for ExecutorProcessConfig {
@@ -169,6 +179,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             grpc_max_encoding_message_size: opt.grpc_server_max_encoding_message_size,
             grpc_server_config: ballista_core::utils::GrpcServerConfig::default(),
             executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
+            metric_collection_policy: opt.metric_collection_policy,
             override_execution_engine: None,
             override_function_registry: None,
             override_config_producer: None,
@@ -178,5 +189,40 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
         })
+    }
+}
+
+/// Configures which executor's metrics should be collected
+#[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
+#[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
+pub enum ExecutorMetricCollectionPolicy {
+    /// Collect only system-wide metrics
+    SystemOnly,
+    /// Collect only current process metrics
+    ProcessOnly,
+    /// Collect both system-wide and process metrics
+    SystemAndProcess,
+    /// Default value - no metrics collected
+    #[default]
+    Off,
+}
+
+impl Display for ExecutorMetricCollectionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExecutorMetricCollectionPolicy::SystemOnly => f.write_str("sys"),
+            ExecutorMetricCollectionPolicy::ProcessOnly => f.write_str("proc"),
+            ExecutorMetricCollectionPolicy::SystemAndProcess => f.write_str("all"),
+            ExecutorMetricCollectionPolicy::Off => f.write_str("off"),
+        }
+    }
+}
+
+#[cfg(feature = "build-binary")]
+impl std::str::FromStr for ExecutorMetricCollectionPolicy {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        clap::ValueEnum::from_str(s, true)
     }
 }

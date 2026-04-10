@@ -59,6 +59,7 @@ use ballista_core::utils::{
 };
 use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
 
+use crate::config::ExecutorMetricCollectionPolicy;
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
@@ -115,6 +116,8 @@ pub struct ExecutorProcessConfig {
     pub grpc_server_config: GrpcServerConfig,
     /// Interval in seconds between heartbeat messages.
     pub executor_heartbeat_interval_seconds: u64,
+    /// Metric collection policy of this executor instance
+    pub metric_collection_policy: ExecutorMetricCollectionPolicy,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -170,6 +173,7 @@ impl Default for ExecutorProcessConfig {
             grpc_max_encoding_message_size: 16777216,
             grpc_server_config: Default::default(),
             executor_heartbeat_interval_seconds: 60,
+            metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,

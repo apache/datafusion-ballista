@@ -368,6 +368,8 @@ message ExecutorMetric {
     uint64 available_memory = 1;
     uint64 total_memory = 2;
     uint64 used_memory = 3;
+    uint64 proc_physical_memory = 4;
+    uint64 proc_virtual_memory = 5;
   }
 }
 
