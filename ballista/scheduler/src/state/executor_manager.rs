@@ -20,6 +20,7 @@ use std::time::Duration;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf;
+use ballista_core::serde::protobuf::ExecutorMetric;
 use log::trace;
 
 use crate::cluster::{BoundTask, ClusterState, ExecutorSlot};
@@ -236,20 +237,20 @@ impl ExecutorManager {
         }
     }
 
-    /// Returns a list of all executors along with the timestamp of their last recorded heartbeat.
+    /// Returns a list of all executors, the timestamp of the last recorded hearbeat and metrics received from it
     pub async fn get_executor_state(
         &self,
-    ) -> Result<Vec<(ExecutorMetadata, Option<Duration>)>> {
-        let mut state: Vec<(ExecutorMetadata, Option<Duration>)> = vec![];
+    ) -> Result<Vec<(ExecutorMetadata, Option<Duration>, Vec<ExecutorMetric>)>> {
+        let mut state = vec![];
         for metadata in self.cluster_state.registered_executor_metadata().await {
-            let duration = self
-                .cluster_state
-                .get_executor_heartbeat(&metadata.id)
+            let heartbeat = self.cluster_state.get_executor_heartbeat(&metadata.id);
+            let duration = heartbeat
+                .as_ref()
                 .map(|hb| hb.timestamp)
                 .map(Duration::from_secs);
-            state.push((metadata, duration));
+            let metrics = heartbeat.map(|hb| hb.metrics).unwrap_or_default();
+            state.push((metadata, duration, metrics));
         }
-
         Ok(state)
     }
 
