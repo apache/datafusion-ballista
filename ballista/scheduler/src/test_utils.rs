@@ -455,18 +455,8 @@ impl SchedulerTest {
                 host: String::default(),
                 port: 0,
                 grpc_port: 0,
-                specification: ExecutorSpecification {
-                    task_slots: task_slots as u32,
-                    physical_cores: 1,
-                    num_disks: 1,
-                    total_disk_space: 8000,
-                    total_available_disk_space: 4000,
-                    open_files_limit: 0,
-                    system_name: String::from("Generic system name"),
-                    kernel_ver: String::from("Generic kernel version"),
-                    os_ver: String::from("Generic OS version"),
-                    os_ver_long: String::from("Generic long OS version"),
-                },
+                specification: ExecutorSpecification::default()
+                    .with_task_slots(task_slots as u32),
             };
 
             let executor_data = ExecutorData {
@@ -1189,18 +1179,7 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
         host: "localhost2".to_string(),
         port: 8080,
         grpc_port: 9090,
-        specification: ExecutorSpecification {
-            task_slots: 1,
-            physical_cores: 1,
-            num_disks: 1,
-            total_disk_space: 8000,
-            total_available_disk_space: 4000,
-            open_files_limit: 0,
-            system_name: String::from("Generic system name"),
-            kernel_ver: String::from("Generic kernel version"),
-            os_ver: String::from("Generic OS version"),
-            os_ver_long: String::from("Generic long OS version"),
-        },
+        specification: ExecutorSpecification::default().with_task_slots(1),
     }
 }
 
