@@ -49,8 +49,11 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
+memory-stats = { version = "1.2.0", features = ["always_use_statm"] }
 mimalloc = { workspace = true, optional = true }
 parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sysinfo = { version = "0.38" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }

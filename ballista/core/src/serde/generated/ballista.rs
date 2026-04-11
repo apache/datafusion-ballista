@@ -546,11 +546,15 @@ pub struct ExecutorHeartbeat {
     pub metrics: ::prost::alloc::vec::Vec<ExecutorMetric>,
     #[prost(message, optional, tag = "4")]
     pub status: ::core::option::Option<ExecutorStatus>,
+    #[prost(uint64, tag = "5")]
+    pub peak_proc_physical_memory: u64,
+    #[prost(uint64, tag = "6")]
+    pub peak_proc_virtual_memory: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
-    #[prost(oneof = "executor_metric::Metric", tags = "1")]
+    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3, 4, 5")]
     pub metric: ::core::option::Option<executor_metric::Metric>,
 }
 /// Nested message and enum types in `ExecutorMetric`.
@@ -560,6 +564,14 @@ pub mod executor_metric {
     pub enum Metric {
         #[prost(uint64, tag = "1")]
         AvailableMemory(u64),
+        #[prost(uint64, tag = "2")]
+        TotalMemory(u64),
+        #[prost(uint64, tag = "3")]
+        UsedMemory(u64),
+        #[prost(uint64, tag = "4")]
+        ProcPhysicalMemory(u64),
+        #[prost(uint64, tag = "5")]
+        ProcVirtualMemory(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -585,20 +597,36 @@ pub mod executor_status {
 pub struct ExecutorSpecification {
     #[prost(message, repeated, tag = "1")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResource>,
+    #[prost(string, tag = "2")]
+    pub system_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub kernel_ver: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub os_ver: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub os_ver_long: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResource {
-    /// TODO add more resources
-    #[prost(oneof = "executor_resource::Resource", tags = "1")]
+    #[prost(oneof = "executor_resource::Resource", tags = "1, 2, 3, 4, 5, 6")]
     pub resource: ::core::option::Option<executor_resource::Resource>,
 }
 /// Nested message and enum types in `ExecutorResource`.
 pub mod executor_resource {
-    /// TODO add more resources
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
+        #[prost(uint32, tag = "2")]
+        PhysicalCores(u32),
+        #[prost(uint32, tag = "3")]
+        NumDisks(u32),
+        #[prost(uint64, tag = "4")]
+        TotalDiskSpace(u64),
+        #[prost(uint64, tag = "5")]
+        TotalAvailableDiskSpace(u64),
+        #[prost(uint64, tag = "6")]
+        OpenFilesLimit(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

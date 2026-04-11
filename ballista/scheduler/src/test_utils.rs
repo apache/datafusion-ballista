@@ -455,9 +455,8 @@ impl SchedulerTest {
                 host: String::default(),
                 port: 0,
                 grpc_port: 0,
-                specification: ExecutorSpecification {
-                    task_slots: task_slots as u32,
-                },
+                specification: ExecutorSpecification::default()
+                    .with_task_slots(task_slots as u32),
             };
 
             let executor_data = ExecutorData {
@@ -1180,7 +1179,7 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
         host: "localhost2".to_string(),
         port: 8080,
         grpc_port: 9090,
-        specification: ExecutorSpecification { task_slots: 1 },
+        specification: ExecutorSpecification::default().with_task_slots(1),
     }
 }
 

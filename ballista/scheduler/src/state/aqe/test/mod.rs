@@ -46,7 +46,7 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification { task_slots: 0 },
+            specification: ExecutorSpecification::default().with_task_slots(0),
         },
         // next few properties are needed
         partition_stats: PartitionStats::new(Some(42), None, Some(10)),
@@ -70,7 +70,7 @@ pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLoca
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification { task_slots: 0 },
+            specification: ExecutorSpecification::default().with_task_slots(0),
         },
         // next few properties are needed
         partition_stats: PartitionStats::new(Some(0), None, Some(0)),

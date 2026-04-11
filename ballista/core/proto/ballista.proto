@@ -360,12 +360,18 @@ message ExecutorHeartbeat {
   uint64 timestamp = 2;
   repeated ExecutorMetric metrics = 3;
   ExecutorStatus status = 4;
+  uint64 peak_proc_physical_memory = 5;
+  uint64 peak_proc_virtual_memory = 6;
 }
 
 message ExecutorMetric {
   // TODO add more metrics
   oneof metric {
     uint64 available_memory = 1;
+    uint64 total_memory = 2;
+    uint64 used_memory = 3;
+    uint64 proc_physical_memory = 4;
+    uint64 proc_virtual_memory = 5;
   }
 }
 
@@ -380,12 +386,20 @@ message ExecutorStatus {
 
 message ExecutorSpecification {
   repeated ExecutorResource resources = 1;
+  string system_name = 2;
+  string kernel_ver = 3;
+  string os_ver = 4;
+  string os_ver_long = 5;
 }
 
 message ExecutorResource {
-  // TODO add more resources
   oneof resource {
     uint32 task_slots = 1;
+    uint32 physical_cores = 2;
+    uint32 num_disks = 3;
+    uint64 total_disk_space = 4;
+    uint64 total_available_disk_space = 5;
+    uint64 open_files_limit = 6;
   }
 }
 

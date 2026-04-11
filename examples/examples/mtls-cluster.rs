@@ -362,6 +362,10 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
         port: 50051,
         grpc_port: 0, // Not used in pull-based scheduling
         specification: Some(ExecutorSpecification {
+            system_name: String::from("Example system-name"),
+            kernel_ver: String::from("Example kernel-version"),
+            os_ver: String::from("Example os-version"),
+            os_ver_long: String::from("Example long os-version"),
             resources: vec![ExecutorResource {
                 resource: Some(Resource::TaskSlots(4)),
             }],

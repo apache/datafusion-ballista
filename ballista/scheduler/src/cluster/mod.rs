@@ -726,7 +726,7 @@ mod test {
             host: "localhost".to_string(),
             port: 50051,
             grpc_port: 50052,
-            specification: ExecutorSpecification { task_slots: 32 },
+            specification: ExecutorSpecification::default().with_task_slots(32),
         };
 
         // complete first stage

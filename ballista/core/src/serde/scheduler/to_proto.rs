@@ -251,9 +251,24 @@ impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
 impl Into<protobuf::ExecutorSpecification> for ExecutorSpecification {
     fn into(self) -> protobuf::ExecutorSpecification {
         protobuf::ExecutorSpecification {
-            resources: vec![protobuf::executor_resource::Resource::TaskSlots(
-                self.task_slots,
-            )]
+            system_name: self.system_name,
+            kernel_ver: self.kernel_ver,
+            os_ver: self.os_ver,
+            os_ver_long: self.os_ver_long,
+            resources: vec![
+                protobuf::executor_resource::Resource::TaskSlots(self.task_slots),
+                protobuf::executor_resource::Resource::PhysicalCores(self.physical_cores),
+                protobuf::executor_resource::Resource::NumDisks(self.num_disks),
+                protobuf::executor_resource::Resource::TotalDiskSpace(
+                    self.total_disk_space,
+                ),
+                protobuf::executor_resource::Resource::TotalAvailableDiskSpace(
+                    self.total_available_disk_space,
+                ),
+                protobuf::executor_resource::Resource::OpenFilesLimit(
+                    self.open_files_limit,
+                ),
+            ]
             .into_iter()
             .map(|r| protobuf::ExecutorResource { resource: Some(r) })
             .collect(),

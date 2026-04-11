@@ -21,7 +21,10 @@ use axum::{
 };
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
-use ballista_core::serde::protobuf::task_status;
+use ballista_core::serde::protobuf::{
+    ExecutorMetric, executor_metric::Metric, task_status,
+};
+use ballista_core::serde::scheduler::{ExecutorPeaks, ExecutorSpecification};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
@@ -58,12 +61,39 @@ struct SchedulerVersionResponse {
     version: &'static str,
     datafusion_version: &'static str,
 }
+
 #[derive(Debug, serde::Serialize)]
 pub struct ExecutorMetaResponse {
     pub id: String,
     pub host: String,
     pub port: u16,
     pub last_seen: Option<u128>,
+    pub specification: ExecutorSpecification,
+    pub metrics: Vec<ExecutorMetricResponse>,
+    pub peaks: ExecutorPeaks,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
+pub enum ExecutorMetricResponse {
+    AvailableMemory(u64),
+    TotalMemory(u64),
+    UsedMemory(u64),
+    ProcPhysicalMemory(u64),
+    ProcVirtualMemory(u64),
+}
+
+impl ExecutorMetricResponse {
+    pub fn from_proto(proto_spec: ExecutorMetric) -> Option<Self> {
+        proto_spec.metric.map(|inner| match inner {
+            Metric::AvailableMemory(v) => Self::AvailableMemory(v),
+            Metric::TotalMemory(v) => Self::TotalMemory(v),
+            Metric::UsedMemory(v) => Self::UsedMemory(v),
+            Metric::ProcPhysicalMemory(v) => Self::ProcPhysicalMemory(v),
+            Metric::ProcVirtualMemory(v) => Self::ProcVirtualMemory(v),
+        })
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -204,16 +234,24 @@ pub async fn get_executors<
     let state = &data_server.state;
     let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
-        .get_executor_state()
+        .get_executors_state()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|(metadata, duration)| ExecutorMetaResponse {
-            id: metadata.id,
-            host: metadata.host,
-            port: metadata.port,
-            last_seen: duration.map(|d| d.as_millis()),
-        })
+        .map(
+            |(metadata, duration, metrics, peaks)| ExecutorMetaResponse {
+                id: metadata.id,
+                host: metadata.host,
+                port: metadata.port,
+                last_seen: duration.map(|d| d.as_millis()),
+                metrics: metrics
+                    .into_iter()
+                    .filter_map(ExecutorMetricResponse::from_proto)
+                    .collect(),
+                specification: metadata.specification,
+                peaks,
+            },
+        )
         .collect();
 
     Json(executors)
