@@ -134,6 +134,8 @@ impl ClusterState for InMemoryClusterState {
             status: Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active(String::default())),
             }),
+            peak_proc_physical_memory: 0,
+            peak_proc_virtual_memory: 0,
         })
         .await?;
 
@@ -190,6 +192,8 @@ impl ClusterState for InMemoryClusterState {
                 .as_secs(),
             metrics: vec![],
             status: None,
+            peak_proc_physical_memory: 0,
+            peak_proc_virtual_memory: 0,
         };
         self.save_executor_heartbeat(heartbeat).await
         // Ok(())

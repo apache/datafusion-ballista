@@ -24,7 +24,7 @@ use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     ExecutorMetric, executor_metric::Metric, task_status,
 };
-use ballista_core::serde::scheduler::ExecutorSpecification;
+use ballista_core::serde::scheduler::{ExecutorPeaks, ExecutorSpecification};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
@@ -70,6 +70,7 @@ pub struct ExecutorMetaResponse {
     pub last_seen: Option<u128>,
     pub specification: ExecutorSpecification,
     pub metrics: Vec<ExecutorMetricResponse>,
+    pub peaks: ExecutorPeaks,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -233,21 +234,24 @@ pub async fn get_executors<
     let state = &data_server.state;
     let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
-        .get_executor_state()
+        .get_executors_state()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|(metadata, duration, metrics)| ExecutorMetaResponse {
-            id: metadata.id,
-            host: metadata.host,
-            port: metadata.port,
-            last_seen: duration.map(|d| d.as_millis()),
-            metrics: metrics
-                .into_iter()
-                .filter_map(ExecutorMetricResponse::from_proto)
-                .collect(),
-            specification: metadata.specification,
-        })
+        .map(
+            |(metadata, duration, metrics, peaks)| ExecutorMetaResponse {
+                id: metadata.id,
+                host: metadata.host,
+                port: metadata.port,
+                last_seen: duration.map(|d| d.as_millis()),
+                metrics: metrics
+                    .into_iter()
+                    .filter_map(ExecutorMetricResponse::from_proto)
+                    .collect(),
+                specification: metadata.specification,
+                peaks,
+            },
+        )
         .collect();
 
     Json(executors)

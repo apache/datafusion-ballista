@@ -30,7 +30,7 @@ use ballista_core::serde::protobuf::{
     HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
     RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
     RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
-    execute_query_failure_result, execute_query_result,
+    execute_query_failure_result, execute_query_result, executor_metric::Metric,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -247,6 +247,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 )));
             }
         }
+        // Extract current process memory from incoming metrics
+        let current_proc_physical = metrics
+            .iter()
+            .find_map(|m| match m.metric {
+                Some(Metric::ProcPhysicalMemory(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or(0);
+
+        let current_proc_virtual = metrics
+            .iter()
+            .find_map(|m| match m.metric {
+                Some(Metric::ProcVirtualMemory(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or(0);
+
+        // Compare against previous peaks
+        let (peak_proc_physical_memory, peak_proc_virtual_memory) = self
+            .state
+            .executor_manager
+            .get_executor_hearbeat(&executor_id)
+            .map(|hb| {
+                (
+                    hb.peak_proc_physical_memory.max(current_proc_physical),
+                    hb.peak_proc_virtual_memory.max(current_proc_virtual),
+                )
+            })
+            .unwrap_or((current_proc_physical, current_proc_virtual));
 
         let executor_heartbeat = ExecutorHeartbeat {
             executor_id,
@@ -256,6 +285,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .as_secs(),
             metrics,
             status,
+            peak_proc_physical_memory,
+            peak_proc_virtual_memory,
         };
 
         self.state

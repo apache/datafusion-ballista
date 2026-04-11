@@ -546,6 +546,10 @@ pub struct ExecutorHeartbeat {
     pub metrics: ::prost::alloc::vec::Vec<ExecutorMetric>,
     #[prost(message, optional, tag = "4")]
     pub status: ::core::option::Option<ExecutorStatus>,
+    #[prost(uint64, tag = "5")]
+    pub peak_proc_physical_memory: u64,
+    #[prost(uint64, tag = "6")]
+    pub peak_proc_virtual_memory: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {

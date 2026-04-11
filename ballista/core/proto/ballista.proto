@@ -360,6 +360,8 @@ message ExecutorHeartbeat {
   uint64 timestamp = 2;
   repeated ExecutorMetric metrics = 3;
   ExecutorStatus status = 4;
+  uint64 peak_proc_physical_memory = 5;
+  uint64 peak_proc_virtual_memory = 6;
 }
 
 message ExecutorMetric {

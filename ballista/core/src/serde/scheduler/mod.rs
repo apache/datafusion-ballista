@@ -125,6 +125,15 @@ pub struct ExecutorMetadata {
     pub specification: ExecutorSpecification,
 }
 
+/// Peak values for executor (memory)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ExecutorPeaks {
+    /// Peak of physical memory usage on this executor
+    pub physical_memory: u64,
+    /// Peak of virtual memory usage on this executor
+    pub virtual_memory: u64,
+}
+
 /// Specification of an executor, indicating executor resources, like total task slots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {
