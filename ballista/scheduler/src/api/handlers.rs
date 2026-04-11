@@ -94,6 +94,7 @@ impl ExecutorMetricResponse {
         })
     }
 }
+
 #[derive(Debug, serde::Serialize)]
 pub struct JobResponse {
     pub job_id: String,
