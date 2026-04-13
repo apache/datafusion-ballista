@@ -24,7 +24,9 @@ use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     ExecutorMetric, executor_metric::Metric, task_status,
 };
-use ballista_core::serde::scheduler::{ExecutorPeaks, ExecutorSpecification};
+use ballista_core::serde::scheduler::{
+    ExecutorOperatingSystemSpecification, ExecutorSpecification,
+};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
@@ -63,14 +65,19 @@ struct SchedulerVersionResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct ExecutorMetaResponse {
+pub struct ExecutorBriefResponse {
     pub id: String,
     pub host: String,
     pub port: u16,
     pub last_seen: Option<u128>,
     pub specification: ExecutorSpecification,
     pub metrics: Vec<ExecutorMetricResponse>,
-    pub peaks: ExecutorPeaks,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ExecutorDetailedResponse {
+    pub executor_info: ExecutorBriefResponse,
+    pub os_info: ExecutorOperatingSystemSpecification,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -82,6 +89,8 @@ pub enum ExecutorMetricResponse {
     UsedMemory(u64),
     ProcPhysicalMemory(u64),
     ProcVirtualMemory(u64),
+    PeakPhysicalMemory(u64),
+    PeakVirtualMemory(u64),
 }
 
 impl ExecutorMetricResponse {
@@ -92,6 +101,8 @@ impl ExecutorMetricResponse {
             Metric::UsedMemory(v) => Self::UsedMemory(v),
             Metric::ProcPhysicalMemory(v) => Self::ProcPhysicalMemory(v),
             Metric::ProcVirtualMemory(v) => Self::ProcVirtualMemory(v),
+            Metric::PeakPhysicalMemory(v) => Self::PeakPhysicalMemory(v),
+            Metric::PeakVirtualMemory(v) => Self::PeakVirtualMemory(v),
         })
     }
 }
@@ -232,29 +243,64 @@ pub async fn get_executors<
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> impl IntoResponse {
     let state = &data_server.state;
-    let executors: Vec<ExecutorMetaResponse> = state
+    let executors: Vec<ExecutorBriefResponse> = state
         .executor_manager
         .get_executors_state()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(
-            |(metadata, duration, metrics, peaks)| ExecutorMetaResponse {
+        .map(|(metadata, duration, metrics)| ExecutorBriefResponse {
+            id: metadata.id,
+            host: metadata.host,
+            port: metadata.port,
+            last_seen: duration.map(|d| d.as_millis()),
+            specification: metadata.specification,
+            metrics: metrics
+                .into_iter()
+                .filter_map(ExecutorMetricResponse::from_proto)
+                .collect(),
+        })
+        .collect();
+
+    Json(executors)
+}
+
+pub async fn get_executor_info<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(executor_id): Path<String>,
+) -> impl IntoResponse {
+    let state = &data_server.state;
+    let executor_info = state
+        .executor_manager
+        .get_executors_state()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|(metadata, _, _)| metadata.id == executor_id)
+        .map(|(metadata, duration, metrics)| {
+            let executor_info = ExecutorBriefResponse {
                 id: metadata.id,
                 host: metadata.host,
                 port: metadata.port,
                 last_seen: duration.map(|d| d.as_millis()),
+                specification: metadata.specification,
                 metrics: metrics
                     .into_iter()
                     .filter_map(ExecutorMetricResponse::from_proto)
                     .collect(),
-                specification: metadata.specification,
-                peaks,
-            },
-        )
-        .collect();
+            };
 
-    Json(executors)
+            ExecutorDetailedResponse {
+                executor_info,
+                os_info: metadata.os_info,
+            }
+        })
+        .unwrap();
+
+    Json(executor_info)
 }
 
 pub async fn get_jobs<

@@ -743,6 +743,7 @@ mod test {
             port: 12345,
             grpc_port: 1,
             specification: None,
+            os_info: None,
         };
 
         // no flight proxy -> client should fetch results from executor

@@ -109,6 +109,7 @@ pub async fn new_standalone_executor_from_builder(
                 .with_task_slots(concurrent_tasks as u32)
                 .into(),
         ),
+        os_info: None,
     };
 
     let config = config_producer();

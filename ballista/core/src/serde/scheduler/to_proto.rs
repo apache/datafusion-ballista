@@ -25,8 +25,8 @@ use crate::serde::protobuf::{self, NamedPruningMetrics, NamedRatio};
 use datafusion_proto::protobuf as datafusion_protobuf;
 
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats,
+    Action, ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
 use protobuf::{NamedCount, NamedGauge, NamedTime, action::ActionType, operator_metric};
@@ -243,6 +243,7 @@ impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
             port: self.port as u32,
             grpc_port: self.grpc_port as u32,
             specification: Some(self.specification.into()),
+            os_info: Some(self.os_info.into()),
         }
     }
 }
@@ -251,27 +252,31 @@ impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
 impl Into<protobuf::ExecutorSpecification> for ExecutorSpecification {
     fn into(self) -> protobuf::ExecutorSpecification {
         protobuf::ExecutorSpecification {
+            resources: vec![protobuf::executor_resource::Resource::TaskSlots(
+                self.task_slots,
+            )]
+            .into_iter()
+            .map(|r| protobuf::ExecutorResource { resource: Some(r) })
+            .collect(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorOperatingSystemSpecification>
+    for ExecutorOperatingSystemSpecification
+{
+    fn into(self) -> protobuf::ExecutorOperatingSystemSpecification {
+        protobuf::ExecutorOperatingSystemSpecification {
             system_name: self.system_name,
             kernel_ver: self.kernel_ver,
             os_ver: self.os_ver,
             os_ver_long: self.os_ver_long,
-            resources: vec![
-                protobuf::executor_resource::Resource::TaskSlots(self.task_slots),
-                protobuf::executor_resource::Resource::PhysicalCores(self.physical_cores),
-                protobuf::executor_resource::Resource::NumDisks(self.num_disks),
-                protobuf::executor_resource::Resource::TotalDiskSpace(
-                    self.total_disk_space,
-                ),
-                protobuf::executor_resource::Resource::TotalAvailableDiskSpace(
-                    self.total_available_disk_space,
-                ),
-                protobuf::executor_resource::Resource::OpenFilesLimit(
-                    self.open_files_limit,
-                ),
-            ]
-            .into_iter()
-            .map(|r| protobuf::ExecutorResource { resource: Some(r) })
-            .collect(),
+            physical_cores: self.physical_cores,
+            num_disks: self.num_disks,
+            total_disk_space: self.total_disk_space,
+            total_available_disk_space: self.total_available_disk_space,
+            open_files_limit: self.open_files_limit,
         }
     }
 }

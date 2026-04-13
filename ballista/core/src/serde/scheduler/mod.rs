@@ -123,15 +123,8 @@ pub struct ExecutorMetadata {
     pub grpc_port: u16,
     /// Resource specification for this executor.
     pub specification: ExecutorSpecification,
-}
-
-/// Peak values for executor (memory)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-pub struct ExecutorPeaks {
-    /// Peak of physical memory usage on this executor
-    pub physical_memory: u64,
-    /// Peak of virtual memory usage on this executor
-    pub virtual_memory: u64,
+    /// OS and hardware info for this executor
+    pub os_info: ExecutorOperatingSystemSpecification,
 }
 
 /// Specification of an executor, indicating executor resources, like total task slots.
@@ -139,6 +132,33 @@ pub struct ExecutorPeaks {
 pub struct ExecutorSpecification {
     /// Number of concurrent task slots available on this executor.
     pub task_slots: u32,
+}
+
+impl Default for ExecutorSpecification {
+    fn default() -> Self {
+        Self { task_slots: 1 }
+    }
+}
+
+impl ExecutorSpecification {
+    /// Setting number of task slots (number of tasks that can be handled by this executor)
+    pub fn with_task_slots(mut self, task_slots: u32) -> Self {
+        self.task_slots = task_slots;
+        self
+    }
+}
+
+/// TESTING EXECUTOR OS
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutorOperatingSystemSpecification {
+    /// System name
+    pub system_name: String,
+    /// Kernel version
+    pub kernel_ver: String,
+    /// OS version
+    pub os_ver: String,
+    /// OS version (long)
+    pub os_ver_long: String,
     /// Number of physical cores available on this executor
     pub physical_cores: u32,
     /// Number of physical disks available on this executor
@@ -149,20 +169,11 @@ pub struct ExecutorSpecification {
     pub total_available_disk_space: u64,
     /// Open files limit on this executor
     pub open_files_limit: u64,
-    /// System name
-    pub system_name: String,
-    /// Kernel version
-    pub kernel_ver: String,
-    /// OS version
-    pub os_ver: String,
-    /// OS version (long)
-    pub os_ver_long: String,
 }
 
-impl Default for ExecutorSpecification {
+impl Default for ExecutorOperatingSystemSpecification {
     fn default() -> Self {
         Self {
-            task_slots: 1,
             physical_cores: 1,
             num_disks: 2,
             total_disk_space: 1024 * 1024 * 8,
@@ -176,13 +187,7 @@ impl Default for ExecutorSpecification {
     }
 }
 
-impl ExecutorSpecification {
-    /// Setting number of task slots (number of tasks that can be handled by this executor)
-    pub fn with_task_slots(mut self, task_slots: u32) -> Self {
-        self.task_slots = task_slots;
-        self
-    }
-
+impl ExecutorOperatingSystemSpecification {
     /// Setting number of physical cores for executor
     pub fn with_physical_cores(mut self, physical_cores: u32) -> Self {
         self.physical_cores = physical_cores;

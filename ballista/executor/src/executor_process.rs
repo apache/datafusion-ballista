@@ -25,6 +25,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::registry::BallistaFunctionRegistry;
+use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -238,7 +239,6 @@ pub async fn start_executor_process(
         "Executor number of concurrent tasks (available CPU cores): {concurrent_tasks}"
     );
     info!("Executor scheduling policy: {task_scheduling_policy:?}");
-
     // Getting system-wide specs for executor registration
     let system_name =
         System::name().unwrap_or_else(|| String::from("Unknown system name"));
@@ -248,7 +248,7 @@ pub async fn start_executor_process(
         .unwrap_or_else(|| String::from("Unknown long OS version"));
     let kernel_ver = System::kernel_long_version();
 
-    let physical_core_count = System::physical_core_count().unwrap_or(0) as u32;
+    let physical_cores = System::physical_core_count().unwrap_or(0) as u32;
     let open_files_limit = System::open_files_limit().unwrap_or(0) as u64;
 
     let disks = Disks::new_with_refreshed_list();
@@ -266,32 +266,20 @@ pub async fn start_executor_process(
         port: opt.port as u32,
         grpc_port: opt.grpc_port as u32,
         specification: Some(ExecutorSpecification {
+            resources: vec![ExecutorResource {
+                resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
+            }],
+        }),
+        os_info: Some(ExecutorOperatingSystemSpecification {
             system_name,
+            kernel_ver,
             os_ver,
             os_ver_long,
-            kernel_ver,
-            resources: vec![
-                ExecutorResource {
-                    resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-                },
-                ExecutorResource {
-                    resource: Some(Resource::PhysicalCores(physical_core_count)),
-                },
-                ExecutorResource {
-                    resource: Some(Resource::NumDisks(num_disks)),
-                },
-                ExecutorResource {
-                    resource: Some(Resource::TotalDiskSpace(total_disk_space)),
-                },
-                ExecutorResource {
-                    resource: Some(Resource::TotalAvailableDiskSpace(
-                        total_available_disk_space,
-                    )),
-                },
-                ExecutorResource {
-                    resource: Some(Resource::OpenFilesLimit(open_files_limit)),
-                },
-            ],
+            physical_cores,
+            num_disks,
+            total_disk_space,
+            total_available_disk_space,
+            open_files_limit,
         }),
     };
 

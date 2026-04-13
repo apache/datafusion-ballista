@@ -21,8 +21,8 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics_no_data,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
-    PartitionStats,
+    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+    PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::stats::Precision;
@@ -348,6 +348,7 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             port: 0,
             grpc_port: 0,
             specification: ExecutorSpecification::default().with_task_slots(0),
+            os_info: ExecutorOperatingSystemSpecification::default(),
         },
         // next few properties are needed
         partition_stats: PartitionStats::new(
@@ -379,6 +380,7 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             port: 0,
             grpc_port: 0,
             specification: ExecutorSpecification::default().with_task_slots(0),
+            os_info: ExecutorOperatingSystemSpecification::default(),
         },
 
         // next few properties are needed

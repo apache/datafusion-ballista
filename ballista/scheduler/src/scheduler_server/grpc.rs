@@ -99,6 +99,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
                     specification: metadata.specification.unwrap().into(),
+                    os_info: metadata.os_info.unwrap().into(),
                 };
                 if let Err(e) = self
                     .state
@@ -189,6 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 port: metadata.port as u16,
                 grpc_port: metadata.grpc_port as u16,
                 specification: metadata.specification.unwrap().into(),
+                os_info: metadata.os_info.unwrap().into(),
             };
 
             self.do_register_executor(metadata).await.map_err(|e| {
@@ -234,6 +236,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
                     specification: metadata.specification.unwrap().into(),
+                    os_info: metadata.os_info.unwrap().into(),
                 };
 
                 self.do_register_executor(metadata).await.map_err(|e| {
@@ -691,6 +694,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use tonic::Request;
@@ -743,6 +747,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -833,6 +838,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -920,6 +926,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -975,6 +982,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -1063,6 +1071,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<RegisterExecutorParams> =

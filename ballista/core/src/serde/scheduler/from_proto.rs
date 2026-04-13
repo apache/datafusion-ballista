@@ -37,8 +37,8 @@ use crate::extension::SessionConfigHelperExt;
 use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
-    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
-    TaskDefinition,
+    ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
+    PartitionLocation, PartitionStats, TaskDefinition,
 };
 
 use crate::RuntimeProducer;
@@ -266,6 +266,7 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
             port: self.port as u16,
             grpc_port: self.grpc_port as u16,
             specification: self.specification.unwrap().into(),
+            os_info: self.os_info.unwrap().into(),
         }
     }
 }
@@ -273,44 +274,37 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
 #[allow(clippy::from_over_into)]
 impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
     fn into(self) -> ExecutorSpecification {
-        let mut ret = ExecutorSpecification {
-            task_slots: 0,
-            physical_cores: 0,
-            num_disks: 0,
-            total_available_disk_space: 0,
-            total_disk_space: 0,
-            open_files_limit: 0,
-            system_name: self.system_name,
-            kernel_ver: self.kernel_ver,
-            os_ver: self.os_ver,
-            os_ver_long: self.os_ver_long,
-        };
+        let mut ret = ExecutorSpecification { task_slots: 0 };
         for resource in self.resources {
             if let Some(resource_spec) = resource.resource {
                 match resource_spec {
                     protobuf::executor_resource::Resource::TaskSlots(num_slots) => {
                         ret.task_slots = num_slots
                     }
-                    protobuf::executor_resource::Resource::PhysicalCores(num_cores) => {
-                        ret.physical_cores = num_cores
-                    }
-                    protobuf::executor_resource::Resource::NumDisks(num_disks) => {
-                        ret.num_disks = num_disks
-                    }
-                    protobuf::executor_resource::Resource::TotalDiskSpace(
-                        total_space,
-                    ) => ret.total_disk_space = total_space,
-                    protobuf::executor_resource::Resource::TotalAvailableDiskSpace(
-                        available_space,
-                    ) => ret.total_available_disk_space = available_space,
-                    protobuf::executor_resource::Resource::OpenFilesLimit(
-                        open_files_limit,
-                    ) => ret.open_files_limit = open_files_limit,
                 }
             }
         }
 
         ret
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorOperatingSystemSpecification>
+    for protobuf::ExecutorOperatingSystemSpecification
+{
+    fn into(self) -> ExecutorOperatingSystemSpecification {
+        ExecutorOperatingSystemSpecification {
+            system_name: self.system_name,
+            kernel_ver: self.kernel_ver,
+            os_ver: self.os_ver,
+            os_ver_long: self.os_ver_long,
+            physical_cores: self.physical_cores,
+            num_disks: self.num_disks,
+            total_disk_space: self.total_disk_space,
+            total_available_disk_space: self.total_available_disk_space,
+            open_files_limit: self.open_files_limit,
+        }
     }
 }
 

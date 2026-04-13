@@ -434,7 +434,8 @@ mod test {
         failed_task, job_status, task_status,
     };
     use ballista_core::serde::scheduler::{
-        ExecutorData, ExecutorMetadata, ExecutorSpecification,
+        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+        ExecutorSpecification,
     };
 
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
@@ -960,6 +961,7 @@ mod test {
                     grpc_port: 9090,
                     specification: ExecutorSpecification::default()
                         .with_task_slots(task_slots),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 ExecutorData {
                     executor_id: "executor-1".to_owned(),
@@ -975,6 +977,7 @@ mod test {
                     grpc_port: 9090,
                     specification: ExecutorSpecification::default()
                         .with_task_slots(num_partitions as u32 - task_slots),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 ExecutorData {
                     executor_id: "executor-2".to_owned(),

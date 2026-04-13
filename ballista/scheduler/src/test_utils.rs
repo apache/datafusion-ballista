@@ -41,7 +41,8 @@ use ballista_core::serde::protobuf::{
     TaskId, TaskStatus, task_status,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorData, ExecutorMetadata, ExecutorSpecification,
+    ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+    ExecutorSpecification,
 };
 use ballista_core::serde::{BallistaCodec, protobuf};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -457,6 +458,7 @@ impl SchedulerTest {
                 grpc_port: 0,
                 specification: ExecutorSpecification::default()
                     .with_task_slots(task_slots as u32),
+                os_info: ExecutorOperatingSystemSpecification::default(),
             };
 
             let executor_data = ExecutorData {
@@ -1180,6 +1182,7 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
         port: 8080,
         grpc_port: 9090,
         specification: ExecutorSpecification::default().with_task_slots(1),
+        os_info: ExecutorOperatingSystemSpecification::default(),
     }
 }
 
