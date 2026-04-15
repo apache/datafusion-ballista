@@ -18,7 +18,6 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
-use crate::config::BallistaConfig;
 use crate::extension::BallistaCacheNode;
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
@@ -54,7 +53,7 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    DEFAULT_SHUFFLE_CHANNEL_CAPACITY, ShuffleReaderExec, ShuffleWriterExec,
+    ShuffleReaderExec, ShuffleWriterExec,
     SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
@@ -353,24 +352,13 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     &converter,
                 )?;
 
-                let channel_capacity = ctx
-                    .session_config()
-                    .options()
-                    .extensions
-                    .get::<BallistaConfig>()
-                    .map(|c| c.shuffle_writer_channel_capacity())
-                    .unwrap_or(DEFAULT_SHUFFLE_CHANNEL_CAPACITY);
-
-                Ok(Arc::new(
-                    ShuffleWriterExec::try_new(
-                        shuffle_writer.job_id.clone(),
-                        shuffle_writer.stage_id as usize,
-                        input,
-                        "".to_string(), // this is intentional but hacky - the executor will fill this in
-                        shuffle_output_partitioning,
-                    )?
-                    .with_channel_capacity(channel_capacity),
-                ))
+                Ok(Arc::new(ShuffleWriterExec::try_new(
+                    shuffle_writer.job_id.clone(),
+                    shuffle_writer.stage_id as usize,
+                    input,
+                    "".to_string(), // this is intentional but hacky - the executor will fill this in
+                    shuffle_output_partitioning,
+                )?))
             }
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
                 let input = inputs[0].clone();
