@@ -50,7 +50,7 @@ pub trait ExecutionEngine: Sync + Send {
         &self,
         job_id: String,
         stage_id: usize,
-        _partition_id: usize,
+        partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
         config: &SessionConfig,
