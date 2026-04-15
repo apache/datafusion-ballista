@@ -371,6 +371,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
+            partition_id,
             plan,
             &self.executor.work_dir,
             &task.session_config,
