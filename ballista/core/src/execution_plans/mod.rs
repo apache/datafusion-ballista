@@ -31,6 +31,7 @@ use datafusion::common::exec_err;
 pub use distributed_query::DistributedQueryExec;
 pub use shuffle_reader::ShuffleReaderExec;
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
+pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
 pub use shuffle_writer::ShuffleWriterExec;
 pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
