@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, DEFAULT_SHUFFLE_CHANNEL_CAPACITY,
+    DEFAULT_SHUFFLE_CHANNEL_CAPACITY, ShuffleReaderExec, ShuffleWriterExec,
 };
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::utils;

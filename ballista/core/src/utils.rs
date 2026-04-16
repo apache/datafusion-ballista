@@ -179,10 +179,7 @@ pub async fn write_stream_to_disk(
 
     let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
-            error!(
-                "Failed to create partition file at {:?}: {e:?}",
-                path_owned
-            );
+            error!("Failed to create partition file at {:?}: {e:?}", path_owned);
             BallistaError::IoError(e)
         })?);
 
