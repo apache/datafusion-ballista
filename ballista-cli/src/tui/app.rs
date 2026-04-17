@@ -312,20 +312,14 @@ impl App {
                     self.sort_executors_by(ExecutorsSortColumn::LastSeen);
                 }
             }
-            KeyCode::Char('4') => {
-                if self.is_jobs_view() {
-                    self.sort_jobs_by(JobsSortColumn::StagesCompleted);
-                }
+            KeyCode::Char('4') if self.is_jobs_view() => {
+                self.sort_jobs_by(JobsSortColumn::StagesCompleted);
             }
-            KeyCode::Char('5') => {
-                if self.is_jobs_view() {
-                    self.sort_jobs_by(JobsSortColumn::PercentComplete);
-                }
+            KeyCode::Char('5') if self.is_jobs_view() => {
+                self.sort_jobs_by(JobsSortColumn::PercentComplete);
             }
-            KeyCode::Char('6') => {
-                if self.is_jobs_view() {
-                    self.sort_jobs_by(JobsSortColumn::StartTime);
-                }
+            KeyCode::Char('6') if self.is_jobs_view() => {
+                self.sort_jobs_by(JobsSortColumn::StartTime);
             }
             KeyCode::Char('c')
                 if self.is_jobs_view() && self.input_mode == InputMode::View =>
@@ -499,8 +493,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tui::domain::{SchedulerState, jobs::Job};
+    use crate::tui::App;
+    use crate::tui::Settings;
+    use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
+    use crate::tui::domain::{SchedulerState, SortOrder, jobs::Job};
 
     fn make_app() -> App {
         let settings =

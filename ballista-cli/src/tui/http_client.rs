@@ -64,7 +64,7 @@ impl HttpClient {
     pub async fn get_jobs(&self) -> TuiResult<Vec<Job>> {
         let url = self.url("jobs");
         self.json::<Vec<Job>>(&url).await.map(|mut jobs| {
-            jobs.sort_by(|a, b| b.start_time.cmp(&a.start_time)); // newest first
+            jobs.sort_by_key(|b| std::cmp::Reverse(b.start_time)); // newest first
             jobs
         })
     }
