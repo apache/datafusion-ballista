@@ -493,8 +493,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tui::domain::{SchedulerState, jobs::Job};
+    use crate::tui::App;
+    use crate::tui::Settings;
+    use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
+    use crate::tui::domain::{SchedulerState, SortOrder, jobs::Job};
 
     fn make_app() -> App {
         let settings =
