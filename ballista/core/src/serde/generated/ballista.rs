@@ -519,6 +519,8 @@ pub struct ExecutorMetadata {
     pub grpc_port: u32,
     #[prost(message, optional, tag = "5")]
     pub specification: ::core::option::Option<ExecutorSpecification>,
+    #[prost(message, optional, tag = "6")]
+    pub os_info: ::core::option::Option<ExecutorOperatingSystemSpecification>,
 }
 /// Used for scheduler-executor
 /// communication
@@ -534,6 +536,8 @@ pub struct ExecutorRegistration {
     pub grpc_port: u32,
     #[prost(message, optional, tag = "5")]
     pub specification: ::core::option::Option<ExecutorSpecification>,
+    #[prost(message, optional, tag = "6")]
+    pub os_info: ::core::option::Option<ExecutorOperatingSystemSpecification>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorHeartbeat {
@@ -546,11 +550,15 @@ pub struct ExecutorHeartbeat {
     pub metrics: ::prost::alloc::vec::Vec<ExecutorMetric>,
     #[prost(message, optional, tag = "4")]
     pub status: ::core::option::Option<ExecutorStatus>,
+    #[prost(uint64, tag = "5")]
+    pub peak_proc_physical_memory: u64,
+    #[prost(uint64, tag = "6")]
+    pub peak_proc_virtual_memory: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
-    #[prost(oneof = "executor_metric::Metric", tags = "1")]
+    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub metric: ::core::option::Option<executor_metric::Metric>,
 }
 /// Nested message and enum types in `ExecutorMetric`.
@@ -560,6 +568,18 @@ pub mod executor_metric {
     pub enum Metric {
         #[prost(uint64, tag = "1")]
         AvailableMemory(u64),
+        #[prost(uint64, tag = "2")]
+        TotalMemory(u64),
+        #[prost(uint64, tag = "3")]
+        UsedMemory(u64),
+        #[prost(uint64, tag = "4")]
+        ProcPhysicalMemory(u64),
+        #[prost(uint64, tag = "5")]
+        ProcVirtualMemory(u64),
+        #[prost(uint64, tag = "6")]
+        PeakPhysicalMemory(u64),
+        #[prost(uint64, tag = "7")]
+        PeakVirtualMemory(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -588,18 +608,37 @@ pub struct ExecutorSpecification {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResource {
-    /// TODO add more resources
     #[prost(oneof = "executor_resource::Resource", tags = "1")]
     pub resource: ::core::option::Option<executor_resource::Resource>,
 }
 /// Nested message and enum types in `ExecutorResource`.
 pub mod executor_resource {
-    /// TODO add more resources
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecutorOperatingSystemSpecification {
+    #[prost(string, tag = "1")]
+    pub system_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub kernel_ver: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub os_ver: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub os_ver_long: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "5")]
+    pub physical_cores: u32,
+    #[prost(uint32, tag = "6")]
+    pub num_disks: u32,
+    #[prost(uint64, tag = "7")]
+    pub total_disk_space: u64,
+    #[prost(uint64, tag = "8")]
+    pub total_available_disk_space: u64,
+    #[prost(uint64, tag = "9")]
+    pub open_files_limit: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AvailableTaskSlots {

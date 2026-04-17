@@ -123,13 +123,127 @@ pub struct ExecutorMetadata {
     pub grpc_port: u16,
     /// Resource specification for this executor.
     pub specification: ExecutorSpecification,
+    /// OS and hardware info for this executor
+    pub os_info: ExecutorOperatingSystemSpecification,
 }
 
 /// Specification of an executor, indicating executor resources, like total task slots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {
     /// Number of concurrent task slots available on this executor.
     pub task_slots: u32,
+}
+
+impl Default for ExecutorSpecification {
+    fn default() -> Self {
+        Self { task_slots: 1 }
+    }
+}
+
+impl ExecutorSpecification {
+    /// Setting number of task slots (number of tasks that can be handled by this executor)
+    pub fn with_task_slots(mut self, task_slots: u32) -> Self {
+        self.task_slots = task_slots;
+        self
+    }
+}
+
+/// TESTING EXECUTOR OS
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutorOperatingSystemSpecification {
+    /// System name
+    pub system_name: String,
+    /// Kernel version
+    pub kernel_ver: String,
+    /// OS version
+    pub os_ver: String,
+    /// OS version (long)
+    pub os_ver_long: String,
+    /// Number of physical cores available on this executor
+    pub physical_cores: u32,
+    /// Number of physical disks available on this executor
+    pub num_disks: u32,
+    /// Total disk space on this executor, in bytes
+    pub total_disk_space: u64,
+    /// Total available disk space on this executor, in bytes
+    pub total_available_disk_space: u64,
+    /// Open files limit on this executor
+    pub open_files_limit: u64,
+}
+
+impl Default for ExecutorOperatingSystemSpecification {
+    fn default() -> Self {
+        Self {
+            physical_cores: 1,
+            num_disks: 2,
+            total_disk_space: 1024 * 1024 * 8,
+            total_available_disk_space: 1024 * 1024 * 4,
+            open_files_limit: 1024,
+            system_name: String::from("Ubuntu"),
+            kernel_ver: String::from("Linux 6.17.0-20-generic"),
+            os_ver: String::from("24.04"),
+            os_ver_long: String::from("Linux (Ubuntu 24.04)"),
+        }
+    }
+}
+
+impl ExecutorOperatingSystemSpecification {
+    /// Setting number of physical cores for executor
+    pub fn with_physical_cores(mut self, physical_cores: u32) -> Self {
+        self.physical_cores = physical_cores;
+        self
+    }
+
+    /// Setting number of disks for executor
+    pub fn with_num_disks(mut self, num_disks: u32) -> Self {
+        self.num_disks = num_disks;
+        self
+    }
+
+    /// Setting total disks space for executor
+    pub fn with_total_disk_space(mut self, total_disk_space: u64) -> Self {
+        self.total_disk_space = total_disk_space;
+        self
+    }
+
+    /// Setting total available disk space for executor
+    pub fn with_total_available_disk_space(
+        mut self,
+        total_available_disk_space: u64,
+    ) -> Self {
+        self.total_available_disk_space = total_available_disk_space;
+        self
+    }
+
+    /// Setting open files limit for executor
+    pub fn with_open_files_limit(mut self, open_files_limit: u64) -> Self {
+        self.open_files_limit = open_files_limit;
+        self
+    }
+
+    /// Setting system name for executor
+    pub fn with_system_name(mut self, system_name: String) -> Self {
+        self.system_name = system_name;
+        self
+    }
+
+    /// Setting kernel version for executor
+    pub fn with_kernel_ver(mut self, kernel_ver: String) -> Self {
+        self.kernel_ver = kernel_ver;
+        self
+    }
+
+    /// Setting OS version for executor
+    pub fn with_os_ver(mut self, os_ver: String) -> Self {
+        self.os_ver = os_ver;
+        self
+    }
+
+    /// Setting OS version (longer variant) for executor
+    pub fn with_os_ver_long(mut self, os_ver_long: String) -> Self {
+        self.os_ver_long = os_ver_long;
+        self
+    }
 }
 
 /// Available resources for an executor, including total and available task slots.

@@ -562,7 +562,9 @@ mod test {
 
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::AvailableTaskSlots;
-    use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
+    use ballista_core::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+    };
 
     use crate::cluster::{BoundTask, bind_task_bias, bind_task_round_robin};
     use crate::state::execution_graph::{ExecutionGraph, StaticExecutionGraph};
@@ -726,7 +728,8 @@ mod test {
             host: "localhost".to_string(),
             port: 50051,
             grpc_port: 50052,
-            specification: ExecutorSpecification { task_slots: 32 },
+            specification: ExecutorSpecification::default().with_task_slots(32),
+            os_info: ExecutorOperatingSystemSpecification::default(),
         };
 
         // complete first stage

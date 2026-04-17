@@ -30,7 +30,7 @@ use ballista_core::serde::protobuf::{
     HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
     RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
     RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
-    execute_query_failure_result, execute_query_result,
+    execute_query_failure_result, execute_query_result, executor_metric::Metric,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -99,6 +99,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
                     specification: metadata.specification.unwrap().into(),
+                    os_info: metadata.os_info.unwrap().into(),
                 };
                 if let Err(e) = self
                     .state
@@ -189,6 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 port: metadata.port as u16,
                 grpc_port: metadata.grpc_port as u16,
                 specification: metadata.specification.unwrap().into(),
+                os_info: metadata.os_info.unwrap().into(),
             };
 
             self.do_register_executor(metadata).await.map_err(|e| {
@@ -234,6 +236,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
                     specification: metadata.specification.unwrap().into(),
+                    os_info: metadata.os_info.unwrap().into(),
                 };
 
                 self.do_register_executor(metadata).await.map_err(|e| {
@@ -247,6 +250,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 )));
             }
         }
+        // Extract current process memory from incoming metrics
+        let current_proc_physical = metrics
+            .iter()
+            .find_map(|m| match m.metric {
+                Some(Metric::ProcPhysicalMemory(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or(0);
+
+        let current_proc_virtual = metrics
+            .iter()
+            .find_map(|m| match m.metric {
+                Some(Metric::ProcVirtualMemory(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or(0);
+
+        // Compare against previous peaks
+        let (peak_proc_physical_memory, peak_proc_virtual_memory) = self
+            .state
+            .executor_manager
+            .get_executor_hearbeat(&executor_id)
+            .map(|hb| {
+                (
+                    hb.peak_proc_physical_memory.max(current_proc_physical),
+                    hb.peak_proc_virtual_memory.max(current_proc_virtual),
+                )
+            })
+            .unwrap_or((current_proc_physical, current_proc_virtual));
 
         let executor_heartbeat = ExecutorHeartbeat {
             executor_id,
@@ -256,6 +288,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .as_secs(),
             metrics,
             status,
+            peak_proc_physical_memory,
+            peak_proc_virtual_memory,
         };
 
         self.state
@@ -660,6 +694,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use tonic::Request;
@@ -709,7 +744,10 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification::default().with_task_slots(2).into(),
+            ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -797,7 +835,10 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification::default().with_task_slots(2).into(),
+            ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -882,7 +923,10 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification::default().with_task_slots(2).into(),
+            ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -935,7 +979,10 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification::default().with_task_slots(2).into(),
+            ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -1021,7 +1068,10 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification::default().with_task_slots(2).into(),
+            ),
+            os_info: Some(ExecutorOperatingSystemSpecification::default()),
         };
 
         let request: Request<RegisterExecutorParams> =
