@@ -277,6 +277,13 @@ impl ShuffleWriterExec {
                 }
 
                 Some(Partitioning::Hash(exprs, num_output_partitions)) => {
+                    eprintln!(
+                        "[dbg-1537] shuffle_writer.Hash: enter job={} stage={} input_part={} cap={}",
+                        self.job_id,
+                        self.stage_id,
+                        input_partition,
+                        self.channel_capacity
+                    );
                     let schema = stream.schema();
                     let (tx, mut rx) =
                         tokio::sync::mpsc::channel::<RecordBatch>(self.channel_capacity);
@@ -387,12 +394,19 @@ impl ShuffleWriterExec {
                         }
                     };
                     drop(tx);
+                    eprintln!(
+                        "[dbg-1537] shuffle_writer.Hash: stream drained tx dropped input_part={input_partition}, awaiting blocking handle"
+                    );
 
                     let write_result = handle.await.map_err(|e| {
                         DataFusionError::Execution(format!(
                             "Shuffle writer task failed: {e}"
                         ))
                     })?;
+                    eprintln!(
+                        "[dbg-1537] shuffle_writer.Hash: blocking handle returned input_part={input_partition} ok={}",
+                        write_result.is_ok()
+                    );
                     if let Some(e) = stream_err {
                         if let Err(write_err) = &write_result {
                             error!("Shuffle writer also failed: {write_err}");
