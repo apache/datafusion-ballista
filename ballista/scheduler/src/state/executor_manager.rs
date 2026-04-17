@@ -439,8 +439,8 @@ impl ExecutorManager {
 
         self.cluster_state
             .executor_heartbeats()
-            .iter()
-            .filter_map(|(_exec, heartbeat)| {
+            .values()
+            .filter_map(|heartbeat| {
                 let terminating = matches!(
                     heartbeat
                         .status
