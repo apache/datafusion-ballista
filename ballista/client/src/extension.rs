@@ -90,15 +90,27 @@ pub trait SessionContextExt {
 
 #[async_trait::async_trait]
 impl SessionContextExt for SessionContext {
-    async fn remote_with_state(
-        url: &str,
+    #[cfg(feature = "standalone")]
+    async fn standalone() -> datafusion::error::Result<Self> {
+        log::info!("Running in local mode. Scheduler will be run in-proc");
+
+        let scheduler_url = Extension::setup_standalone(None).await?;
+
+        let session_state = SessionState::new_ballista_state(scheduler_url)?;
+
+        log::info!(
+            "Server side SessionContext created with session id: {}",
+            session_state.session_id()
+        );
+
+        Ok(SessionContext::new_with_state(session_state))
+    }
+
+    #[cfg(feature = "standalone")]
+    async fn standalone_with_state(
         state: SessionState,
     ) -> datafusion::error::Result<SessionContext> {
-        let scheduler_url = Extension::parse_url(url)?;
-        log::info!(
-            "Connecting to Ballista scheduler at {}",
-            scheduler_url.clone()
-        );
+        let scheduler_url = Extension::setup_standalone(Some(&state)).await?;
 
         let session_state = state.upgrade_for_ballista(scheduler_url)?;
 
@@ -126,29 +138,17 @@ impl SessionContextExt for SessionContext {
         Ok(SessionContext::new_with_state(session_state))
     }
 
-    #[cfg(feature = "standalone")]
-    async fn standalone_with_state(
+    async fn remote_with_state(
+        url: &str,
         state: SessionState,
     ) -> datafusion::error::Result<SessionContext> {
-        let scheduler_url = Extension::setup_standalone(Some(&state)).await?;
-
-        let session_state = state.upgrade_for_ballista(scheduler_url)?;
-
+        let scheduler_url = Extension::parse_url(url)?;
         log::info!(
-            "Server side SessionContext created with session id: {}",
-            session_state.session_id()
+            "Connecting to Ballista scheduler at {}",
+            scheduler_url.clone()
         );
 
-        Ok(SessionContext::new_with_state(session_state))
-    }
-
-    #[cfg(feature = "standalone")]
-    async fn standalone() -> datafusion::error::Result<Self> {
-        log::info!("Running in local mode. Scheduler will be run in-proc");
-
-        let scheduler_url = Extension::setup_standalone(None).await?;
-
-        let session_state = SessionState::new_ballista_state(scheduler_url)?;
+        let session_state = state.upgrade_for_ballista(scheduler_url)?;
 
         log::info!(
             "Server side SessionContext created with session id: {}",
