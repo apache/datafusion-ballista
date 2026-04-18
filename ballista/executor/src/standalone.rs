@@ -93,9 +93,11 @@ pub async fn new_standalone_executor_from_builder(
     codec: BallistaCodec,
     function_registry: BallistaFunctionRegistry,
 ) -> Result<()> {
+    eprintln!("[dbg-1537] executor: new_standalone_executor_from_builder enter");
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let address = listener.local_addr()?;
+    eprintln!("[dbg-1537] executor: bound listener addr={address:?}");
     info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
     let executor_meta = ExecutorRegistration {
@@ -142,8 +144,10 @@ pub async fn new_standalone_executor_from_builder(
                 listener,
             )),
     );
+    eprintln!("[dbg-1537] executor: flight grpc spawned");
 
     tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));
+    eprintln!("[dbg-1537] executor: poll_loop spawned, returning");
     Ok(())
 }
 
