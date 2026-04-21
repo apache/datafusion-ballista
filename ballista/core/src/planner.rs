@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::config::BallistaConfig;
-use crate::execution_plans::DistributedQueryExec;
+use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
 use crate::serde::BallistaLogicalExtensionCodec;
 
 use async_trait::async_trait;
@@ -128,6 +128,27 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                     log::debug!("create_physical_plan - handling empty exec");
                     Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
                 }
+                LogicalPlan::Analyze(analyze) => {
+                    log::debug!(
+                        "create_physical_plan - handling explain analyze statement"
+                    );
+                    let inner_plan = analyze.input.as_ref().clone();
+                    let distributed_query_exec =
+                        Arc::new(DistributedQueryExec::<T>::with_extension(
+                            self.scheduler_url.clone(),
+                            self.config.clone(),
+                            inner_plan,
+                            self.extension_codec.clone(),
+                            session_state.session_id().to_string(),
+                        ));
+
+                    Ok(Arc::new(DistributedExplainAnalyzeExec::new(
+                        distributed_query_exec,
+                        self.scheduler_url.clone(),
+                        Arc::clone(analyze.schema.inner()),
+                        analyze.verbose,
+                    )))
+                }
                 _ => {
                     log::debug!("create_physical_plan - handling general statement");
 
@@ -183,11 +204,18 @@ mod test {
     use datafusion::{
         common::tree_node::TreeNode,
         error::Result,
-        execution::{SessionStateBuilder, runtime_env::RuntimeEnvBuilder},
+        execution::{
+            SessionStateBuilder, context::QueryPlanner, runtime_env::RuntimeEnvBuilder,
+        },
+        logical_expr::LogicalPlan,
+        physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
     };
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use super::LocalRun;
+    use super::{BallistaQueryPlanner, LocalRun};
+    use crate::config::BallistaConfig;
+    use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
 
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnvBuilder::new().build().unwrap();
@@ -262,6 +290,33 @@ mod test {
 
         assert!(!local_run.can_be_local);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_create_distributed_explain_analyze_exec() -> Result<()> {
+        let ctx = context();
+        ctx.sql("CREATE TABLE tt (c0 INT)").await?.show().await?;
+        let analyze_df = ctx.sql("EXPLAIN ANALYZE SELECT * FROM tt").await?;
+        let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
+            "http://localhost:50050".to_string(),
+            BallistaConfig::default(),
+        );
+        let plan = planner
+            .create_physical_plan(analyze_df.logical_plan(), &ctx.state())
+            .await?;
+
+        assert!(matches!(analyze_df.logical_plan(), LogicalPlan::Analyze(_)));
+        let explain = plan
+            .as_any()
+            .downcast_ref::<DistributedExplainAnalyzeExec<LogicalPlanNode>>()
+            .unwrap();
+        assert!(
+            explain.children()[0]
+                .as_any()
+                .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+                .is_some()
+        );
         Ok(())
     }
 }
