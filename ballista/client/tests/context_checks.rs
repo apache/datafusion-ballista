@@ -25,11 +25,14 @@ mod supported {
     };
     use ballista_core::config::BallistaConfig;
 
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use rstest::*;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[rstest::fixture]
     fn test_data() -> String {
@@ -1046,6 +1049,89 @@ mod supported {
             "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
         ];
         assert_batches_eq!(expected, &result);
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_explain_analyze_query(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let result = ctx
+            .sql(
+                "EXPLAIN ANALYZE select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id",
+            )
+            .await?
+            .collect()
+            .await?;
+
+        // Replace the metric values with "..." to keep the test stable.
+        let sanitized_plan_text = result[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .lines()
+            .map(|line| {
+                if let Some(index) = line.find("metrics=[") {
+                    let prefix = &line[..index];
+                    let metrics = &line[index + "metrics=[".len()..];
+                    let sanitized_metrics = metrics.strip_suffix(']').map_or_else(
+                        || "...".to_string(),
+                        |body| {
+                            body.split(", ")
+                                .map(|metric| {
+                                    metric.split_once('=').map_or_else(
+                                        || "...".to_string(),
+                                        |(name, _)| format!("{name}=..."),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        },
+                    );
+                    format!("{prefix}metrics=[{sanitized_metrics}]")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let sanitized = RecordBatch::try_new(
+            result[0].schema(),
+            vec![
+                result[0].column(0).clone(),
+                Arc::new(StringArray::from(vec![sanitized_plan_text])),
+            ],
+        )?;
+
+        let expected = [
+            "+-------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+            "| plan_type         | plan                                                                                                                                                                                                                                                                                                                                                                                              |",
+            "+-------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+            "| Plan with Metrics | =========SuccessfulStage[stage_id=1, partitions=1]=========                                                                                                                                                                                                                                                                                                                                       |",
+            "|                   | ShuffleWriterExec: partitioning: Hash([id@0], 16), metrics=[output_rows=..., input_rows=..., repart_time=..., write_time=...]                                                                                                                                                                                                                                                                     |",
+            "|                   |   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., spill_count=..., spilled_bytes=..., spilled_rows=..., skipped_aggregation_rows=..., peak_mem_used=..., aggregate_arguments_time=..., aggregation_time=..., emitting_time=..., time_calculating_group_ids=..., reduction_factor=...] |",
+            "|                   |     ProjectionExec: expr=[__unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)),depth=1)@0 as id], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., expr_0_eval_time=...]                                                                                                                                                             |",
+            "|                   |       UnnestExec, metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., input_batches=..., input_rows=...]                                                                                                                                                                                                                                                         |",
+            "|                   |         ProjectionExec: expr=[[1, 2, 3, 4, 5] as __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., expr_0_eval_time=...]                                                                                                                                                      |",
+            "|                   |           PlaceholderRowExec, metrics=[...]                                                                                                                                                                                                                                                                                                                                                       |",
+            "|                   |                                                                                                                                                                                                                                                                                                                                                                                                   |",
+            "|                   | =========SuccessfulStage[stage_id=2, partitions=16]=========                                                                                                                                                                                                                                                                                                                                      |",
+            "|                   | ShuffleWriterExec: partitioning: None, metrics=[output_rows=..., input_rows=..., repart_time=..., write_time=...]                                                                                                                                                                                                                                                                                 |",
+            "|                   |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., expr_0_eval_time=..., expr_1_eval_time=...]                                                                                                                                                                                              |",
+            "|                   |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., spill_count=..., spilled_bytes=..., spilled_rows=..., peak_mem_used=..., aggregate_arguments_time=..., aggregation_time=..., emitting_time=..., time_calculating_group_ids=...]                                          |",
+            "|                   |       ShuffleReaderExec: partitioning: Hash([id@0], 16), metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=...]                                                                                                                                                                                                                                                     |",
+            "+-------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+        ];
+        assert_batches_eq!(expected, &[sanitized]);
+
+        Ok(())
     }
 
     #[rstest]
