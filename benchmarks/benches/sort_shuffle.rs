@@ -37,7 +37,7 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::expressions::Column;
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
-use rand::Rng;
+use rand::RngExt;
 use tempfile::TempDir;
 
 const BATCH_SIZE: usize = 8192;
