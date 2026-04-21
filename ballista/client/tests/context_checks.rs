@@ -798,31 +798,40 @@ mod supported {
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
-
-        let expected = [
-            "+------------+----------+",
-            "| string_col | count(*) |",
-            "+------------+----------+",
-            "| 30         | 1        |",
-            "| 31         | 2        |",
-            "+------------+----------+",
-        ];
-
-        let result = ctx
-            .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
-            .await?
-            .collect()
+        tokio::time::timeout(std::time::Duration::from_secs(90), async move {
+            eprintln!("[dbg-1537] group_by: test body start");
+            ctx.register_parquet(
+                "test",
+                &format!("{test_data}/alltypes_plain.parquet"),
+                Default::default(),
+            )
             .await?;
+            eprintln!("[dbg-1537] group_by: after register_parquet");
 
-        assert_batches_eq!(expected, &result);
+            let expected = [
+                "+------------+----------+",
+                "| string_col | count(*) |",
+                "+------------+----------+",
+                "| 30         | 1        |",
+                "| 31         | 2        |",
+                "+------------+----------+",
+            ];
 
-        Ok(())
+            eprintln!("[dbg-1537] group_by: before sql/collect");
+            let result = ctx
+                .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
+                .await?
+                .collect()
+                .await?;
+            eprintln!("[dbg-1537] group_by: after sql/collect");
+
+            assert_batches_eq!(expected, &result);
+
+            eprintln!("[dbg-1537] group_by: done");
+            Ok::<(), datafusion::error::DataFusionError>(())
+        })
+        .await
+        .expect("should_execute_group_by hung >90s")
     }
 
     #[rstest]
