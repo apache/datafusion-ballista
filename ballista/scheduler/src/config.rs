@@ -28,11 +28,23 @@
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use ballista_core::extension::EndpointOverrideFn;
+use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;
 use std::sync::Arc;
+
+/// Listener for scheduler-level executor lifecycle events.
+///
+/// Implement this trait to react to executor join/leave events.
+/// Used by external plugins to observe executor topology changes.
+pub trait SchedulerEventListener: Send + Sync {
+    /// Called when a new executor registers with the scheduler.
+    fn on_executor_registered(&self, metadata: &ExecutorMetadata);
+    /// Called when an executor is removed or lost.
+    fn on_executor_lost(&self, executor_id: &str);
+}
 
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
@@ -237,6 +249,8 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
+    /// Event listeners for executor lifecycle events (join/leave).
+    pub event_listeners: Vec<Arc<dyn SchedulerEventListener>>,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -268,6 +282,7 @@ impl Default for SchedulerConfig {
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            event_listeners: vec![],
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
         }
@@ -405,6 +420,15 @@ impl SchedulerConfig {
         self.use_tls = use_tls;
         self
     }
+
+    /// Adds an event listener for executor lifecycle events (join/leave).
+    pub fn with_event_listener(
+        mut self,
+        listener: Arc<dyn SchedulerEventListener>,
+    ) -> Self {
+        self.event_listeners.push(listener);
+        self
+    }
 }
 
 /// Policy of distributing tasks to available executor slots
@@ -494,6 +518,7 @@ impl TryFrom<Config> for SchedulerConfig {
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            event_listeners: vec![],
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
         };
