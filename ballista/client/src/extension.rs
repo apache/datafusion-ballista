@@ -180,10 +180,6 @@ impl Extension {
     ) -> datafusion::error::Result<String> {
         use ballista_core::{serde::BallistaCodec, utils::default_config_producer};
 
-        eprintln!(
-            "[dbg-1537] setup_standalone: enter (has_state={})",
-            session_state.is_some()
-        );
         let addr = match session_state {
             None => ballista_scheduler::standalone::new_standalone_scheduler()
                 .await
@@ -196,43 +192,24 @@ impl Extension {
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?
             }
         };
-        eprintln!("[dbg-1537] setup_standalone: scheduler spawned addr={addr:?}");
         let config = session_state
             .map(|s| s.config().clone())
             .unwrap_or_else(default_config_producer);
 
         let scheduler_url = format!("http://localhost:{}", addr.port());
 
-        eprintln!(
-            "[dbg-1537] setup_standalone: connect loop starting url={scheduler_url}"
-        );
-        let mut attempts: u32 = 0;
         let scheduler = loop {
             match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
-                Err(e) => {
-                    attempts += 1;
-                    if attempts == 1 || attempts.is_power_of_two() {
-                        eprintln!(
-                            "[dbg-1537] setup_standalone: connect attempt {attempts} failed err={e}"
-                        );
-                    }
+                Err(_) => {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     log::info!("Attempting to connect to in-proc scheduler...");
                 }
-                Ok(scheduler) => {
-                    eprintln!(
-                        "[dbg-1537] setup_standalone: connected after {attempts} retries"
-                    );
-                    break scheduler;
-                }
+                Ok(scheduler) => break scheduler,
             }
         };
 
         let concurrent_tasks = config.ballista_standalone_parallelism();
 
-        eprintln!(
-            "[dbg-1537] setup_standalone: starting executor concurrent_tasks={concurrent_tasks}"
-        );
         match session_state {
             None => {
                 ballista_executor::new_standalone_executor(
@@ -253,7 +230,6 @@ impl Extension {
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
             }
         }
-        eprintln!("[dbg-1537] setup_standalone: done, returning url");
 
         Ok(scheduler_url)
     }

@@ -171,10 +171,6 @@ pub async fn write_stream_to_disk(
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
 ) -> Result<PartitionStats> {
-    eprintln!(
-        "[dbg-1537] write_stream_to_disk: enter path={} cap={channel_capacity}",
-        path.display()
-    );
     let schema = stream.schema();
     let path_owned = path.to_owned();
     let write_metric = disk_write_metric.clone();
@@ -221,19 +217,10 @@ pub async fn write_stream_to_disk(
         }
     };
     drop(tx);
-    eprintln!(
-        "[dbg-1537] write_stream_to_disk: stream drained awaiting handle path={}",
-        path.display()
-    );
 
     let write_result = handle
         .await
         .map_err(|e| BallistaError::General(format!("Disk writer task failed: {e}")))?;
-    eprintln!(
-        "[dbg-1537] write_stream_to_disk: handle returned path={} ok={}",
-        path.display(),
-        write_result.is_ok()
-    );
 
     if let Some(e) = stream_err {
         if let Err(write_err) = &write_result {

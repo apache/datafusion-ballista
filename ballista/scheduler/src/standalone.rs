@@ -79,7 +79,6 @@ pub async fn new_standalone_scheduler_with_builder(
     config_producer: ConfigProducer,
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
-    eprintln!("[dbg-1537] scheduler: new_standalone_scheduler_with_builder enter");
     let config = config_producer();
 
     let cluster =
@@ -98,9 +97,7 @@ pub async fn new_standalone_scheduler_with_builder(
             metrics_collector,
         );
 
-    eprintln!("[dbg-1537] scheduler: calling init().await");
     scheduler_server.init().await?;
-    eprintln!("[dbg-1537] scheduler: init() returned");
     let server = SchedulerGrpcServer::new(scheduler_server.clone())
         .max_decoding_message_size(config.ballista_grpc_client_max_message_size())
         .max_encoding_message_size(config.ballista_grpc_client_max_message_size());
@@ -108,7 +105,6 @@ pub async fn new_standalone_scheduler_with_builder(
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let addr = listener.local_addr()?;
-    eprintln!("[dbg-1537] scheduler: bound listener addr={addr:?}");
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {addr:?}"
     );
@@ -119,7 +115,6 @@ pub async fn new_standalone_scheduler_with_builder(
                 listener,
             )),
     );
-    eprintln!("[dbg-1537] scheduler: grpc task spawned, returning addr");
 
     Ok(addr)
 }
