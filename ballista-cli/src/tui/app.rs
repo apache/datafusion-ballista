@@ -208,10 +208,11 @@ impl App {
                 KeyCode::Down => {
                     self.job_dot_scroll = self.job_dot_scroll.saturating_add(1);
                 }
-                _ => {
+                KeyCode::Esc => {
                     self.job_dot_popup = None;
                     self.job_dot_scroll = 0;
                 }
+                _ => {}
             }
             return Ok(());
         }
