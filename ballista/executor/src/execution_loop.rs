@@ -277,6 +277,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
         job_id.clone(),
         stage_id as usize,
+        partition_id as usize,
         plan,
         &executor.work_dir,
         task_context.session_config(),

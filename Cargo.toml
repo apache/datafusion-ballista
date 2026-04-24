@@ -51,12 +51,12 @@ tonic-prost-build = { version = "0.14" }
 tracing = "0.1"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ctor = { version = "0.8" }
+ctor = { version = "0.10" }
 mimalloc = { version = "0.1" }
 
 tokio = { version = "1" }
 uuid = { version = "1.23", features = ["v4", "v7"] }
-rand = { version = "0.9" }
+rand = { version = "0.10" }
 env_logger = { version = "0.11" }
 futures = { version = "0.3" }
 log = { version = "0.4" }

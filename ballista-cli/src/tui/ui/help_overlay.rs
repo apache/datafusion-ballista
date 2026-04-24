@@ -21,7 +21,7 @@ use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
-    let area = crate::tui::ui::centered_rect(25, 50, f.area());
+    let area = crate::tui::ui::centered_rect(45, 50, f.area());
 
     f.render_widget(Clear, area);
 
@@ -62,7 +62,7 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             style,
         )),
         Line::from(Span::styled(
-            "  D       View plans if a completed job is selected",
+            "  p       View plans if a completed job is selected",
             style,
         )),
         Line::from(Span::styled(
