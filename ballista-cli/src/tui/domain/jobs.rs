@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod stages;
+
 use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 
@@ -227,7 +229,7 @@ impl JobsData {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::tui::domain::jobs::{Job, JobsData, SortColumn};
     use crate::tui::domain::SortOrder;
 
     fn make_job(

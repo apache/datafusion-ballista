@@ -23,7 +23,7 @@ use crate::tui::{
         executors::{ExecutorsData, SortColumn as ExecutorsSortColumn},
         jobs::{
             CancelJobResult, JobDetails, JobsData, SortColumn as JobsSortColumn,
-            StagesGraph,
+            StagesGraph, stages::JobStagesPopup,
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
@@ -37,8 +37,8 @@ use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
 use crate::tui::ui::{
-    load_executors_data, load_job_details, load_job_dot, load_jobs_data,
-    load_metrics_data,
+    load_executors_data, load_job_details, load_job_dot, load_job_stages_popup,
+    load_jobs_data, load_metrics_data,
 };
 
 #[derive(Debug, PartialEq)]
@@ -89,6 +89,8 @@ pub(crate) struct App {
     pub job_plan_popup: Option<(JobDetails, PlanTab)>,
     pub job_plan_popup_scroll: u16,
 
+    pub job_stages_popup: Option<JobStagesPopup>,
+
     pub http_client: Arc<HttpClient>,
 }
 
@@ -108,6 +110,7 @@ impl App {
             job_dot_scroll: 0,
             job_plan_popup: None,
             job_plan_popup_scroll: 0,
+            job_stages_popup: None,
             executors_data: ExecutorsData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
@@ -200,6 +203,27 @@ impl App {
             return Ok(());
         }
 
+        if let Some(popup) = &mut self.job_stages_popup {
+            if popup.show_tasks
+                && let KeyCode::Esc = key.code
+            {
+                popup.show_tasks = false;
+            } else if !popup.show_tasks {
+                match key.code {
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    KeyCode::Enter => {
+                        popup.show_tasks = true;
+                    }
+                    KeyCode::Esc => {
+                        self.job_stages_popup = None;
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(());
+        }
+
         if self.job_dot_popup.is_some() {
             match key.code {
                 KeyCode::Up => {
@@ -268,6 +292,9 @@ impl App {
             }
             KeyCode::Char('i') => {
                 self.show_scheduler_info = true;
+            }
+            KeyCode::Enter if self.is_jobs_view() => {
+                self.load_job_stages_popup_data().await;
             }
             KeyCode::Char('g') if self.is_jobs_view() => {
                 self.load_job_dot_data().await;
@@ -378,6 +405,15 @@ impl App {
             }
         } else {
             tracing::trace!("No job selected");
+        }
+    }
+
+    async fn load_job_stages_popup_data(&self) {
+        if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
+            let job_id = job.job_id.clone();
+            if let Err(e) = load_job_stages_popup(self, &job_id).await {
+                tracing::error!("Failed to load job stages popup for '{job_id}': {e:?}");
+            }
         }
     }
 

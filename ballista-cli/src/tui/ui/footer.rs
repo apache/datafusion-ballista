@@ -43,7 +43,8 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                     ));
                 }
                 if app.has_selected_job() {
-                    page_key_bindings.push(Span::from("[g] View job stages, "));
+                    page_key_bindings.push(Span::from("[Enter] View stages, "));
+                    page_key_bindings.push(Span::from("[g] View job stages graph, "));
                     page_key_bindings.push(Span::from("[c] Cancel job, "));
                 }
                 if app.has_selected_completed_job() {
