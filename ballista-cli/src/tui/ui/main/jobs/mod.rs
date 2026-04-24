@@ -22,26 +22,26 @@ pub mod job_stages_popup;
 pub mod stage_tasks_popup;
 
 use crate::tui::{
+    TuiResult,
     app::App,
     domain::{
-        jobs::{Job, SortColumn},
         SortOrder,
+        jobs::{Job, SortColumn},
     },
     event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
-    TuiResult,
 };
 
 use ratatui::style::Color;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Text,
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
-    Frame,
 };
 
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
@@ -290,7 +290,7 @@ fn render_job_status_cell(job: &Job) -> Cell<'_> {
 #[cfg(test)]
 mod tests {
     use super::column_suffix;
-    use crate::tui::domain::{jobs::SortColumn, SortOrder};
+    use crate::tui::domain::{SortOrder, jobs::SortColumn};
 
     #[test]
     fn column_suffix_active_ascending_returns_up_arrow() {

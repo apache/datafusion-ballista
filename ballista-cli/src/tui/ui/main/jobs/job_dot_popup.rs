@@ -17,9 +17,9 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::GraphNode;
+use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {

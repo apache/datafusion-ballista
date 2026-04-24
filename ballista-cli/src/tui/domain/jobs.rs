@@ -229,8 +229,8 @@ impl JobsData {
 
 #[cfg(test)]
 mod tests {
-    use crate::tui::domain::jobs::{Job, JobsData, SortColumn};
     use crate::tui::domain::SortOrder;
+    use crate::tui::domain::jobs::{Job, JobsData, SortColumn};
 
     fn make_job(
         id: &str,

@@ -16,11 +16,12 @@
 // under the License.
 
 use crate::tui::app::App;
-use ratatui::Frame;
+use crate::tui::domain::jobs::stages::StageTaskResponse;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Borders, Cell, Clear, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, HighlightSpacing, Row, Table};
+use ratatui::Frame;
 
 pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
@@ -31,55 +32,106 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         return;
     };
 
-    let area = crate::tui::ui::centered_rect(50, 55, f.area());
+    let area = crate::tui::ui::centered_rect(98, 55, f.area());
     f.render_widget(Clear, area);
 
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
-    let header = ["Metric", "Value"]
-        .into_iter()
-        .map(|h| Cell::from(Text::from(h).centered()))
-        .collect::<Row>()
-        .style(header_style)
-        .height(1);
+    let header = [
+        "Task ID",
+        "Status",
+        "Input Rows",
+        "Output Rows",
+        "Partition ID",
+        // "Scheduled Time",
+        "Launch Time",
+        "Start Time",
+        "End Time",
+        "Duration",
+        "Finish Time",
+    ]
+    .into_iter()
+    .map(|h| Cell::from(Text::from(h).centered()))
+    .collect::<Row>()
+    .style(header_style)
+    .height(1);
 
-    let p = &stage.task_duration_percentiles;
-    let metrics: &[(&str, String)] = &[
-        ("Status", stage.status.clone()),
-        ("Input Rows", stage.input_rows.to_string()),
-        ("Output Rows", stage.output_rows.to_string()),
-        ("Elapsed Compute", stage.elapsed_compute.clone()),
-        ("Min Task Duration", format!("{} ms", p.min)),
-        ("P25 Task Duration", format!("{} ms", p.p25)),
-        ("Median Task Duration", format!("{} ms", p.median)),
-        ("P75 Task Duration", format!("{} ms", p.p75)),
-        ("Max Task Duration", format!("{} ms", p.max)),
-    ];
+    let rows = stage
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| build_stage_task_row(i, task));
 
-    let rows = metrics.iter().enumerate().map(|(i, (metric, value))| {
-        let bg = if i % 2 == 0 {
-            Color::DarkGray
-        } else {
-            Color::Black
-        };
-        Row::new(vec![
-            Cell::from(Text::from(*metric).style(Style::default().fg(Color::Cyan))),
-            Cell::from(Text::from(value.clone())),
-        ])
-        .style(Style::default().bg(bg))
-    });
-
-    let title = format!(" Tasks for Stage '{}' (Esc close) ", stage.id);
     let table = Table::new(
         rows,
-        [Constraint::Percentage(45), Constraint::Percentage(55)],
+        [
+            Constraint::Percentage(5),
+            Constraint::Percentage(9),
+            Constraint::Percentage(7),
+            Constraint::Percentage(7),
+            // Constraint::Percentage(9),
+            Constraint::Percentage(8),
+            Constraint::Percentage(12),
+            Constraint::Percentage(12),
+            Constraint::Percentage(9),
+            Constraint::Percentage(9),
+            Constraint::Percentage(9),
+        ],
     )
     .block(
         Block::default()
-            .title(title)
+            .title("  Tasks for Stage '{}' (Esc close) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta)),
+            .border_style(Style::default().fg(Color::Cyan)),
     )
-    .header(header);
+    .header(header)
+    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .highlight_spacing(HighlightSpacing::Always);
 
     f.render_widget(table, area);
+}
+
+fn build_stage_task_row(i: usize, task: &StageTaskResponse) -> Row<'static> {
+    let bg = if i.is_multiple_of(2) {
+        Color::DarkGray
+    } else {
+        Color::Black
+    };
+
+    let status_color = match task.status.as_str() {
+        "Running" => Color::LightBlue,
+        "Successful" | "Completed" => Color::Green,
+        "Failed" => Color::Red,
+        _ => Color::Gray,
+    };
+
+    Row::new(vec![
+        Cell::from(Text::from(task.id.to_string()).centered()),
+        Cell::from(
+            Text::from(task.status.clone())
+                .style(Style::default().fg(status_color))
+                .centered(),
+        ),
+        Cell::from(Text::from(task.input_rows.to_string()).centered()),
+        Cell::from(Text::from(task.output_rows.to_string()).centered()),
+        Cell::from(Text::from(task.partition_id.to_string()).centered()),
+        // Cell::from(Text::from(format_datetime(task.scheduled_time)).centered()),
+        Cell::from(Text::from(format_datetime(task.launch_time)).centered()),
+        Cell::from(Text::from(format_datetime(task.start_exec_time)).centered()),
+        Cell::from(Text::from(format_time(task.end_exec_time)).centered()),
+        Cell::from(Text::from(task.exec_duration.to_string()).centered()),
+        Cell::from(Text::from(format_time(task.finish_time)).centered()),
+    ])
+    .style(Style::default().bg(bg))
+}
+
+fn format_datetime(dt: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(dt.try_into().unwrap_or(0))
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "Invalid Date".to_string())
+}
+
+fn format_time(dt: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(dt.try_into().unwrap_or(0))
+        .map(|dt| dt.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "Invalid Date".to_string())
 }

@@ -17,11 +17,11 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::JobStageResponse;
-use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Cell, Clear, HighlightSpacing, Row, Table};
+use ratatui::Frame;
 
 pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
@@ -31,9 +31,6 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     let area = crate::tui::ui::centered_rect(80, 70, f.area());
     f.render_widget(Clear, area);
 
-    let job_id = popup.stages.stages.first().map(|_| "").unwrap_or("");
-    let _ = job_id;
-
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
     let header = [
         "Stage ID",
@@ -41,7 +38,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         "Input Rows",
         "Output Rows",
         "Elapsed Compute",
-        "Task Durations (min/med/max)",
+        "Task Durations (min/med/max/p25/p75 ms)",
     ]
     .into_iter()
     .map(|h| Cell::from(Text::from(h).centered()))
@@ -77,12 +74,12 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
 
-    let mut table_state = popup.table_state.clone();
+    let mut table_state = popup.table_state;
     f.render_stateful_widget(table, area, &mut table_state);
 }
 
 fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
-    let bg = if i % 2 == 0 {
+    let bg = if i.is_multiple_of(2) {
         Color::DarkGray
     } else {
         Color::Black
@@ -96,7 +93,10 @@ fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
     };
 
     let p = &stage.task_duration_percentiles;
-    let task_summary = format!("min={}ms med={}ms max={}ms", p.min, p.median, p.max);
+    let task_summary = format!(
+        "min={} med={} max={} p25={} p75={}",
+        p.min, p.median, p.max, p.p25, p.p75
+    );
 
     Row::new(vec![
         Cell::from(Text::from(stage.id.clone()).centered()),

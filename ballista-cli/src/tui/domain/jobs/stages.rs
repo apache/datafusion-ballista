@@ -36,19 +36,24 @@ pub struct JobStageResponse {
     pub tasks: Vec<StageTaskResponse>,
 }
 
+// TaskSummary
 #[derive(Deserialize, Clone, Debug)]
 pub struct StageTaskResponse {
     pub id: usize,
     pub status: String,
-    pub partition_id: u64,
-    pub input_rows: u64,
+    pub partition_id: u32,
+    pub input_rows: usize,
+    pub output_rows: usize,
+    #[expect(dead_code)]
     pub scheduled_time: u64,
     pub launch_time: u64,
     pub start_exec_time: u64,
     pub end_exec_time: u64,
     pub exec_duration: u64,
+    pub finish_time: u64,
 }
 
+// Percentiles
 #[derive(Deserialize, Clone, Debug)]
 pub struct TaskDurationPercentiles {
     pub min: u64,
@@ -112,12 +117,5 @@ impl JobStagesPopup {
         self.table_state
             .selected()
             .and_then(|i| self.stages.stages.get(i))
-    }
-
-    pub fn selected_stage_tasks(&self) -> Option<Vec<StageTaskResponse>> {
-        self.table_state
-            .selected()
-            .and_then(|idx| self.stages.stages.get(idx).clone())
-            .map(|stage| stage.tasks.clone())
     }
 }
