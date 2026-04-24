@@ -694,7 +694,6 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use tonic::Request;
@@ -715,7 +714,9 @@ mod test {
         ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams, HeartBeatParams,
         PollWorkParams, RegisterExecutorParams, executor_status,
     };
-    use ballista_core::serde::scheduler::ExecutorSpecification;
+    use ballista_core::serde::scheduler::{
+        ExecutorOperatingSystemSpecification, ExecutorSpecification,
+    };
 
     use crate::state::SchedulerState;
     use crate::test_utils::await_condition;
@@ -747,7 +748,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
-            os_info: Some(ExecutorOperatingSystemSpecification::default()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -838,7 +839,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
-            os_info: Some(ExecutorOperatingSystemSpecification::default()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -926,7 +927,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
-            os_info: Some(ExecutorOperatingSystemSpecification::default()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -982,7 +983,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
-            os_info: Some(ExecutorOperatingSystemSpecification::default()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -1071,7 +1072,7 @@ mod test {
             specification: Some(
                 ExecutorSpecification::default().with_task_slots(2).into(),
             ),
-            os_info: Some(ExecutorOperatingSystemSpecification::default()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
         let request: Request<RegisterExecutorParams> =

@@ -148,7 +148,7 @@ impl ExecutorSpecification {
     }
 }
 
-/// TESTING EXECUTOR OS
+/// Operating system level specification of an executor
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorOperatingSystemSpecification {
     /// System name
