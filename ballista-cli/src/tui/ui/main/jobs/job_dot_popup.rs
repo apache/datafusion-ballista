@@ -32,7 +32,7 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title(format!(
-            " Job Stages: {} (↑↓ scroll, any other key to close) ",
+            " Stages for job '{}' (↑↓ scroll | Esc close) ",
             graph.job_id
         ))
         .borders(Borders::ALL)
@@ -255,7 +255,11 @@ fn arrow_connector(total_width: usize, arrow_col: usize, style: Style) -> Line<'
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        arrow_connector, node_bottom_border, node_text_row, node_top_border,
+        truncate_to_width,
+    };
+    use ratatui::prelude::Style;
 
     // --- truncate_to_width ---
 

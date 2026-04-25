@@ -28,8 +28,9 @@ use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
 pub use main::{
-    job_dot_popup, job_plan_popup, load_executors_data, load_job_details, load_job_dot,
-    load_jobs_data, load_metrics_data,
+    job_dot_popup, job_plan_popup, job_stages_popup, load_executors_data,
+    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
+    load_metrics_data, stage_tasks_popup,
 };
 use main::{render_executors, render_jobs, render_metrics};
 use ratatui::{
@@ -58,6 +59,12 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         scheduler_info_popup::render_scheduler_info(f, app);
     } else if app.cancel_job_result.is_some() {
         cancel_result_popup::render_cancel_result_popup(f, app);
+    } else if let Some(popup) = &app.job_stages_popup {
+        if popup.show_tasks {
+            stage_tasks_popup::render_stage_tasks_popup(f, app);
+        } else {
+            job_stages_popup::render_job_stages_popup(f, app);
+        }
     } else if app.job_dot_popup.is_some() {
         job_dot_popup::render_job_dot_popup(f, app);
     } else if app.job_plan_popup.is_some() {

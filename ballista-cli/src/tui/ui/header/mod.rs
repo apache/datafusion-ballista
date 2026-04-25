@@ -34,7 +34,6 @@ const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
     [Constraint::Percentage(PERCENTAGE); MENU_ITEMS.len()];
 
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
-    tracing::debug!("render_header: {area:?}");
     let banner_percentage = match area.width {
         0..200 => 30,
         220..230 => 40,
@@ -60,7 +59,7 @@ fn render_banner(f: &mut Frame, area: Rect) {
         70..80 => PixelSize::QuarterHeight,
         _ => PixelSize::ThirdHeight,
     };
-    tracing::debug!("render_header: {area:?}, banner_size: {banner_size:?},");
+
     let big_text = BigText::builder()
         .pixel_size(banner_size)
         .style(Style::new().yellow())

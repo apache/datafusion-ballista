@@ -21,7 +21,7 @@ mod metrics;
 
 pub use executors::{load_executors_data, render_executors};
 pub use jobs::{
-    job_dot_popup, job_plan_popup, load_job_details, load_job_dot, load_jobs_data,
-    render_jobs,
+    job_dot_popup, job_plan_popup, job_stages_popup, load_job_details, load_job_dot,
+    load_job_stages_popup, load_jobs_data, render_jobs, stage_tasks_popup,
 };
 pub use metrics::{load_metrics_data, render_metrics};

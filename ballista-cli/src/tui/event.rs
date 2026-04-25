@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use crate::tui::domain::{
     SchedulerState,
     executors::Executor,
-    jobs::{Job, JobDetails, StagesGraph},
+    jobs::{Job, JobDetails, StagesGraph, stages::JobStagesResponse},
     metrics::Metric,
 };
 
@@ -32,7 +32,8 @@ pub enum UiData {
     Metrics(Vec<Metric>),
     Jobs(Vec<Job>),
     JobDetails(JobDetails),
-    JobDot(StagesGraph),
+    JobStagesGraph(StagesGraph),
+    JobStagesData(JobStagesResponse),
 }
 
 #[derive(Clone, Debug)]
