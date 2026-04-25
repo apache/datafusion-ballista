@@ -147,7 +147,7 @@ pub struct Config {
     #[arg(
         short = 'm',
         long = "metrics",
-        default_value_t = ExecutorMetricCollectionPolicy::Off,
+        default_value_t = ExecutorMetricCollectionPolicy::ProcessOnly,
         help = "Metric collection policy of this executor instance"
     )]
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
