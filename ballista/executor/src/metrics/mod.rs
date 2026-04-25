@@ -61,11 +61,11 @@ pub enum ExecutorMetricCollectionPolicy {
     /// Collect only system-wide metrics
     SystemOnly,
     /// Collect only current process metrics
+    #[default]
     ProcessOnly,
     /// Collect both system-wide and process metrics
     SystemAndProcess,
-    /// Default value - no metrics collected
-    #[default]
+    /// No metrics collected
     Off,
 }
 
