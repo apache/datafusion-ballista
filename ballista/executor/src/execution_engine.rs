@@ -22,8 +22,11 @@
 //! for creating query stage executors from physical plans.
 
 use async_trait::async_trait;
+use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
+use ballista_core::execution_plans::{
+    DEFAULT_SHUFFLE_CHANNEL_CAPACITY, ShuffleReaderExec, ShuffleWriterExec,
+};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::utils;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -93,7 +96,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
         _partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
-        _config: &SessionConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<dyn QueryStageExecutor>> {
         let plan = plan
             .transform(|p| {
@@ -106,6 +109,14 @@ impl ExecutionEngine for DefaultExecutionEngine {
             })?
             .data;
 
+        let channel_capacity = config
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_writer_channel_capacity())
+            .unwrap_or(DEFAULT_SHUFFLE_CHANNEL_CAPACITY)
+            .max(1);
+
         // the query plan created by the scheduler always starts with a shuffle writer
         // (either ShuffleWriterExec or SortShuffleWriterExec)
         if let Some(shuffle_writer) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
@@ -116,7 +127,8 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 plan.children()[0].clone(),
                 work_dir.to_string(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
-            )?;
+            )?
+            .with_channel_capacity(channel_capacity);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Hash(exec),
             )))
