@@ -59,11 +59,14 @@ impl ExecutorMetricsCollector for LoggingMetricsCollector {
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum ExecutorMetricCollectionPolicy {
     /// Collect only system-wide metrics
+    #[clap(name = "sys")]
     SystemOnly,
     /// Collect only current process metrics
+    #[clap(name = "proc")]
     #[default]
     ProcessOnly,
     /// Collect both system-wide and process metrics
+    #[clap(name = "all")]
     SystemAndProcess,
     /// No metrics collected
     Off,
