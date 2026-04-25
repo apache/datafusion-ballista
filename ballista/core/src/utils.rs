@@ -67,6 +67,10 @@ pub struct GrpcClientConfig {
     pub use_tls: bool,
     /// Returns the maximum message size for gRPC clients in bytes.
     pub max_message_size: usize,
+    /// Number of retries for IO operations.
+    pub io_retries_times: u8,
+    /// Wait time in milliseconds between IO retries.
+    pub io_retry_wait_time_ms: u64,
 }
 
 impl From<&BallistaConfig> for GrpcClientConfig {
@@ -80,6 +84,8 @@ impl From<&BallistaConfig> for GrpcClientConfig {
                 as u64,
             use_tls: config.client_use_tls(),
             max_message_size: config.grpc_client_max_message_size(),
+            io_retries_times: config.io_retries_times() as u8,
+            io_retry_wait_time_ms: config.io_retry_wait_time_ms() as u64,
         }
     }
 }
@@ -93,6 +99,8 @@ impl Default for GrpcClientConfig {
             http2_keepalive_interval_seconds: 300,
             use_tls: false,
             max_message_size: 16 * 1024 * 1024,
+            io_retries_times: 3,
+            io_retry_wait_time_ms: 3000,
         }
     }
 }
@@ -343,6 +351,8 @@ mod tests {
             http2_keepalive_interval_seconds: 150,
             use_tls: false,
             max_message_size: 16 * 1024 * 1024,
+            io_retries_times: 3,
+            io_retry_wait_time_ms: 3000,
         };
         let result = create_grpc_client_endpoint("http://localhost:50051", Some(&config));
         assert!(result.is_ok());

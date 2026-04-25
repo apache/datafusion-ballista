@@ -55,11 +55,9 @@ pub struct BallistaClient {
     host: String,
     port: u16,
     flight_client: FlightServiceClient<tonic::transport::channel::Channel>,
+    io_retries_times: u8,
+    io_retry_wait_time_ms: u64,
 }
-
-//TODO make this configurable
-const IO_RETRIES_TIMES: u8 = 3;
-const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
 
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
@@ -70,6 +68,8 @@ impl BallistaClient {
         max_message_size: usize,
         use_tls: bool,
         customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+        io_retries_times: u8,
+        io_retry_wait_time_ms: u64,
     ) -> BResult<Self> {
         let scheme = if use_tls { "https" } else { "http" };
 
@@ -109,6 +109,8 @@ impl BallistaClient {
             flight_client,
             host: host.to_string(),
             port,
+            io_retries_times,
+            io_retry_wait_time_ms,
         })
     }
 
@@ -211,13 +213,15 @@ impl BallistaClient {
             .encode(&mut buf)
             .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        for i in 0..IO_RETRIES_TIMES {
+        let io_retries_times = self.io_retries_times;
+        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
+        for i in 0..io_retries_times {
             if i > 0 {
                 warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {IO_RETRY_WAIT_TIME_MS} ms."
+                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    IO_RETRY_WAIT_TIME_MS,
+                    io_retry_wait_time_ms,
                 ))
                 .await;
             }
@@ -231,7 +235,7 @@ impl BallistaClient {
                 Err(ref err) => {
                     // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
+                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             result.unwrap_err()
@@ -260,7 +264,7 @@ impl BallistaClient {
                     };
                 }
                 Err(e) => {
-                    if i == IO_RETRIES_TIMES - 1 || e.code() != Code::Unknown {
+                    if i == io_retries_times - 1 || e.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             e.to_string()
@@ -290,13 +294,15 @@ impl BallistaClient {
             .encode(&mut buf)
             .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        for i in 0..IO_RETRIES_TIMES {
+        let io_retries_times = self.io_retries_times;
+        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
+        for i in 0..io_retries_times {
             if i > 0 {
                 warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {IO_RETRY_WAIT_TIME_MS} ms."
+                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    IO_RETRY_WAIT_TIME_MS,
+                    io_retry_wait_time_ms,
                 ))
                 .await;
             }
@@ -311,7 +317,7 @@ impl BallistaClient {
                 Err(ref err) => {
                     // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
+                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             result.unwrap_err()

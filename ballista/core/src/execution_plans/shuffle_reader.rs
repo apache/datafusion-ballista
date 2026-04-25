@@ -475,9 +475,19 @@ async fn new_ballista_client(
 ) -> result::Result<BallistaClient, BallistaError> {
     let max_message_size = config.max_message_size;
     let use_tls = config.use_tls;
+    let io_retries_times = config.io_retries_times;
+    let io_retry_wait_time_ms = config.io_retry_wait_time_ms;
 
-    BallistaClient::try_new(host, port, max_message_size, use_tls, customize_endpoint)
-        .await
+    BallistaClient::try_new(
+        host,
+        port,
+        max_message_size,
+        use_tls,
+        customize_endpoint,
+        io_retries_times,
+        io_retry_wait_time_ms,
+    )
+    .await
 }
 
 async fn fetch_partition_remote(
