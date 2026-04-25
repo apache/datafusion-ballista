@@ -1143,4 +1143,43 @@ mod supported {
 
         Ok(())
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_set_io_retry_config(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        ctx.sql("SET ballista.client.io_retries_times = 5")
+            .await?
+            .show()
+            .await?;
+
+        ctx.sql("SET ballista.client.io_retry_wait_time_ms = 1500")
+            .await?
+            .show()
+            .await?;
+
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name like 'ballista.client.io_%' order by name")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = [
+            "+---------------------------------------+-------+",
+            "| name                                  | value |",
+            "+---------------------------------------+-------+",
+            "| ballista.client.io_retries_times      | 5     |",
+            "| ballista.client.io_retry_wait_time_ms | 1500  |",
+            "+---------------------------------------+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
 }

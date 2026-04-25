@@ -79,6 +79,10 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
 /// Should client use tls connection
 pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
+/// Number of retries for IO operations in the Ballista client
+pub const BALLISTA_IO_RETRIES_TIMES: &str = "ballista.client.io_retries_times";
+/// Wait time in milliseconds between IO retries in the Ballista client
+pub const BALLISTA_IO_RETRY_WAIT_TIME_MS: &str = "ballista.client.io_retry_wait_time_ms";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -163,7 +167,15 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_CLIENT_USE_TLS.to_string(),
                          "Should connection between client, scheduler, and executors use TLS.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string()))
+                         Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_IO_RETRIES_TIMES.to_string(),
+                         "Number of retries for IO operations in the Ballista client.".to_string(),
+                         DataType::UInt16,
+                         Some(3.to_string())),
+        ConfigEntry::new(BALLISTA_IO_RETRY_WAIT_TIME_MS.to_string(),
+                         "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
+                         DataType::UInt64,
+                         Some(3000.to_string()))
     ];
     entries
         .into_iter()
@@ -377,6 +389,16 @@ impl BallistaConfig {
     /// should client use TLS to communicate with ballista cluster
     pub fn client_use_tls(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
+    }
+
+    /// Returns the number of retries for IO operations in the Ballista client.
+    pub fn io_retries_times(&self) -> usize {
+        self.get_usize_setting(BALLISTA_IO_RETRIES_TIMES)
+    }
+
+    /// Returns the wait time in milliseconds between IO retries in the Ballista client.
+    pub fn io_retry_wait_time_ms(&self) -> usize {
+        self.get_usize_setting(BALLISTA_IO_RETRY_WAIT_TIME_MS)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
