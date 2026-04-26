@@ -19,6 +19,7 @@ from datafusion import SessionContext, DataFrame, ParquetWriterOptions
 from datafusion.dataframe import Compression
 
 from typing import (
+    Dict,
     List,
     Union,
     Optional,
@@ -81,10 +82,14 @@ class RedefiningSessionContextMeta(type):
     def __new__(cls, name, bases, attrs):
         def __wrap_dataframe_result(func):
             def method_wrapper(*args, **kwargs):
-                address = args[0].address
-                session_id = args[0].session_id
+                ctx = args[0]
                 df = func(*args, **kwargs)
-                return DistributedDataFrame(df, session_id, address)
+                return DistributedDataFrame(
+                    df,
+                    ctx.session_id,
+                    ctx.address,
+                    ctx.cluster_config,
+                )
 
             return method_wrapper
 
@@ -112,17 +117,29 @@ class RedefiningSessionContextMeta(type):
 #
 # this class keeps reference to remote ballista
 class DistributedDataFrame(DataFrame, metaclass=type):
-    def __init__(self, df: DataFrame, session_id: str, address: str):
+    def __init__(
+        self,
+        df: DataFrame,
+        session_id: str,
+        address: str,
+        cluster_config: Optional[Dict[str, str]] = None,
+    ):
         super().__init__(df.df)
         self.address = address
         self._session_id = session_id
+        self.cluster_config = cluster_config
     #
     # this will create a ballista dataframe, which has ballista
     # session context, and ballista planner.
     #
     def _to_internal_df(self):
         blob_plan = self.logical_plan().to_proto()
-        df = create_ballista_data_frame(blob_plan, self.address, self._session_id)
+        df = create_ballista_data_frame(
+            blob_plan,
+            self.address,
+            self._session_id,
+            self.cluster_config,
+        )
         return df
 
     def write_csv(self, path, with_header=False):
@@ -498,16 +515,35 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         >>> df = ctx.sql("SELECT * FROM my_table LIMIT 10")
         >>> df.show()
 
+    To override DataFusion / Ballista session settings on the cluster
+    (e.g. the number of target partitions used by the scheduler):
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     cluster_config={"datafusion.execution.target_partitions": "256"},
+        ... )
+
     For Jupyter notebook users:
         >>> %load_ext ballista.jupyter
         >>> %ballista connect df://localhost:50050
         >>> %sql SELECT * FROM my_table
     """
 
-    def __init__(self, address: str, config=None, runtime=None):
+    def __init__(
+        self,
+        address: str,
+        config=None,
+        runtime=None,
+        cluster_config: Optional[Dict[str, str]] = None,
+    ):
         super().__init__(config, runtime)
         self.address = address
-        self.session_id_internal = super().session_id() 
+        self.session_id_internal = super().session_id()
+        self.cluster_config = (
+            {str(k): str(v) for k, v in cluster_config.items()}
+            if cluster_config is not None
+            else None
+        )
 
     @property
     def session_id(self):
