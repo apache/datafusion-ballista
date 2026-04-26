@@ -49,6 +49,7 @@ async-trait = { workspace = true }
 aws-config = { version = "1.8.16", optional = true }
 aws-credential-types = { version = "1.2.0", optional = true }
 chrono = { version = "0.4", default-features = false }
+dashmap = { workspace = true }
 clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
