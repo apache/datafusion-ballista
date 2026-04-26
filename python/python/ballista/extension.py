@@ -35,6 +35,18 @@ import pathlib
 # class used to redefine DataFrame object
 # intercepting execution methods and methods
 # which returns `DataFrame`
+EXECUTION_METHODS = [
+    "collect",
+    "collect_partitioned",
+    "show",
+    "count",
+    "to_arrow_table",
+    "to_pandas",
+    "to_polars",
+    "write_json",
+]
+
+
 class RedefiningDataFrameMeta(type):
     def __new__(cls, name, bases, attrs):
         # wrapper function intercept all execution functions
@@ -74,6 +86,13 @@ class RedefiningDataFrameMeta(type):
                 #
                 attrs[base_name] = __wrap_dataframe_result(base_value)
 
+        # Wrap execution methods to route through _to_internal_df() so they
+        # execute on the Ballista cluster rather than locally. Skip any method
+        # already explicitly defined on the subclass.
+        for func in EXECUTION_METHODS:
+            if func not in attrs:
+                attrs[func] = __wrap_dataframe_execution(func)
+
         return super().__new__(cls, name, bases, attrs)
 
 
@@ -111,7 +130,7 @@ class RedefiningSessionContextMeta(type):
 # serialize it and invoke ballista client to execute it
 #
 # this class keeps reference to remote ballista
-class DistributedDataFrame(DataFrame, metaclass=type):
+class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
     def __init__(self, df: DataFrame, session_id: str, address: str):
         super().__init__(df.df)
         self.address = address
