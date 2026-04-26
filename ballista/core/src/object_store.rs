@@ -194,10 +194,6 @@ impl CustomObjectStoreRegistry {
             if let Some(session_token) = session_token {
                 builder = builder.with_token(session_token);
             }
-        } else {
-            return config_err!(
-                "'s3.access_key_id' & 's3.secret_access_key' must be configured"
-            );
         }
 
         if let Some(region) = region {
