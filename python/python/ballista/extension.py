@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from datafusion import SessionContext, DataFrame, ParquetWriterOptions
+from datafusion import SessionConfig, SessionContext, DataFrame, ParquetWriterOptions
 from datafusion.dataframe import Compression
 
 from typing import (
@@ -555,14 +555,23 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         runtime=None,
         cluster_config: Optional[Dict[str, str]] = None,
     ):
-        super().__init__(config, runtime)
-        self.address = address
-        self.session_id_internal = super().session_id()
         self.cluster_config = (
             {str(k): str(v) for k, v in cluster_config.items()}
             if cluster_config is not None
             else None
         )
+        # Apply overrides to the local SessionContext too: some settings
+        # (e.g. datafusion.execution.listing_table_factory_infer_partitions)
+        # are consulted during local table registration / planning, before
+        # the plan is shipped to the scheduler.
+        if self.cluster_config:
+            if config is None:
+                config = SessionConfig()
+            for key, value in self.cluster_config.items():
+                config = config.set(key, value)
+        super().__init__(config, runtime)
+        self.address = address
+        self.session_id_internal = super().session_id()
 
     @property
     def session_id(self):
