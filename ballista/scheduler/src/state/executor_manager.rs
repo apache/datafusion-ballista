@@ -245,12 +245,24 @@ impl ExecutorManager {
         let mut state = vec![];
         for metadata in self.cluster_state.registered_executor_metadata().await {
             let heartbeat = self.cluster_state.get_executor_heartbeat(&metadata.id);
-            let duration = heartbeat.as_ref().map(|hb| hb.timestamp).map(Duration::from_secs);
-            let mut metrics = heartbeat.as_ref().map(|hb| hb.metrics.clone()).unwrap_or_default();
+            let duration = heartbeat
+                .as_ref()
+                .map(|hb| hb.timestamp)
+                .map(Duration::from_secs);
+            let mut metrics = heartbeat
+                .as_ref()
+                .map(|hb| hb.metrics.clone())
+                .unwrap_or_default();
 
             if let Some(hb) = &heartbeat {
-                metrics.push(ExecutorMetric { metric: Some(Metric::PeakPhysicalMemory(hb.peak_proc_physical_memory)) });
-                metrics.push(ExecutorMetric { metric: Some(Metric::PeakVirtualMemory(hb.peak_proc_virtual_memory)) });
+                metrics.push(ExecutorMetric {
+                    metric: Some(Metric::PeakPhysicalMemory(
+                        hb.peak_proc_physical_memory,
+                    )),
+                });
+                metrics.push(ExecutorMetric {
+                    metric: Some(Metric::PeakVirtualMemory(hb.peak_proc_virtual_memory)),
+                });
             }
 
             state.push((metadata, duration, metrics));
