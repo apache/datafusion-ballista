@@ -106,6 +106,14 @@ persistentvolumeclaim/data-pv-claim created
 
 Copy the following yaml to a `cluster.yaml` file and change `<your-image>` with the name of your Ballista Docker image.
 
+The scheduler is started with `--external-host=ballista-scheduler` so that it
+advertises the cluster-internal Service DNS name to executors. Executors call
+back to that address to report task status and heartbeats; if it is left at the
+default of `localhost`, executors will try to dial `localhost:50050` inside
+their own pod and fail with `Fail to connect to scheduler localhost:50050`.
+Replace `ballista-scheduler` with whatever Service name resolves to the
+scheduler in your namespace.
+
 ```yaml
 apiVersion: v1
 kind: Service
@@ -140,7 +148,9 @@ spec:
       containers:
         - name: ballista-scheduler
           image: <your-repo>/datafusion-ballista-scheduler:latest
-          args: ["--bind-port=50050"]
+          args:
+            - "--bind-port=50050"
+            - "--external-host=ballista-scheduler"
           ports:
             - containerPort: 50050
               name: flight
