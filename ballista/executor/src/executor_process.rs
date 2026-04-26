@@ -239,49 +239,9 @@ pub async fn start_executor_process(
         "Executor number of concurrent tasks (available CPU cores): {concurrent_tasks}"
     );
     info!("Executor scheduling policy: {task_scheduling_policy:?}");
-    // Getting system-wide specs for executor registration
-    let system_name =
-        System::name().unwrap_or_else(|| String::from("Unknown system name"));
-    let os_ver =
-        System::os_version().unwrap_or_else(|| String::from("Unknown OS version"));
-    let os_ver_long = System::long_os_version()
-        .unwrap_or_else(|| String::from("Unknown long OS version"));
-    let kernel_ver = System::kernel_long_version();
 
-    let physical_cores = System::physical_core_count().unwrap_or(0) as u32;
-    let open_files_limit = System::open_files_limit().unwrap_or(0) as u64;
-
-    let disks = Disks::new_with_refreshed_list();
-    let num_disks = disks.list().len() as u32;
-    let mut total_disk_space: u64 = 0;
-    let mut total_available_disk_space: u64 = 0;
-    for disk in &disks {
-        total_disk_space += disk.total_space();
-        total_available_disk_space += disk.available_space();
-    }
-
-    let executor_meta = ExecutorRegistration {
-        id: executor_id.clone(),
-        host: opt.external_host.clone(),
-        port: opt.port as u32,
-        grpc_port: opt.grpc_port as u32,
-        specification: Some(ExecutorSpecification {
-            resources: vec![ExecutorResource {
-                resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-            }],
-        }),
-        os_info: Some(ExecutorOperatingSystemSpecification {
-            system_name,
-            kernel_ver,
-            os_ver,
-            os_ver_long,
-            physical_cores,
-            num_disks,
-            total_disk_space,
-            total_available_disk_space,
-            open_files_limit,
-        }),
-    };
+    let executor_meta =
+        structure_executor_metadata(&executor_id, &opt, concurrent_tasks as u32);
 
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
@@ -804,6 +764,56 @@ pub async fn satisfy_dir_ttl(
     }
 
     Ok(false)
+}
+
+/// Structuring executor's metadata to start the main process
+pub fn structure_executor_metadata(
+    executor_id: &str,
+    options: &Arc<ExecutorProcessConfig>,
+    concurrent_tasks: u32,
+) -> ExecutorRegistration {
+    let system_name =
+        System::name().unwrap_or_else(|| String::from("Unknown system name"));
+    let os_ver =
+        System::os_version().unwrap_or_else(|| String::from("Unknown OS version"));
+    let os_ver_long = System::long_os_version()
+        .unwrap_or_else(|| String::from("Unknown long OS version"));
+    let kernel_ver = System::kernel_long_version();
+
+    let physical_cores = System::physical_core_count().unwrap_or(0) as u32;
+    let open_files_limit = System::open_files_limit().unwrap_or(0) as u64;
+
+    let disks = Disks::new_with_refreshed_list();
+    let num_disks = disks.list().len() as u32;
+    let mut total_disk_space: u64 = 0;
+    let mut total_available_disk_space: u64 = 0;
+    for disk in &disks {
+        total_disk_space += disk.total_space();
+        total_available_disk_space += disk.available_space();
+    }
+
+    ExecutorRegistration {
+        id: executor_id.to_string().clone(),
+        host: options.external_host.clone(),
+        port: options.port as u32,
+        grpc_port: options.grpc_port as u32,
+        specification: Some(ExecutorSpecification {
+            resources: vec![ExecutorResource {
+                resource: Some(Resource::TaskSlots(concurrent_tasks)),
+            }],
+        }),
+        os_info: Some(ExecutorOperatingSystemSpecification {
+            system_name,
+            kernel_ver,
+            os_ver,
+            os_ver_long,
+            physical_cores,
+            num_disks,
+            total_disk_space,
+            total_available_disk_space,
+            open_files_limit,
+        }),
+    }
 }
 
 #[cfg(test)]
