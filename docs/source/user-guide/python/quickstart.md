@@ -56,6 +56,29 @@ ctx = BallistaBuilder().standalone()
 Use `BallistaBuilder` when you need standalone mode or want to pass configuration keys
 at construction time. Either approach returns the same context object.
 
+## Configuration
+
+### Target Partitions
+
+After connecting, set `datafusion.execution.target_partitions` to match your cluster
+capacity (`executors × concurrent_tasks_per_executor`). The default inherits from
+DataFusion and is based on the client's CPU count, which is far too low for distributed
+execution:
+
+```python
+from datafusion import SessionContext as _SC
+
+executors = 4
+concurrent_tasks = 8
+target_partitions = executors * concurrent_tasks
+
+_SC.sql(ctx, f"SET datafusion.execution.target_partitions = {target_partitions}")
+```
+
+This controls how many parallel tasks the scheduler creates per stage. Setting it too
+low leaves executor capacity idle; setting it too high creates unnecessary scheduling
+overhead.
+
 ## SQL
 
 ### Registering Tables
