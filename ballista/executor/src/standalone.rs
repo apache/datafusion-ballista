@@ -31,7 +31,7 @@ use ballista_core::{
     error::Result,
     serde::BallistaCodec,
     serde::protobuf::{ExecutorRegistration, scheduler_grpc_client::SchedulerGrpcClient},
-    serde::scheduler::ExecutorSpecification,
+    serde::scheduler::{ExecutorOperatingSystemSpecification, ExecutorSpecification},
     utils::create_grpc_server,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
@@ -105,11 +105,11 @@ pub async fn new_standalone_executor_from_builder(
         // TODO Make it configurable
         grpc_port: 50020,
         specification: Some(
-            ExecutorSpecification {
-                task_slots: concurrent_tasks as u32,
-            }
-            .into(),
+            ExecutorSpecification::default()
+                .with_task_slots(concurrent_tasks as u32)
+                .into(),
         ),
+        os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
     };
 
     let config = config_producer();

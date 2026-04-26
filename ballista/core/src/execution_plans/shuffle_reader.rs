@@ -722,7 +722,10 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 mod tests {
     use super::*;
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
-    use crate::serde::scheduler::{ExecutorMetadata, ExecutorSpecification, PartitionId};
+    use crate::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId,
+    };
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -824,7 +827,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -874,7 +878,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -925,7 +930,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -976,7 +982,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
                 file_id: None,
@@ -1164,7 +1171,8 @@ mod tests {
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification { task_slots: 12 },
+                    specification: ExecutorSpecification::default().with_task_slots(12),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
                 file_id,

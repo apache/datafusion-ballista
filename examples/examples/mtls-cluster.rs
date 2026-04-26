@@ -366,6 +366,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
                 resource: Some(Resource::TaskSlots(4)),
             }],
         }),
+        os_info: None,
     };
 
     let config_producer = create_tls_config_producer(tls.client_tls.clone());

@@ -341,6 +341,7 @@ message ExecutorMetadata {
   uint32 port = 3;
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
+  ExecutorOperatingSystemSpecification os_info = 6;
 }
 
 
@@ -352,6 +353,7 @@ message ExecutorRegistration {
   uint32 port = 3;
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
+  ExecutorOperatingSystemSpecification os_info = 6;
 }
 
 message ExecutorHeartbeat {
@@ -360,12 +362,20 @@ message ExecutorHeartbeat {
   uint64 timestamp = 2;
   repeated ExecutorMetric metrics = 3;
   ExecutorStatus status = 4;
+  uint64 peak_proc_physical_memory = 5;
+  uint64 peak_proc_virtual_memory = 6;
 }
 
 message ExecutorMetric {
   // TODO add more metrics
   oneof metric {
     uint64 available_memory = 1;
+    uint64 total_memory = 2;
+    uint64 used_memory = 3;
+    uint64 proc_physical_memory = 4;
+    uint64 proc_virtual_memory = 5;
+    uint64 peak_physical_memory = 6;
+    uint64 peak_virtual_memory = 7;
   }
 }
 
@@ -383,10 +393,21 @@ message ExecutorSpecification {
 }
 
 message ExecutorResource {
-  // TODO add more resources
   oneof resource {
     uint32 task_slots = 1;
   }
+}
+
+message ExecutorOperatingSystemSpecification {
+  string system_name = 1;
+  string kernel_ver = 2;
+  string os_ver = 3;
+  string os_ver_long = 4;
+  uint32 physical_cores = 5;
+  uint32 num_disks = 6;
+  uint64 total_disk_space = 7;
+  uint64 total_available_disk_space = 8;
+  uint64 open_files_limit = 9;
 }
 
 message AvailableTaskSlots {

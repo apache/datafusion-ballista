@@ -20,6 +20,8 @@ use std::time::Duration;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf;
+use ballista_core::serde::protobuf::ExecutorMetric;
+use ballista_core::serde::protobuf::executor_metric::Metric;
 use log::trace;
 
 use crate::cluster::{BoundTask, ClusterState, ExecutorSlot};
@@ -236,20 +238,35 @@ impl ExecutorManager {
         }
     }
 
-    /// Returns a list of all executors along with the timestamp of their last recorded heartbeat.
-    pub async fn get_executor_state(
+    /// Returns a list of all executors, the timestamp of the last recorded hearbeat and metrics received from it
+    pub async fn get_executors_state(
         &self,
-    ) -> Result<Vec<(ExecutorMetadata, Option<Duration>)>> {
-        let mut state: Vec<(ExecutorMetadata, Option<Duration>)> = vec![];
+    ) -> Result<Vec<(ExecutorMetadata, Option<Duration>, Vec<ExecutorMetric>)>> {
+        let mut state = vec![];
         for metadata in self.cluster_state.registered_executor_metadata().await {
-            let duration = self
-                .cluster_state
-                .get_executor_heartbeat(&metadata.id)
+            let heartbeat = self.cluster_state.get_executor_heartbeat(&metadata.id);
+            let duration = heartbeat
+                .as_ref()
                 .map(|hb| hb.timestamp)
                 .map(Duration::from_secs);
-            state.push((metadata, duration));
-        }
+            let mut metrics = heartbeat
+                .as_ref()
+                .map(|hb| hb.metrics.clone())
+                .unwrap_or_default();
 
+            if let Some(hb) = &heartbeat {
+                metrics.push(ExecutorMetric {
+                    metric: Some(Metric::PeakPhysicalMemory(
+                        hb.peak_proc_physical_memory,
+                    )),
+                });
+                metrics.push(ExecutorMetric {
+                    metric: Some(Metric::PeakVirtualMemory(hb.peak_proc_virtual_memory)),
+                });
+            }
+
+            state.push((metadata, duration, metrics));
+        }
         Ok(state)
     }
 
@@ -261,6 +278,11 @@ impl ExecutorManager {
         executor_id: &str,
     ) -> Result<ExecutorMetadata> {
         self.cluster_state.get_executor_metadata(executor_id).await
+    }
+
+    /// Return executor latest hearbeat, or None if not found
+    pub fn get_executor_hearbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat> {
+        self.cluster_state.get_executor_heartbeat(executor_id)
     }
 
     /// Saves executor metadata for pull-based task scheduling.
