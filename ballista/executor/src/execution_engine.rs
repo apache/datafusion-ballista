@@ -98,7 +98,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
         let plan = plan
             .transform(|p| {
                 if let Some(reader) = p.as_any().downcast_ref::<ShuffleReaderExec>() {
-                    let reader = Arc::new(reader.change_work_dir(work_dir.to_string()));
+                    let reader = Arc::new(reader.with_work_dir(work_dir.to_string()));
                     Ok(Transformed::yes(reader))
                 } else {
                     Ok(Transformed::no(p))
