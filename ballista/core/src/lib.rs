@@ -33,6 +33,8 @@ pub fn print_version() {
 
 /// Client utilities for connecting to Ballista schedulers.
 pub mod client;
+/// Connection pool for reusing `BallistaClient`` instances across requests.
+pub mod client_pool;
 /// Configuration options and settings for Ballista components.
 pub mod config;
 /// Utilities for generating execution plan diagrams.

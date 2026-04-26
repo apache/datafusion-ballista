@@ -114,6 +114,24 @@ impl BallistaClient {
         })
     }
 
+    /// Build a client with a lazy channel — no real server required.
+    /// Intended only for unit tests that exercise pool logic without I/O.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(host: &str, port: u16) -> Self {
+        use tonic::transport::Endpoint;
+        let addr = format!("http://{host}:{port}");
+        let channel = Endpoint::from_shared(addr)
+            .expect("valid address")
+            .connect_lazy();
+        Self {
+            io_retries_times: 3,
+            io_retry_wait_time_ms: 250,
+            host: host.to_string(),
+            port,
+            flight_client: FlightServiceClient::new(channel),
+        }
+    }
+
     /// Retrieves a partition from an executor.
     ///
     /// Depending on the value of the `flight_transport` parameter, this method will utilize either
