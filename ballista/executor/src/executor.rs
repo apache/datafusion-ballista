@@ -368,6 +368,7 @@ mod test {
             grpc_port: 0,
             specification: None,
             host: None,
+            os_info: None,
         };
         let config_producer = Arc::new(default_config_producer);
         let ctx = SessionContext::new();
