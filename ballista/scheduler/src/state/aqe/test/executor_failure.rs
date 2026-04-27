@@ -18,3 +18,91 @@
 //! Tests for executor failure handling in AdaptiveExecutionGraph.
 //! Mirrors the static-graph tests in
 //! `ballista/scheduler/src/state/execution_graph.rs`.
+
+use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::test::test_aqe_join_plan;
+use crate::state::execution_graph::ExecutionGraph;
+use crate::test_utils::{
+    mock_completed_task, mock_executor,
+    revive_graph_and_complete_next_stage_with_executor,
+};
+use ballista_core::error::Result;
+use ballista_core::serde::scheduler::ExecutorMetadata;
+
+/// Local equivalent of static `drain_tasks`: keep popping tasks and reporting
+/// completion via the given surviving executor until no more tasks are
+/// available even after a final revive.
+fn drain_aqe(
+    graph: &mut AdaptiveExecutionGraph,
+    executor: &ExecutorMetadata,
+) -> Result<()> {
+    loop {
+        graph.revive();
+        let mut popped = false;
+        while let Some(task) = graph.pop_next_task(&executor.id)? {
+            popped = true;
+            let task_status = mock_completed_task(task, &executor.id);
+            graph.update_task_status(executor, vec![task_status], 4, 4)?;
+        }
+        if !popped {
+            // No more tasks to pop. Try one more revive to flush state, then exit.
+            if !graph.revive() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_reset_completed_stage_executor_lost() -> Result<()> {
+    let executor1 = mock_executor("executor-id1".to_string());
+    let executor2 = mock_executor("executor-id2".to_string());
+    let mut join_graph = test_aqe_join_plan(4).await;
+
+    // Initial state: graph has the leaf stages resolved.
+    let initial_stage_count = join_graph.stage_count();
+    assert!(initial_stage_count >= 2, "expected at least 2 leaf stages");
+
+    join_graph.revive();
+
+    // Complete the first leaf stage on executor1.
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut join_graph,
+        &executor1,
+    )?;
+
+    // Complete the second leaf stage on executor2.
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut join_graph,
+        &executor2,
+    )?;
+
+    join_graph.revive();
+
+    // Pop and complete one task in the next stage on executor1.
+    if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
+        let task_status = mock_completed_task(task, &executor1.id);
+        join_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
+    }
+    // Pop a second task on executor1 but don't report status (running).
+    let _running = join_graph.pop_next_task(&executor1.id)?;
+
+    let reset = join_graph.reset_stages_on_lost_executor(&executor1.id)?;
+
+    // At least one stage was reset (combining rollback + rerun).
+    assert!(
+        !reset.0.is_empty(),
+        "expected at least one stage to be reset"
+    );
+
+    // The graph still has tasks available to drive to completion.
+    drain_aqe(&mut join_graph, &executor2)?;
+    assert!(
+        join_graph.is_successful(),
+        "join plan failed to complete after executor loss"
+    );
+
+    Ok(())
+}
+
