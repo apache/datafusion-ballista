@@ -822,6 +822,117 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
+        use datafusion::arrow::array::Int64Array;
+        use datafusion::arrow::ipc::reader::FileReader;
+        use datafusion::execution::memory_pool::FairSpillPool;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use std::collections::HashSet;
+
+        // Build an input plan with many wide rows so memory growth is noticeable.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+
+        // 10 batches of 8192 rows each. With a 512 KiB pool, this forces spilling.
+        let batches: Vec<RecordBatch> = (0..10)
+            .map(|b| {
+                let start = b * 8192_i64;
+                let keys: Vec<i64> = (start..start + 8192).collect();
+                let values: Vec<i64> = keys.iter().map(|k| k * 2).collect();
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from(keys)),
+                        Arc::new(Int64Array::from(values)),
+                    ],
+                )
+                .unwrap()
+            })
+            .collect();
+        let partitions = vec![batches];
+        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema.clone(),
+            None,
+        )?);
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(memory_data_source));
+
+        // Tight memory pool to force spills.
+        let runtime_env = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(FairSpillPool::new(512 * 1024)))
+                .build()?,
+        );
+        let session_ctx = SessionContext::new_with_config_rt(
+            datafusion::execution::config::SessionConfig::new(),
+            runtime_env,
+        );
+        let task_ctx = session_ctx.task_ctx();
+
+        let work_dir = TempDir::new()?;
+
+        let writer = SortShuffleWriterExec::try_new(
+            "spill_test_job".to_string(),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], 4),
+            SortShuffleConfig::default(),
+        )?;
+
+        let mut stream = writer.execute(0, task_ctx)?;
+        let summary_batches: Vec<RecordBatch> = stream
+            .by_ref()
+            .try_collect()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        assert_eq!(summary_batches.len(), 1, "expected one summary batch");
+
+        let metrics = writer.metrics().expect("metrics after execute");
+        let spill_count = metrics
+            .iter()
+            .find(|m| m.value().name() == "spill_count")
+            .map(|m| m.value().as_usize())
+            .unwrap_or(0);
+        assert!(
+            spill_count > 0,
+            "expected spilling under tight memory pool, got spill_count={spill_count}"
+        );
+
+        // Round-trip: read back the consolidated file via Arrow IPC FileReader and
+        // verify all keys are present.
+        let data_path = work_dir
+            .path()
+            .join("spill_test_job")
+            .join("1")
+            .join("0")
+            .join("data.arrow");
+        let file = std::fs::File::open(&data_path)?;
+        let reader = FileReader::try_new(file, None)?;
+        let mut seen: HashSet<i64> = HashSet::new();
+        for batch_result in reader {
+            let batch = batch_result?;
+            let arr = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for v in arr.values() {
+                seen.insert(*v);
+            }
+        }
+        assert_eq!(seen.len(), 10 * 8192);
+        for k in 0..(10 * 8192_i64) {
+            assert!(seen.contains(&k), "key {k} missing from round-trip");
+        }
+
+        Ok(())
+    }
+
     /// Drift-detection test: verifies that `compute_partition_indices` produces
     /// exactly the same per-row partition assignment as DataFusion's own
     /// `BatchPartitioner::new_hash_partitioner`. If a future DataFusion release
