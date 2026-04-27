@@ -31,7 +31,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 /// spill or final-write time, by way of `interleave_record_batch`.
 #[derive(Debug)]
 pub struct BufferedBatches {
-    #[allow(dead_code)]
     schema: SchemaRef,
     /// All input batches, in arrival order. Indexed by `batch_idx` in
     /// `indices`. Never sliced.
@@ -39,7 +38,7 @@ pub struct BufferedBatches {
     /// One entry per output partition. Each `(u32, u32)` is `(batch_idx,
     /// row_idx)`, referring to a row inside `batches[batch_idx]`.
     indices: Vec<Vec<(u32, u32)>>,
-    /// Total rows currently referenced by `indices`. Drives metrics.
+    /// Total rows currently referenced by `indices`. Test diagnostic only.
     num_buffered_rows: usize,
 }
 
@@ -92,6 +91,10 @@ impl BufferedBatches {
     /// `per_partition_rows.len()` must equal `num_partitions()`.
     pub fn push_batch(&mut self, batch: RecordBatch, per_partition_rows: &[Vec<u32>]) {
         debug_assert_eq!(per_partition_rows.len(), self.indices.len());
+        debug_assert!(
+            *batch.schema() == *self.schema,
+            "BufferedBatches::push_batch schema mismatch"
+        );
         let batch_idx = self.batches.len() as u32;
         for (p, rows) in per_partition_rows.iter().enumerate() {
             let dst = &mut self.indices[p];

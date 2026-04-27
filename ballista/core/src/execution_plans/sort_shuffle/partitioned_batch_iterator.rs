@@ -29,9 +29,7 @@ use datafusion::error::Result;
 /// chunk of up to `batch_size` pairs gathers the referenced rows from
 /// `batches` via `interleave_record_batch`, yielding one `RecordBatch` per
 /// chunk.
-#[allow(dead_code)]
 pub(crate) struct PartitionedBatchIterator<'a> {
-    batches: &'a [RecordBatch],
     batch_refs: Vec<&'a RecordBatch>,
     indices: &'a [(u32, u32)],
     batch_size: usize,
@@ -48,7 +46,6 @@ impl<'a> PartitionedBatchIterator<'a> {
     /// * `indices` — `(batch_idx, row_idx)` pairs that select which rows to
     ///   emit, in order.
     /// * `batch_size` — maximum number of rows per output `RecordBatch`.
-    #[allow(dead_code)]
     pub(crate) fn new(
         batches: &'a [RecordBatch],
         indices: &'a [(u32, u32)],
@@ -56,7 +53,6 @@ impl<'a> PartitionedBatchIterator<'a> {
     ) -> Self {
         let batch_refs = batches.iter().collect();
         Self {
-            batches,
             batch_refs,
             indices,
             batch_size,
