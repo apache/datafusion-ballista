@@ -28,20 +28,17 @@
 //! A background tokio task evicts idle connections that have not been returned
 //! within the configured `idle_timeout`.
 
+use crate::client::BallistaClient;
+use crate::error::Result;
+use crate::extension::BallistaConfigGrpcEndpoint;
+use crate::utils::GrpcClientConfig;
+use async_trait::async_trait;
+use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-
-use async_trait::async_trait;
-use dashmap::DashMap;
-use datafusion::arrow::compute::kernels::boolean;
-
-use crate::client::BallistaClient;
-use crate::error::Result;
-use crate::extension::BallistaConfigGrpcEndpoint;
-use crate::utils::GrpcClientConfig;
 
 // ---------------------------------------------------------------------------
 // PooledClient guard
@@ -142,9 +139,10 @@ struct Inner {
 /// Default pool implementation.
 ///
 /// Keeps a `VecDeque<BallistaClient>` per `(host, port)`. Idle clients are
-/// evicted by a background tokio task that runs at `idle_timeout / 5`
-/// intervals (minimum 10 s). The task exits automatically when the pool `Arc`
+/// evicted by a background tokio task that runs at `idle_timeout / 3`
+/// intervals (minimum 15 s). The task exits automatically when the pool `Arc`
 /// is dropped.
+
 #[derive(Clone)]
 pub struct DefaultBallistaClientPool {
     inner: Arc<Inner>,
@@ -172,7 +170,7 @@ impl DefaultBallistaClientPool {
 
         let weak: Weak<Inner> = Arc::downgrade(&inner);
         // TODO: do we limit minimum interval here?
-        let check_interval = Duration::from_secs((idle_timeout.as_secs() / 5).max(15));
+        let check_interval = Duration::from_secs((idle_timeout.as_secs() / 3).max(15));
 
         if enable_eviction_thread {
             tokio::spawn(async move {
