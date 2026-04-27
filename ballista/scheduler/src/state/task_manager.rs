@@ -230,7 +230,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             scheduler_id: scheduler_id.clone(),
             active_job_cache: Arc::new(DashMap::new()),
             launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
-            task_max_failures: config.task_max_failures, 
+            task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
         }
     }
@@ -249,7 +249,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             scheduler_id,
             active_job_cache: Arc::new(DashMap::new()),
             launcher,
-            task_max_failures: config.task_max_failures, 
+            task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
         }
     }
