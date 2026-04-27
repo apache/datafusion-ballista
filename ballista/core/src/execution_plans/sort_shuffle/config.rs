@@ -60,6 +60,7 @@ mod tests {
     fn test_default_config() {
         let config = SortShuffleConfig::default();
         assert!(!config.enabled);
+        assert!(matches!(config.compression, CompressionType::LZ4_FRAME));
         assert_eq!(config.batch_size, 8192);
     }
 
@@ -67,6 +68,7 @@ mod tests {
     fn test_new() {
         let config = SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, 4096);
         assert!(config.enabled);
+        assert!(matches!(config.compression, CompressionType::LZ4_FRAME));
         assert_eq!(config.batch_size, 4096);
     }
 }
