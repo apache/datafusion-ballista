@@ -228,6 +228,7 @@ impl SortShuffleWriterExec {
                 &job_id,
                 stage_id,
                 input_partition,
+                schema.clone(),
                 config.compression,
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -260,7 +261,6 @@ impl SortShuffleWriterExec {
                     spill_largest_buffers(
                         &mut buffers,
                         &mut spill_manager,
-                        &schema,
                         config.spill_memory_threshold() / 2,
                         config.batch_size,
                     )?;
@@ -337,7 +337,6 @@ impl SortShuffleWriterExec {
 fn spill_largest_buffers(
     buffers: &mut [PartitionBuffer],
     spill_manager: &mut SpillManager,
-    schema: &SchemaRef,
     target_memory: usize,
     batch_size: usize,
 ) -> Result<()> {
@@ -358,9 +357,11 @@ fn spill_largest_buffers(
             Some(idx) if buffers[idx].memory_used() > 0 => {
                 let partition_id = buffers[idx].partition_id();
                 let batches = buffers[idx].drain_coalesced(batch_size);
-                spill_manager
-                    .spill(partition_id, batches, schema)
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                for batch in &batches {
+                    spill_manager
+                        .spill(partition_id, batch)
+                        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                }
             }
             _ => break, // No more buffers to spill
         }
