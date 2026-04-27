@@ -253,13 +253,9 @@ impl SortShuffleWriterExec {
 
                 // Estimate memory growth: input batch + index Vec growth.
                 let mut growth = input_batch.get_array_memory_size();
-                let before: usize = (0..num_output_partitions)
-                    .map(|p| std::mem::size_of_val(buffered.indices_for(p)))
-                    .sum();
+                let before = buffered.indices_allocated_size();
                 buffered.push_batch(input_batch, &per_partition_rows);
-                let after: usize = (0..num_output_partitions)
-                    .map(|p| std::mem::size_of_val(buffered.indices_for(p)))
-                    .sum();
+                let after = buffered.indices_allocated_size();
                 growth += after.saturating_sub(before);
 
                 if reservation.try_grow(growth).is_err() {

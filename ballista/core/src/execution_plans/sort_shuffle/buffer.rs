@@ -31,6 +31,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 /// spill or final-write time, by way of `interleave_record_batch`.
 #[derive(Debug)]
 pub struct BufferedBatches {
+    #[allow(dead_code)]
     schema: SchemaRef,
     /// All input batches, in arrival order. Indexed by `batch_idx` in
     /// `indices`. Never sliced.
@@ -53,12 +54,6 @@ impl BufferedBatches {
         }
     }
 
-    /// Returns the schema this buffer is bound to.
-    #[allow(dead_code)]
-    pub fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-
     /// Returns the configured number of output partitions.
     pub fn num_partitions(&self) -> usize {
         self.indices.len()
@@ -75,10 +70,14 @@ impl BufferedBatches {
         self.num_buffered_rows
     }
 
-    /// Returns the buffered batches.
-    #[allow(dead_code)]
-    pub fn batches(&self) -> &[RecordBatch] {
-        &self.batches
+    /// Returns the total heap-allocated size, in bytes, of the per-partition
+    /// `(batch_idx, row_idx)` index `Vec`s. Uses capacity (not length) so the
+    /// figure tracks actual heap allocation as `Vec`s grow.
+    pub fn indices_allocated_size(&self) -> usize {
+        self.indices
+            .iter()
+            .map(|v| v.capacity() * std::mem::size_of::<(u32, u32)>())
+            .sum()
     }
 
     /// Returns the row indices for output partition `partition_id`.
