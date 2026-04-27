@@ -68,7 +68,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(" Job Stages (↑↓ - navigate | Enter - show tasks | Esc - close) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Color::LightBlue)),
     )
     .header(header)
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
