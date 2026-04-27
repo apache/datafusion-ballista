@@ -203,8 +203,8 @@ async fn benchmark_sort_shuffle(
     schema: SchemaRef,
     output_partitions: usize,
     work_dir: &str,
-    buffer_size: usize,
-    memory_limit: usize,
+    _buffer_size: usize,
+    _memory_limit: usize,
 ) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
     use ballista_core::execution_plans::sort_shuffle::{
         SortShuffleConfig, SortShuffleWriterExec,
@@ -220,14 +220,7 @@ async fn benchmark_sort_shuffle(
     let input = Arc::new(DataSourceExec::new(memory_source));
 
     // Create sort shuffle config
-    let config = SortShuffleConfig::new(
-        true,
-        buffer_size,
-        memory_limit,
-        0.8,
-        CompressionType::LZ4_FRAME,
-        8192,
-    );
+    let config = SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, 8192);
 
     // Create sort shuffle writer
     let shuffle_writer = SortShuffleWriterExec::try_new(
