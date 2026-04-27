@@ -44,16 +44,18 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::hash_utils::create_hashes;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_common::utils::evaluate_expressions_to_arrays;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
-use datafusion::common::hash_utils::create_hashes;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::repartition::{BatchPartitioner, REPARTITION_RANDOM_STATE};
-use datafusion::physical_expr_common::utils::evaluate_expressions_to_arrays;
+use datafusion::physical_plan::repartition::{
+    BatchPartitioner, REPARTITION_RANDOM_STATE,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -689,7 +691,11 @@ fn compute_partition_indices(
     let arrays = evaluate_expressions_to_arrays(exprs, batch)?;
     hash_buffer.clear();
     hash_buffer.resize(batch.num_rows(), 0);
-    create_hashes(&arrays, REPARTITION_RANDOM_STATE.random_state(), hash_buffer)?;
+    create_hashes(
+        &arrays,
+        REPARTITION_RANDOM_STATE.random_state(),
+        hash_buffer,
+    )?;
 
     let mut out: Vec<Vec<u32>> = (0..num_partitions).map(|_| Vec::new()).collect();
     for (row, &h) in hash_buffer.iter().enumerate() {
@@ -752,7 +758,9 @@ mod tests {
         .unwrap();
 
         let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> =
-            vec![Arc::new(datafusion::physical_expr::expressions::Column::new("k", 0))];
+            vec![Arc::new(
+                datafusion::physical_expr::expressions::Column::new("k", 0),
+            )];
 
         let mut hash_buffer: Vec<u64> = Vec::new();
         let result =
@@ -812,5 +820,70 @@ mod tests {
         assert!(output_dir.join("data.arrow.index").exists());
 
         Ok(())
+    }
+
+    /// Drift-detection test: verifies that `compute_partition_indices` produces
+    /// exactly the same per-row partition assignment as DataFusion's own
+    /// `BatchPartitioner::new_hash_partitioner`. If a future DataFusion release
+    /// changes the hash seed or algorithm this test will fail, signalling that
+    /// the sort-shuffle path has diverged.
+    #[test]
+    fn compute_partition_indices_matches_batch_partitioner() {
+        use datafusion::arrow::array::Int64Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::metrics::Time;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let values: Vec<i64> = (0..10).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(values.clone()))],
+        )
+        .unwrap();
+
+        let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> =
+            vec![Arc::new(
+                datafusion::physical_expr::expressions::Column::new("k", 0),
+            )];
+
+        // Our implementation
+        let mut hash_buffer: Vec<u64> = Vec::new();
+        let ours =
+            compute_partition_indices(&batch, &exprs, 4, &mut hash_buffer).unwrap();
+
+        // Reference: DataFusion's BatchPartitioner::new_hash_partitioner
+        let mut ref_partitioner =
+            BatchPartitioner::new_hash_partitioner(exprs.clone(), 4, Time::default());
+        let mut ref_assignments = [usize::MAX; 10];
+        ref_partitioner
+            .partition(batch.clone(), |partition, sub_batch| {
+                // BatchPartitioner returns the rows for `partition` in the order
+                // they appear in the original batch. Recover the row indices via
+                // value lookup (unique values in 0..10 make this unambiguous).
+                let arr = sub_batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for v in arr.values() {
+                    let original_row = values.iter().position(|x| x == v).unwrap();
+                    ref_assignments[original_row] = partition;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // Cross-check: every row's partition assignment from our helper must
+        // match BatchPartitioner's. Guards against hash-seed or algorithm drift.
+        for (row, &ref_partition) in ref_assignments.iter().enumerate() {
+            let our_partition = ours
+                .iter()
+                .position(|v| v.contains(&(row as u32)))
+                .expect("row not assigned to any partition");
+            assert_eq!(
+                our_partition, ref_partition,
+                "partition assignment for row {row} differs from BatchPartitioner"
+            );
+        }
     }
 }
