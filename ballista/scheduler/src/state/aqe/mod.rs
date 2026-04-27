@@ -486,7 +486,8 @@ impl AdaptiveExecutionGraph {
         // update_exchange_locations (cache entries were cleared in
         // finalise_stage) and the plan tree still treats affected
         // exchanges as resolved.
-        self.planner
+        let planner_affected = self
+            .planner
             .reset_on_lost_executor(executor_id)
             .map_err(|e| {
                 BallistaError::Internal(format!(
@@ -494,7 +495,105 @@ impl AdaptiveExecutionGraph {
                 ))
             })?;
 
+        // The static-graph stage.inputs walk above is a no-op for AQE
+        // (`create_resolved_stage` initialises inputs to an empty HashMap).
+        // Use the planner's affected-stage set to drive the equivalent
+        // recovery for AQE: rerun Successful stages whose outputs were
+        // lost, and drop downstream Resolved/Running stages that depend
+        // on those outputs (the planner regenerates them via
+        // `actionable_stages` once the upstream stages re-run).
+        if !planner_affected.is_empty() {
+            // 1. Rerun Successful stages whose outputs were on the lost
+            //    executor.
+            let successful_to_rerun: Vec<usize> = planner_affected
+                .iter()
+                .copied()
+                .filter(|stage_id| {
+                    matches!(
+                        self.stages.get(stage_id),
+                        Some(ExecutionStage::Successful(_))
+                    )
+                })
+                .collect();
+            for stage_id in &successful_to_rerun {
+                if let Some(ExecutionStage::Successful(success)) =
+                    self.stages.get_mut(stage_id)
+                {
+                    success.reset_tasks(executor_id);
+                }
+                if self.rerun_successful_stage(*stage_id) {
+                    reset_stage.insert(*stage_id);
+                }
+            }
+
+            // 2. Drop Resolved / Running stages whose embedded plan reads
+            //    from any affected stage (their ShuffleReaderExec entries
+            //    contain stale partition locations on the lost executor).
+            let stages_to_drop: Vec<usize> = self
+                .stages
+                .iter()
+                .filter_map(|(stage_id, stage)| {
+                    let plan = match stage {
+                        ExecutionStage::Resolved(s) => s.plan.clone(),
+                        ExecutionStage::Running(s) => s.plan.clone(),
+                        _ => return None,
+                    };
+                    if Self::plan_reads_from_any(&plan, &planner_affected) {
+                        Some(*stage_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for stage_id in stages_to_drop {
+                if let Some(ExecutionStage::Running(running)) =
+                    self.stages.get(&stage_id)
+                {
+                    let running_tasks = running
+                        .running_tasks()
+                        .into_iter()
+                        .map(|(task_id, stage_id, partition_id, executor_id)| {
+                            RunningTaskInfo {
+                                task_id,
+                                job_id: self.job_id.clone(),
+                                stage_id,
+                                partition_id,
+                                executor_id,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    all_running_tasks.extend(running_tasks);
+                }
+                self.stages.remove(&stage_id);
+                reset_stage.insert(stage_id);
+            }
+        }
+
         Ok((reset_stage, all_running_tasks))
+    }
+
+    /// Recursively walk a physical plan looking for any `ShuffleReaderExec`
+    /// whose `stage_id` is in the affected set. Used to identify downstream
+    /// stages that need rebuilding after an executor loss invalidates an
+    /// upstream stage's outputs.
+    fn plan_reads_from_any(
+        plan: &Arc<dyn ExecutionPlan>,
+        affected: &HashSet<usize>,
+    ) -> bool {
+        if let Some(reader) = plan
+            .as_any()
+            .downcast_ref::<ballista_core::execution_plans::ShuffleReaderExec>()
+            && affected.contains(&reader.stage_id)
+        {
+            return true;
+        }
+        for child in plan.children() {
+            if Self::plan_reads_from_any(child, affected) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Clear the stage failure count for this stage if the stage is finally success

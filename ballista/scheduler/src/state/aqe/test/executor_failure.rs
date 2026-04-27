@@ -106,3 +106,45 @@ async fn test_reset_completed_stage_executor_lost() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_reset_resolved_stage_executor_lost() -> Result<()> {
+    let executor1 = mock_executor("executor-id1".to_string());
+    let executor2 = mock_executor("executor-id2".to_string());
+    let mut join_graph = test_aqe_join_plan(4).await;
+
+    join_graph.revive();
+
+    // Complete first leaf stage on executor1 (its outputs end up
+    // referencing executor1).
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut join_graph,
+        &executor1,
+    )?;
+
+    // Complete second leaf stage on executor2.
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut join_graph,
+        &executor2,
+    )?;
+
+    // The downstream stage is now Resolved (waiting for revive) but no
+    // tasks have been popped yet.
+    let reset = join_graph.reset_stages_on_lost_executor(&executor1.id)?;
+
+    // Either the resolved stage was rolled back, or the upstream successful
+    // stage was reset for re-execution. We expect at least one of these.
+    assert!(
+        !reset.0.is_empty(),
+        "expected at least one stage to be reset (rollback or rerun)"
+    );
+
+    // Plan must still complete on executor2.
+    drain_aqe(&mut join_graph, &executor2)?;
+    assert!(
+        join_graph.is_successful(),
+        "join plan failed to complete after Resolved-stage rollback"
+    );
+
+    Ok(())
+}
+
