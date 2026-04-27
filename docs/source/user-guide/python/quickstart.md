@@ -26,11 +26,9 @@ collect the results back in Python.
 
 ## Connecting to a Cluster
 
-There are two ways to create a Ballista context:
+`BallistaSessionContext` is the entry point for both remote and in-process clusters.
 
-**`BallistaSessionContext`** — direct connection to a remote scheduler. Use this when
-you just need to connect to an already-running cluster and don't need custom
-configuration:
+**Remote cluster** — connect to an already-running scheduler:
 
 ```python
 from ballista import BallistaSessionContext
@@ -38,42 +36,44 @@ from ballista import BallistaSessionContext
 ctx = BallistaSessionContext("df://localhost:50050")
 ```
 
-**`BallistaBuilder`** — builder pattern that supports both remote and standalone modes,
-and lets you set configuration options before connecting:
+**In-process cluster** — start a scheduler and executor in the current Python process.
+Useful for development, testing, and notebooks:
 
 ```python
-from ballista import BallistaBuilder
+from ballista import BallistaSessionContext, setup_test_cluster
 
-# Remote cluster with custom config
-ctx = BallistaBuilder() \
-    .config("ballista.job.name", "my-job") \
-    .remote("df://localhost:50050")
-
-# Standalone (in-process scheduler + executor, useful for development)
-ctx = BallistaBuilder().standalone()
+host, port = setup_test_cluster()
+ctx = BallistaSessionContext(f"df://{host}:{port}")
 ```
-
-Use `BallistaBuilder` when you need standalone mode or want to pass configuration keys
-at construction time. Either approach returns the same context object.
 
 ## Configuration
 
 ### Target Partitions
 
-After connecting, set `datafusion.execution.target_partitions` to match your cluster
-capacity (`executors × concurrent_tasks_per_executor`). The default inherits from
-DataFusion and is based on the client's CPU count, which is far too low for distributed
-execution:
+Set `datafusion.execution.target_partitions` to match your cluster capacity
+(`executors × concurrent_tasks_per_executor`) by passing `cluster_config` to the
+constructor. The default inherits from DataFusion and is based on the client's CPU
+count, which is far too low for distributed execution:
 
 ```python
-from datafusion import SessionContext as _SC
+from ballista import BallistaSessionContext
 
 executors = 4
 concurrent_tasks = 8
 target_partitions = executors * concurrent_tasks
 
-_SC.sql(ctx, f"SET datafusion.execution.target_partitions = {target_partitions}")
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    cluster_config={
+        "datafusion.execution.target_partitions": str(target_partitions),
+    },
+)
 ```
+
+`cluster_config` is propagated to the scheduler-side session for distributed planning
+and execution, and is also applied to the local context so settings consulted during
+table registration (e.g. `datafusion.execution.listing_table_factory_infer_partitions`)
+take effect before the plan is shipped.
 
 This controls how many parallel tasks the scheduler creates per stage. Setting it too
 low leaves executor capacity idle; setting it too high creates unnecessary scheduling
@@ -149,11 +149,12 @@ COUNT(UInt8(1)): int64]
 You can create a DataFrame from in-memory data using PyArrow record batches:
 
 ```python
-from ballista import BallistaBuilder
+from ballista import BallistaSessionContext, setup_test_cluster
 from datafusion import col
 import pyarrow
 
-ctx = BallistaBuilder().standalone()
+host, port = setup_test_cluster()
+ctx = BallistaSessionContext(f"df://{host}:{port}")
 
 batch = pyarrow.RecordBatch.from_arrays(
     [pyarrow.array([1, 2, 3]), pyarrow.array([4, 5, 6])],
