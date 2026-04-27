@@ -1,3 +1,22 @@
+<!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Sort-Shuffle: Buffer Whole Batches and Materialize via `interleave_record_batch`
 
 Closes [#1432](https://github.com/apache/datafusion-ballista/issues/1432).
@@ -60,6 +79,7 @@ fn compute_partition_indices(
 ```
 
 Implementation uses these public helpers:
+
 - `datafusion_physical_expr_common::utils::evaluate_expressions_to_arrays`
 - `datafusion_common::hash_utils::create_hashes`
 - `datafusion_physical_plan::repartition::REPARTITION_RANDOM_STATE` (`pub const`)
@@ -74,7 +94,7 @@ compute_partition_indices -> push (batch_idx, row_idx) into BufferedBatches.indi
 
 ### Spill model: all-or-nothing
 
-Because `BufferedBatches.batches` is shared across partitions, freeing memory requires draining *all* partition indices and dropping the buffered batches. The current "spill the largest buffer" greedy logic goes away.
+Because `BufferedBatches.batches` is shared across partitions, freeing memory requires draining _all_ partition indices and dropping the buffered batches. The current "spill the largest buffer" greedy logic goes away.
 
 When `reservation.try_grow(growth)` returns `Err`:
 
@@ -121,6 +141,7 @@ if reservation.try_grow(growth).is_err() {
 Format unchanged: `data.arrow` (Arrow IPC `FileWriter`) + `data.arrow.index` (per-partition starting batch index, i64 little-endian). What changes is how each partition's batches are produced:
 
 For each output partition `p`, in order:
+
 1. Record `cumulative_batch_count` as that partition's starting batch index.
 2. If `SpillManager` has a spill file for `p`, stream-read it (already `batch_size`-shaped) and write each batch into the `FileWriter`.
 3. If `BufferedBatches.indices[p]` is non-empty, run it through `PartitionedBatchIterator` and write each yielded batch.
@@ -133,6 +154,7 @@ After the loop: `writer.finish()`, write `ShuffleIndex` to disk, return `Shuffle
 ## Configuration
 
 `SortShuffleConfig` (`config.rs`) drops three fields that no longer make sense:
+
 - `buffer_size` — was the per-partition byte cap on the old eager-buffer model. No equivalent.
 - `memory_limit` — was the per-task fixed budget. The runtime memory pool replaces it.
 - `spill_threshold` — was the fraction of `memory_limit` at which to start spilling. Pool decides; no fraction.
@@ -140,6 +162,7 @@ After the loop: `writer.finish()`, write `ShuffleIndex` to disk, return `Shuffle
 Also drops `spill_memory_threshold()`.
 
 Keeps:
+
 - `enabled`
 - `batch_size`
 - `compression`
@@ -184,7 +207,7 @@ The in-flight docs PR (`30576dd7 docs: document hash-based and sort-based shuffl
 ## Risks and Trade-offs
 
 - **All-or-nothing spill.** The greedy "spill the largest buffer" model could spill less data per event by targeting only the heaviest partition. The new model spills everything once. In practice the freed memory is the buffered input batches (the dominant cost), so partial spill provides little benefit and adds complexity. Comet uses all-or-nothing for the same reason.
-- **Hash-semantics drift.** The inline `compute_partition_indices` will be byte-identical to `BatchPartitioner::Hash` *as long as DataFusion does not change `REPARTITION_RANDOM_STATE` or its hash routine*. If DataFusion changes either, the sort writer would diverge from any `RepartitionExec` upstream. Mitigation: a unit test in `writer.rs` that compares `compute_partition_indices` output to a `BatchPartitioner` reference run on the same input. Catches drift the next time `cargo update` rolls DataFusion.
+- **Hash-semantics drift.** The inline `compute_partition_indices` will be byte-identical to `BatchPartitioner::Hash` _as long as DataFusion does not change `REPARTITION_RANDOM_STATE` or its hash routine_. If DataFusion changes either, the sort writer would diverge from any `RepartitionExec` upstream. Mitigation: a unit test in `writer.rs` that compares `compute_partition_indices` output to a `BatchPartitioner` reference run on the same input. Catches drift the next time `cargo update` rolls DataFusion.
 - **Memory growth cost during high-fanout writes.** Each input batch grows `partition_indices` by `num_rows × 8` bytes total, distributed across `num_output_partitions` `Vec<(u32, u32)>`s. At 200 partitions with capacity-doubling growth, occasional reallocation cost is bounded; the `allocated_size().saturating_sub(before)` accounting captures actual heap growth, not capacity-doubled-then-shrunk.
 - **`MemoryConsumer` registration pressure.** Each running shuffle task registers its own `MemoryConsumer`. Hundreds of concurrent shuffle tasks per executor would create hundreds of consumers — well within DataFusion's design tolerance, matching how `SortExec` and `HashJoinExec` already work.
 

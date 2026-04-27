@@ -1,3 +1,22 @@
+<!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Sort-Shuffle Interleave Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -16,22 +35,22 @@
 
 ## File Structure
 
-| File | Role | Status |
-|---|---|---|
-| `ballista/core/src/execution_plans/sort_shuffle/buffer.rs` | Holds `BufferedBatches` (whole input batches + per-partition `(batch_idx, row_idx)` lists) | Rewrite — replace `PartitionBuffer` |
-| `ballista/core/src/execution_plans/sort_shuffle/partitioned_batch_iterator.rs` | `PartitionedBatchIterator` — yields `batch_size`-shaped batches via `interleave_record_batch` | New |
-| `ballista/core/src/execution_plans/sort_shuffle/writer.rs` | `SortShuffleWriterExec` + private `compute_partition_indices` + `spill_all_partitions` | Rewrite |
-| `ballista/core/src/execution_plans/sort_shuffle/spill.rs` | `SpillManager` — per-batch spill API | Modify (signature change) |
-| `ballista/core/src/execution_plans/sort_shuffle/config.rs` | `SortShuffleConfig` — slimmed to `enabled`, `batch_size`, `compression` | Modify (drop 3 fields) |
-| `ballista/core/src/execution_plans/sort_shuffle/mod.rs` | Re-exports | Modify (drop `PartitionBuffer`) |
-| `ballista/core/src/config.rs` | `BallistaConfig` — drop 3 obsolete sort-shuffle keys | Modify |
-| `ballista/core/proto/ballista.proto` | `SortShuffleWriterExecNode` — drop 3 obsolete fields | Modify |
-| `ballista/core/src/serde/mod.rs` | Encode/decode of `SortShuffleWriterExecNode` | Modify |
-| `ballista/scheduler/src/planner.rs` | `create_shuffle_writer_with_config` callsite | Modify |
-| `ballista/client/tests/sort_shuffle.rs` | Integration tests — drop removed config-key references | Modify |
-| `benchmarks/benches/sort_shuffle.rs` | Criterion bench — `SortShuffleConfig::new` callsite | Modify |
-| `benchmarks/src/bin/shuffle_bench.rs` | Standalone Parquet-driven bench, `--writer hash\|sort` | Rewrite |
-| `benchmarks/Cargo.toml` | Replace `structopt` with `clap`, add `parquet`, `arrow` | Modify |
+| File                                                                           | Role                                                                                          | Status                              |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `ballista/core/src/execution_plans/sort_shuffle/buffer.rs`                     | Holds `BufferedBatches` (whole input batches + per-partition `(batch_idx, row_idx)` lists)    | Rewrite — replace `PartitionBuffer` |
+| `ballista/core/src/execution_plans/sort_shuffle/partitioned_batch_iterator.rs` | `PartitionedBatchIterator` — yields `batch_size`-shaped batches via `interleave_record_batch` | New                                 |
+| `ballista/core/src/execution_plans/sort_shuffle/writer.rs`                     | `SortShuffleWriterExec` + private `compute_partition_indices` + `spill_all_partitions`        | Rewrite                             |
+| `ballista/core/src/execution_plans/sort_shuffle/spill.rs`                      | `SpillManager` — per-batch spill API                                                          | Modify (signature change)           |
+| `ballista/core/src/execution_plans/sort_shuffle/config.rs`                     | `SortShuffleConfig` — slimmed to `enabled`, `batch_size`, `compression`                       | Modify (drop 3 fields)              |
+| `ballista/core/src/execution_plans/sort_shuffle/mod.rs`                        | Re-exports                                                                                    | Modify (drop `PartitionBuffer`)     |
+| `ballista/core/src/config.rs`                                                  | `BallistaConfig` — drop 3 obsolete sort-shuffle keys                                          | Modify                              |
+| `ballista/core/proto/ballista.proto`                                           | `SortShuffleWriterExecNode` — drop 3 obsolete fields                                          | Modify                              |
+| `ballista/core/src/serde/mod.rs`                                               | Encode/decode of `SortShuffleWriterExecNode`                                                  | Modify                              |
+| `ballista/scheduler/src/planner.rs`                                            | `create_shuffle_writer_with_config` callsite                                                  | Modify                              |
+| `ballista/client/tests/sort_shuffle.rs`                                        | Integration tests — drop removed config-key references                                        | Modify                              |
+| `benchmarks/benches/sort_shuffle.rs`                                           | Criterion bench — `SortShuffleConfig::new` callsite                                           | Modify                              |
+| `benchmarks/src/bin/shuffle_bench.rs`                                          | Standalone Parquet-driven bench, `--writer hash\|sort`                                        | Rewrite                             |
+| `benchmarks/Cargo.toml`                                                        | Replace `structopt` with `clap`, add `parquet`, `arrow`                                       | Modify                              |
 
 Each task lands as one commit. Use conventional commit format (`feat:`, `refactor:`, `chore:`, `test:`).
 
@@ -52,6 +71,7 @@ Each task lands as one commit. Use conventional commit format (`feat:`, `refacto
 ## Task 1: Add `compute_partition_indices` helper
 
 **Files:**
+
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/writer.rs`
 
 This task adds a private helper that, given an input batch and hash-partitioning expressions, returns row indices grouped by output partition. It does **not** wire the helper into `execute_shuffle_write` yet (Task 5 does that). Adding it standalone with tests gives us a known-good starting point byte-identical to DataFusion's `BatchPartitioner::Hash`.
@@ -184,6 +204,7 @@ git commit -m "refactor: add compute_partition_indices helper for sort shuffle"
 ## Task 2: Add `PartitionedBatchIterator`
 
 **Files:**
+
 - Create: `ballista/core/src/execution_plans/sort_shuffle/partitioned_batch_iterator.rs`
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/mod.rs`
 
@@ -417,6 +438,7 @@ git commit -m "feat: add PartitionedBatchIterator for sort shuffle"
 ## Task 3: Add `BufferedBatches`
 
 **Files:**
+
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/buffer.rs`
 
 Add `BufferedBatches` alongside the existing `PartitionBuffer` (which Task 5 will delete). New struct, new tests. Old struct and tests untouched.
@@ -623,6 +645,7 @@ git commit -m "feat: add BufferedBatches type for deferred sort shuffle material
 ## Task 4: Change `SpillManager::spill` to per-batch signature
 
 **Files:**
+
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/spill.rs`
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/writer.rs` (callsite in `spill_largest_buffers`)
 
@@ -946,11 +969,13 @@ git commit -m "refactor: change SpillManager::spill to per-batch signature"
 ## Task 5: Rewrite `execute_shuffle_write` with `BufferedBatches`, memory pool, and all-or-nothing spill
 
 **Files:**
+
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/writer.rs`
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/buffer.rs` (delete `PartitionBuffer`)
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/mod.rs` (drop `pub use buffer::PartitionBuffer`)
 
 This is the core change. After this task:
+
 - `BatchPartitioner` is no longer used.
 - `PartitionBuffer` is gone.
 - Spill is all-or-nothing, driven by `MemoryReservation::try_grow`.
@@ -1259,6 +1284,7 @@ Delete the `spill_largest_buffers` function from `writer.rs` in its entirety.
 - [ ] **Step 5: Delete `PartitionBuffer` and supporting code**
 
 In `ballista/core/src/execution_plans/sort_shuffle/buffer.rs`, delete:
+
 - The `PartitionBuffer` struct and its impl block.
 - The `coalesce_batches` private helper.
 - The `LimitedBatchCoalescer` import (and any other now-unused imports — clippy will tell you).
@@ -1330,6 +1356,7 @@ Closes #1432."
 ## Task 6: Drop obsolete fields from `SortShuffleConfig`
 
 **Files:**
+
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/config.rs`
 - Modify: `ballista/core/src/serde/mod.rs`
 - Modify: `ballista/scheduler/src/planner.rs`
@@ -1555,6 +1582,7 @@ Do **not** commit yet. Combine this commit with Task 7's proto edit, since the e
 ## Task 7: Drop obsolete proto fields and regenerate
 
 **Files:**
+
 - Modify: `ballista/core/proto/ballista.proto`
 - Verify regeneration: `ballista/core/src/serde/generated/ballista.rs`
 
@@ -1646,6 +1674,7 @@ all callsites."
 ## Task 8: Drop obsolete `BALLISTA_SHUFFLE_SORT_BASED_*` config keys
 
 **Files:**
+
 - Modify: `ballista/core/src/config.rs`
 
 Three config keys and their accessors are no longer referenced after Task 6: `BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE`, `BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT`, `BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD`. Drop them.
@@ -1735,6 +1764,7 @@ Expected: build fails in `ballista/client/tests/sort_shuffle.rs` (the imports re
 ## Task 9: Update integration test to drop removed key references
 
 **Files:**
+
 - Modify: `ballista/client/tests/sort_shuffle.rs`
 
 - [ ] **Step 1: Update imports**
@@ -1815,6 +1845,7 @@ memory pool. Drop the keys, their accessors, and all references."
 ## Task 10: Add memory-pressure spill integration test
 
 **Files:**
+
 - Modify: `ballista/core/src/execution_plans/sort_shuffle/writer.rs`
 
 Add a test that verifies the new memory-pool-driven spill path actually triggers spilling under pressure, and that spilled data is correctly reassembled in the final output.
@@ -1942,7 +1973,7 @@ If any of the imports above (`MemorySourceConfig`, `DataSourceExec`, `Column`, `
 cargo test -p ballista-core --lib spills_under_memory_pressure_and_round_trips 2>&1 | tail -20
 ```
 
-Expected: test passes. If the test fails because spill is *not* triggered, lower the memory pool to e.g. `256 * 1024` (256 KiB) — but it's preferable to size the input large enough to force spilling at 512 KiB so the test doesn't depend on exact heap behavior.
+Expected: test passes. If the test fails because spill is _not_ triggered, lower the memory pool to e.g. `256 * 1024` (256 KiB) — but it's preferable to size the input large enough to force spilling at 512 KiB so the test doesn't depend on exact heap behavior.
 
 - [ ] **Step 3: Run all sort_shuffle tests**
 
@@ -1968,6 +1999,7 @@ git commit -m "test: add memory-pressure spill round-trip test for sort shuffle"
 ## Task 11: Replace standalone shuffle benchmark binary
 
 **Files:**
+
 - Replace: `benchmarks/src/bin/shuffle_bench.rs`
 - Modify: `benchmarks/Cargo.toml`
 
@@ -2031,7 +2063,7 @@ If `parquet = "53"` (or similar) is already there, you can use `parquet = { work
 
 Overwrite the file. Full content:
 
-```rust
+````rust
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -2533,7 +2565,7 @@ fn main() {
 
     let _ = fs::remove_dir_all(&args.output_dir);
 }
-```
+````
 
 - [ ] **Step 3: Build the binary**
 
