@@ -201,9 +201,9 @@ impl ExchangeExec {
     ) -> Option<usize> {
         let mut guard = self.shuffle_partitions.lock();
         let affected = match guard.as_ref() {
-            Some(parts) => parts.iter().any(|locs| {
-                locs.iter().any(|loc| loc.executor_meta.id == executor_id)
-            }),
+            Some(parts) => parts
+                .iter()
+                .any(|locs| locs.iter().any(|loc| loc.executor_meta.id == executor_id)),
             None => false,
         };
         if affected {
@@ -438,9 +438,9 @@ impl AdaptiveDatafusionExec {
     ) -> Option<usize> {
         let mut guard = self.shuffle_partitions.lock();
         let affected = match guard.as_ref() {
-            Some(parts) => parts.iter().any(|locs| {
-                locs.iter().any(|loc| loc.executor_meta.id == executor_id)
-            }),
+            Some(parts) => parts
+                .iter()
+                .any(|locs| locs.iter().any(|loc| loc.executor_meta.id == executor_id)),
             None => false,
         };
         if affected {

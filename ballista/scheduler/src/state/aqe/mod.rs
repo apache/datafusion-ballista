@@ -547,8 +547,7 @@ impl AdaptiveExecutionGraph {
                 .collect();
 
             for stage_id in stages_to_drop {
-                if let Some(ExecutionStage::Running(running)) =
-                    self.stages.get(&stage_id)
+                if let Some(ExecutionStage::Running(running)) = self.stages.get(&stage_id)
                 {
                     let running_tasks = running
                         .running_tasks()
@@ -581,9 +580,9 @@ impl AdaptiveExecutionGraph {
         plan: &Arc<dyn ExecutionPlan>,
         affected: &HashSet<usize>,
     ) -> bool {
-        if let Some(reader) = plan
-            .as_any()
-            .downcast_ref::<ballista_core::execution_plans::ShuffleReaderExec>()
+        if let Some(reader) =
+            plan.as_any()
+                .downcast_ref::<ballista_core::execution_plans::ShuffleReaderExec>()
             && affected.contains(&reader.stage_id)
         {
             return true;

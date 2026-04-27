@@ -68,16 +68,10 @@ async fn test_reset_completed_stage_executor_lost() -> Result<()> {
     join_graph.revive();
 
     // Complete the first leaf stage on executor1.
-    revive_graph_and_complete_next_stage_with_executor(
-        &mut join_graph,
-        &executor1,
-    )?;
+    revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor1)?;
 
     // Complete the second leaf stage on executor2.
-    revive_graph_and_complete_next_stage_with_executor(
-        &mut join_graph,
-        &executor2,
-    )?;
+    revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor2)?;
 
     join_graph.revive();
 
@@ -117,16 +111,10 @@ async fn test_reset_resolved_stage_executor_lost() -> Result<()> {
 
     // Complete first leaf stage on executor1 (its outputs end up
     // referencing executor1).
-    revive_graph_and_complete_next_stage_with_executor(
-        &mut join_graph,
-        &executor1,
-    )?;
+    revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor1)?;
 
     // Complete second leaf stage on executor2.
-    revive_graph_and_complete_next_stage_with_executor(
-        &mut join_graph,
-        &executor2,
-    )?;
+    revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor2)?;
 
     // The downstream stage is now Resolved (waiting for revive) but no
     // tasks have been popped yet.
@@ -158,10 +146,7 @@ async fn test_task_update_after_reset_stage() -> Result<()> {
     agg_graph.revive();
 
     // Complete the first stage on executor1 — outputs reference executor1.
-    revive_graph_and_complete_next_stage_with_executor(
-        &mut agg_graph,
-        &executor1,
-    )?;
+    revive_graph_and_complete_next_stage_with_executor(&mut agg_graph, &executor1)?;
 
     agg_graph.revive();
 
@@ -216,10 +201,7 @@ async fn test_long_delayed_failed_task_after_executor_lost() -> Result<()> {
     agg_graph.revive();
 
     // Complete the first stage on executor1.
-    revive_graph_and_complete_next_stage_with_executor(
-        &mut agg_graph,
-        &executor1,
-    )?;
+    revive_graph_and_complete_next_stage_with_executor(&mut agg_graph, &executor1)?;
 
     agg_graph.revive();
 
@@ -255,4 +237,3 @@ async fn test_long_delayed_failed_task_after_executor_lost() -> Result<()> {
 
     Ok(())
 }
-

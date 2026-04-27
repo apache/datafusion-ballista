@@ -256,12 +256,10 @@ impl AdaptivePlanner {
             if let Some(stage_id) = ex.reset_locations_on_lost_executor(executor_id) {
                 out.push((stage_id, node.clone()));
             }
-        } else if let Some(ad) =
-            node.as_any().downcast_ref::<AdaptiveDatafusionExec>()
+        } else if let Some(ad) = node.as_any().downcast_ref::<AdaptiveDatafusionExec>()
+            && let Some(stage_id) = ad.reset_locations_on_lost_executor(executor_id)
         {
-            if let Some(stage_id) = ad.reset_locations_on_lost_executor(executor_id) {
-                out.push((stage_id, node.clone()));
-            }
+            out.push((stage_id, node.clone()));
         }
         for child in node.children() {
             Self::collect_affected_stages(child, executor_id, out);
