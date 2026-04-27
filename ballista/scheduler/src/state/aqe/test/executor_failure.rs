@@ -23,10 +23,11 @@ use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::test::{test_aqe_aggregation_plan, test_aqe_join_plan};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::test_utils::{
-    mock_completed_task, mock_executor,
+    mock_completed_task, mock_executor, mock_failed_task,
     revive_graph_and_complete_next_stage_with_executor,
 };
 use ballista_core::error::Result;
+use ballista_core::serde::protobuf::{ExecutionError, FailedTask, failed_task};
 use ballista_core::serde::scheduler::ExecutorMetadata;
 
 /// Local equivalent of static `drain_tasks`: keep popping tasks and reporting
@@ -201,6 +202,55 @@ async fn test_task_update_after_reset_stage() -> Result<()> {
     assert!(
         agg_graph.is_successful(),
         "agg plan failed to complete after reset/late-status"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_long_delayed_failed_task_after_executor_lost() -> Result<()> {
+    let executor1 = mock_executor("executor-id1".to_string());
+    let executor2 = mock_executor("executor-id2".to_string());
+    let mut agg_graph = test_aqe_aggregation_plan(4).await;
+
+    agg_graph.revive();
+
+    // Complete the first stage on executor1.
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut agg_graph,
+        &executor1,
+    )?;
+
+    agg_graph.revive();
+
+    // Pop one task in the second stage on executor1; do not report.
+    let stranded = agg_graph.pop_next_task(&executor1.id)?;
+
+    // Lose executor1.
+    let reset = agg_graph.reset_stages_on_lost_executor(&executor1.id)?;
+    assert!(!reset.0.is_empty());
+
+    // Now the stranded task's failure status arrives long after the reset.
+    if let Some(t) = stranded {
+        let failed_status = mock_failed_task(
+            t,
+            FailedTask {
+                error: "ExecutionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::ExecutionError(
+                    ExecutionError {},
+                )),
+            },
+        );
+        // Should not panic / not corrupt graph state.
+        agg_graph.update_task_status(&executor1, vec![failed_status], 4, 4)?;
+    }
+
+    drain_aqe(&mut agg_graph, &executor2)?;
+    assert!(
+        agg_graph.is_successful(),
+        "agg plan failed to complete after delayed failed-status from dead executor"
     );
 
     Ok(())
