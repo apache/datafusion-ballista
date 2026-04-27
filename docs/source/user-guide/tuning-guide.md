@@ -83,7 +83,7 @@ in memory across batches.
 
 This is simple and low latency, but for `N` input partitions and `M`
 output partitions it produces `N × M` files. Wide shuffles can therefore
-generate a very large number of small files.
+generate a large number of small files.
 
 ### Sort-based shuffle (opt-in)
 
