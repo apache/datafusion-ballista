@@ -53,7 +53,7 @@ impl ExchangeExec {
     /// If this exec's resolved shuffle_partitions reference the given executor,
     /// clear shuffle_partitions back to None and return its stage_id so the
     /// caller can restore planner cache entries. Returns None if untouched.
-    pub fn reset_locations_on_lost_executor(&self, executor_id: &str) -> Option<usize> {
+    pub(crate) fn reset_locations_on_lost_executor(&self, executor_id: &str) -> Option<usize> {
         let mut guard = self.shuffle_partitions.lock();
         let affected = match guard.as_ref() {
             Some(parts) => parts
@@ -83,7 +83,7 @@ File: `ballista/scheduler/src/state/aqe/planner.rs`
 
 ```rust
 impl AdaptivePlanner {
-    pub fn reset_on_lost_executor(&mut self, executor_id: &str) -> common::Result<()> {
+    pub(super) fn reset_on_lost_executor(&mut self, executor_id: &str) -> common::Result<()> {
         let mut affected: Vec<(usize, Arc<dyn ExecutionPlan>)> = Vec::new();
         Self::collect_affected_stages(&self.plan, executor_id, &mut affected);
 
@@ -202,7 +202,7 @@ Register the new test module in `ballista/scheduler/src/state/aqe/test/mod.rs` (
 - New code paths are only exercised when `ballista_adaptive_query_planner_enabled()` is true (still off by default).
 - No changes to the `ExecutionGraph` trait surface or to `StaticExecutionGraph`.
 - No protocol / serialization changes.
-- The new methods on `ExchangeExec` / `AdaptiveDatafusionExec` are `pub(crate)` (only the planner needs them).
+- The new methods on `ExchangeExec` / `AdaptiveDatafusionExec` are `pub(crate)` (only the planner needs them). `AdaptivePlanner::reset_on_lost_executor` is `pub(super)` (only `AdaptiveExecutionGraph` calls it).
 
 ## Files Changed
 
