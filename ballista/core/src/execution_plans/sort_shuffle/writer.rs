@@ -30,9 +30,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::super::shuffle_writer_trait::ShuffleWriter;
-use super::buffer::PartitionBuffer;
+use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
+use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
 use crate::execution_plans::create_shuffle_path;
 use crate::serde::protobuf::ShuffleWritePartition;
@@ -47,15 +48,14 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::utils::evaluate_expressions_to_arrays;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
-use datafusion::physical_plan::repartition::{
-    BatchPartitioner, REPARTITION_RANDOM_STATE,
-};
+use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -208,7 +208,7 @@ impl SortShuffleWriterExec {
 
         async move {
             let now = Instant::now();
-            let mut stream = plan.execute(input_partition, context)?;
+            let mut stream = plan.execute(input_partition, context.clone())?;
             let schema = stream.schema();
 
             let Partitioning::Hash(exprs, num_output_partitions) = partitioning else {
@@ -217,12 +217,6 @@ impl SortShuffleWriterExec {
                 ));
             };
 
-            // Create partition buffers
-            let mut buffers: Vec<PartitionBuffer> = (0..num_output_partitions)
-                .map(|i| PartitionBuffer::new(i, schema.clone()))
-                .collect();
-
-            // Create spill manager
             let mut spill_manager = SpillManager::new(
                 &work_dir,
                 &job_id,
@@ -233,61 +227,71 @@ impl SortShuffleWriterExec {
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            // Create batch partitioner
-            let mut partitioner = BatchPartitioner::new_hash_partitioner(
-                exprs,
-                num_output_partitions,
-                metrics.repart_time.clone(),
-            );
+            let mut buffered =
+                BufferedBatches::new(num_output_partitions, schema.clone());
 
-            // Process input stream
+            let mut reservation =
+                MemoryConsumer::new(format!("SortShuffleWriter[{input_partition}]"))
+                    .with_can_spill(true)
+                    .register(&context.runtime_env().memory_pool);
+
+            let mut hash_buffer: Vec<u64> = Vec::new();
+
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
                 metrics.input_rows.add(input_batch.num_rows());
 
-                // Partition the batch
-                partitioner.partition(
-                    input_batch,
-                    |output_partition, output_batch| {
-                        buffers[output_partition].append(output_batch);
-                        Ok(())
-                    },
+                // Compute partition assignment for every row.
+                let timer = metrics.repart_time.timer();
+                let per_partition_rows = compute_partition_indices(
+                    &input_batch,
+                    &exprs,
+                    num_output_partitions,
+                    &mut hash_buffer,
                 )?;
+                timer.done();
 
-                // Check if we need to spill
-                let total_memory: usize = buffers.iter().map(|b| b.memory_used()).sum();
-                if total_memory > config.spill_memory_threshold() {
-                    let timer = metrics.spill_time.timer();
-                    spill_largest_buffers(
-                        &mut buffers,
+                // Estimate memory growth: input batch + index Vec growth.
+                let mut growth = input_batch.get_array_memory_size();
+                let before: usize = (0..num_output_partitions)
+                    .map(|p| std::mem::size_of_val(buffered.indices_for(p)))
+                    .sum();
+                buffered.push_batch(input_batch, &per_partition_rows);
+                let after: usize = (0..num_output_partitions)
+                    .map(|p| std::mem::size_of_val(buffered.indices_for(p)))
+                    .sum();
+                growth += after.saturating_sub(before);
+
+                if reservation.try_grow(growth).is_err() {
+                    let spill_timer = metrics.spill_time.timer();
+                    spill_all_partitions(
+                        &mut buffered,
                         &mut spill_manager,
-                        config.spill_memory_threshold() / 2,
+                        &mut reservation,
                         config.batch_size,
                     )?;
-                    timer.done();
+                    spill_timer.done();
                 }
             }
 
-            // Finish spill writers before reading them back
+            // Finish spill writers before reading them back during finalize.
             spill_manager
                 .finish_writers()
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            // Finalize: write consolidated output file
             let timer = metrics.write_time.timer();
             let (data_path, index_path, partition_stats) = finalize_output(
                 &work_dir,
                 &job_id,
                 stage_id,
                 input_partition,
-                &mut buffers,
+                &mut buffered,
                 &mut spill_manager,
                 &schema,
                 &config,
             )?;
             timer.done();
 
-            // Update metrics
             metrics.spill_count.add(spill_manager.total_spills());
             metrics
                 .spill_bytes
@@ -296,29 +300,34 @@ impl SortShuffleWriterExec {
             let total_rows: u64 = partition_stats.iter().map(|(_, _, r, _)| *r).sum();
             metrics.output_rows.add(total_rows as usize);
 
-            // Cleanup spill files
+            // Snapshot spill counters before cleanup (cleanup doesn't touch them
+            // but we want to be explicit about ordering for the log line below).
+            let total_spills = spill_manager.total_spills();
+            let total_bytes_spilled = spill_manager.total_bytes_spilled();
+
             spill_manager
                 .cleanup()
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
+            // Reservation drops naturally; nothing left to free.
+            drop(reservation);
+
             info!(
                 "Sort shuffle write for partition {} completed in {} seconds. \
-                 Output: {:?}, Index: {:?}, Spills: {}, Spill bytes: {}",
+                 Output: {:?}, Index: {:?}, Spill batches: {}, Spill bytes: {}",
                 input_partition,
                 now.elapsed().as_secs(),
                 data_path,
                 index_path,
-                spill_manager.total_spills(),
-                spill_manager.total_bytes_spilled()
+                total_spills,
+                total_bytes_spilled
             );
 
-            // Build result - one entry per output partition that has data
             let mut results = Vec::new();
             for (part_id, num_batches, num_rows, num_bytes) in partition_stats {
                 if num_rows > 0 {
                     results.push(ShuffleWritePartition {
                         partition_id: part_id as u64,
-                        //path: data_path.to_string_lossy().to_string(),
                         num_batches,
                         num_rows,
                         num_bytes,
@@ -333,39 +342,33 @@ impl SortShuffleWriterExec {
     }
 }
 
-/// Spills the largest buffers until total memory is below the target.
-fn spill_largest_buffers(
-    buffers: &mut [PartitionBuffer],
+/// Spills *all* buffered partitions: for each partition, materializes its
+/// indices through `PartitionedBatchIterator` and appends each yielded batch
+/// to that partition's spill file. After this call, `buffered.is_empty()` is
+/// true and `reservation.size() == 0`.
+fn spill_all_partitions(
+    buffered: &mut BufferedBatches,
     spill_manager: &mut SpillManager,
-    target_memory: usize,
+    reservation: &mut MemoryReservation,
     batch_size: usize,
 ) -> Result<()> {
-    loop {
-        let total_memory: usize = buffers.iter().map(|b| b.memory_used()).sum();
-        if total_memory <= target_memory {
-            break;
+    if buffered.is_empty() {
+        return Ok(());
+    }
+    let (batches, indices) = buffered.take();
+    for (partition_id, partition_indices) in indices.iter().enumerate() {
+        if partition_indices.is_empty() {
+            continue;
         }
-
-        // Find the largest buffer
-        let largest_idx = buffers
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, b)| b.memory_used())
-            .map(|(i, _)| i);
-
-        match largest_idx {
-            Some(idx) if buffers[idx].memory_used() > 0 => {
-                let partition_id = buffers[idx].partition_id();
-                let batches = buffers[idx].drain_coalesced(batch_size);
-                for batch in &batches {
-                    spill_manager
-                        .spill(partition_id, batch)
-                        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-                }
-            }
-            _ => break, // No more buffers to spill
+        let iter = PartitionedBatchIterator::new(&batches, partition_indices, batch_size);
+        for result in iter {
+            let batch = result?;
+            spill_manager
+                .spill(partition_id, &batch)
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
         }
     }
+    reservation.free();
     Ok(())
 }
 
@@ -379,16 +382,15 @@ fn finalize_output(
     job_id: &str,
     stage_id: usize,
     input_partition: usize,
-    buffers: &mut [PartitionBuffer],
+    buffered: &mut BufferedBatches,
     spill_manager: &mut SpillManager,
     schema: &SchemaRef,
     config: &SortShuffleConfig,
 ) -> Result<FinalizeResult> {
-    let num_partitions = buffers.len();
+    let num_partitions = buffered.num_partitions();
     let mut index = ShuffleIndex::new(num_partitions);
     let mut partition_stats = Vec::with_capacity(num_partitions);
 
-    // Create output directory
     let mut output_dir = PathBuf::from(work_dir);
     output_dir.push(job_id);
     output_dir.push(format!("{stage_id}"));
@@ -400,28 +402,28 @@ fn finalize_output(
 
     debug!("Writing consolidated shuffle output to {:?}", data_path);
 
-    // Use FileWriter for random access support via FileReader
     let file = File::create(&data_path)?;
-    let mut buffered = BufWriter::new(file);
+    let mut buffered_writer = BufWriter::new(file);
 
     let options =
         IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
-    let mut writer = FileWriter::try_new_with_options(&mut buffered, schema, options)?;
+    let mut writer =
+        FileWriter::try_new_with_options(&mut buffered_writer, schema, options)?;
 
-    // Track cumulative batch counts - index stores the starting batch index for each partition
-    // FileReader supports random access to batches by index
     let mut cumulative_batch_count: i64 = 0;
 
-    // Write partitions in order
-    for (partition_id, buffer) in buffers.iter_mut().enumerate() {
-        // Set the starting batch index for this partition
+    // Take ownership of the in-memory state once. After this we can iterate
+    // each partition's indices independently without borrow-checker grief.
+    let (in_memory_batches, in_memory_indices) = buffered.take();
+
+    for (partition_id, partition_indices) in in_memory_indices.iter().enumerate() {
         index.set_offset(partition_id, cumulative_batch_count);
 
         let mut partition_rows: u64 = 0;
         let mut partition_batches: u64 = 0;
         let mut partition_bytes: u64 = 0;
 
-        // First, stream any spill file for this partition
+        // First, stream any spill file for this partition.
         if let Some(reader) = spill_manager
             .open_spill_reader(partition_id)
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
@@ -435,13 +437,20 @@ fn finalize_output(
             }
         }
 
-        // Then write remaining buffered data (coalesced)
-        let buffered_batches = buffer.take_batches_coalesced(config.batch_size);
-        for batch in buffered_batches {
-            partition_rows += batch.num_rows() as u64;
-            partition_bytes += batch.get_array_memory_size() as u64;
-            partition_batches += 1;
-            writer.write(&batch)?;
+        // Then write the in-memory remainder via interleave_record_batch.
+        if !partition_indices.is_empty() {
+            let iter = PartitionedBatchIterator::new(
+                &in_memory_batches,
+                partition_indices,
+                config.batch_size,
+            );
+            for result in iter {
+                let batch = result?;
+                partition_rows += batch.num_rows() as u64;
+                partition_bytes += batch.get_array_memory_size() as u64;
+                partition_batches += 1;
+                writer.write(&batch)?;
+            }
         }
 
         partition_stats.push((
@@ -454,13 +463,8 @@ fn finalize_output(
         cumulative_batch_count += partition_batches as i64;
     }
 
-    // Finish writing (this writes the IPC footer for random access)
     writer.finish()?;
-
-    // Store total batch count
     index.set_total_length(cumulative_batch_count);
-
-    // Write index file
     index
         .write_to_file(&index_path)
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -682,7 +686,6 @@ impl std::fmt::Display for SortShuffleWriterExec {
 ///
 /// `hash_buffer` is reused across calls to amortize allocations; it is
 /// cleared and resized internally.
-#[allow(dead_code)] // wired in by a subsequent task
 fn compute_partition_indices(
     batch: &RecordBatch,
     exprs: &[Arc<dyn PhysicalExpr>],
@@ -833,6 +836,7 @@ mod tests {
         use datafusion::arrow::array::Int64Array;
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         use datafusion::physical_plan::metrics::Time;
+        use datafusion::physical_plan::repartition::BatchPartitioner;
 
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
         let values: Vec<i64> = (0..10).collect();
