@@ -41,20 +41,29 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
 /// max message size for gRPC clients
-pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
-    "ballista.grpc_client_max_message_size";
+pub const BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE: &str =
+    "ballista.client.grpc_max_message_size";
 /// Configuration key for gRPC client connection timeout in seconds.
-pub const BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS: &str =
-    "ballista.grpc.client.connect_timeout_seconds";
+pub const BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS: &str =
+    "ballista.client.grpc_connect_timeout_seconds";
 /// Configuration key for gRPC client request timeout in seconds.
-pub const BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS: &str =
-    "ballista.grpc.client.timeout_seconds";
+pub const BALLISTA_CLIENT_GRPC_TIMEOUT_SECONDS: &str =
+    "ballista.client.grpc_timeout_seconds";
 /// Configuration key for TCP keep-alive interval for gRPC clients in seconds.
-pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
-    "ballista.grpc.client.tcp_keepalive_seconds";
+pub const BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS: &str =
+    "ballista.client.grpc_tcp_keepalive_seconds";
 /// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
-pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
-    "ballista.grpc.client.http2_keepalive_interval_seconds";
+pub const BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
+    "ballista.client.grpc_http2_keepalive_interval_seconds";
+/// Should client employ pull or push job tracking strategy
+pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
+/// Should client use tls connection
+pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
+/// Number of retries for IO operations in the Ballista client
+pub const BALLISTA_CLIENT_IO_RETRIES_TIMES: &str = "ballista.client.io_retries_times";
+/// Wait time in milliseconds between IO retries in the Ballista client
+pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
+    "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
 /// Number of times that the optimizer will attempt to optimize the plan
@@ -75,14 +84,6 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
-/// Should client employ pull or push job tracking strategy
-pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
-/// Should client use tls connection
-pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
-/// Number of retries for IO operations in the Ballista client
-pub const BALLISTA_IO_RETRIES_TIMES: &str = "ballista.client.io_retries_times";
-/// Wait time in milliseconds between IO retries in the Ballista client
-pub const BALLISTA_IO_RETRY_WAIT_TIME_MS: &str = "ballista.client.io_retry_wait_time_ms";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -112,23 +113,23 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
                          Some((16 * 1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS.to_string(),
                          "Connection timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((20).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_TIMEOUT_SECONDS.to_string(),
                          "Request timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((20).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS.to_string(),
                          "TCP keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((3600).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((300).to_string())),
@@ -168,11 +169,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Should connection between client, scheduler, and executors use TLS.".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_IO_RETRIES_TIMES.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_IO_RETRIES_TIMES.to_string(),
                          "Number of retries for IO operations in the Ballista client.".to_string(),
                          DataType::UInt16,
                          Some(3.to_string())),
-        ConfigEntry::new(BALLISTA_IO_RETRY_WAIT_TIME_MS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS.to_string(),
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
                          Some(3000.to_string()))
@@ -299,27 +300,27 @@ impl BallistaConfig {
 
     /// Returns the gRPC client connection timeout in seconds.
     pub fn grpc_client_connect_timeout_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS)
     }
 
     /// Returns the gRPC client request timeout in seconds.
     pub fn grpc_client_timeout_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_TIMEOUT_SECONDS)
     }
 
     /// Returns the TCP keep-alive interval for gRPC clients in seconds.
     pub fn grpc_client_tcp_keepalive_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS)
     }
 
     /// Returns the HTTP/2 keep-alive interval for gRPC clients in seconds.
     pub fn grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
     }
 
     /// Returns the maximum message size for gRPC clients in bytes.
     pub fn grpc_client_max_message_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE)
     }
 
     /// Returns whether the default cache node extension is disabled.
@@ -393,12 +394,12 @@ impl BallistaConfig {
 
     /// Returns the number of retries for IO operations in the Ballista client.
     pub fn io_retries_times(&self) -> usize {
-        self.get_usize_setting(BALLISTA_IO_RETRIES_TIMES)
+        self.get_usize_setting(BALLISTA_CLIENT_IO_RETRIES_TIMES)
     }
 
     /// Returns the wait time in milliseconds between IO retries in the Ballista client.
     pub fn io_retry_wait_time_ms(&self) -> usize {
-        self.get_usize_setting(BALLISTA_IO_RETRY_WAIT_TIME_MS)
+        self.get_usize_setting(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
