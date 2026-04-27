@@ -952,9 +952,12 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     );
                 }
             } else {
-                return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {stage_id} for job {job_id}"
-                )));
+                // Stage may have been dropped during executor-failure recovery
+                // (see reset_stages_internal). Late task statuses for such
+                // stages are expected and benign — log and skip.
+                warn!(
+                    "Ignoring task status update for unknown stage {job_id}/{stage_id} (stage may have been dropped during recovery)"
+                );
             }
         }
 

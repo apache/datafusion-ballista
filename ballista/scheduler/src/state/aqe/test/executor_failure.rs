@@ -20,7 +20,7 @@
 //! `ballista/scheduler/src/state/execution_graph.rs`.
 
 use crate::state::aqe::AdaptiveExecutionGraph;
-use crate::state::aqe::test::test_aqe_join_plan;
+use crate::state::aqe::test::{test_aqe_aggregation_plan, test_aqe_join_plan};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::test_utils::{
     mock_completed_task, mock_executor,
@@ -143,6 +143,64 @@ async fn test_reset_resolved_stage_executor_lost() -> Result<()> {
     assert!(
         join_graph.is_successful(),
         "join plan failed to complete after Resolved-stage rollback"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_task_update_after_reset_stage() -> Result<()> {
+    let executor1 = mock_executor("executor-id1".to_string());
+    let executor2 = mock_executor("executor-id2".to_string());
+    let mut agg_graph = test_aqe_aggregation_plan(4).await;
+
+    agg_graph.revive();
+
+    // Complete the first stage on executor1 — outputs reference executor1.
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut agg_graph,
+        &executor1,
+    )?;
+
+    agg_graph.revive();
+
+    // First task in the second stage, on executor2.
+    if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+        let task_status = mock_completed_task(task, &executor2.id);
+        agg_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
+    }
+
+    // Second task in the second stage, on executor1.
+    if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        let task_status = mock_completed_task(task, &executor1.id);
+        agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
+    }
+
+    // Third task — popped (running) but not completed, on executor1.
+    let task = agg_graph.pop_next_task(&executor1.id)?;
+
+    let reset = agg_graph.reset_stages_on_lost_executor(&executor1.id)?;
+
+    // The 3rd task's late status arrives after the reset.
+    if let Some(t) = task {
+        let task_status = mock_completed_task(t, &executor1.id);
+        agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
+    }
+
+    assert!(!reset.0.is_empty(), "expected stages to be reset");
+
+    // Idempotent: a second reset call must produce no further changes.
+    let reset2 = agg_graph.reset_stages_on_lost_executor(&executor1.id)?;
+    assert!(
+        reset2.0.is_empty(),
+        "expected second reset call to be a no-op, got {:?}",
+        reset2.0
+    );
+
+    drain_aqe(&mut agg_graph, &executor2)?;
+    assert!(
+        agg_graph.is_successful(),
+        "agg plan failed to complete after reset/late-status"
     );
 
     Ok(())
