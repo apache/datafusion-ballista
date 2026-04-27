@@ -38,13 +38,13 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         "Input Rows",
         "Output Rows",
         "Elapsed Compute",
-        "Task Durations (min/med/max/p25/p75 ms)",
+        "Task Durations\n(min/p25/med/p75/max ms)",
     ]
     .into_iter()
     .map(|h| Cell::from(Text::from(h).centered()))
     .collect::<Row>()
     .style(header_style)
-    .height(1);
+    .height(2);
 
     let rows = popup
         .stages
@@ -66,7 +66,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     )
     .block(
         Block::default()
-            .title(" Job Stages (↑↓ navigate | Enter tasks | Esc close) ")
+            .title(" Job Stages (↑↓ - navigate | Enter - show tasks | Esc - close) ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     )
@@ -87,16 +87,13 @@ fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
 
     let status_color = match stage.status.as_str() {
         "Running" => Color::LightBlue,
-        "Completed" => Color::Green,
+        "Successful" | "Completed" => Color::Green,
         "Failed" => Color::Red,
         _ => Color::Gray,
     };
 
     let p = &stage.task_duration_percentiles;
-    let task_summary = format!(
-        "min={} med={} max={} p25={} p75={}",
-        p.min, p.median, p.max, p.p25, p.p75
-    );
+    let task_summary = format!("{}/{}/{}/{}/{}", p.min, p.p25, p.median, p.p75, p.max);
 
     Row::new(vec![
         Cell::from(Text::from(stage.id.clone()).centered()),
