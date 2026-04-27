@@ -930,6 +930,16 @@ mod tests {
             assert!(seen.contains(&k), "key {k} missing from round-trip");
         }
 
+        // (c) Confirm the writer's MemoryReservation was freed.
+        // The reservation is registered on the pool during execute_shuffle_write
+        // and freed when the future completes, so the pool should now report no
+        // reserved bytes from any source.
+        let pool_reserved = session_ctx.runtime_env().memory_pool.reserved();
+        assert_eq!(
+            pool_reserved, 0,
+            "expected MemoryReservation freed after finalization, but pool reports {pool_reserved} bytes still reserved"
+        );
+
         Ok(())
     }
 
