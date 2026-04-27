@@ -114,7 +114,7 @@ The following session-level keys tune its behavior:
 | ballista.shuffle.sort_based.enabled       | Boolean | false       | Enables the sort-based shuffle writer.                                                                     |
 | ballista.shuffle.sort_based.buffer_size   | UInt64  | 1048576     | Per-partition buffer size in bytes (1 MiB default).                                                        |
 | ballista.shuffle.sort_based.memory_limit  | UInt64  | 268435456   | Total in-memory budget across all output-partition buffers (256 MiB default).                              |
-| ballista.shuffle.sort_based.spill_threshold | Utf8  | 0.8         | Fraction of `memory_limit` at which the largest buffers begin spilling to disk. Must be in the range 0–1. |
+| ballista.shuffle.sort_based.spill_threshold | Utf8  | "0.8"         | Fraction of `memory_limit` at which the largest buffers begin spilling to disk. Must be in the range 0–1. |
 | ballista.shuffle.sort_based.batch_size    | UInt64  | 8192        | Target row count when coalescing buffered batches before they are written or spilled.                      |
 
 ## Push-based vs Pull-based Task Scheduling
