@@ -276,6 +276,23 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#shuffle-implementation">
+   Shuffle Implementation
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#hash-based-shuffle-default">
+     Hash-based shuffle (default)
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#sort-based-shuffle-opt-in">
+     Sort-based shuffle (opt-in)
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#push-based-vs-pull-based-task-scheduling">
    Push-based vs Pull-based Task Scheduling
   </a>
@@ -372,6 +389,80 @@ this will also mean that the executor will use more memory. If executors are fai
 decreasing the number of concurrent tasks may help.</p>
 <p>In the future, Ballista will have better support for tracking memory usage and allocating tasks based on available
 memory, as well as supporting spill-to-disk to reduce memory pressure.</p>
+</section>
+<section id="shuffle-implementation">
+<h2>Shuffle Implementation<a class="headerlink" href="#shuffle-implementation" title="Link to this heading">¶</a></h2>
+<p>Ballista exchanges data between query stages by writing the output of each
+upstream task to local files, which downstream tasks read either from disk
+(when co-located) or over Arrow Flight. Two shuffle implementations are
+available, with different trade-offs around file count, memory use, and
+write latency.</p>
+<section id="hash-based-shuffle-default">
+<h3>Hash-based shuffle (default)<a class="headerlink" href="#hash-based-shuffle-default" title="Link to this heading">¶</a></h3>
+<p>The default writer hashes each incoming <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> and immediately
+encodes the per-partition slices to Arrow IPC, streaming them into one
+file per <code class="docutils literal notranslate"><span class="pre">(input_partition,</span> <span class="pre">output_partition)</span></code> pair. Nothing is buffered
+in memory across batches.</p>
+<p>This is simple and low latency, but for <code class="docutils literal notranslate"><span class="pre">N</span></code> input partitions and <code class="docutils literal notranslate"><span class="pre">M</span></code>
+output partitions it produces <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">×</span> <span class="pre">M</span></code> files. Wide shuffles can therefore
+generate a large number of small files.</p>
+</section>
+<section id="sort-based-shuffle-opt-in">
+<h3>Sort-based shuffle (opt-in)<a class="headerlink" href="#sort-based-shuffle-opt-in" title="Link to this heading">¶</a></h3>
+<p>The sort-based writer accumulates batches in a per-output-partition
+in-memory buffer. When the total buffered size crosses a threshold, the
+largest buffers are spilled to disk. After the input stream finishes, the
+remaining in-memory data and any spilled batches are merged and written
+into a single consolidated Arrow IPC file per input partition, alongside
+an index file that lets readers seek directly to a given output partition.</p>
+<p>This produces <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">×</span> <span class="pre">N</span></code> files instead of <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">×</span> <span class="pre">M</span></code>, coalesces small batches
+to a target size before writing, and bounds shuffle memory use via
+spilling — at the cost of higher write latency than the hash writer.
+Consider enabling it for queries with high partition fan-out or when
+file-count pressure on local storage is a concern.</p>
+<p>The sort-based writer is disabled by default and is enabled per session:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">&quot;ballista.shuffle.sort_based.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>The following session-level keys tune its behavior:</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>type</p></th>
+<th class="head"><p>default</p></th>
+<th class="head"><p>description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Enables the sort-based shuffle writer.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.sort_based.buffer_size</p></td>
+<td><p>UInt64</p></td>
+<td><p>1048576</p></td>
+<td><p>Per-partition buffer size in bytes (1 MiB default).</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.memory_limit</p></td>
+<td><p>UInt64</p></td>
+<td><p>268435456</p></td>
+<td><p>Total in-memory budget across all output-partition buffers (256 MiB default).</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.sort_based.spill_threshold</p></td>
+<td><p>Utf8</p></td>
+<td><p>“0.8”</p></td>
+<td><p>Fraction of <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> at which the largest buffers begin spilling to disk. Must be in the range 0–1.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
+<td><p>UInt64</p></td>
+<td><p>8192</p></td>
+<td><p>Target row count when coalescing buffered batches before they are written or spilled.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
 </section>
 <section id="push-based-vs-pull-based-task-scheduling">
 <h2>Push-based vs Pull-based Task Scheduling<a class="headerlink" href="#push-based-vs-pull-based-task-scheduling" title="Link to this heading">¶</a></h2>
