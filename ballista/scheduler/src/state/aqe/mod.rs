@@ -64,7 +64,6 @@ mod test;
 ///
 /// with many limitations, such as:
 ///
-/// - it does not cover executor failure
 /// - dynamically coalescing shuffle partitions, not supported yet
 /// - does not switch from hash join to sort merge join
 /// - does not switch from streaming aggregation to hash aggregation
@@ -481,6 +480,20 @@ impl AdaptiveExecutionGraph {
         reset_stage.extend(rollback_resolved_stages);
         reset_stage.extend(rollback_running_stages);
         reset_stage.extend(resubmit_successful_stages);
+
+        // Synchronize planner state with the graph-level rollback above.
+        // Without this, re-running stages can't accept
+        // update_exchange_locations (cache entries were cleared in
+        // finalise_stage) and the plan tree still treats affected
+        // exchanges as resolved.
+        self.planner
+            .reset_on_lost_executor(executor_id)
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to reset AdaptivePlanner state on lost executor {executor_id}: {e}"
+                ))
+            })?;
+
         Ok((reset_stage, all_running_tasks))
     }
 
