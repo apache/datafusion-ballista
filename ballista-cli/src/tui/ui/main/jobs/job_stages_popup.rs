@@ -17,6 +17,7 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::JobStageResponse;
+use datafusion::common::human_readable_count;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
@@ -102,8 +103,8 @@ fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
                 .style(Style::default().fg(status_color))
                 .centered(),
         ),
-        Cell::from(Text::from(stage.input_rows.to_string()).centered()),
-        Cell::from(Text::from(stage.output_rows.to_string()).centered()),
+        Cell::from(Text::from(human_readable_count(stage.input_rows)).centered()),
+        Cell::from(Text::from(human_readable_count(stage.output_rows)).centered()),
         Cell::from(Text::from(stage.elapsed_compute.clone()).centered()),
         Cell::from(Text::from(task_summary).centered()),
     ])
