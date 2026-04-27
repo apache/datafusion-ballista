@@ -32,6 +32,7 @@ use datafusion::error::Result;
 #[allow(dead_code)]
 pub(crate) struct PartitionedBatchIterator<'a> {
     batches: &'a [RecordBatch],
+    batch_refs: Vec<&'a RecordBatch>,
     indices: &'a [(u32, u32)],
     batch_size: usize,
     pos: usize,
@@ -53,8 +54,10 @@ impl<'a> PartitionedBatchIterator<'a> {
         indices: &'a [(u32, u32)],
         batch_size: usize,
     ) -> Self {
+        let batch_refs = batches.iter().collect();
         Self {
             batches,
+            batch_refs,
             indices,
             batch_size,
             pos: 0,
@@ -79,9 +82,7 @@ impl<'a> Iterator for PartitionedBatchIterator<'a> {
         );
         self.pos = end;
 
-        // `interleave_record_batch` expects a `&[&RecordBatch]` view.
-        let batch_refs: Vec<&RecordBatch> = self.batches.iter().collect();
-        match interleave_record_batch(&batch_refs, &self.scratch) {
+        match interleave_record_batch(&self.batch_refs, &self.scratch) {
             Ok(batch) => Some(Ok(batch)),
             Err(e) => Some(Err(DataFusionError::ArrowError(
                 Box::new(e),
