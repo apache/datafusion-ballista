@@ -427,6 +427,29 @@ impl AdaptiveDatafusionExec {
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
     }
+
+    /// If this exec's resolved `shuffle_partitions` reference the given
+    /// executor, clear `shuffle_partitions` back to `None` and return its
+    /// `stage_id` so the planner can restore cache entries. Returns `None`
+    /// if unaffected.
+    pub(crate) fn reset_locations_on_lost_executor(
+        &self,
+        executor_id: &str,
+    ) -> Option<usize> {
+        let mut guard = self.shuffle_partitions.lock();
+        let affected = match guard.as_ref() {
+            Some(parts) => parts.iter().any(|locs| {
+                locs.iter().any(|loc| loc.executor_meta.id == executor_id)
+            }),
+            None => false,
+        };
+        if affected {
+            *guard = None;
+            self.stage_id()
+        } else {
+            None
+        }
+    }
 }
 
 impl DisplayAs for AdaptiveDatafusionExec {
@@ -584,5 +607,30 @@ mod tests {
 
         assert_eq!(result, None);
         assert!(!exec.shuffle_created());
+    }
+
+    #[test]
+    fn adaptive_datafusion_exec_reset_clears_when_affected() {
+        let exec = AdaptiveDatafusionExec::new(0, empty_input());
+        exec.set_stage_id(11);
+        exec.resolve_shuffle_partitions(vec![vec![loc("ex-1")]]);
+        assert!(exec.shuffle_created());
+
+        let result = exec.reset_locations_on_lost_executor("ex-1");
+
+        assert_eq!(result, Some(11));
+        assert!(!exec.shuffle_created());
+    }
+
+    #[test]
+    fn adaptive_datafusion_exec_reset_no_op_when_unrelated_executor() {
+        let exec = AdaptiveDatafusionExec::new(0, empty_input());
+        exec.set_stage_id(11);
+        exec.resolve_shuffle_partitions(vec![vec![loc("ex-2")]]);
+
+        let result = exec.reset_locations_on_lost_executor("ex-1");
+
+        assert_eq!(result, None);
+        assert!(exec.shuffle_created());
     }
 }
