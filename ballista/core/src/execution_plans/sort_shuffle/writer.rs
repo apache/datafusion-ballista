@@ -50,7 +50,10 @@ use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
-use datafusion::physical_plan::repartition::BatchPartitioner;
+use datafusion::common::hash_utils::create_hashes;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::repartition::{BatchPartitioner, REPARTITION_RANDOM_STATE};
+use datafusion::physical_expr_common::utils::evaluate_expressions_to_arrays;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -668,6 +671,33 @@ impl std::fmt::Display for SortShuffleWriterExec {
     }
 }
 
+/// Computes per-row output partition assignments for hash partitioning.
+///
+/// Returns a `Vec` of length `num_partitions`, where entry `p` lists the
+/// row indices in `batch` that hash to partition `p`. Hash semantics are
+/// byte-identical to `datafusion::physical_plan::repartition::BatchPartitioner::Hash`.
+///
+/// `hash_buffer` is reused across calls to amortize allocations; it is
+/// cleared and resized internally.
+#[allow(dead_code)] // wired in by a subsequent task
+fn compute_partition_indices(
+    batch: &RecordBatch,
+    exprs: &[Arc<dyn PhysicalExpr>],
+    num_partitions: usize,
+    hash_buffer: &mut Vec<u64>,
+) -> Result<Vec<Vec<u32>>> {
+    let arrays = evaluate_expressions_to_arrays(exprs, batch)?;
+    hash_buffer.clear();
+    hash_buffer.resize(batch.num_rows(), 0);
+    create_hashes(&arrays, REPARTITION_RANDOM_STATE.random_state(), hash_buffer)?;
+
+    let mut out: Vec<Vec<u32>> = (0..num_partitions).map(|_| Vec::new()).collect();
+    for (row, &h) in hash_buffer.iter().enumerate() {
+        out[(h % num_partitions as u64) as usize].push(row as u32);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +729,51 @@ mod tests {
             Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
 
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+    }
+
+    #[test]
+    fn compute_partition_indices_distributes_rows_by_hash() {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from((0..1000_i64).collect::<Vec<_>>())),
+                Arc::new(StringArray::from(
+                    (0..1000).map(|i| format!("v{i}")).collect::<Vec<String>>(),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> =
+            vec![Arc::new(datafusion::physical_expr::expressions::Column::new("k", 0))];
+
+        let mut hash_buffer: Vec<u64> = Vec::new();
+        let result =
+            compute_partition_indices(&batch, &exprs, 8, &mut hash_buffer).unwrap();
+
+        // 8 partition slots
+        assert_eq!(result.len(), 8);
+        // Total row count is preserved
+        let total: usize = result.iter().map(|v| v.len()).sum();
+        assert_eq!(total, 1000);
+        // No row index appears in two partitions
+        let mut seen = vec![false; 1000];
+        for indices in &result {
+            for &row in indices {
+                assert!(!seen[row as usize], "row {row} appeared twice");
+                seen[row as usize] = true;
+            }
+        }
+        // Distribution is non-trivial — at least 2 distinct partitions used
+        let used = result.iter().filter(|v| !v.is_empty()).count();
+        assert!(used >= 2, "expected hash to use multiple partitions");
     }
 
     #[tokio::test]
