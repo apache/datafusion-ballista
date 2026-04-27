@@ -109,3 +109,6 @@ logs/
 # Claude Code guidance file (local only)
 CLAUDE.md
 .claude/
+
+# git worktrees for parallel development (local only)
+.worktrees/
