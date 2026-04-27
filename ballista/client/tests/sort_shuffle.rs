@@ -32,8 +32,7 @@ mod sort_shuffle_tests {
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
         BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
-        BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE, BALLISTA_SHUFFLE_SORT_BASED_ENABLED,
-        BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT,
+        BALLISTA_SHUFFLE_SORT_BASED_ENABLED,
     };
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
@@ -55,9 +54,7 @@ mod sort_shuffle_tests {
     async fn create_sort_shuffle_context(read_mode: ReadMode) -> SessionContext {
         let mut config = SessionConfig::new_with_ballista()
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
-            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, false) // AQE does not support sort shuffle at the moment
-            .set_str(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE, "1048576") // 1MB
-            .set_str(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT, "268435456"); // 256MB
+            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, false); // AQE does not support sort shuffle at the moment
 
         // Configure read mode
         match read_mode {
