@@ -340,9 +340,10 @@ pub async fn start_executor_process(
         concurrent_tasks,
         opt.override_execution_engine.clone().unwrap_or_else(|| {
             if opt.connection_cache > 0 {
-                let client_pool = Arc::new(DefaultBallistaClientPool::new(
-                    Duration::from_secs(opt.connection_cache),
-                ));
+                let client_pool =
+                    Arc::new(DefaultBallistaClientPool::with_eviction_thread(
+                        Duration::from_secs(opt.connection_cache),
+                    ));
                 Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
             } else {
                 Arc::new(DefaultExecutionEngine::new())

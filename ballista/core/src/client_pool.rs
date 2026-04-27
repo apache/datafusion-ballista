@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use datafusion::arrow::compute::kernels::boolean;
 
 use crate::client::BallistaClient;
 use crate::error::Result;
@@ -156,34 +157,43 @@ impl Debug for DefaultBallistaClientPool {
 }
 
 impl DefaultBallistaClientPool {
-    /// Create a pool that evicts connections idle longer than `idle_timeout`.
-    pub fn new(idle_timeout: Duration) -> Self {
+    /// Create a pool that evicts connections idle longer than `idle_timeout`,
+    pub fn with_eviction_thread(idle_timeout: Duration) -> Self {
+        Self::new(idle_timeout, true)
+    }
+
+    /// Create a pool that evicts connections idle longer than `idle_timeout`,
+    /// if `enable_eviction_thread` is enabled
+    pub fn new(idle_timeout: Duration, enable_eviction_thread: bool) -> Self {
         let inner = Arc::new(Inner {
             idle: DashMap::new(),
             idle_timeout,
         });
 
         let weak: Weak<Inner> = Arc::downgrade(&inner);
-        let check_interval = Duration::from_secs((idle_timeout.as_secs() / 5).max(10));
+        // TODO: do we limit minimum interval here?
+        let check_interval = Duration::from_secs((idle_timeout.as_secs() / 5).max(15));
 
-        tokio::spawn(async move {
-            log::debug!(
-                "client connection pool - eviction thread started ... interval: {check_interval:?}"
-            );
-            let mut ticker = tokio::time::interval(check_interval);
-            loop {
-                ticker.tick().await;
+        if enable_eviction_thread {
+            tokio::spawn(async move {
+                log::debug!(
+                    "client connection pool - eviction thread started ... interval: {check_interval:?}"
+                );
+                let mut ticker = tokio::time::interval(check_interval);
+                loop {
+                    ticker.tick().await;
 
-                match weak.upgrade() {
-                    None => break,
-                    Some(pool) => {
-                        log::trace!("client connection pool - evicting connections");
-                        evict(&pool.idle, pool.idle_timeout)
+                    match weak.upgrade() {
+                        None => break,
+                        Some(pool) => {
+                            log::trace!("client connection pool - evicting connections");
+                            evict(&pool.idle, pool.idle_timeout)
+                        }
                     }
                 }
-            }
-            log::debug!("client connection pool - eviction thread ... DONE");
-        });
+                log::debug!("client connection pool - eviction thread ... DONE");
+            });
+        }
 
         Self { inner }
     }
@@ -287,7 +297,7 @@ mod tests {
     use std::time::Duration;
 
     fn make_pool(timeout: Duration) -> DefaultBallistaClientPool {
-        DefaultBallistaClientPool::new(timeout)
+        DefaultBallistaClientPool::new(timeout, false)
     }
 
     /// Inject an `IdleEntry` with a specific `idle_since` directly into the
