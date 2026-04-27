@@ -79,7 +79,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     )
     .block(
         Block::default()
-            .title("  Tasks for Stage '{}' (Esc close) ")
+            .title(format!("  Tasks for Stage '{}' (Esc close) ", stage.id))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     )
