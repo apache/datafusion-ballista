@@ -167,14 +167,22 @@ impl DefaultBallistaClientPool {
         let check_interval = Duration::from_secs((idle_timeout.as_secs() / 5).max(10));
 
         tokio::spawn(async move {
+            log::debug!(
+                "client connection pool - eviction thread started ... interval: {check_interval:?}"
+            );
             let mut ticker = tokio::time::interval(check_interval);
             loop {
                 ticker.tick().await;
+
                 match weak.upgrade() {
                     None => break,
-                    Some(pool) => evict(&pool.idle, pool.idle_timeout),
+                    Some(pool) => {
+                        log::trace!("client connection pool - evicting connections");
+                        evict(&pool.idle, pool.idle_timeout)
+                    }
                 }
             }
+            log::debug!("client connection pool - eviction thread ... DONE");
         });
 
         Self { inner }
@@ -222,8 +230,16 @@ impl BallistaClientPool for DefaultBallistaClientPool {
             .map(|e| e.client);
 
         let client = match maybe_idle {
-            Some(c) => c,
+            Some(c) => {
+                log::trace!(
+                    "client connection pool - returning cached connection - host:{host}, port:{port}"
+                );
+                c
+            }
             None => {
+                log::trace!(
+                    "client connection pool - returning NEW connection - host:{host}, port:{port}"
+                );
                 BallistaClient::try_new(
                     host,
                     port,

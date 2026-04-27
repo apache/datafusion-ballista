@@ -24,6 +24,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use ballista_core::client_pool::DefaultBallistaClientPool;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
 use datafusion::DATAFUSION_VERSION;
@@ -63,7 +64,7 @@ use ballista_core::utils::{
 };
 use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
 
-use crate::execution_engine::ExecutionEngine;
+use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
@@ -171,6 +172,8 @@ pub struct ExecutorProcessConfig {
     pub override_arrow_flight_service: Option<Arc<ArrowFlightServerProvider>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Number of second established client connection should be cached (0 means no cache)
+    pub connection_cache: u64,
 }
 
 impl ExecutorProcessConfig {
@@ -219,6 +222,7 @@ impl Default for ExecutorProcessConfig {
             override_physical_codec: None,
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
+            connection_cache: 0,
         }
     }
 }
@@ -334,7 +338,16 @@ pub async fn start_executor_process(
         opt.override_function_registry.clone().unwrap_or_default(),
         metrics_collector,
         concurrent_tasks,
-        opt.override_execution_engine.clone(),
+        opt.override_execution_engine.clone().unwrap_or_else(|| {
+            if opt.connection_cache > 0 {
+                let client_pool = Arc::new(DefaultBallistaClientPool::new(
+                    Duration::from_secs(opt.connection_cache),
+                ));
+                Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
+            } else {
+                Arc::new(DefaultExecutionEngine::new())
+            }
+        }),
     ));
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;

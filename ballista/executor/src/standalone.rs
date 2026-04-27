@@ -119,7 +119,7 @@ pub async fn new_standalone_executor_from_builder(
 
     info!("work_dir: {work_dir}");
 
-    let executor = Arc::new(Executor::new(
+    let executor = Arc::new(Executor::with_default_execution_engine(
         executor_meta,
         &work_dir,
         runtime_producer,
@@ -127,7 +127,6 @@ pub async fn new_standalone_executor_from_builder(
         Arc::new(function_registry),
         Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
-        None,
     ));
 
     let service = BallistaFlightService::new(work_dir);
