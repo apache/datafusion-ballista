@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_CLIENT_USE_TLS, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
@@ -410,10 +410,10 @@ impl SessionConfigExt for SessionConfig {
 
     fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self {
         if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+            self.set_usize(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, max_size)
         } else {
             self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+                .set_usize(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, max_size)
         }
     }
 

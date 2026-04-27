@@ -134,6 +134,8 @@ impl ClusterState for InMemoryClusterState {
             status: Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active(String::default())),
             }),
+            peak_proc_physical_memory: 0,
+            peak_proc_virtual_memory: 0,
         })
         .await?;
 
@@ -190,6 +192,8 @@ impl ClusterState for InMemoryClusterState {
                 .as_secs(),
             metrics: vec![],
             status: None,
+            peak_proc_physical_memory: 0,
+            peak_proc_virtual_memory: 0,
         };
         self.save_executor_heartbeat(heartbeat).await
         // Ok(())
@@ -518,7 +522,9 @@ mod test {
     };
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
-    use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
+    use ballista_core::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+    };
     use ballista_core::utils::{default_config_producer, default_session_builder};
     use datafusion::prelude::SessionConfig;
     use futures::StreamExt;
@@ -639,7 +645,8 @@ mod test {
             host: "".to_string(),
             port: 50055,
             grpc_port: 50050,
-            specification: ExecutorSpecification { task_slots: 2 },
+            specification: ExecutorSpecification::default().with_task_slots(2),
+            os_info: ExecutorOperatingSystemSpecification::default(),
         };
 
         cluster_state

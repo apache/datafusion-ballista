@@ -25,12 +25,14 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::registry::BallistaFunctionRegistry;
+use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use log::{error, info, warn};
+use sysinfo::{Disks, System};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
 use tokio::signal;
@@ -63,6 +65,7 @@ use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
+use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
@@ -115,6 +118,8 @@ pub struct ExecutorProcessConfig {
     pub grpc_server_config: GrpcServerConfig,
     /// Interval in seconds between heartbeat messages.
     pub executor_heartbeat_interval_seconds: u64,
+    /// Metric collection policy of this executor instance
+    pub metric_collection_policy: ExecutorMetricCollectionPolicy,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -170,6 +175,7 @@ impl Default for ExecutorProcessConfig {
             grpc_max_encoding_message_size: 16777216,
             grpc_server_config: Default::default(),
             executor_heartbeat_interval_seconds: 60,
+            metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,
@@ -229,20 +235,13 @@ pub async fn start_executor_process(
     );
     info!("Executor id: {executor_id}");
     info!("Executor working directory: {work_dir}");
-    info!("Executor number of concurrent tasks: {concurrent_tasks}");
+    info!(
+        "Executor number of concurrent tasks (available CPU cores): {concurrent_tasks}"
+    );
     info!("Executor scheduling policy: {task_scheduling_policy:?}");
 
-    let executor_meta = ExecutorRegistration {
-        id: executor_id.clone(),
-        host: opt.external_host.clone(),
-        port: opt.port as u32,
-        grpc_port: opt.grpc_port as u32,
-        specification: Some(ExecutorSpecification {
-            resources: vec![ExecutorResource {
-                resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-            }],
-        }),
-    };
+    let executor_meta =
+        structure_executor_metadata(&executor_id, &opt, concurrent_tasks as u32);
 
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
@@ -278,7 +277,7 @@ pub async fn start_executor_process(
     > = BallistaCodec::new(logical, physical);
 
     let executor = Arc::new(Executor::new(
-        executor_meta,
+        executor_meta.clone(),
         &work_dir,
         runtime_producer,
         config_producer,
@@ -418,10 +417,14 @@ pub async fn start_executor_process(
     // Channels used to receive stop requests from Executor grpc service.
     let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
 
+    // Starting main executor process based on the TaskSchedulingPolicy
+    //
+    // PushStaged => starting new executor_server that waits for tasks from the schedule
+    // PullStaged => executor is polling the scheduler when it is idle
     match scheduler_policy {
         TaskSchedulingPolicy::PushStaged => {
             service_handlers.push(
-                //If there is executor registration error during startup, return the error and stop early.
+                // If there is executor registration error during startup, return the error and stop early.
                 executor_server::startup(
                     scheduler.clone(),
                     opt.clone(),
@@ -443,7 +446,7 @@ pub async fn start_executor_process(
     };
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
-    //let wd = work_dir.clone();
+
     service_handlers.push(match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
@@ -508,17 +511,7 @@ pub async fn start_executor_process(
                 status: Some(ExecutorStatus {
                     status: Some(Status::Terminating(String::default())),
                 }),
-                metadata: Some(ExecutorRegistration {
-                    id: executor_id.clone(),
-                    host: opt.external_host.clone(),
-                    port: opt.port as u32,
-                    grpc_port: opt.grpc_port as u32,
-                    specification: Some(ExecutorSpecification {
-                        resources: vec![ExecutorResource {
-                            resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-                        }],
-                    }),
-                }),
+                metadata: Some(executor_meta),
             })
             .await
         {
@@ -771,6 +764,56 @@ pub async fn satisfy_dir_ttl(
     }
 
     Ok(false)
+}
+
+/// Structuring executor's metadata to start the main process
+pub fn structure_executor_metadata(
+    executor_id: &str,
+    options: &Arc<ExecutorProcessConfig>,
+    concurrent_tasks: u32,
+) -> ExecutorRegistration {
+    let system_name =
+        System::name().unwrap_or_else(|| String::from("Unknown system name"));
+    let os_ver =
+        System::os_version().unwrap_or_else(|| String::from("Unknown OS version"));
+    let os_ver_long = System::long_os_version()
+        .unwrap_or_else(|| String::from("Unknown long OS version"));
+    let kernel_ver = System::kernel_long_version();
+
+    let physical_cores = System::physical_core_count().unwrap_or(0) as u32;
+    let open_files_limit = System::open_files_limit().unwrap_or(0) as u64;
+
+    let disks = Disks::new_with_refreshed_list();
+    let num_disks = disks.list().len() as u32;
+    let mut total_disk_space: u64 = 0;
+    let mut total_available_disk_space: u64 = 0;
+    for disk in &disks {
+        total_disk_space += disk.total_space();
+        total_available_disk_space += disk.available_space();
+    }
+
+    ExecutorRegistration {
+        id: executor_id.to_string().clone(),
+        host: options.external_host.clone(),
+        port: options.port as u32,
+        grpc_port: options.grpc_port as u32,
+        specification: Some(ExecutorSpecification {
+            resources: vec![ExecutorResource {
+                resource: Some(Resource::TaskSlots(concurrent_tasks)),
+            }],
+        }),
+        os_info: Some(ExecutorOperatingSystemSpecification {
+            system_name,
+            kernel_ver,
+            os_ver,
+            os_ver_long,
+            physical_cores,
+            num_disks,
+            total_disk_space,
+            total_available_disk_space,
+            open_files_limit,
+        }),
+    }
 }
 
 #[cfg(test)]

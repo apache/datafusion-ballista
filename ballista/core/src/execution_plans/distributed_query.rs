@@ -330,6 +330,8 @@ async fn execute_query_pull(
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
     let use_tls = session_config.ballista_use_tls();
+    let io_retries_times = grpc_config.io_retries_times;
+    let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -469,6 +471,8 @@ async fn execute_query_pull(
                         flight_proxy.clone(),
                         customize_endpoint.clone(),
                         use_tls,
+                        io_retries_times,
+                        io_retry_wait_time_ms,
                     )
                     .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
@@ -497,6 +501,8 @@ async fn execute_query_push(
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
     let use_tls = session_config.ballista_use_tls();
+    let io_retries_times = grpc_config.io_retries_times;
+    let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -623,6 +629,8 @@ async fn execute_query_push(
                         flight_proxy.clone(),
                         customize_endpoint.clone(),
                         use_tls,
+                        io_retries_times,
+                        io_retry_wait_time_ms,
                     )
                     .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
@@ -679,7 +687,7 @@ fn get_client_host_port(
         }
     }
 }
-
+#[allow(clippy::too_many_arguments)]
 async fn fetch_partition(
     location: PartitionLocation,
     max_message_size: usize,
@@ -688,6 +696,8 @@ async fn fetch_partition(
     flight_proxy: Option<FlightProxy>,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     use_tls: bool,
+    io_retries_times: u8,
+    io_retry_wait_time_ms: u64,
 ) -> Result<SendableRecordBatchStream> {
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
@@ -708,6 +718,8 @@ async fn fetch_partition(
         max_message_size,
         use_tls,
         customize_endpoint,
+        io_retries_times,
+        io_retry_wait_time_ms,
     )
     .await
     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -743,6 +755,7 @@ mod test {
             port: 12345,
             grpc_port: 1,
             specification: None,
+            os_info: None,
         };
 
         // no flight proxy -> client should fetch results from executor

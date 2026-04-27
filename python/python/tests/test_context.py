@@ -73,3 +73,21 @@ def test_read_dataframe_api(ctx):
 
     assert result.column(0) == pa.array([3, 4, 5])
     assert result.column(1) == pa.array([-4, -5, -6])
+
+
+def test_cluster_config_propagates_to_distributed_dataframe():
+    """The cluster_config dict should be passed to DistributedDataFrame
+    instances created through the BallistaSessionContext, so it can be
+    forwarded to the scheduler-side session.
+    """
+    (address, port) = setup_test_cluster()
+    overrides = {"datafusion.execution.target_partitions": "256"}
+    ctx = BallistaSessionContext(
+        address=f"df://{address}:{port}",
+        cluster_config=overrides,
+    )
+
+    assert ctx.cluster_config == overrides
+
+    df = ctx.sql("SELECT 1")
+    assert df.cluster_config == overrides
