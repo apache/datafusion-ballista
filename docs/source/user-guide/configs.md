@@ -94,16 +94,16 @@ The following session-level keys control Ballista's shuffle behavior. See
 the [tuning guide](tuning-guide.md#shuffle-implementation) for an
 explanation of the hash-based (default) and sort-based shuffle writers.
 
-| key                                                | type    | default     | description                                                                                                                                  |
-| -------------------------------------------------- | ------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.shuffle.max_concurrent_read_requests      | UInt64  | 64          | Maximum number of concurrent fetch requests the shuffle reader will issue.                                                                   |
-| ballista.shuffle.force_remote_read                 | Boolean | false       | Forces the shuffle reader to fetch every partition through Arrow Flight, even when the data is local. Intended for testing.                  |
-| ballista.shuffle.remote_read_prefer_flight         | Boolean | false       | For remote reads, prefer the Arrow Flight reader over the block reader. The block reader is generally faster.                                |
-| ballista.shuffle.sort_based.enabled                | Boolean | false       | Enables the sort-based shuffle writer (consolidated data file per input partition with an index, instead of one file per (input partition, output partition) pair).  |
-| ballista.shuffle.sort_based.buffer_size            | UInt64  | 1048576     | Per-partition buffer size in bytes for the sort-based writer (1 MiB default).                                                                |
-| ballista.shuffle.sort_based.memory_limit           | UInt64  | 268435456   | Total in-memory budget across all output-partition buffers for the sort-based writer (256 MiB default).                                      |
-| ballista.shuffle.sort_based.spill_threshold        | Utf8    | "0.8"         | Fraction of `memory_limit` at which the largest buffers spill to disk. Must be in the range 0–1.                                             |
-| ballista.shuffle.sort_based.batch_size             | UInt64  | 8192        | Target row count when coalescing buffered batches before they are written or spilled.                                                        |
+| key                                           | type    | default   | description                                                                                                                                                         |
+| --------------------------------------------- | ------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.shuffle.max_concurrent_read_requests | UInt64  | 64        | Maximum number of concurrent fetch requests the shuffle reader will issue.                                                                                          |
+| ballista.shuffle.force_remote_read            | Boolean | false     | Forces the shuffle reader to fetch every partition through Arrow Flight, even when the data is local. Intended for testing.                                         |
+| ballista.shuffle.remote_read_prefer_flight    | Boolean | false     | For remote reads, prefer the Arrow Flight reader over the block reader. The block reader is generally faster.                                                       |
+| ballista.shuffle.sort_based.enabled           | Boolean | false     | Enables the sort-based shuffle writer (consolidated data file per input partition with an index, instead of one file per (input partition, output partition) pair). |
+| ballista.shuffle.sort_based.buffer_size       | UInt64  | 1048576   | Per-partition buffer size in bytes for the sort-based writer (1 MiB default).                                                                                       |
+| ballista.shuffle.sort_based.memory_limit      | UInt64  | 268435456 | Total in-memory budget across all output-partition buffers for the sort-based writer (256 MiB default).                                                             |
+| ballista.shuffle.sort_based.spill_threshold   | Utf8    | "0.8"     | Fraction of `memory_limit` at which the largest buffers spill to disk. Must be in the range 0–1.                                                                    |
+| ballista.shuffle.sort_based.batch_size        | UInt64  | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                               |
 
 ## Ballista Scheduler Configuration Settings
 
