@@ -37,12 +37,16 @@ pub(crate) struct MultiStreamPartitionStream {
     data_path: PathBuf,
     schema: SchemaRef,
     end_offset: u64,
-    /// Active sub-stream reader, or `None` between sub-streams.
-    reader: Option<StreamReader<File>>,
-    /// Absolute byte position to seek to for the next sub-stream. `None`
-    /// while `reader` is `Some` (the position is held inside the reader).
-    next_offset: Option<u64>,
-    finished: bool,
+    state: State,
+}
+
+enum State {
+    /// Next sub-stream begins at this absolute byte offset.
+    Pending(u64),
+    /// Currently draining a sub-stream.
+    Reading(StreamReader<File>),
+    /// Range exhausted or an error has terminated the stream.
+    Done,
 }
 
 impl MultiStreamPartitionStream {
@@ -55,62 +59,49 @@ impl MultiStreamPartitionStream {
         start_offset: u64,
         end_offset: u64,
     ) -> Self {
-        let finished = start_offset >= end_offset;
+        let state = if start_offset >= end_offset {
+            State::Done
+        } else {
+            State::Pending(start_offset)
+        };
         Self {
             data_path,
             schema,
             end_offset,
-            reader: None,
-            next_offset: Some(start_offset),
-            finished,
+            state,
         }
     }
 
     /// Synchronous core: pulls the next batch, advancing across sub-stream
-    /// boundaries as needed.
+    /// boundaries as needed. Any error path leaves `state == Done`, so a
+    /// repeated poll after an error returns `Ok(None)` rather than retrying
+    /// the failed offset.
     fn next_batch(&mut self) -> Result<Option<RecordBatch>, ArrowError> {
         loop {
-            if self.finished {
-                return Ok(None);
-            }
-
-            if let Some(reader) = self.reader.as_mut() {
-                match reader.next() {
-                    Some(Ok(batch)) => return Ok(Some(batch)),
-                    Some(Err(e)) => {
-                        self.finished = true;
-                        return Err(e);
+            match std::mem::replace(&mut self.state, State::Done) {
+                State::Done => return Ok(None),
+                State::Reading(mut reader) => match reader.next() {
+                    Some(Ok(batch)) => {
+                        self.state = State::Reading(reader);
+                        return Ok(Some(batch));
                     }
+                    Some(Err(e)) => return Err(e),
                     None => {
-                        // EOS for this sub-stream: capture position and drop
-                        // the reader so we can construct the next one.
-                        let pos = reader
-                            .get_mut()
-                            .stream_position()
-                            .map_err(|e| ArrowError::IoError(format!("{e}"), e))?;
-                        self.next_offset = Some(pos);
-                        self.reader = None;
+                        let pos = reader.get_mut().stream_position()?;
+                        if pos < self.end_offset {
+                            self.state = State::Pending(pos);
+                        }
                     }
+                },
+                State::Pending(next) => {
+                    if next >= self.end_offset {
+                        return Ok(None);
+                    }
+                    let mut file = File::open(&self.data_path)?;
+                    file.seek(SeekFrom::Start(next))?;
+                    self.state = State::Reading(StreamReader::try_new(file, None)?);
                 }
             }
-
-            let next = self
-                .next_offset
-                .expect("invariant: next_offset is Some when reader is None");
-            if next >= self.end_offset {
-                self.finished = true;
-                return Ok(None);
-            }
-
-            self.finished = true;
-            let mut file = File::open(&self.data_path)
-                .map_err(|e| ArrowError::IoError(format!("{e}"), e))?;
-            file.seek(SeekFrom::Start(next))
-                .map_err(|e| ArrowError::IoError(format!("{e}"), e))?;
-            let reader = StreamReader::try_new(file, None)?;
-            self.reader = Some(reader);
-            self.next_offset = None;
-            self.finished = false;
         }
     }
 }

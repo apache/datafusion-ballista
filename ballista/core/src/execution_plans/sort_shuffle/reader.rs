@@ -63,11 +63,8 @@ pub fn stream_sort_shuffle_partition(
     }
 
     // Read the schema from the leading header stream.
-    let header_file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let header_reader = StreamReader::try_new(header_file, None)
-        .map_err(|e| BallistaError::General(format!("read schema header: {e}")))?;
-    let schema = header_reader.schema();
-    drop(header_reader);
+    let header_file = File::open(data_path)?;
+    let schema = StreamReader::try_new(header_file, None)?.schema();
 
     let (start, end) = index.get_partition_range(partition_id);
     if start < 0 || end < start {

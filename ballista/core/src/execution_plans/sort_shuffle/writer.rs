@@ -415,7 +415,9 @@ fn finalize_output(
     let (in_memory_batches, in_memory_indices) = buffered.take();
 
     for (partition_id, partition_indices) in in_memory_indices.iter().enumerate() {
-        // Stream position before this partition's bytes start.
+        // Flush before reading the kernel position so the BufWriter buffer
+        // is empty; std::io::copy below also writes directly to the inner
+        // File and would land after any pending buffered bytes otherwise.
         output.flush()?;
         let partition_start = output.get_mut().stream_position()? as i64;
         index.set_offset(partition_id, partition_start);
@@ -423,13 +425,11 @@ fn finalize_output(
         let (spill_batches, spill_rows, spill_bytes) =
             spill_manager.partition_stats(partition_id);
 
-        // 1) Byte-copy the spill file (if any) directly into the output.
         if let Some(spill_path) = spill_manager.spill_path(partition_id) {
             let mut spill_file = File::open(spill_path)?;
             std::io::copy(&mut spill_file, output.get_mut())?;
         }
 
-        // 2) Append in-memory remainder as a fresh IPC stream.
         let mut mem_batches: u64 = 0;
         let mut mem_rows: u64 = 0;
         let mut mem_bytes: u64 = 0;
