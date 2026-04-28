@@ -177,16 +177,16 @@ pub struct Config {
     #[arg(
         long,
         default_value_t = 4,
-        help = "Number of failures attempts before task is considered failed."
+        help = "Number of attempts before task is considered failed."
     )]
-    pub task_max_failures: u64,
+    pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     #[arg(
         long,
         default_value_t = 4,
-        help = "Number of failures attempts before stage is considered failed."
+        help = "Number of attempts before stage is considered failed."
     )]
-    pub stage_max_failures: u64,
+    pub stage_max_failures: usize,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     #[arg(
@@ -249,10 +249,10 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
-    /// Number of failures attempts before task is considered failed"
-    pub task_max_failures: u64,
-    /// Number of failures attempts before stage is considered failed"
-    pub stage_max_failures: u64,
+    /// Number of failures attempts before task is considered failed
+    pub task_max_failures: usize,
+    /// Number of failures attempts before stage is considered failed
+    pub stage_max_failures: usize,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,

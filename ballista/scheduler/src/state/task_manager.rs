@@ -132,9 +132,9 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     /// Task launcher implementation.
     launcher: Arc<dyn TaskLauncher>,
     /// Maximum number of failure attempts for task-level retry before the task is considered failed
-    task_max_failures: u64,
+    task_max_failures: usize,
     /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
-    stage_max_failures: u64,
+    stage_max_failures: usize,
 }
 
 /// Cache for active job information managed by this scheduler.
@@ -428,8 +428,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 graph.update_task_status(
                     executor,
                     statuses,
-                    self.task_max_failures.try_into().unwrap(),
-                    self.stage_max_failures.try_into().unwrap(),
+                    self.task_max_failures,
+                    self.stage_max_failures,
                 )?
             } else {
                 // TODO Deal with curator changed case
