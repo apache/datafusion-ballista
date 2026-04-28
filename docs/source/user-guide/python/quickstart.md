@@ -130,7 +130,7 @@ COUNT(UInt8(1)): int64]
 `explain` shows the logical and physical plans for a query:
 
 ```python
->>> df.explain()
+df.explain()
 +---------------+-------------------------------------------------------------+
 | plan_type     | plan                                                        |
 +---------------+-------------------------------------------------------------+
