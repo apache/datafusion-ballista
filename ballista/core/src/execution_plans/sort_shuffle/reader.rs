@@ -164,12 +164,6 @@ pub fn stream_sort_shuffle_partition(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::CompressionType;
-    use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
-    use std::io::BufWriter;
-    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
