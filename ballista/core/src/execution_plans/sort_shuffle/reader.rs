@@ -47,69 +47,6 @@ pub fn get_index_path(data_path: &Path) -> std::path::PathBuf {
     data_path.with_extension("arrow.index")
 }
 
-/// Reads all batches for a specific partition from a sort shuffle data file.
-///
-/// Uses Arrow IPC FileReader for efficient random access - directly reads
-/// only the batches belonging to the requested partition without scanning
-/// through preceding data.
-///
-/// # Arguments
-/// * `data_path` - Path to the consolidated data file (Arrow IPC File format)
-/// * `index_path` - Path to the index file
-/// * `partition_id` - The partition to read
-///
-/// # Returns
-/// Vector of record batches for the requested partition.
-pub fn read_sort_shuffle_partition(
-    data_path: &Path,
-    index_path: &Path,
-    partition_id: usize,
-) -> Result<Vec<RecordBatch>> {
-    // Load the index
-    let index = ShuffleIndex::read_from_file(index_path)?;
-
-    if partition_id >= index.partition_count() {
-        return Err(BallistaError::General(format!(
-            "Partition {partition_id} not found in index (max: {})",
-            index.partition_count()
-        )));
-    }
-
-    // Check if partition has data
-    if !index.partition_has_data(partition_id) {
-        return Ok(Vec::new());
-    }
-
-    // Get the batch range for this partition from the index
-    // The index stores cumulative batch counts:
-    // - offset[i] = starting batch index for partition i
-    // - offset[i+1] (or total_length for last partition) = ending batch index (exclusive)
-    let (start_batch, end_batch) = index.get_partition_range(partition_id);
-    let start_batch = start_batch as usize;
-    let end_batch = end_batch as usize;
-
-    // Open the data file with FileReader for random access
-    let file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let mut reader = FileReader::try_new(file, None)?;
-
-    let mut batches = Vec::with_capacity(end_batch - start_batch);
-
-    // Use FileReader's set_index() for random access to specific batches
-    // This positions the reader directly at the starting batch index
-    reader.set_index(start_batch)?;
-
-    // Read only the batches we need for this partition
-    for _ in start_batch..end_batch {
-        match reader.next() {
-            Some(Ok(batch)) => batches.push(batch),
-            Some(Err(e)) => return Err(e.into()),
-            None => break,
-        }
-    }
-
-    Ok(batches)
-}
-
 /// A stream that reads batches from a sort shuffle partition lazily.
 ///
 /// Wraps an Arrow FileReader and yields batches one at a time without
@@ -224,25 +161,6 @@ pub fn stream_sort_shuffle_partition(
     )))
 }
 
-/// Reads all batches from a sort shuffle data file.
-///
-/// # Arguments
-/// * `data_path` - Path to the consolidated data file (Arrow IPC File format)
-///
-/// # Returns
-/// Vector of all record batches in the file.
-pub fn read_all_batches(data_path: &Path) -> Result<Vec<RecordBatch>> {
-    let file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let reader = FileReader::try_new(file, None)?;
-
-    let mut batches = Vec::with_capacity(reader.num_batches());
-    for batch_result in reader {
-        batches.push(batch_result?);
-    }
-
-    Ok(batches)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,18 +171,6 @@ mod tests {
     use std::io::BufWriter;
     use std::sync::Arc;
     use tempfile::TempDir;
-
-    fn create_test_schema() -> datafusion::arrow::datatypes::SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
-    }
-
-    fn create_test_batch(
-        schema: &datafusion::arrow::datatypes::SchemaRef,
-        values: Vec<i32>,
-    ) -> RecordBatch {
-        let array = Int32Array::from(values);
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
-    }
 
     #[test]
     fn test_is_sort_shuffle_output() {
@@ -279,37 +185,5 @@ mod tests {
         // With index file
         std::fs::write(&index_path, b"test").unwrap();
         assert!(is_sort_shuffle_output(&data_path));
-    }
-
-    #[test]
-    fn test_read_all_batches() -> Result<()> {
-        let temp_dir = TempDir::new().unwrap();
-        let schema = create_test_schema();
-        let data_path = temp_dir.path().join("data.arrow");
-
-        // Write test data using FileWriter (IPC File format)
-        let file = File::create(&data_path).unwrap();
-        let mut buffered = BufWriter::new(file);
-        let options = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))
-            .unwrap();
-        let mut writer =
-            FileWriter::try_new_with_options(&mut buffered, &schema, options).unwrap();
-
-        writer
-            .write(&create_test_batch(&schema, vec![1, 2, 3]))
-            .unwrap();
-        writer
-            .write(&create_test_batch(&schema, vec![4, 5]))
-            .unwrap();
-        writer.finish().unwrap();
-
-        // Read back
-        let batches = read_all_batches(&data_path)?;
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].num_rows(), 3);
-        assert_eq!(batches[1].num_rows(), 2);
-
-        Ok(())
     }
 }

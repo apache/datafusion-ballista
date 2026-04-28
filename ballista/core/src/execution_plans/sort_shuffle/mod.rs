@@ -40,9 +40,6 @@ mod writer;
 pub use buffer::BufferedBatches;
 pub use config::SortShuffleConfig;
 pub use index::ShuffleIndex;
-pub use reader::{
-    get_index_path, is_sort_shuffle_output, read_all_batches,
-    read_sort_shuffle_partition, stream_sort_shuffle_partition,
-};
+pub use reader::{get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition};
 pub use spill::SpillManager;
 pub use writer::SortShuffleWriterExec;
