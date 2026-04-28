@@ -72,15 +72,6 @@ pub const BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES: &str =
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
-/// Configuration key for sort shuffle per-partition buffer size in bytes.
-pub const BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE: &str =
-    "ballista.shuffle.sort_based.buffer_size";
-/// Configuration key for sort shuffle total memory limit in bytes.
-pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT: &str =
-    "ballista.shuffle.sort_based.memory_limit";
-/// Configuration key for sort shuffle spill threshold (0.0-1.0).
-pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
-    "ballista.shuffle.sort_based.spill_threshold";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
@@ -145,18 +136,6 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE.to_string(),
-                         "Per-partition buffer size in bytes for sort shuffle".to_string(),
-                         DataType::UInt64,
-                         Some((1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT.to_string(),
-                         "Total memory limit in bytes for sort shuffle buffers".to_string(),
-                         DataType::UInt64,
-                         Some((256 * 1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD.to_string(),
-                         "Spill threshold as decimal fraction (0.0-1.0) of memory limit".to_string(),
-                         DataType::Utf8,
-                         Some("0.8".to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -362,21 +341,6 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_SHUFFLE_SORT_BASED_ENABLED)
     }
 
-    /// Returns the per-partition buffer size for sort-based shuffle in bytes.
-    pub fn shuffle_sort_based_buffer_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE)
-    }
-
-    /// Returns the total memory limit for sort-based shuffle buffers in bytes.
-    pub fn shuffle_sort_based_memory_limit(&self) -> usize {
-        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT)
-    }
-
-    /// Returns the spill threshold for sort-based shuffle (0.0-1.0).
-    pub fn shuffle_sort_based_spill_threshold(&self) -> f64 {
-        self.get_f64_setting(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD)
-    }
-
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
@@ -436,16 +400,6 @@ impl BallistaConfig {
             // infallible because we validate all configs in the constructor
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.to_string()
-        }
-    }
-
-    fn get_f64_setting(&self, key: &str) -> f64 {
-        if let Some(v) = self.settings.get(key) {
-            v.parse::<f64>().unwrap()
-        } else {
-            let entries = Self::valid_entries();
-            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
-            v.parse::<f64>().unwrap()
         }
     }
 }

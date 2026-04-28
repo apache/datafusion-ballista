@@ -61,15 +61,6 @@ use std::time::Instant;
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Default per-partition buffer size for sort-based shuffle (1 MiB).
-const DEFAULT_SORT_BUFFER_SIZE: usize = 1024 * 1024;
-
-/// Default total memory limit for sort-based shuffle buffers (256 MiB).
-const DEFAULT_SORT_MEMORY_LIMIT: usize = 256 * 1024 * 1024;
-
-/// Default spill threshold as a fraction of `memory_limit` for sort shuffle.
-const DEFAULT_SORT_SPILL_THRESHOLD: f64 = 0.8;
-
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "shuffle_bench",
@@ -101,10 +92,8 @@ struct Args {
     #[arg(long, default_value_t = 8192)]
     batch_size: usize,
 
-    /// Memory pool size in bytes. When set, applies to both
-    /// RuntimeEnvBuilder::with_memory_limit (governs Parquet decoding and
-    /// other memory-aware operators) and the sort writer's internal
-    /// memory_limit field (governs spill-to-disk).
+    /// Memory pool size in bytes (passed to RuntimeEnvBuilder::with_memory_limit).
+    /// When set, the sort writer will spill once usage crosses this limit.
     #[arg(long)]
     memory_limit: Option<usize>,
 
@@ -297,15 +286,8 @@ async fn execute_shuffle_write(
             exec.metrics().unwrap_or_default()
         }
         WriterKind::Sort => {
-            let memory_limit = args.memory_limit.unwrap_or(DEFAULT_SORT_MEMORY_LIMIT);
-            let cfg = SortShuffleConfig::new(
-                true,
-                DEFAULT_SORT_BUFFER_SIZE,
-                memory_limit,
-                DEFAULT_SORT_SPILL_THRESHOLD,
-                CompressionType::LZ4_FRAME,
-                args.batch_size,
-            );
+            let cfg =
+                SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, args.batch_size);
             let exec = SortShuffleWriterExec::try_new(
                 format!("bench_job_{task_id}"),
                 1,

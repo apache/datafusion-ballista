@@ -79,13 +79,7 @@ pub struct SortShuffleWriterExecNode {
     pub output_partitioning: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
-    /// Configuration for sort shuffle
-    #[prost(uint64, tag = "5")]
-    pub buffer_size: u64,
-    #[prost(uint64, tag = "6")]
-    pub memory_limit: u64,
-    #[prost(double, tag = "7")]
-    pub spill_threshold: f64,
+    /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,
 }
