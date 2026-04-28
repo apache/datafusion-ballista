@@ -142,6 +142,11 @@ struct Inner {
 /// evicted by a background tokio task that runs at `idle_timeout / 3`
 /// intervals (minimum 15 s). The task exits automatically when the pool `Arc`
 /// is dropped.
+///
+/// Note: The `DefaultBallistaClientPool` only uses the (host, port) combination for
+/// connection identification. Consequently changes to connection configuration
+/// may not be propagated and the pool may return connections
+/// with a previous configuration.
 
 #[derive(Clone)]
 pub struct DefaultBallistaClientPool {
@@ -155,7 +160,8 @@ impl Debug for DefaultBallistaClientPool {
 }
 
 impl DefaultBallistaClientPool {
-    /// Create a pool that evicts connections idle longer than `idle_timeout`,
+    /// Create a pool that evicts connections idle longer
+    /// than defined `idle_timeout`.
     pub fn with_eviction_thread(idle_timeout: Duration) -> Self {
         Self::new(idle_timeout, true)
     }
@@ -209,7 +215,7 @@ fn evict(idle: &IdleMap, timeout: Duration) {
 
     // Drain expired entries from the front of each deque (oldest = front).
     idle.retain(|_, deque| {
-        while deque.front().is_some_and(|e| e.idle_since <= deadline) {
+        while deque.front().is_some_and(|e| e.idle_since < deadline) {
             deque.pop_front();
         }
         !deque.is_empty()

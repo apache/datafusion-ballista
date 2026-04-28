@@ -172,7 +172,7 @@ pub struct ExecutorProcessConfig {
     pub override_arrow_flight_service: Option<Arc<ArrowFlightServerProvider>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
-    /// Number of second established client connection should be cached (0 means no cache)
+    /// Number of seconds established client connection should be cached (0 means no cache)
     pub connection_cache: u64,
 }
 
