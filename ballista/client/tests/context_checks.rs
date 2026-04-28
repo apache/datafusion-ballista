@@ -847,6 +847,13 @@ mod supported {
             .show()
             .await?;
 
+        // The block-transport remote reader does not support sort-based
+        // shuffle output, so this test exercises the hash-based writer.
+        ctx.sql("SET ballista.shuffle.sort_based.enabled = false")
+            .await?
+            .show()
+            .await?;
+
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'ballista.shuffle.force_remote_read' order by name limit 1")
             .await?
@@ -1000,6 +1007,15 @@ mod supported {
         #[case]
         ctx: SessionContext,
     ) {
+        // Pin the writer so the EXPLAIN output is stable regardless of the
+        // session-level shuffle default.
+        ctx.sql("SET ballista.shuffle.sort_based.enabled = false")
+            .await
+            .unwrap()
+            .show()
+            .await
+            .unwrap();
+
         let result = ctx
             .sql("EXPLAIN select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id")
             .await
