@@ -368,7 +368,7 @@ fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
         } else {
             0.0
         };
-        format!("{:.3}s ({:.1}%)", secs, pct)
+        format!("{secs:.3}s ({pct:.1}%)")
     };
     let aggregated = metrics.aggregate_by_name();
     for m in aggregated.iter() {
@@ -447,19 +447,19 @@ fn main() {
     let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
     println!("=== Ballista Shuffle Benchmark ===");
-    println!("Writer:         {:?}", writer_kind);
-    println!("Partitioning:   {:?}", partitioning_kind);
+    println!("Writer:         {writer_kind:?}");
+    println!("Partitioning:   {partitioning_kind:?}");
     println!("Input:          {}", args.input.display());
     println!(
         "Schema:         {} cols ({})",
         schema.fields().len(),
         describe_schema(&schema)
     );
-    println!("Total rows:     {}", total_rows);
+    println!("Total rows:     {total_rows}");
     println!("Partitions:     {}", args.partitions);
     println!("Batch size:     {}", args.batch_size);
     if let Some(m) = args.memory_limit {
-        println!("Memory limit:   {} bytes", m);
+        println!("Memory limit:   {m} bytes");
     }
     if args.concurrent_tasks > 1 {
         println!("Concurrent:     {} tasks", args.concurrent_tasks);

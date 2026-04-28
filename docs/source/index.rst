@@ -42,7 +42,7 @@ Table of content
    :maxdepth: 1
    :caption: Clients
 
-   Python <user-guide/python>
+   Python <user-guide/python/index>
    Rust <user-guide/rust>
    SQL CLI <user-guide/cli>
 

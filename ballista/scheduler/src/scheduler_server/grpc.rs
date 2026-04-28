@@ -26,11 +26,12 @@ use ballista_core::serde::protobuf::{
     CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
     ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
-    ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
-    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
-    execute_query_failure_result, execute_query_result, executor_metric::Metric,
+    ExecutorStoppedResult, GetJobMetricsParams, GetJobMetricsResult, GetJobStatusParams,
+    GetJobStatusResult, HeartBeatParams, HeartBeatResult, JobStatus, KeyValuePair,
+    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
+    RemoveSessionParams, RemoveSessionResult, UpdateTaskStatusParams,
+    UpdateTaskStatusResult, execute_query_failure_result, execute_query_result,
+    executor_metric::Metric,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -53,6 +54,7 @@ use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -547,6 +549,134 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Err(Status::internal(msg))
             }
         }
+    }
+
+    async fn get_job_metrics(
+        &self,
+        request: Request<GetJobMetricsParams>,
+    ) -> Result<Response<GetJobMetricsResult>, Status> {
+        let job_id = request.into_inner().job_id;
+        trace!("Received get_job_metrics request for job {}", job_id);
+
+        let graph = self
+            .state
+            .task_manager
+            .get_job_execution_graph(&job_id)
+            .await
+            .map_err(|e| {
+                let msg =
+                    format!("Error fetching execution graph for job {job_id}: {e:?}");
+                error!("{msg}");
+                Status::internal(msg)
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!("Execution graph not found for job {job_id}"))
+            })?;
+
+        let mut stage_metrics_list = graph
+            .stages()
+            .iter()
+            .filter_map(|(stage_id, stage)| {
+                let successful = match stage {
+                    crate::state::execution_graph::ExecutionStage::Successful(stage) => {
+                        stage
+                    }
+                    _ => return None,
+                };
+
+                let raw_metrics = &successful.stage_metrics;
+                let mut operators = Vec::with_capacity(raw_metrics.len());
+                let mut metric_index = 0;
+                let operators = (|| -> Result<
+                    Vec<ballista_core::serde::protobuf::OperatorWithMetrics>,
+                    BallistaError,
+                > {
+                    let mut stack = vec![(successful.plan.as_ref(), 0_u32)];
+
+                    while let Some((plan, depth)) = stack.pop() {
+                        let operator_desc = {
+                            struct DisplayableOperator<'a> {
+                                plan: &'a dyn ExecutionPlan,
+                            }
+
+                            impl std::fmt::Display for DisplayableOperator<'_> {
+                                fn fmt(
+                                    &self,
+                                    f: &mut std::fmt::Formatter<'_>,
+                                ) -> std::fmt::Result {
+                                    self.plan.fmt_as(DisplayFormatType::Default, f)
+                                }
+                            }
+
+                            DisplayableOperator { plan }.to_string()
+                        };
+                        let metrics = if plan.metrics().is_some() {
+                            let metrics: ballista_core::serde::protobuf::OperatorMetricsSet =
+                                raw_metrics
+                                    .get(metric_index)
+                                    .ok_or_else(|| {
+                                        BallistaError::Internal(format!(
+                                            "Missing metrics for operator {} at depth {}",
+                                            plan.name(),
+                                            depth
+                                        ))
+                                    })?
+                                    .clone()
+                                    .try_into()?;
+                            metric_index += 1;
+                            metrics.metrics
+                        } else {
+                            vec![]
+                        };
+
+                        operators.push(
+                            ballista_core::serde::protobuf::OperatorWithMetrics {
+                                depth,
+                                operator_type: plan.name().to_string(),
+                                operator_desc,
+                                metrics,
+                            },
+                        );
+
+                        for child in plan.children().into_iter().rev() {
+                            stack.push((child.as_ref(), depth + 1));
+                        }
+                    }
+
+                    Ok(operators)
+                })()
+                .and_then(|operators| {
+                    if metric_index == raw_metrics.len() {
+                        Ok(operators)
+                    } else {
+                        Err(BallistaError::Internal(format!(
+                            "Stage metrics size mismatch for job {job_id} stage {stage_id}: operators {} != stage metrics {}",
+                            metric_index,
+                            raw_metrics.len()
+                        )))
+                    }
+                })
+                .map_err(|e| {
+                    Status::internal(format!(
+                        "Error serializing job metrics for job {job_id} stage {stage_id}: {e:?}"
+                    ))
+                });
+
+                Some(operators.map(|operators| {
+                    ballista_core::serde::protobuf::JobStageMetrics {
+                        stage_id: *stage_id as u32,
+                        partitions: successful.partitions as u32,
+                        operators,
+                    }
+                }))
+            })
+            .collect::<Result<Vec<_>, Status>>()?;
+
+        stage_metrics_list.sort_by_key(|stage| stage.stage_id);
+
+        Ok(Response::new(GetJobMetricsResult {
+            stages: stage_metrics_list,
+        }))
     }
 
     async fn executor_stopped(
