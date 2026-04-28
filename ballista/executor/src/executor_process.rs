@@ -24,7 +24,6 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
-use ballista_core::client_pool::DefaultBallistaClientPool;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
 use datafusion::DATAFUSION_VERSION;
@@ -64,6 +63,7 @@ use ballista_core::utils::{
 };
 use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
 
+use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;

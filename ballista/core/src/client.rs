@@ -114,10 +114,10 @@ impl BallistaClient {
         })
     }
 
-    /// Build a client with a lazy channel — no real server required.
-    /// Intended only for unit tests that exercise pool logic without I/O.
-    #[cfg(test)]
-    pub(crate) fn new_for_test(host: &str, port: u16) -> Self {
+    /// creates a ballista client to be used for testing
+    /// it connects lazily and which can not really
+    /// be reconfigured.
+    pub fn new_for_test(host: &str, port: u16) -> Self {
         use tonic::transport::Endpoint;
         let addr = format!("http://{host}:{port}");
         let channel = Endpoint::from_shared(addr)
