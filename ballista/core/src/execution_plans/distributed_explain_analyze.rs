@@ -44,7 +44,7 @@ use std::sync::Arc;
 /// This operator fetches stage metrics from the Ballista scheduler after the query has been executed in children (DistributedQueryExec).
 #[derive(Debug, Clone)]
 pub struct DistributedExplainAnalyzeExec<T: 'static + AsLogicalPlan> {
-    child: Arc<dyn ExecutionPlan>,
+    query_exec: Arc<dyn ExecutionPlan>,
     scheduler_url: String,
     schema: SchemaRef,
     verbose: bool,
@@ -55,14 +55,14 @@ pub struct DistributedExplainAnalyzeExec<T: 'static + AsLogicalPlan> {
 impl<T: 'static + AsLogicalPlan> DistributedExplainAnalyzeExec<T> {
     /// Creates a new explain-analyze wrapper around a distributed query exec.
     pub fn new(
-        child: Arc<DistributedQueryExec<T>>,
+        query_exec: Arc<DistributedQueryExec<T>>,
         scheduler_url: String,
         schema: SchemaRef,
         verbose: bool,
     ) -> Self {
         let properties = Arc::new(Self::compute_properties(Arc::clone(&schema)));
         Self {
-            child,
+            query_exec,
             scheduler_url,
             schema,
             verbose,
@@ -116,7 +116,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.child]
+        vec![&self.query_exec]
     }
 
     fn with_new_children(
@@ -130,14 +130,14 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
             );
         }
 
-        let child = children.pop().unwrap();
-        if child
+        let query_exec = children.pop().unwrap();
+        if query_exec
             .as_any()
             .downcast_ref::<DistributedQueryExec<T>>()
             .is_some()
         {
             return Ok(Arc::new(Self {
-                child,
+                query_exec,
                 scheduler_url: self.scheduler_url.clone(),
                 schema: Arc::clone(&self.schema),
                 verbose: self.verbose,
@@ -158,7 +158,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
-        let child = Arc::clone(&self.child);
+        let query_exec = Arc::clone(&self.query_exec);
         let scheduler_url = self.scheduler_url.clone();
         let schema = Arc::clone(&self.schema);
         let verbose = self.verbose;
@@ -166,12 +166,12 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
         let session_config = ctx.session_config().clone();
 
         let stream = futures::stream::once(async move {
-            let mut child_stream = child.execute(partition, ctx)?;
+            let mut child_stream = query_exec.execute(partition, ctx)?;
             while let Some(batch) = child_stream.next().await {
                 batch?;
             }
 
-            let job_id = child
+            let job_id = query_exec
                 .as_any()
                 .downcast_ref::<DistributedQueryExec<T>>()
                 .ok_or_else(|| {
