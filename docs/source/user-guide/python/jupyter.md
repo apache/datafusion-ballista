@@ -64,7 +64,7 @@ ctx.register_parquet("orders", "/data/orders.parquet")
 ctx.register_parquet("customers", "/data/customers.parquet")
 
 # Cell 2: Explore the data
-ctx.sql("SELECT * FROM orders LIMIT 5")
+df = ctx.sql("SELECT * FROM orders LIMIT 5")
 
 # Cell 3: Run analysis — DataFrame renders as an HTML table
 ctx.sql("""
