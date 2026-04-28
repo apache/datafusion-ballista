@@ -33,8 +33,10 @@ that quietly fall back to local execution.
 """
 
 import pyarrow as pa
+import pyarrow.csv as pa_csv
+import pyarrow.parquet as pa_parquet
 import pytest
-from datafusion import DataFrame, SessionContext
+from datafusion import DataFrame, ParquetWriterOptions, SessionContext
 
 from ballista import BallistaSessionContext, setup_test_cluster
 from ballista.extension import EXECUTION_METHODS, DistributedDataFrame
@@ -198,3 +200,71 @@ def test_execution_method_write_json(ctx, tmp_path):
     written = list(out.glob("*.json"))
     assert written, f"write_json produced no files in {out}"
     assert sum(p.stat().st_size for p in written) > 0
+
+
+# ---------------------------------------------------------------------------
+# DistributedDataFrame write methods.
+#
+# Unlike the methods above, these are *explicitly defined* on
+# ``DistributedDataFrame`` (extension.py:164-243) and bypass the metaclass.
+# They route through ``_to_internal_df()`` and call into the Rust-side
+# ``_internal_ballista`` bindings, so they exercise a different surface than
+# the metaclass-wrapped execution methods.
+# ---------------------------------------------------------------------------
+
+
+def _read_back_concat(paths, reader):
+    return pa.concat_tables([reader(str(p)) for p in paths])
+
+
+def test_write_csv_round_trip(ctx, tmp_path):
+    out = tmp_path / "csv-out"
+    _df(ctx).write_csv(str(out), with_header=True)
+
+    files = sorted(out.glob("*.csv"))
+    assert files, f"write_csv produced no files in {out}"
+
+    table = _read_back_concat(files, pa_csv.read_csv)
+    assert table.num_rows == 5
+    assert table.column_names == ["a", "b"]
+    assert table.column("a").to_pylist() == [1, 2, 3, 4, 5]
+
+
+def test_write_parquet_round_trip(ctx, tmp_path):
+    out = tmp_path / "pq-out"
+    _df(ctx).write_parquet(str(out))
+
+    files = sorted(out.glob("*.parquet"))
+    assert files, f"write_parquet produced no files in {out}"
+
+    table = _read_back_concat(files, pa_parquet.read_table)
+    assert table.num_rows == 5
+    assert table.column_names == ["a", "b"]
+    assert table.column("b").to_pylist() == [-2, -3, -4, -5, -6]
+
+
+def test_write_parquet_with_options_round_trip(ctx, tmp_path):
+    """Exercise ``write_parquet_with_options`` so that the ~20 attributes
+    read off the supplied ``ParquetWriterOptions`` (extension.py:173-194)
+    are validated against the live datafusion-python class. Use non-default
+    values so we actually shovel something through the binding.
+    """
+    out = tmp_path / "pq-opts-out"
+    options = ParquetWriterOptions(
+        compression="snappy",
+        write_batch_size=512,
+        max_row_group_size=128,
+        statistics_enabled="chunk",
+    )
+    _df(ctx).write_parquet_with_options(str(out), options)
+
+    files = sorted(out.glob("*.parquet"))
+    assert files, f"write_parquet_with_options produced no files in {out}"
+
+    metadata = pa_parquet.read_metadata(str(files[0]))
+    # Sanity check that the options actually propagated to the file.
+    assert metadata.row_group(0).column(0).compression.lower() == "snappy"
+
+    table = _read_back_concat(files, pa_parquet.read_table)
+    assert table.num_rows == 5
+    assert table.column_names == ["a", "b"]
