@@ -19,17 +19,36 @@ use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
+use ballista_core::serde::scheduler::ExecutorMetadata;
 
 use ballista_scheduler::cluster::BallistaCluster;
-use ballista_scheduler::config::SchedulerConfig;
+use ballista_scheduler::config::{SchedulerConfig, SchedulerEventListener};
 use ballista_scheduler::scheduler_process::start_server;
+use log::info;
 use std::net::AddrParseError;
 use std::sync::Arc;
+
+/// Example event listener that logs executor lifecycle events.
+struct LoggingEventListener;
+
+impl SchedulerEventListener for LoggingEventListener {
+    fn on_executor_registered(&self, metadata: &ExecutorMetadata) {
+        info!(
+            "Executor registered: {} at {}:{}",
+            metadata.id, metadata.host, metadata.port
+        );
+    }
+
+    fn on_executor_lost(&self, executor_id: &str) {
+        info!("Executor lost: {executor_id}");
+    }
+}
 
 ///
 /// # Custom Ballista Scheduler
 ///
-/// This example demonstrates how to crate custom ballista schedulers.
+/// This example demonstrates how to create custom ballista schedulers
+/// with overridden config, session builder, and event listeners.
 ///
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
@@ -46,7 +65,9 @@ async fn main() -> ballista_core::error::Result<()> {
         // runtime environment and session state.
         override_session_builder: Some(Arc::new(session_state_with_s3_support)),
         ..Default::default()
-    };
+    }
+    // add event listener for executor lifecycle events
+    .with_event_listener(Arc::new(LoggingEventListener));
 
     let addr = format!("{}:{}", config.bind_host, config.bind_port);
     let addr = addr

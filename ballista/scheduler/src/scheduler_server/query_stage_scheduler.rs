@@ -312,6 +312,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.revive_offers(event_sender).await?;
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
+                // Notify event listeners about executor loss
+                for listener in &self.config.event_listeners {
+                    listener.on_executor_lost(&executor_id);
+                }
+
                 match self.state.task_manager.executor_lost(&executor_id).await {
                     Ok(tasks) => {
                         if !tasks.is_empty()

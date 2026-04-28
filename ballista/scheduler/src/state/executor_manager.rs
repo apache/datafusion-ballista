@@ -293,7 +293,26 @@ impl ExecutorManager {
             "save executor metadata {} with {} task slots (pull-based registration)",
             metadata.id, metadata.specification.task_slots
         );
-        self.cluster_state.save_executor_metadata(metadata).await
+
+        // Check if this is a new executor (not seen before)
+        let is_new = self
+            .cluster_state
+            .get_executor_metadata(&metadata.id)
+            .await
+            .is_err();
+
+        self.cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+
+        // Notify event listeners only for newly registered executors
+        if is_new {
+            for listener in &self.config.event_listeners {
+                listener.on_executor_registered(&metadata);
+            }
+        }
+
+        Ok(())
     }
 
     /// Registers the executor with the scheduler for push-based task scheduling.
@@ -313,8 +332,13 @@ impl ExecutorManager {
         ExecutorManager::test_connectivity(&metadata).await?;
 
         self.cluster_state
-            .register_executor(metadata, specification)
+            .register_executor(metadata.clone(), specification)
             .await?;
+
+        // Notify event listeners about the new executor
+        for listener in &self.config.event_listeners {
+            listener.on_executor_registered(&metadata);
+        }
 
         Ok(())
     }
