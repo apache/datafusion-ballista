@@ -120,7 +120,7 @@ df.show()
 [PyArrow](https://arrow.apache.org/docs/python/index.html) record batches:
 
 ```python
->>> df.collect()
+df.collect()
 [pyarrow.RecordBatch
 COUNT(UInt8(1)): int64]
 ```
