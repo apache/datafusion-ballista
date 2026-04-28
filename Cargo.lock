@@ -987,6 +987,7 @@ version = "53.0.0"
 dependencies = [
  "ballista",
  "ballista-core",
+ "clap 4.6.1",
  "criterion",
  "datafusion",
  "datafusion-proto",
