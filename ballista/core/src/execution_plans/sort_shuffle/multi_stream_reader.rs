@@ -33,6 +33,8 @@ use std::task::{Context, Poll};
 
 /// Reads `RecordBatch`es from `[start_offset, end_offset)` of `data_path`,
 /// where the byte range contains zero or more concatenated Arrow IPC streams.
+// TODO: remove the `dead_code` allow once Task 3 wires this into reader.rs.
+#[allow(dead_code)]
 pub(crate) struct MultiStreamPartitionStream {
     data_path: PathBuf,
     schema: SchemaRef,
@@ -45,6 +47,7 @@ pub(crate) struct MultiStreamPartitionStream {
     finished: bool,
 }
 
+#[allow(dead_code)]
 impl MultiStreamPartitionStream {
     /// Creates a new bounded multi-stream reader. `schema` is the schema of
     /// the partition data; the caller must obtain it from the data file's
@@ -77,7 +80,10 @@ impl MultiStreamPartitionStream {
             if let Some(reader) = self.reader.as_mut() {
                 match reader.next() {
                     Some(Ok(batch)) => return Ok(Some(batch)),
-                    Some(Err(e)) => return Err(e),
+                    Some(Err(e)) => {
+                        self.finished = true;
+                        return Err(e);
+                    }
                     None => {
                         // EOS for this sub-stream: capture position and drop
                         // the reader so we can construct the next one.
@@ -99,6 +105,7 @@ impl MultiStreamPartitionStream {
                 return Ok(None);
             }
 
+            self.finished = true;
             let mut file = File::open(&self.data_path)
                 .map_err(|e| ArrowError::IoError(format!("{e}"), e))?;
             file.seek(SeekFrom::Start(next))
@@ -106,6 +113,7 @@ impl MultiStreamPartitionStream {
             let reader = StreamReader::try_new(file, None)?;
             self.reader = Some(reader);
             self.next_offset = None;
+            self.finished = false;
         }
     }
 }
@@ -268,5 +276,33 @@ mod tests {
             rows.extend(arr.values().iter().copied());
         }
         assert_eq!(rows, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn starts_at_non_zero_offset() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.arrow");
+        let s = schema();
+        // Two streams in sequence; the test reads only the second.
+        let len_first = append_stream(&path, &s, &[batch(&s, vec![1, 2, 3])]);
+        let len_second = append_stream(&path, &s, &[batch(&s, vec![10, 20])]);
+
+        let mut stream = MultiStreamPartitionStream::new(
+            path,
+            s.clone(),
+            len_first,
+            len_first + len_second,
+        );
+        let mut rows = vec![];
+        while let Some(b) = stream.next().await {
+            let b = b.unwrap();
+            let arr = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            rows.extend(arr.values().iter().copied());
+        }
+        assert_eq!(rows, vec![10, 20]);
     }
 }
