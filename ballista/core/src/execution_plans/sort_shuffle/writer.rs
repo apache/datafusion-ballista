@@ -35,6 +35,7 @@ use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::spill::SpillManager;
 use crate::execution_plans::create_shuffle_path;
+use crate::execution_plans::timed_write::TimedWrite;
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use datafusion::arrow::array::{
@@ -91,6 +92,10 @@ pub struct SortShuffleWriterExec {
 struct SortShuffleWriteMetrics {
     /// Time spent writing batches to the output file
     write_time: metrics::Time,
+    /// Time spent in raw byte-pump calls (`Write::write` + `Write::flush`)
+    /// against the output file. Subset of `write_time`; the difference
+    /// approximates Arrow IPC encode + compress cost.
+    disk_write_time: metrics::Time,
     /// Time spent partitioning input batches
     repart_time: metrics::Time,
     /// Time spent spilling to disk
@@ -109,6 +114,8 @@ impl SortShuffleWriteMetrics {
     fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
+            disk_write_time: MetricBuilder::new(metrics)
+                .subset_time("disk_write_time", partition),
             repart_time: MetricBuilder::new(metrics)
                 .subset_time("repart_time", partition),
             spill_time: MetricBuilder::new(metrics).subset_time("spill_time", partition),
@@ -279,6 +286,7 @@ impl SortShuffleWriterExec {
                 &mut spill_manager,
                 &schema,
                 &config,
+                metrics.disk_write_time.clone(),
             )?;
             timer.done();
 
@@ -377,6 +385,7 @@ fn finalize_output(
     spill_manager: &mut SpillManager,
     schema: &SchemaRef,
     config: &SortShuffleConfig,
+    disk_write_time: metrics::Time,
 ) -> Result<FinalizeResult> {
     let num_partitions = buffers.len();
     let mut index = ShuffleIndex::new(num_partitions);
@@ -394,9 +403,11 @@ fn finalize_output(
 
     debug!("Writing consolidated shuffle output to {:?}", data_path);
 
-    // Use FileWriter for random access support via FileReader
+    // Use FileWriter for random access support via FileReader. Wrap the
+    // buffered file in `TimedWrite` so per-call elapsed time is recorded into
+    // `disk_write_time`, separate from the surrounding IPC encode cost.
     let file = File::create(&data_path)?;
-    let mut buffered = BufWriter::new(file);
+    let mut buffered = TimedWrite::new(BufWriter::new(file), disk_write_time);
 
     let options =
         IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
@@ -735,6 +746,46 @@ mod tests {
         let output_dir = work_dir.path().join("job1").join("1").join("0");
         assert!(output_dir.join("data.arrow").exists());
         assert!(output_dir.join("data.arrow.index").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sort_shuffle_writer_records_disk_write_time() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan = Arc::new(CoalescePartitionsExec::new(create_test_input()?));
+        let work_dir = TempDir::new()?;
+
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".to_string(),
+            1,
+            input_plan,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
+            SortShuffleConfig::default(),
+        )?;
+
+        let mut stream = writer.execute(0, task_ctx)?;
+        let _: Vec<RecordBatch> = stream
+            .by_ref()
+            .try_collect()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+        // After writing output, disk_write_time must be reported as a distinct
+        // metric so we can split byte-pump cost from Arrow IPC encode cost.
+        let metrics = writer.metrics().expect("metrics should be set");
+        let disk = metrics
+            .iter()
+            .find(|m| m.value().name() == "disk_write_time")
+            .expect("disk_write_time metric should be present");
+        assert!(
+            disk.value().as_usize() > 0,
+            "disk_write_time should be > 0, got {}",
+            disk.value().as_usize()
+        );
 
         Ok(())
     }

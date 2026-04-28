@@ -23,6 +23,7 @@ mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+pub(crate) mod timed_write;
 mod unresolved_shuffle;
 
 use std::path::{Path, PathBuf};
