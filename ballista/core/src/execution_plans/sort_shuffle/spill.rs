@@ -192,8 +192,12 @@ impl SpillManager {
         self.total_bytes_spilled
     }
 
-    /// Returns (batches, rows, bytes) spilled for the given partition. Zeros
-    /// if the partition never spilled.
+    /// Returns `(batches, rows, bytes)` spilled for the given partition, or
+    /// `(0, 0, 0)` if the partition never spilled.
+    ///
+    /// The `bytes` value is the Arrow in-memory buffer size of each batch
+    /// at the time of the spill call (`RecordBatch::get_array_memory_size`).
+    /// It is **not** the compressed on-disk size.
     pub fn partition_stats(&self, partition_id: usize) -> (u64, u64, u64) {
         self.partition_counters
             .get(&partition_id)
@@ -342,13 +346,17 @@ mod tests {
         manager.spill(0, &create_test_batch(&schema, vec![4, 5]))?;
         manager.spill(1, &create_test_batch(&schema, vec![6]))?;
 
-        let (b0, r0, _bytes0) = manager.partition_stats(0);
-        let (b1, r1, _bytes1) = manager.partition_stats(1);
-        let (b2, r2, _bytes2) = manager.partition_stats(2);
+        let (b0, r0, bytes0) = manager.partition_stats(0);
+        let (b1, r1, bytes1) = manager.partition_stats(1);
+        let (b2, r2, bytes2) = manager.partition_stats(2);
 
         assert_eq!((b0, r0), (2, 5));
         assert_eq!((b1, r1), (1, 1));
         assert_eq!((b2, r2), (0, 0));
+
+        assert!(bytes0 > 0, "spilled partition should have non-zero bytes counter");
+        assert!(bytes1 > 0, "spilled partition should have non-zero bytes counter");
+        assert_eq!(bytes2, 0, "never-spilled partition should have zero bytes counter");
 
         assert!(manager.spill_path(0).is_some());
         assert!(manager.spill_path(1).is_some());
