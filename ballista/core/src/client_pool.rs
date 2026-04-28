@@ -45,8 +45,7 @@ pub trait BallistaClientPool: Send + Sync + Debug {
     ) -> Result<PooledClient>;
 
     /// Remove all idle clients that have been sitting unused longer than the
-    /// configured idle timeout. Called automatically by the background task in
-    /// [DefaultBallistaClientPool]; can also be invoked on demand.
+    /// configured idle timeout.
     async fn evict_idle(&self);
 }
 

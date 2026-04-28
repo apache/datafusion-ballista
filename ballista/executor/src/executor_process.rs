@@ -173,7 +173,7 @@ pub struct ExecutorProcessConfig {
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Number of seconds established client connection should be cached (0 means no cache)
-    pub connection_cache: u64,
+    pub client_ttl: u64,
 }
 
 impl ExecutorProcessConfig {
@@ -222,7 +222,7 @@ impl Default for ExecutorProcessConfig {
             override_physical_codec: None,
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
-            connection_cache: 0,
+            client_ttl: 0,
         }
     }
 }
@@ -339,10 +339,10 @@ pub async fn start_executor_process(
         metrics_collector,
         concurrent_tasks,
         opt.override_execution_engine.clone().unwrap_or_else(|| {
-            if opt.connection_cache > 0 {
+            if opt.client_ttl > 0 {
                 let client_pool =
                     Arc::new(DefaultBallistaClientPool::with_eviction_thread(
-                        Duration::from_secs(opt.connection_cache),
+                        Duration::from_secs(opt.client_ttl),
                     ));
                 Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
             } else {

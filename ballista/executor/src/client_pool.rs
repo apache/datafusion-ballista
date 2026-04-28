@@ -18,14 +18,15 @@
 //! Connection pool for `BallistaClient` instances.
 //!
 //! `DefaultBallistaClientPool` maintains a `VecDeque`` of idle clients per
-//! `(host, port)` key backed by a `DashMap`. Callers `BallistaClientPool::acquire` a
-//! `PooledClient` guard; when the guard is dropped the underlying client is
+//! `(host, port, config)` key backed by a `DashMap`. Callers `BallistaClientPool::acquire`
+//! a `PooledClient` guard; when the guard is dropped the underlying client is
 //! returned to the idle deque automatically.
 //!
-//! If the connection errored, call`PooledClient::discard` before dropping so
-//! the pool closes the channel rather than reusing it.
+//! Connections could be discarded calling `PooledClient::discard` which will result
+//! of dropping connection rather than returning it to the pool. This could be
+//! used for error handling.
 //!
-//! A background tokio task evicts idle connections that have not been returned
+//! A optional background tokio task evicts idle connections that have not been used
 //! within the configured `idle_timeout`.
 
 use async_trait::async_trait;
@@ -49,7 +50,7 @@ struct IdleEntry {
     idle_since: Instant,
 }
 
-type IdleMap = DashMap<(String, u16), VecDeque<IdleEntry>>;
+type IdleMap = DashMap<(String, u16, GrpcClientConfig), VecDeque<IdleEntry>>;
 
 struct Inner {
     idle: IdleMap,
@@ -58,15 +59,14 @@ struct Inner {
 
 /// Default pool implementation.
 ///
-/// Keeps a `VecDeque<BallistaClient>` per `(host, port)`. Idle clients are
+/// Keeps a `VecDeque<BallistaClient>` per `(host, port, config)`. Idle clients are
 /// evicted by a background tokio task that runs at `idle_timeout / 3`
 /// intervals (minimum 15 s). The task exits automatically when the pool `Arc`
 /// is dropped.
 ///
-/// Note: The `DefaultBallistaClientPool` only uses the (host, port) combination for
-/// connection identification. Consequently changes to connection configuration
-/// may not be propagated and the pool may return connections
-/// with a previous configuration.
+/// The `DefaultBallistaClientPool` uses the (host, port, config) to identify a connection.
+/// Therefore changing connection config might leave pooled connections
+/// with older config unused until they expire.
 
 #[derive(Clone)]
 pub struct DefaultBallistaClientPool {
@@ -135,8 +135,10 @@ fn evict(idle: &IdleMap, timeout: Duration) {
         .unwrap_or_else(Instant::now);
 
     // Drain expired entries from the front of each deque (oldest = front).
+    // This way pool can shrink in case of low utilization.
     idle.retain(|_, deque| {
         while deque.front().is_some_and(|e| e.idle_since < deadline) {
+            // evict from front of the queue
             deque.pop_front();
         }
         !deque.is_empty()
@@ -152,24 +154,24 @@ impl BallistaClientPool for DefaultBallistaClientPool {
         config: &GrpcClientConfig,
         customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     ) -> Result<PooledClient> {
-        let key = (host.to_string(), port);
+        let key = (host.to_string(), port, config.clone());
 
         // Pop the most-recently-used idle client. The DashMap shard lock is
         // held only for the duration of the pop — released before the async
         // BallistaClient::try_new call below.
-        let maybe_idle = self
+        let maybe_idle_client = self
             .inner
             .idle
             .get_mut(&key)
-            .and_then(|mut deque| deque.pop_back())
+            .and_then(|mut deque| deque.pop_back()) // acquire from back of the queue
             .map(|e| e.client);
 
-        let client = match maybe_idle {
-            Some(c) => {
+        let client = match maybe_idle_client {
+            Some(client) => {
                 log::trace!(
                     "client connection pool - returning cached connection - host:{host}, port:{port}"
                 );
-                c
+                client
             }
             None => {
                 log::trace!(
@@ -211,10 +213,6 @@ impl BallistaClientPool for DefaultBallistaClientPool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,7 +234,7 @@ mod tests {
         let client = BallistaClient::new_for_test(host, port);
         pool.inner
             .idle
-            .entry((host.to_string(), port))
+            .entry((host.to_string(), port, GrpcClientConfig::default()))
             .or_default()
             .push_back(IdleEntry {
                 client,
@@ -288,7 +286,7 @@ mod tests {
     async fn pooled_client_returns_on_drop() {
         let pool = make_pool(Duration::from_secs(300));
         let client = BallistaClient::new_for_test("host-c", 3456);
-        let key = ("host-c".to_string(), 3456u16);
+        let key = ("host-c".to_string(), 3456u16, GrpcClientConfig::default());
 
         let inner_ref = Arc::clone(&pool.inner);
         let return_key = key.clone();
@@ -323,7 +321,7 @@ mod tests {
             Box::new(move |c| {
                 inner_ref
                     .idle
-                    .entry(("host-d".to_string(), 4567u16))
+                    .entry(("host-d".to_string(), 4567u16, GrpcClientConfig::default()))
                     .or_default()
                     .push_back(IdleEntry {
                         client: c,

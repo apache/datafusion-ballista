@@ -96,8 +96,8 @@ impl ShuffleReaderExec {
             partition,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: None, // to be updated at the executor side
-            client_pool: None,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
         })
     }
 
