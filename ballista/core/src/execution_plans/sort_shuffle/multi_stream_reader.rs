@@ -33,8 +33,6 @@ use std::task::{Context, Poll};
 
 /// Reads `RecordBatch`es from `[start_offset, end_offset)` of `data_path`,
 /// where the byte range contains zero or more concatenated Arrow IPC streams.
-// TODO: remove the `dead_code` allow once Task 3 wires this into reader.rs.
-#[allow(dead_code)]
 pub(crate) struct MultiStreamPartitionStream {
     data_path: PathBuf,
     schema: SchemaRef,
@@ -47,7 +45,6 @@ pub(crate) struct MultiStreamPartitionStream {
     finished: bool,
 }
 
-#[allow(dead_code)]
 impl MultiStreamPartitionStream {
     /// Creates a new bounded multi-stream reader. `schema` is the schema of
     /// the partition data; the caller must obtain it from the data file's

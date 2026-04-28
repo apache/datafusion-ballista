@@ -24,7 +24,7 @@
 use std::any::Any;
 use std::fs::File;
 use std::future::Future;
-use std::io::BufWriter;
+use std::io::{BufWriter, Seek, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -43,7 +43,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
+use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::error::{DataFusionError, Result};
@@ -399,68 +399,75 @@ fn finalize_output(
     debug!("Writing consolidated shuffle output to {:?}", data_path);
 
     let file = File::create(&data_path)?;
-    let mut buffered_writer = BufWriter::new(file);
+    let mut output = BufWriter::new(file);
 
-    let options =
-        IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
-    let mut writer =
-        FileWriter::try_new_with_options(&mut buffered_writer, schema, options)?;
+    let opts = IpcWriteOptions::default()
+        .try_with_compression(Some(config.compression))?;
 
-    let mut cumulative_batch_count: i64 = 0;
+    // Leading schema-header stream (schema message + EOS, no batches) so the
+    // reader can recover the schema even when the requested partition is empty.
+    {
+        let mut header = StreamWriter::try_new_with_options(
+            &mut output,
+            schema,
+            opts.clone(),
+        )?;
+        header.finish()?;
+    }
 
-    // Take ownership of the in-memory state once. After this we can iterate
-    // each partition's indices independently without borrow-checker grief.
     let (in_memory_batches, in_memory_indices) = buffered.take();
 
     for (partition_id, partition_indices) in in_memory_indices.iter().enumerate() {
-        index.set_offset(partition_id, cumulative_batch_count);
+        // Stream position before this partition's bytes start.
+        output.flush()?;
+        let partition_start = output.get_mut().stream_position()? as i64;
+        index.set_offset(partition_id, partition_start);
 
-        let mut partition_rows: u64 = 0;
-        let mut partition_batches: u64 = 0;
-        let mut partition_bytes: u64 = 0;
+        let (spill_batches, spill_rows, spill_bytes) =
+            spill_manager.partition_stats(partition_id);
 
-        // First, stream any spill file for this partition.
-        if let Some(reader) = spill_manager
-            .open_spill_reader(partition_id)
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        {
-            for batch_result in reader {
-                let batch = batch_result?;
-                partition_rows += batch.num_rows() as u64;
-                partition_bytes += batch.get_array_memory_size() as u64;
-                partition_batches += 1;
-                writer.write(&batch)?;
-            }
+        // 1) Byte-copy the spill file (if any) directly into the output.
+        if let Some(spill_path) = spill_manager.spill_path(partition_id) {
+            let mut spill_file = File::open(spill_path)?;
+            std::io::copy(&mut spill_file, output.get_mut())?;
         }
 
-        // Then write the in-memory remainder via interleave_record_batch.
+        // 2) Append in-memory remainder as a fresh IPC stream.
+        let mut mem_batches: u64 = 0;
+        let mut mem_rows: u64 = 0;
+        let mut mem_bytes: u64 = 0;
         if !partition_indices.is_empty() {
             let iter = PartitionedBatchIterator::new(
                 &in_memory_batches,
                 partition_indices,
                 config.batch_size,
             );
+            let mut writer = StreamWriter::try_new_with_options(
+                &mut output,
+                schema,
+                opts.clone(),
+            )?;
             for result in iter {
                 let batch = result?;
-                partition_rows += batch.num_rows() as u64;
-                partition_bytes += batch.get_array_memory_size() as u64;
-                partition_batches += 1;
+                mem_rows += batch.num_rows() as u64;
+                mem_bytes += batch.get_array_memory_size() as u64;
+                mem_batches += 1;
                 writer.write(&batch)?;
             }
+            writer.finish()?;
         }
 
         partition_stats.push((
             partition_id,
-            partition_batches,
-            partition_rows,
-            partition_bytes,
+            spill_batches + mem_batches,
+            spill_rows + mem_rows,
+            spill_bytes + mem_bytes,
         ));
-
-        cumulative_batch_count += partition_batches as i64;
     }
 
-    writer.finish()?;
-    index.set_total_length(cumulative_batch_count);
+    output.flush()?;
+    let total = output.get_mut().stream_position()? as i64;
+    index.set_total_length(total);
     index
         .write_to_file(&index_path)
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -824,8 +831,8 @@ mod tests {
 
     #[tokio::test]
     async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
+        use super::super::reader::stream_sort_shuffle_partition;
         use datafusion::arrow::array::Int64Array;
-        use datafusion::arrow::ipc::reader::FileReader;
         use datafusion::execution::memory_pool::FairSpillPool;
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
         use std::collections::HashSet;
@@ -903,26 +910,33 @@ mod tests {
             "expected spilling under tight memory pool, got spill_count={spill_count}"
         );
 
-        // Round-trip: read back the consolidated file via Arrow IPC FileReader and
-        // verify all keys are present.
+        // Round-trip: read back the consolidated file via the sort-shuffle
+        // reader and verify all keys are present across all output partitions.
         let data_path = work_dir
             .path()
             .join("spill_test_job")
             .join("1")
             .join("0")
             .join("data.arrow");
-        let file = std::fs::File::open(&data_path)?;
-        let reader = FileReader::try_new(file, None)?;
+        let index_path = data_path.with_extension("arrow.index");
         let mut seen: HashSet<i64> = HashSet::new();
-        for batch_result in reader {
-            let batch = batch_result?;
-            let arr = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            for v in arr.values() {
-                seen.insert(*v);
+        for partition_id in 0..4 {
+            let mut stream = stream_sort_shuffle_partition(
+                &data_path,
+                &index_path,
+                partition_id,
+            )
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            while let Some(batch_result) = stream.next().await {
+                let batch = batch_result?;
+                let arr = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for v in arr.values() {
+                    seen.insert(*v);
+                }
             }
         }
         assert_eq!(seen.len(), 10 * 8192);
