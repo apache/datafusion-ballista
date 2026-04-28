@@ -568,11 +568,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     format!("Error fetching execution graph for job {job_id}: {e:?}");
                 error!("{msg}");
                 Status::internal(msg)
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!("Execution graph not found for job {job_id}"))
             })?;
-
-        let graph = graph.ok_or_else(|| {
-            Status::not_found(format!("Execution graph not found for job {job_id}"))
-        })?;
 
         let mut stage_metrics_list = graph
             .stages()
