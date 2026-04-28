@@ -25,9 +25,12 @@
 //! ```
 //!
 //! - All values are little-endian i64
-//! - `offset_i` = byte offset where partition `i` starts
-//! - Last entry is total file length
-//! - Partition `i` data spans `[offset_i, offset_{i+1})`
+//! - `offset_i` is the absolute byte position where partition `i` starts
+//!   inside the data file
+//! - The leading bytes of the data file (before `offset_0`) hold a small
+//!   schema-header stream used by the reader to recover the schema
+//! - The last entry is the total file length
+//! - Partition `i` data spans the byte range `[offset_i, offset_{i+1})`
 
 use crate::error::{BallistaError, Result};
 use std::fs::File;

@@ -125,10 +125,9 @@ impl Stream for MultiStreamPartitionStream {
         match self.next_batch() {
             Ok(Some(batch)) => Poll::Ready(Some(Ok(batch))),
             Ok(None) => Poll::Ready(None),
-            Err(e) => Poll::Ready(Some(Err(DataFusionError::ArrowError(
-                Box::new(e),
-                None,
-            )))),
+            Err(e) => {
+                Poll::Ready(Some(Err(DataFusionError::ArrowError(Box::new(e), None))))
+            }
         }
     }
 }
@@ -184,8 +183,8 @@ mod tests {
             .unwrap();
         let opts = IpcWriteOptions::default();
         {
-            let mut writer = StreamWriter::try_new_with_options(&mut file, schema, opts)
-                .unwrap();
+            let mut writer =
+                StreamWriter::try_new_with_options(&mut file, schema, opts).unwrap();
             for b in batches {
                 writer.write(b).unwrap();
             }
@@ -207,11 +206,7 @@ mod tests {
         let mut rows = vec![];
         while let Some(b) = stream.next().await {
             let b = b.unwrap();
-            let arr = b
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
+            let arr = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
             rows.extend(arr.values().iter().copied());
         }
         assert_eq!(rows, vec![1, 2, 3]);
@@ -230,11 +225,7 @@ mod tests {
         let mut rows = vec![];
         while let Some(b) = stream.next().await {
             let b = b.unwrap();
-            let arr = b
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
+            let arr = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
             rows.extend(arr.values().iter().copied());
         }
         assert_eq!(rows, vec![1, 2, 3, 4, 5]);
@@ -265,11 +256,7 @@ mod tests {
         let mut rows = vec![];
         while let Some(b) = stream.next().await {
             let b = b.unwrap();
-            let arr = b
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
+            let arr = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
             rows.extend(arr.values().iter().copied());
         }
         assert_eq!(rows, vec![1, 2]);
@@ -293,11 +280,7 @@ mod tests {
         let mut rows = vec![];
         while let Some(b) = stream.next().await {
             let b = b.unwrap();
-            let arr = b
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
+            let arr = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
             rows.extend(arr.values().iter().copied());
         }
         assert_eq!(rows, vec![10, 20]);

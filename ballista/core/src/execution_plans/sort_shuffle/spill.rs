@@ -129,7 +129,10 @@ impl SpillManager {
         let bytes_written = batch.get_array_memory_size() as u64;
         writer.write(batch)?;
 
-        let entry = self.partition_counters.entry(partition_id).or_insert((0, 0, 0));
+        let entry = self
+            .partition_counters
+            .entry(partition_id)
+            .or_insert((0, 0, 0));
         entry.0 += 1;
         entry.1 += batch.num_rows() as u64;
         entry.2 += bytes_written;
@@ -354,9 +357,18 @@ mod tests {
         assert_eq!((b1, r1), (1, 1));
         assert_eq!((b2, r2), (0, 0));
 
-        assert!(bytes0 > 0, "spilled partition should have non-zero bytes counter");
-        assert!(bytes1 > 0, "spilled partition should have non-zero bytes counter");
-        assert_eq!(bytes2, 0, "never-spilled partition should have zero bytes counter");
+        assert!(
+            bytes0 > 0,
+            "spilled partition should have non-zero bytes counter"
+        );
+        assert!(
+            bytes1 > 0,
+            "spilled partition should have non-zero bytes counter"
+        );
+        assert_eq!(
+            bytes2, 0,
+            "never-spilled partition should have zero bytes counter"
+        );
 
         assert!(manager.spill_path(0).is_some());
         assert!(manager.spill_path(1).is_some());

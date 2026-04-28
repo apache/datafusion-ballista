@@ -401,17 +401,14 @@ fn finalize_output(
     let file = File::create(&data_path)?;
     let mut output = BufWriter::new(file);
 
-    let opts = IpcWriteOptions::default()
-        .try_with_compression(Some(config.compression))?;
+    let opts =
+        IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
 
     // Leading schema-header stream (schema message + EOS, no batches) so the
     // reader can recover the schema even when the requested partition is empty.
     {
-        let mut header = StreamWriter::try_new_with_options(
-            &mut output,
-            schema,
-            opts.clone(),
-        )?;
+        let mut header =
+            StreamWriter::try_new_with_options(&mut output, schema, opts.clone())?;
         header.finish()?;
     }
 
@@ -442,11 +439,8 @@ fn finalize_output(
                 partition_indices,
                 config.batch_size,
             );
-            let mut writer = StreamWriter::try_new_with_options(
-                &mut output,
-                schema,
-                opts.clone(),
-            )?;
+            let mut writer =
+                StreamWriter::try_new_with_options(&mut output, schema, opts.clone())?;
             for result in iter {
                 let batch = result?;
                 mem_rows += batch.num_rows() as u64;
@@ -898,10 +892,7 @@ mod tests {
             1,
             input,
             work_dir.path().to_str().unwrap().to_string(),
-            Partitioning::Hash(
-                vec![Arc::new(Column::new("k", 0))],
-                num_partitions,
-            ),
+            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
             SortShuffleConfig::default(),
         )?;
 
@@ -941,12 +932,9 @@ mod tests {
         let mut seen: HashSet<i64> = HashSet::new();
         let total_rows = num_batches * rows_per_batch;
         for partition_id in 0..num_partitions {
-            let mut s = stream_sort_shuffle_partition(
-                &data_path,
-                &index_path,
-                partition_id,
-            )
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            let mut s =
+                stream_sort_shuffle_partition(&data_path, &index_path, partition_id)
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
             while let Some(batch_result) = s.next().await {
                 let batch = batch_result?;
                 let arr = batch
@@ -1069,8 +1057,9 @@ mod tests {
 
         let mut row_counts = Vec::with_capacity(num_partitions);
         for partition_id in 0..num_partitions {
-            let mut s = stream_sort_shuffle_partition(&data_path, &index_path, partition_id)
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            let mut s =
+                stream_sort_shuffle_partition(&data_path, &index_path, partition_id)
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
             let mut count = 0_usize;
             while let Some(batch_result) = s.next().await {
                 let batch = batch_result?;
@@ -1083,7 +1072,10 @@ mod tests {
         assert_eq!(total_seen, total_rows, "round-trip lost rows");
         let non_empty = row_counts.iter().filter(|c| **c > 0).count();
         assert!(non_empty >= 1, "expected at least one non-empty partition");
-        assert!(non_empty < num_partitions, "expected at least one empty partition");
+        assert!(
+            non_empty < num_partitions,
+            "expected at least one empty partition"
+        );
 
         Ok(())
     }
