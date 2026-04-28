@@ -332,6 +332,14 @@ download the same wheels that were voted on from the RC's CI run. Retagging the
 RC commit does not trigger a fresh build, so the RC artifacts remain the
 canonical source.
 
+> **Artifact retention warning:** GitHub Actions artifacts default to 90-day
+> retention. If the elapsed time from cutting the RC to publishing PyPI wheels
+> exceeds that window, the wheels will have been deleted and are unrecoverable
+> — you cannot publish the voted-on artifacts and must cut a new RC and revote.
+> Plan the vote and the post-vote publish so the publish step happens
+> comfortably inside the 90-day window. Check the run's `expires_at` on
+> `https://github.com/apache/datafusion-ballista/actions` if in doubt.
+
 ```bash
 export GH_TOKEN=...     # GitHub PAT with read access to actions
 mkdir ballista-pypi-<version> && cd ballista-pypi-<version>
