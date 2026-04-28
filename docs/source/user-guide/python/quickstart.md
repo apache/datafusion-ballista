@@ -106,7 +106,7 @@ df = ctx.sql("SELECT count(*) FROM trips")
 ### Showing Query Results
 
 ```python
->>> df.show()
+df.show()
 +-----------------+
 | COUNT(UInt8(1)) |
 +-----------------+
