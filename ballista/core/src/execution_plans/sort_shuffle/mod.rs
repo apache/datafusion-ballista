@@ -19,7 +19,7 @@
 //!
 //! This module provides an alternative to the hash-based shuffle. It writes
 //! a single consolidated file per input partition (sorted by output partition ID)
-//! along with an index file mapping partition IDs to batch ranges.
+//! along with an index file mapping partition IDs to byte ranges.
 //!
 //! This approach reduces file count from `N × M` (N input partitions × M output partitions)
 //! to `2 × N` files (one data + one index per input partition).

@@ -17,8 +17,9 @@
 
 //! Spill manager for sort-based shuffle.
 //!
-//! Handles writing partition buffers to disk when memory pressure is high,
-//! and reading them back during the finalization phase.
+//! Handles writing partition buffers to disk when memory pressure is high.
+//! At finalization, the spill bytes are concatenated verbatim into the
+//! consolidated output file alongside the in-memory remainder.
 
 use crate::error::{BallistaError, Result};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -35,10 +36,10 @@ use std::path::{Path, PathBuf};
 /// Manages spill files for sort-based shuffle.
 ///
 /// When partition buffers exceed memory limits, they are spilled to disk
-/// as Arrow IPC files. Each output partition has at most one spill file
+/// as Arrow IPC streams. Each output partition has at most one spill file
 /// that is appended to across multiple spill calls. During finalization,
-/// these spill files are read back and merged into the consolidated
-/// output file.
+/// the spill file bytes are concatenated directly into the consolidated
+/// output file (no decode/re-encode round-trip).
 pub struct SpillManager {
     /// Base directory for spill files
     spill_dir: PathBuf,
