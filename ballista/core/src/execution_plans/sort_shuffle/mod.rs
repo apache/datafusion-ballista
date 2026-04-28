@@ -33,6 +33,7 @@ mod buffer;
 mod config;
 mod index;
 mod partitioned_batch_iterator;
+mod multi_stream_reader;
 mod reader;
 mod spill;
 mod writer;
