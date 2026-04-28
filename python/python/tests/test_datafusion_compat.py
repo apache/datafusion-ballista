@@ -32,9 +32,6 @@ mechanism so that drift surfaces as a test failure rather than as queries
 that quietly fall back to local execution.
 """
 
-import os
-import pathlib
-
 import pyarrow as pa
 import pytest
 from datafusion import DataFrame, SessionContext
@@ -42,11 +39,24 @@ from datafusion import DataFrame, SessionContext
 from ballista import BallistaSessionContext, setup_test_cluster
 from ballista.extension import EXECUTION_METHODS, DistributedDataFrame
 
+# The metaclass at ``extension.py:75`` matches this exact string against
+# ``__annotations__["return"]``. Keeping it as a constant here prevents the
+# tests from drifting away from the wrapping logic if either side is changed.
+DATAFRAME_RETURN_ANNOTATION = "DataFrame"
 
-@pytest.fixture
+
+@pytest.fixture(scope="module")
 def ctx():
+    """Single in-process cluster + session shared by every round-trip test.
+
+    ``setup_test_cluster()`` spawns a fresh scheduler and executor each call,
+    so a function-scoped fixture would pay that cost per test. The "test"
+    table is registered once here so ``_df`` only has to run the SQL.
+    """
     address, port = setup_test_cluster()
-    return BallistaSessionContext(address=f"df://{address}:{port}")
+    c = BallistaSessionContext(address=f"df://{address}:{port}")
+    c.register_csv("test", "testdata/test.csv", has_header=True)
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -61,27 +71,29 @@ def test_distributed_dataframe_wraps_dataframe_returning_methods():
     instead of forward-reference strings), this test fails before queries
     silently start executing locally.
     """
+    # ``__dict__`` (not ``getattr``) is deliberate: it shows methods defined
+    # directly on each class. The metaclass wrapping inserts wrappers into
+    # the subclass's ``__dict__``; falling through to inherited attributes
+    # via ``getattr`` would mask a wrapping regression.
     annotated = [
         name
         for name, m in DataFrame.__dict__.items()
         if callable(m)
         and not name.startswith("_")
-        and getattr(m, "__annotations__", {}).get("return") == "DataFrame"
+        and getattr(m, "__annotations__", {}).get("return")
+        == DATAFRAME_RETURN_ANNOTATION
     ]
-    # Sanity: datafusion still uses the string-annotation pattern at all.
     assert annotated, (
         "No DataFrame methods carry a string 'DataFrame' return annotation. "
         "datafusion-python likely changed its annotation style; "
         "ballista's metaclass wrapping in extension.py needs updating."
     )
 
-    # Spot-check a representative subset that we expect to keep returning
-    # DataFrame across releases. If any of these aren't wrapped, the
-    # introspection no longer matches.
     for method in ("select", "filter", "with_column", "aggregate"):
         assert method in annotated, (
             f"datafusion DataFrame.{method} is no longer annotated as "
-            f"returning 'DataFrame'; metaclass wrapping will skip it."
+            f"returning {DATAFRAME_RETURN_ANNOTATION!r}; metaclass wrapping "
+            f"will skip it."
         )
         wrapped = DistributedDataFrame.__dict__.get(method)
         original = DataFrame.__dict__.get(method)
@@ -103,9 +115,10 @@ def test_ballista_session_context_wraps_dataframe_returning_methods():
             f"BallistaSessionContext can no longer rely on it."
         )
         ann = getattr(original, "__annotations__", {}).get("return")
-        assert ann == "DataFrame", (
+        assert ann == DATAFRAME_RETURN_ANNOTATION, (
             f"SessionContext.{method} return annotation is {ann!r}, not "
-            f"'DataFrame'. Metaclass wrapping in extension.py won't catch it."
+            f"{DATAFRAME_RETURN_ANNOTATION!r}. Metaclass wrapping in "
+            f"extension.py won't catch it."
         )
         wrapped = BallistaSessionContext.__dict__.get(method)
         assert wrapped is not None and wrapped is not original, (
@@ -132,8 +145,6 @@ def test_execution_methods_are_present_on_dataframe():
 
 
 def _df(ctx):
-    """A small DistributedDataFrame the execution methods can act on."""
-    ctx.register_csv("test", "testdata/test.csv", has_header=True)
     return ctx.sql("SELECT a, b FROM test")
 
 
@@ -184,6 +195,6 @@ def test_execution_method_write_json(ctx, tmp_path):
     # write_options is declared with a default of None in datafusion 51 but
     # the PyO3 binding still requires the argument to be passed explicitly.
     _df(ctx).write_json(str(out), None)
-    written = list(pathlib.Path(out).glob("*.json"))
+    written = list(out.glob("*.json"))
     assert written, f"write_json produced no files in {out}"
-    assert sum(os.path.getsize(p) for p in written) > 0
+    assert sum(p.stat().st_size for p in written) > 0
