@@ -67,7 +67,7 @@ ctx.register_parquet("customers", "/data/customers.parquet")
 df = ctx.sql("SELECT * FROM orders LIMIT 5")
 
 # Cell 3: Run analysis — DataFrame renders as an HTML table
-ctx.sql("""
+df = ctx.sql("""
     SELECT
         c.name,
         COUNT(*) as order_count,
