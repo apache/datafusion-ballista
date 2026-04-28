@@ -136,6 +136,7 @@ pub fn test_cluster_context() -> BallistaCluster {
         TEST_SCHEDULER_NAME,
         Arc::new(default_session_builder),
         Arc::new(default_config_producer),
+        &SchedulerConfig::default(),
     )
 }
 

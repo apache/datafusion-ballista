@@ -93,9 +93,10 @@ impl BallistaCluster {
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,
         config_producer: ConfigProducer,
+        scheduler_config: &SchedulerConfig,
     ) -> Self {
         Self {
-            cluster_state: Arc::new(InMemoryClusterState::default()),
+            cluster_state: Arc::new(InMemoryClusterState::new(scheduler_config)),
             job_state: Arc::new(InMemoryJobState::new(
                 scheduler,
                 session_builder,
@@ -122,6 +123,7 @@ impl BallistaCluster {
             scheduler,
             session_builder,
             config_producer,
+            config,
         ))
     }
 

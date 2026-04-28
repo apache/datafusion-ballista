@@ -19,6 +19,7 @@ use crate::cluster::{
     BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
     JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
 };
+use crate::config::SchedulerConfig;
 use crate::state::execution_graph::ExecutionGraphBox;
 use async_trait::async_trait;
 use ballista_core::error::{BallistaError, Result};
@@ -61,6 +62,18 @@ pub struct InMemoryClusterState {
     heartbeats: DashMap<String, ExecutorHeartbeat>,
     /// Broadcast sender for cluster state change events.
     cluster_event_sender: ClusterEventSender<ClusterStateEvent>,
+}
+
+impl InMemoryClusterState {
+    /// Creating new cluster state in memory from the scheduler's config
+    pub fn new(config: &SchedulerConfig) -> Self {
+        Self {
+            cluster_event_sender: ClusterEventSender::new(
+                config.event_sender_buffer_capacity,
+            ),
+            ..Default::default()
+        }
+    }
 }
 
 #[async_trait]

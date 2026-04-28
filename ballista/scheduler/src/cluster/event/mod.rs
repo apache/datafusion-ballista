@@ -26,9 +26,6 @@ use std::task::{Context, Poll, Waker};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::TryRecvError;
 
-// TODO make configurable
-const EVENT_BUFFER_SIZE: usize = 256;
-
 static ID_GEN: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
@@ -112,7 +109,7 @@ impl<T: Clone> ClusterEventSender<T> {
 
 impl<T: Clone> Default for ClusterEventSender<T> {
     fn default() -> Self {
-        Self::new(EVENT_BUFFER_SIZE)
+        Self::new(256)
     }
 }
 

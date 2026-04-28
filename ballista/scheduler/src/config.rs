@@ -187,6 +187,13 @@ pub struct Config {
         help = "Number of attempts before stage is considered failed."
     )]
     pub stage_max_failures: usize,
+    /// Cluster's event sender buffer capacity
+    #[arg(
+        long,
+        default_value_t = 256,
+        help = "Cluster's event sender buffer capacity."
+    )]
+    pub event_sender_buffer_capacity: usize,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     #[arg(
@@ -253,6 +260,8 @@ pub struct SchedulerConfig {
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     pub stage_max_failures: usize,
+    /// Cluster's event sender buffer capacity
+    pub event_sender_buffer_capacity: usize,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -286,6 +295,7 @@ impl Default for SchedulerConfig {
             use_tls: false,
             task_max_failures: 4,
             stage_max_failures: 4,
+            event_sender_buffer_capacity: 256,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
         }
@@ -427,6 +437,7 @@ impl SchedulerConfig {
 
 /// Policy of distributing tasks to available executor slots
 ///
+/// Is this enum necessary? Seems like an older copy of the TaskDistributionPolicy
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskDistribution {
@@ -514,6 +525,7 @@ impl TryFrom<Config> for SchedulerConfig {
             use_tls: false,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
+            event_sender_buffer_capacity: opt.event_sender_buffer_capacity,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
         };

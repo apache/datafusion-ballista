@@ -81,8 +81,12 @@ pub async fn new_standalone_scheduler_with_builder(
 ) -> Result<SocketAddr> {
     let config = config_producer();
 
-    let cluster =
-        BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
+    let cluster = BallistaCluster::new_memory(
+        "localhost:50050",
+        session_builder,
+        config_producer,
+        &SchedulerConfig::default(),
+    );
 
     let metrics_collector = default_metrics_collector()?;
 
