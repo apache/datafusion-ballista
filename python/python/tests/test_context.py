@@ -91,3 +91,26 @@ def test_cluster_config_propagates_to_distributed_dataframe():
 
     df = ctx.sql("SELECT 1")
     assert df.cluster_config == overrides
+
+
+def test_cluster_config_accepts_ballista_namespaced_keys():
+    """Ballista-namespaced keys (e.g. ``ballista.shuffle.sort_based.enabled``)
+    are not understood by the local DataFusion ``SessionConfig`` and used to
+    panic when applied to it. They are forwarded to the scheduler only and
+    must be ignored locally rather than crashing context construction.
+    """
+    (address, port) = setup_test_cluster()
+    overrides = {
+        "datafusion.execution.target_partitions": "8",
+        "ballista.shuffle.sort_based.enabled": "true",
+    }
+    ctx = BallistaSessionContext(
+        address=f"df://{address}:{port}",
+        cluster_config=overrides,
+    )
+
+    assert ctx.cluster_config == overrides
+
+    df = ctx.sql("SELECT 1")
+    assert df.cluster_config == overrides
+    assert len(df.collect()) == 1

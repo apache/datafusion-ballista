@@ -563,11 +563,15 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         # Apply overrides to the local SessionContext too: some settings
         # (e.g. datafusion.execution.listing_table_factory_infer_partitions)
         # are consulted during local table registration / planning, before
-        # the plan is shipped to the scheduler.
+        # the plan is shipped to the scheduler. Ballista-namespaced keys
+        # are not understood by the local SessionConfig and are forwarded
+        # to the scheduler only.
         if self.cluster_config:
             if config is None:
                 config = SessionConfig()
             for key, value in self.cluster_config.items():
+                if key.startswith("ballista."):
+                    continue
                 config = config.set(key, value)
         super().__init__(config, runtime)
         self.address = address
