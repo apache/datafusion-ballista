@@ -168,15 +168,15 @@ def test_execution_method_to_arrow_table(ctx):
 
 
 def test_execution_method_to_pandas(ctx):
-    pytest.importorskip("pandas")
     pdf = _df(ctx).to_pandas()
     assert pdf.shape == (5, 2)
+    assert list(pdf.columns) == ["a", "b"]
 
 
 def test_execution_method_to_polars(ctx):
-    pytest.importorskip("polars")
     pldf = _df(ctx).to_polars()
     assert pldf.shape == (5, 2)
+    assert pldf.columns == ["a", "b"]
 
 
 def test_execution_method_write_json(ctx, tmp_path):
