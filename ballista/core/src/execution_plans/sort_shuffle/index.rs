@@ -85,6 +85,13 @@ impl ShuffleIndex {
         (self.offsets[partition_id], self.offsets[partition_id + 1])
     }
 
+    /// Returns the byte position where partition data begins, i.e. the byte
+    /// just past the leading schema-header IPC stream. Equivalent to
+    /// `get_partition_range(0).0` but names the intent.
+    pub fn header_end_offset(&self) -> i64 {
+        self.offsets[0]
+    }
+
     /// Returns the size in bytes for the given partition.
     pub fn get_partition_size(&self, partition_id: usize) -> i64 {
         let (start, end) = self.get_partition_range(partition_id);

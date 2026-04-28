@@ -555,6 +555,11 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
     }
 }
 
+/// Detects the `ArrowError` that `arrow_ipc::reader::stream::StreamDecoder`
+/// emits when bytes arrive after a clean EOS marker (its `DecoderState::Finished`
+/// arm in `arrow-ipc/src/reader/stream.rs` returns `IpcError("Unexpected EOS")`).
+/// `should_process_concatenated_streams` will fail if that string ever changes
+/// upstream, so a future arrow-ipc bump that breaks the contract is visible.
 fn is_post_eos_error(e: &ArrowError) -> bool {
     matches!(e, ArrowError::IpcError(msg) if msg == "Unexpected EOS")
 }

@@ -345,8 +345,7 @@ async fn stream_whole_file(
         path,
         file.metadata().await?.len()
     );
-    let reader = tokio::io::BufReader::with_capacity(BLOCK_BUFFER_CAPACITY, file);
-    let file_stream = ReaderStream::with_capacity(reader, BLOCK_BUFFER_CAPACITY);
+    let file_stream = ReaderStream::with_capacity(file, BLOCK_BUFFER_CAPACITY);
     Ok(Box::pin(file_stream.map(|result| {
         result
             .map(|bytes| arrow_flight::Result { body: bytes })
@@ -361,8 +360,8 @@ async fn stream_sort_shuffle_block(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let index_path = get_index_path(data_path);
-    let index = ShuffleIndex::read_from_file(&index_path)
-        .map_err(|e| Status::internal(format!("read shuffle index: {e}")))?;
+    let index =
+        ShuffleIndex::read_from_file(&index_path).map_err(|e| from_ballista_err(&e))?;
 
     if partition_id >= index.partition_count() {
         return Err(Status::out_of_range(format!(
@@ -372,30 +371,32 @@ async fn stream_sort_shuffle_block(
     }
 
     // The leading [0, header_end) bytes hold the schema-header IPC stream.
-    // The partition's byte range is [start, end). We send both, in that
-    // order, so the receiver always recovers the schema even when the
-    // partition is empty.
-    let header_end = index.get_partition_range(0).0 as u64;
+    // We always prepend it to the partition's byte range so the receiver
+    // recovers the schema even when the partition is empty.
+    let header_end = index.header_end_offset() as u64;
     let (start, end) = index.get_partition_range(partition_id);
     let (start, end) = (start as u64, end as u64);
 
+    // One open + dup gives us two independent file cursors over the same
+    // inode: one reads the header from offset 0, the other seeks to the
+    // partition. `chain` and `take` consume their readers by value, so two
+    // cursors are unavoidable here.
     let header_file = tokio::fs::File::open(data_path)
         .await
         .map_err(|e| Status::internal(format!("Failed to open file: {e}")))?;
-    let header = header_file.take(header_end);
-
-    let mut partition_file = tokio::fs::File::open(data_path)
+    let mut partition_file = header_file
+        .try_clone()
         .await
-        .map_err(|e| Status::internal(format!("Failed to open file: {e}")))?;
+        .map_err(|e| Status::internal(format!("dup file handle: {e}")))?;
     partition_file
         .seek(std::io::SeekFrom::Start(start))
         .await
         .map_err(|e| Status::internal(format!("seek partition: {e}")))?;
-    let partition = partition_file.take(end - start);
 
-    let combined = header.chain(partition);
-    let buffered = tokio::io::BufReader::with_capacity(BLOCK_BUFFER_CAPACITY, combined);
-    let file_stream = ReaderStream::with_capacity(buffered, BLOCK_BUFFER_CAPACITY);
+    let combined = header_file
+        .take(header_end)
+        .chain(partition_file.take(end - start));
+    let file_stream = ReaderStream::with_capacity(combined, BLOCK_BUFFER_CAPACITY);
     Ok(Box::pin(file_stream.map(|result| {
         result
             .map(|bytes| arrow_flight::Result { body: bytes })
