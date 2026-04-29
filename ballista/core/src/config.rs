@@ -19,6 +19,7 @@
 //! Ballista configuration
 
 use crate::error::{BallistaError, Result};
+use crate::execution_plans::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
@@ -75,6 +76,9 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
+/// Configuration key for shuffle writer bounded-channel capacity.
+pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
+    "ballista.shuffle.writer_channel_capacity";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -140,6 +144,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
                          Some((8192).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY.to_string(),
+                         "Bounded channel capacity for async-to-blocking I/O bridge in shuffle writer".to_string(),
+                         DataType::UInt32,
+                         Some(DEFAULT_SHUFFLE_CHANNEL_CAPACITY.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -344,6 +352,11 @@ impl BallistaConfig {
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
+    pub fn shuffle_writer_channel_capacity(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY)
     }
 
     /// Should client employ pull or push job tracking strategy
