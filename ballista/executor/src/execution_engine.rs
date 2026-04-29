@@ -119,10 +119,9 @@ impl ExecutionEngine for DefaultExecutionEngine {
                     // invoke reader.with_client_pool_and_work_dir
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
-                            reader.with_client_pool_and_work_dir(
-                                client_pool.clone(),
-                                work_dir.to_string(),
-                            ),
+                            reader
+                                .with_work_dir(work_dir.to_string())
+                                .with_client_pool(client_pool.clone()),
                         ))),
                         None => Ok(Transformed::yes(Arc::new(
                             reader.with_work_dir(work_dir.to_string()),

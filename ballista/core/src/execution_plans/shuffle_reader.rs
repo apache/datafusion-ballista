@@ -125,22 +125,6 @@ impl ShuffleReaderExec {
             client_pool: Some(client_pool),
         }
     }
-    /// creates new shuffle reader with client pool and work dir
-    pub fn with_client_pool_and_work_dir(
-        &self,
-        client_pool: Arc<dyn BallistaClientPool>,
-        work_dir: String,
-    ) -> Self {
-        Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
-            work_dir: Some(work_dir),
-            client_pool: Some(client_pool),
-        }
-    }
 }
 
 impl DisplayAs for ShuffleReaderExec {
