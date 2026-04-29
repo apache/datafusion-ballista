@@ -173,34 +173,6 @@ pub struct Config {
     pub memory_pool_size: Option<u64>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_memory_pool_size;
-
-    #[test]
-    fn parse_decimal_suffix() {
-        assert_eq!(parse_memory_pool_size("8GB").unwrap(), 8_000_000_000);
-        assert_eq!(parse_memory_pool_size("1KB").unwrap(), 1_000);
-    }
-
-    #[test]
-    fn parse_binary_suffix() {
-        assert_eq!(parse_memory_pool_size("512MiB").unwrap(), 512 * 1024 * 1024);
-        assert_eq!(parse_memory_pool_size("1KiB").unwrap(), 1024);
-    }
-
-    #[test]
-    fn parse_plain_integer_is_bytes() {
-        assert_eq!(parse_memory_pool_size("1024").unwrap(), 1024);
-    }
-
-    #[test]
-    fn parse_rejects_invalid() {
-        assert!(parse_memory_pool_size("banana").is_err());
-        assert!(parse_memory_pool_size("").is_err());
-    }
-}
-
 impl TryFrom<Config> for ExecutorProcessConfig {
     type Error = BallistaError;
 
@@ -237,5 +209,33 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_memory_pool_size;
+
+    #[test]
+    fn parse_decimal_suffix() {
+        assert_eq!(parse_memory_pool_size("8GB").unwrap(), 8_000_000_000);
+        assert_eq!(parse_memory_pool_size("1KB").unwrap(), 1_000);
+    }
+
+    #[test]
+    fn parse_binary_suffix() {
+        assert_eq!(parse_memory_pool_size("512MiB").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_memory_pool_size("1KiB").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_plain_integer_is_bytes() {
+        assert_eq!(parse_memory_pool_size("1024").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_rejects_invalid() {
+        assert!(parse_memory_pool_size("banana").is_err());
+        assert!(parse_memory_pool_size("").is_err());
     }
 }
