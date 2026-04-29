@@ -63,8 +63,33 @@ Increasing this configuration setting will increase the number of tasks that eac
 this will also mean that the executor will use more memory. If executors are failing due to out-of-memory errors then
 decreasing the number of concurrent tasks may help.
 
-In the future, Ballista will have better support for tracking memory usage and allocating tasks based on available
-memory, as well as supporting spill-to-disk to reduce memory pressure.
+## Configuring Executor Memory Pool
+
+By default the executor uses DataFusion's unbounded memory pool, so spillable
+operators (sort, hash join, hash aggregate) grow until the host runs out of
+memory. To bound executor memory and let those operators spill to disk under
+pressure, pass `--memory-pool-size` when starting the executor:
+
+```sh
+ballista-executor --memory-pool-size 8GB --concurrent-tasks 8
+```
+
+The argument accepts human-readable sizes (`8GB`, `512MiB`) or a plain byte
+count. SI suffixes (`KB`/`MB`/`GB`) are powers of 10; IEC suffixes
+(`KiB`/`MiB`/`GiB`) are powers of 2.
+
+The total budget is divided equally across concurrent task slots: each task
+receives its own `FairSpillPool` of size `memory_pool_size / concurrent_tasks`.
+With `--memory-pool-size 8GB --concurrent-tasks 8`, every task sees a 1 GB
+pool, fully isolated from other tasks. Idle slots do not lend their share to
+busy ones, which keeps task memory predictable at the cost of some unused
+capacity when the executor is under-utilized.
+
+The executor refuses to start if the per-task share would round to zero (i.e.
+`memory_pool_size < concurrent_tasks`).
+
+When `--memory-pool-size` is not set, the executor behaves as before with no
+memory pool installed.
 
 ## Shuffle Implementation
 
