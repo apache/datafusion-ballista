@@ -17,7 +17,7 @@
 
 //! Connection pool for `BallistaClient` instances.
 //!
-//! `DefaultBallistaClientPool` maintains a `VecDeque`` of idle clients per
+//! `DefaultBallistaClientPool` maintains a `VecDeque` of idle clients per
 //! `(host, port, config)` key backed by a `DashMap`. Callers `BallistaClientPool::acquire`
 //! a `PooledClient` guard; when the guard is dropped the underlying client is
 //! returned to the idle deque automatically.
@@ -59,8 +59,8 @@ struct Inner {
 
 /// Default pool implementation.
 ///
-/// Keeps a `VecDeque<BallistaClient>` per `(host, port, config)`. Idle clients are
-/// evicted by a background tokio task that runs at `idle_timeout / 3`
+/// Keeps `BallistaClients` as `VecDeque<IdleEntry>` per `(host, port, config)`.
+/// Idle clients are evicted by a background tokio task that runs at `idle_timeout / 3`
 /// intervals (minimum 15 s). The task exits automatically when the pool `Arc`
 /// is dropped.
 ///
