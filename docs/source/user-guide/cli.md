@@ -160,14 +160,14 @@ The TUI provides the following views:
 
 ### TUI Navigation
 
-| Key | Action |
-|-----|--------|
-| `Tab` | Switch between Executors, Jobs, and Metrics tabs |
-| `↑` / `↓` | Navigate rows in the current table |
-| `←` / `→` | Change sort column |
-| `Enter` | Open details popup for the selected job |
-| `Esc` | Close popup or quit details view |
-| `q` | Quit the TUI |
-| `?` | Show help overlay with all key bindings |
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `Tab`     | Switch between Executors, Jobs, and Metrics tabs |
+| `↑` / `↓` | Navigate rows in the current table               |
+| `←` / `→` | Change sort column                               |
+| `Enter`   | Open details popup for the selected job          |
+| `Esc`     | Close popup or quit details view                 |
+| `q`       | Quit the TUI                                     |
+| `?`       | Show help overlay with all key bindings          |
 
 The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
