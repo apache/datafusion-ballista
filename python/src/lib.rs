@@ -23,6 +23,7 @@ use cluster::{PyExecutor, PyScheduler};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
 use datafusion_proto::bytes::logical_plan_from_bytes;
+use datafusion_python::errors::from_datafusion_error;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
@@ -86,8 +87,10 @@ fn create_ballista_data_frame(
         .with_session_id(session_id.to_string())
         .build();
 
-    let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))?;
-    let plan = logical_plan_from_bytes(plan_blob, &ctx.task_ctx())?;
+    let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))
+        .map_err(from_datafusion_error)?;
+    let plan = logical_plan_from_bytes(plan_blob, &ctx.task_ctx())
+        .map_err(from_datafusion_error)?;
 
     Ok(datafusion_python::dataframe::PyDataFrame::new(
         DataFrame::new(ctx.state(), plan),
