@@ -308,6 +308,33 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#building-the-python-client-from-source">
+   Building the Python Client from Source
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#prerequisites">
+     Prerequisites
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#create-a-virtual-environment">
+     Create a virtual environment
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#build-and-install">
+     Build and install
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#run-the-tests">
+     Run the tests
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#benchmarking">
    Benchmarking
   </a>
@@ -402,6 +429,72 @@ bottom right corner of the IDE.</p>
 cargo<span class="w"> </span>run<span class="w"> </span>--example<span class="w"> </span>standalone_sql<span class="w"> </span>--features<span class="o">=</span>ballista/standalone
 </pre></div>
 </div>
+</section>
+<section id="building-the-python-client-from-source">
+<h2>Building the Python Client from Source<a class="headerlink" href="#building-the-python-client-from-source" title="Link to this heading">¶</a></h2>
+<p>The Python client (<code class="docutils literal notranslate"><span class="pre">ballista</span></code> on PyPI) lives in the <code class="docutils literal notranslate"><span class="pre">python/</span></code> directory and is versioned and released
+independently from the main Ballista project, so it is intentionally not part of the default Cargo
+workspace. Building it from source uses <a class="reference external" href="https://www.maturin.rs/">maturin</a> to compile the Rust
+extension module and install it into a Python virtual environment.</p>
+<section id="prerequisites">
+<h3>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Python 3.10 or newer</p></li>
+<li><p>The Rust toolchain (see <a class="reference internal" href="#development-environment"><span class="xref myst">Development Environment</span></a>)</p></li>
+<li><p><a class="reference external" href="https://protobuf.dev/downloads/"><code class="docutils literal notranslate"><span class="pre">protoc</span></code></a> on your <code class="docutils literal notranslate"><span class="pre">PATH</span></code></p></li>
+</ul>
+<p>All commands in this section are run from the <code class="docutils literal notranslate"><span class="pre">python/</span></code> directory:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>python
+</pre></div>
+</div>
+</section>
+<section id="create-a-virtual-environment">
+<h3>Create a virtual environment<a class="headerlink" href="#create-a-virtual-environment" title="Link to this heading">¶</a></h3>
+<p>Using <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv
+<span class="nb">source</span><span class="w"> </span>.venv/bin/activate
+pip3<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
+pip3<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">pip</span></code> upgrade is required because <code class="docutils literal notranslate"><span class="pre">maturin</span> <span class="pre">develop</span></code> invokes <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">--group</span></code>, which
+needs pip 25.1 or newer. The pip shipped with <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">venv</span></code> is often older than that.</p>
+<p>Using <a class="reference external" href="https://docs.astral.sh/uv/"><code class="docutils literal notranslate"><span class="pre">uv</span></code></a>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>sync<span class="w"> </span>--dev<span class="w"> </span>--no-install-package<span class="w"> </span>ballista
+</pre></div>
+</div>
+</section>
+<section id="build-and-install">
+<h3>Build and install<a class="headerlink" href="#build-and-install" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">maturin</span> <span class="pre">develop</span></code> compiles the Rust extension and installs it into the active virtual environment
+as an editable package, so subsequent Python imports pick up your local changes.</p>
+<p>Using <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>maturin<span class="w"> </span>develop<span class="w">            </span><span class="c1"># debug build</span>
+maturin<span class="w"> </span>develop<span class="w"> </span>--release<span class="w">  </span><span class="c1"># release build (slower to compile, faster at runtime)</span>
+</pre></div>
+</div>
+<p>Using <code class="docutils literal notranslate"><span class="pre">uv</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--no-project<span class="w"> </span>maturin<span class="w"> </span>develop<span class="w"> </span>--uv
+</pre></div>
+</div>
+<p>To produce a wheel without installing it (for example, to share or publish):</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--no-project<span class="w"> </span>maturin<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>--strip
+</pre></div>
+</div>
+</section>
+<section id="run-the-tests">
+<h3>Run the tests<a class="headerlink" href="#run-the-tests" title="Link to this heading">¶</a></h3>
+<p>Using <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>pytest
+</pre></div>
+</div>
+<p>Using <code class="docutils literal notranslate"><span class="pre">uv</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--no-project<span class="w"> </span>pytest
+</pre></div>
+</div>
+<p>For more detail on the underlying workflow, including tips for improving build speed, see the
+<a class="reference external" href="https://datafusion.apache.org/python/contributor-guide/introduction.html">DataFusion Python contributor guide</a>.</p>
+</section>
 </section>
 <section id="benchmarking">
 <h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">¶</a></h2>
