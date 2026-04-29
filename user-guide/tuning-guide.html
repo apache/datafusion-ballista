@@ -298,6 +298,11 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#configuring-executor-memory-pool">
+   Configuring Executor Memory Pool
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#shuffle-implementation">
    Shuffle Implementation
   </a>
@@ -409,8 +414,29 @@ the source operation has fewer partitions than this setting.</p>
 <p>Increasing this configuration setting will increase the number of tasks that each executor can run concurrently but
 this will also mean that the executor will use more memory. If executors are failing due to out-of-memory errors then
 decreasing the number of concurrent tasks may help.</p>
-<p>In the future, Ballista will have better support for tracking memory usage and allocating tasks based on available
-memory, as well as supporting spill-to-disk to reduce memory pressure.</p>
+</section>
+<section id="configuring-executor-memory-pool">
+<h2>Configuring Executor Memory Pool<a class="headerlink" href="#configuring-executor-memory-pool" title="Link to this heading">¶</a></h2>
+<p>By default the executor uses DataFusion’s unbounded memory pool, so spillable
+operators (sort, hash join, hash aggregate) grow until the host runs out of
+memory. To bound executor memory and let those operators spill to disk under
+pressure, pass <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> when starting the executor:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>ballista-executor<span class="w"> </span>--memory-pool-size<span class="w"> </span>8GB<span class="w"> </span>--concurrent-tasks<span class="w"> </span><span class="m">8</span>
+</pre></div>
+</div>
+<p>The argument accepts human-readable sizes (<code class="docutils literal notranslate"><span class="pre">8GB</span></code>, <code class="docutils literal notranslate"><span class="pre">512MiB</span></code>) or a plain byte
+count. SI suffixes (<code class="docutils literal notranslate"><span class="pre">KB</span></code>/<code class="docutils literal notranslate"><span class="pre">MB</span></code>/<code class="docutils literal notranslate"><span class="pre">GB</span></code>) are powers of 10; IEC suffixes
+(<code class="docutils literal notranslate"><span class="pre">KiB</span></code>/<code class="docutils literal notranslate"><span class="pre">MiB</span></code>/<code class="docutils literal notranslate"><span class="pre">GiB</span></code>) are powers of 2.</p>
+<p>The total budget is divided equally across concurrent task slots: each task
+receives its own <code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> of size <code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">/</span> <span class="pre">concurrent_tasks</span></code>.
+With <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">8GB</span> <span class="pre">--concurrent-tasks</span> <span class="pre">8</span></code>, every task sees a 1 GB
+pool, fully isolated from other tasks. Idle slots do not lend their share to
+busy ones, which keeps task memory predictable at the cost of some unused
+capacity when the executor is under-utilized.</p>
+<p>The executor refuses to start if the per-task share would round to zero (i.e.
+<code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">&lt;</span> <span class="pre">concurrent_tasks</span></code>).</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> is not set, the executor behaves as before with no
+memory pool installed.</p>
 </section>
 <section id="shuffle-implementation">
 <h2>Shuffle Implementation<a class="headerlink" href="#shuffle-implementation" title="Link to this heading">¶</a></h2>
