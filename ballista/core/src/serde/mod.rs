@@ -379,13 +379,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 let batch_size = if sort_shuffle_writer.batch_size > 0 {
                     sort_shuffle_writer.batch_size as usize
                 } else {
-                    8192 // default for backwards compatibility
+                    8192
                 };
                 let config = SortShuffleConfig::new(
                     true,
-                    sort_shuffle_writer.buffer_size as usize,
-                    sort_shuffle_writer.memory_limit as usize,
-                    sort_shuffle_writer.spill_threshold,
                     datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
                     batch_size,
                 );
@@ -532,9 +529,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         stage_id: exec.stage_id() as u32,
                         input: None,
                         output_partitioning,
-                        buffer_size: config.buffer_size as u64,
-                        memory_limit: config.memory_limit as u64,
-                        spill_threshold: config.spill_threshold,
                         batch_size: config.batch_size as u64,
                     },
                 )),

@@ -498,9 +498,19 @@ async fn new_ballista_client(
 ) -> result::Result<BallistaClient, BallistaError> {
     let max_message_size = config.max_message_size;
     let use_tls = config.use_tls;
+    let io_retries_times = config.io_retries_times;
+    let io_retry_wait_time_ms = config.io_retry_wait_time_ms;
 
-    BallistaClient::try_new(host, port, max_message_size, use_tls, customize_endpoint)
-        .await
+    BallistaClient::try_new(
+        host,
+        port,
+        max_message_size,
+        use_tls,
+        customize_endpoint,
+        io_retries_times,
+        io_retry_wait_time_ms,
+    )
+    .await
 }
 
 async fn fetch_partition_remote(
@@ -712,7 +722,10 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 mod tests {
     use super::*;
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
-    use crate::serde::scheduler::{ExecutorMetadata, ExecutorSpecification, PartitionId};
+    use crate::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId,
+    };
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -814,7 +827,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -864,7 +878,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -915,7 +930,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -966,7 +982,8 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
                 file_id: None,
@@ -1154,7 +1171,8 @@ mod tests {
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification { task_slots: 12 },
+                    specification: ExecutorSpecification::default().with_task_slots(12),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
                 file_id,

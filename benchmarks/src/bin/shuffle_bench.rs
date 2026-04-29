@@ -15,494 +15,505 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Benchmark comparing hash-based and sort-based shuffle implementations.
+//! Standalone shuffle benchmark for profiling Ballista shuffle write
+//! performance outside of a cluster. Streams input from Parquet files and
+//! drives either the hash-based or sort-based shuffle writer end-to-end.
 //!
-//! This benchmark generates synthetic data and measures the performance of
-//! both shuffle implementations across various configurations:
-//! - Different input sizes (number of rows)
-//! - Different partition counts
-//! - Different batch sizes
+//! # Usage
 //!
-//! Usage:
-//!   cargo run --release --bin shuffle_bench -- --help
-//!   cargo run --release --bin shuffle_bench -- --rows 1000000 --partitions 16
+//! ```sh
+//! cargo run --release --bin shuffle_bench -- \
+//!   --input /data/tpch-sf100/lineitem/ \
+//!   --writer sort \
+//!   --partitions 200 \
+//!   --hash-columns 0,3
+//! ```
+//!
+//! Profile with flamegraph:
+//! ```sh
+//! cargo flamegraph --release --bin shuffle_bench -- \
+//!   --input /data/tpch-sf100/lineitem/ \
+//!   --writer sort --partitions 200
+//! ```
 
+use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::sort_shuffle::{
+    SortShuffleConfig, SortShuffleWriterExec,
+};
 use ballista_core::utils;
-use datafusion::arrow::array::{Int64Array, StringArray};
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use clap::Parser;
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::arrow::ipc::CompressionType;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::memory::MemorySourceConfig;
-use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::context::TaskContext;
+use datafusion::execution::config::SessionConfig;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::Partitioning;
-use datafusion::prelude::SessionContext;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use structopt::StructOpt;
-use tempfile::TempDir;
+use std::time::Instant;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[derive(Debug, StructOpt, Clone)]
-#[structopt(
+#[derive(Parser, Debug, Clone)]
+#[command(
     name = "shuffle_bench",
-    about = "Benchmark comparing hash-based and sort-based shuffle implementations"
+    about = "Standalone Ballista shuffle benchmark"
 )]
-struct ShuffleBenchOpt {
-    /// Number of rows to generate
-    #[structopt(short = "r", long = "rows", default_value = "1000000")]
-    rows: usize,
+struct Args {
+    /// Path to input Parquet file or directory of Parquet files.
+    #[arg(long)]
+    input: PathBuf,
 
-    /// Number of output partitions
-    #[structopt(short = "p", long = "partitions", default_value = "16")]
+    /// Shuffle writer to drive: `hash` (default) or `sort`.
+    #[arg(long, default_value = "hash")]
+    writer: String,
+
+    /// Partitioning scheme: `hash`, `single`, or `round-robin`. Currently
+    /// both writers only support `hash`; other values are rejected.
+    #[arg(long, default_value = "hash")]
+    partitioning: String,
+
+    /// Column indices to hash on (comma-separated, e.g. "0,3").
+    #[arg(long, default_value = "0")]
+    hash_columns: String,
+
+    /// Number of output shuffle partitions.
+    #[arg(long, default_value_t = 200)]
     partitions: usize,
 
-    /// Number of input partitions
-    #[structopt(short = "i", long = "input-partitions", default_value = "4")]
-    input_partitions: usize,
-
-    /// Batch size
-    #[structopt(short = "b", long = "batch-size", default_value = "8192")]
+    /// DataFusion target batch size (rows).
+    #[arg(long, default_value_t = 8192)]
     batch_size: usize,
 
-    /// Number of iterations
-    #[structopt(short = "n", long = "iterations", default_value = "3")]
+    /// Memory pool size in bytes (passed to RuntimeEnvBuilder::with_memory_limit).
+    /// When set, the sort writer will spill once usage crosses this limit.
+    #[arg(long)]
+    memory_limit: Option<usize>,
+
+    /// Limit rows read from Parquet (0 = no limit).
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+
+    /// Number of timed iterations.
+    #[arg(long, default_value_t = 1)]
     iterations: usize,
 
-    /// Memory limit for sort shuffle (in MB)
-    #[structopt(short = "m", long = "memory-limit", default_value = "256")]
-    memory_limit_mb: usize,
+    /// Number of warmup iterations before timing.
+    #[arg(long, default_value_t = 0)]
+    warmup: usize,
 
-    /// Buffer size for sort shuffle (in MB)
-    #[structopt(long = "buffer-size", default_value = "1")]
-    buffer_size_mb: usize,
+    /// Output work directory for shuffle data.
+    #[arg(long, default_value = "/tmp/ballista_shuffle_bench")]
+    output_dir: PathBuf,
 
-    /// Only run hash shuffle
-    #[structopt(long = "hash-only")]
-    hash_only: bool,
-
-    /// Only run sort shuffle
-    #[structopt(long = "sort-only")]
-    sort_only: bool,
-
-    /// Number of input partitions to execute concurrently
-    #[structopt(short = "c", long = "concurrency", default_value = "1")]
-    concurrency: usize,
-
-    /// Bounded channel capacity for hash shuffle I/O offload
-    #[structopt(long = "channel-capacity", default_value = "8")]
-    channel_capacity: usize,
+    /// Concurrent shuffle tasks to simulate executor parallelism.
+    #[arg(long, default_value_t = 1)]
+    concurrent_tasks: usize,
 }
 
-fn create_test_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("partition_key", DataType::Int64, false),
-        Field::new("value", DataType::Utf8, true),
-    ]))
+#[derive(Clone, Copy, Debug)]
+enum WriterKind {
+    Hash,
+    Sort,
 }
 
-fn generate_test_batch(
-    schema: &SchemaRef,
-    batch_size: usize,
-    partition_count: usize,
-    offset: usize,
-) -> RecordBatch {
-    let ids: Vec<i64> = (offset..offset + batch_size).map(|i| i as i64).collect();
-    let partition_keys: Vec<i64> =
-        ids.iter().map(|id| *id % partition_count as i64).collect();
-    let values: Vec<String> = ids.iter().map(|id| format!("value_{}", id)).collect();
-
-    RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(ids)),
-            Arc::new(Int64Array::from(partition_keys)),
-            Arc::new(StringArray::from(values)),
-        ],
-    )
-    .unwrap()
+#[derive(Clone, Copy, Debug)]
+enum PartitioningKind {
+    Hash,
 }
 
-fn create_test_data(
-    schema: &SchemaRef,
-    rows: usize,
-    batch_size: usize,
-    input_partitions: usize,
-    partition_count: usize,
-) -> Vec<Vec<RecordBatch>> {
-    let rows_per_partition = rows / input_partitions;
-    let batches_per_partition = rows_per_partition.div_ceil(batch_size);
-
-    let mut partitions = Vec::with_capacity(input_partitions);
-    for p in 0..input_partitions {
-        let mut batches = Vec::with_capacity(batches_per_partition);
-        for b in 0..batches_per_partition {
-            let offset = p * rows_per_partition + b * batch_size;
-            let current_batch_size =
-                std::cmp::min(batch_size, rows_per_partition - b * batch_size);
-            if current_batch_size > 0 {
-                batches.push(generate_test_batch(
-                    schema,
-                    current_batch_size,
-                    partition_count,
-                    offset,
-                ));
-            }
-        }
-        partitions.push(batches);
+fn parse_writer(s: &str) -> Result<WriterKind, String> {
+    match s.to_lowercase().as_str() {
+        "hash" => Ok(WriterKind::Hash),
+        "sort" => Ok(WriterKind::Sort),
+        other => Err(format!(
+            "unknown writer: {other} (expected 'hash' or 'sort')"
+        )),
     }
-    partitions
 }
 
-async fn benchmark_hash_shuffle(
-    data: &[Vec<RecordBatch>],
-    schema: SchemaRef,
-    output_partitions: usize,
-    work_dir: &str,
-    concurrency: usize,
-    channel_capacity: usize,
-) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
-    use ballista_core::execution_plans::ShuffleWriterExec;
+fn parse_partitioning(s: &str) -> Result<PartitioningKind, String> {
+    match s.to_lowercase().as_str() {
+        "hash" => Ok(PartitioningKind::Hash),
+        "single" | "round-robin" => Err(format!(
+            "partitioning '{s}' is not supported by Ballista shuffle writers; \
+             only 'hash' is currently legal"
+        )),
+        other => Err(format!("unknown partitioning: {other}")),
+    }
+}
 
-    let session_ctx = SessionContext::new();
-    let task_ctx = session_ctx.task_ctx();
+fn parse_hash_columns(s: &str) -> Vec<usize> {
+    s.split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().parse::<usize>().expect("invalid column index"))
+        .collect()
+}
 
-    let memory_source =
-        Arc::new(MemorySourceConfig::try_new(data, schema.clone(), None)?);
-    let input = Arc::new(DataSourceExec::new(memory_source));
+fn read_parquet_metadata(path: &Path, limit: usize) -> (SchemaRef, u64) {
+    let paths = collect_parquet_paths(path);
+    let mut schema = None;
+    let mut total_rows = 0u64;
 
-    let shuffle_writer = Arc::new(
-        ShuffleWriterExec::try_new(
-            "bench_job".to_owned(),
-            1,
-            input,
-            work_dir.to_owned(),
-            Some(Partitioning::Hash(
-                vec![Arc::new(Column::new("partition_key", 1))],
-                output_partitions,
-            )),
-        )?
-        .with_channel_capacity(channel_capacity),
+    for file_path in &paths {
+        let file = fs::File::open(file_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {}", file_path.display(), e));
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(file).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read Parquet metadata from {}: {}",
+                    file_path.display(),
+                    e
+                )
+            });
+        if schema.is_none() {
+            schema = Some(Arc::clone(builder.schema()));
+        }
+        total_rows += builder.metadata().file_metadata().num_rows() as u64;
+        if limit > 0 && total_rows >= limit as u64 {
+            total_rows = total_rows.min(limit as u64);
+            break;
+        }
+    }
+
+    (schema.expect("No parquet files found"), total_rows)
+}
+
+fn collect_parquet_paths(path: &Path) -> Vec<PathBuf> {
+    if path.is_dir() {
+        let mut files: Vec<PathBuf> = fs::read_dir(path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e))
+            .filter_map(|entry| {
+                let p = entry.ok()?.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("parquet") {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        files.sort();
+        if files.is_empty() {
+            panic!("No .parquet files in {}", path.display());
+        }
+        files
+    } else {
+        vec![path.to_path_buf()]
+    }
+}
+
+fn build_partitioning(
+    _kind: PartitioningKind,
+    num_partitions: usize,
+    hash_col_indices: &[usize],
+    schema: &SchemaRef,
+) -> Partitioning {
+    let exprs = hash_col_indices
+        .iter()
+        .map(|&idx| {
+            let field = schema.field(idx);
+            Arc::new(Column::new(field.name(), idx))
+                as Arc<dyn datafusion::physical_expr::PhysicalExpr>
+        })
+        .collect();
+    Partitioning::Hash(exprs, num_partitions)
+}
+
+async fn execute_shuffle_write(
+    args: &Args,
+    writer_kind: WriterKind,
+    partitioning_kind: PartitioningKind,
+    hash_col_indices: &[usize],
+    work_dir: PathBuf,
+    task_id: usize,
+) -> datafusion::error::Result<MetricsSet> {
+    let mut runtime_builder = RuntimeEnvBuilder::new();
+    if let Some(mem_limit) = args.memory_limit {
+        runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
+    }
+    let runtime_env = Arc::new(runtime_builder.build()?);
+    let config = SessionConfig::new().with_batch_size(args.batch_size);
+    let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+
+    let mut df = ctx
+        .read_parquet(args.input.to_str().unwrap(), ParquetReadOptions::default())
+        .await?;
+    if args.limit > 0 {
+        df = df.limit(0, Some(args.limit))?;
+    }
+
+    let parquet_plan = df.create_physical_plan().await?;
+    let input: Arc<dyn ExecutionPlan> = if parquet_plan
+        .properties()
+        .output_partitioning()
+        .partition_count()
+        > 1
+    {
+        Arc::new(CoalescePartitionsExec::new(parquet_plan.clone()))
+    } else {
+        parquet_plan
+    };
+    let schema = input.schema();
+    let partitioning = build_partitioning(
+        partitioning_kind,
+        args.partitions,
+        hash_col_indices,
+        &schema,
     );
 
-    let start = Instant::now();
+    let work_dir_str = work_dir.to_str().unwrap().to_string();
+    fs::create_dir_all(&work_dir).expect("create work dir");
 
-    let input_partition_count = data.len();
-    let mut total_files = 0;
-
-    if concurrency <= 1 {
-        for partition in 0..input_partition_count {
-            let mut stream = shuffle_writer.execute(partition, task_ctx.clone())?;
-            let batches = utils::collect_stream(&mut stream).await?;
-            if let Some(batch) = batches.first() {
-                total_files += batch.num_rows();
-            }
+    let metrics: MetricsSet = match writer_kind {
+        WriterKind::Hash => {
+            let exec = ShuffleWriterExec::try_new(
+                format!("bench_job_{task_id}"),
+                1,
+                input,
+                work_dir_str,
+                Some(partitioning),
+            )?;
+            let task_ctx = ctx.task_ctx();
+            let mut stream = exec.execute(0, task_ctx)?;
+            let _ = utils::collect_stream(&mut stream).await;
+            exec.metrics().unwrap_or_default()
         }
-    } else {
-        total_files += run_concurrent(
-            shuffle_writer.clone(),
-            task_ctx.clone(),
-            input_partition_count,
-            concurrency,
-        )
-        .await?;
-    }
-
-    let elapsed = start.elapsed();
-    Ok((elapsed, total_files))
-}
-
-async fn benchmark_sort_shuffle(
-    data: &[Vec<RecordBatch>],
-    schema: SchemaRef,
-    output_partitions: usize,
-    work_dir: &str,
-    buffer_size: usize,
-    memory_limit: usize,
-    concurrency: usize,
-) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
-    use ballista_core::execution_plans::sort_shuffle::{
-        SortShuffleConfig, SortShuffleWriterExec,
+        WriterKind::Sort => {
+            let cfg =
+                SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, args.batch_size);
+            let exec = SortShuffleWriterExec::try_new(
+                format!("bench_job_{task_id}"),
+                1,
+                input,
+                work_dir_str,
+                partitioning,
+                cfg,
+            )?;
+            let task_ctx = ctx.task_ctx();
+            let mut stream = exec.execute(0, task_ctx)?;
+            let _ = utils::collect_stream(&mut stream).await;
+            exec.metrics().unwrap_or_default()
+        }
     };
 
-    let session_ctx = SessionContext::new();
-    let task_ctx = session_ctx.task_ctx();
-
-    let memory_source =
-        Arc::new(MemorySourceConfig::try_new(data, schema.clone(), None)?);
-    let input = Arc::new(DataSourceExec::new(memory_source));
-
-    let config = SortShuffleConfig::new(
-        true,
-        buffer_size,
-        memory_limit,
-        0.8,
-        CompressionType::LZ4_FRAME,
-        8192,
-    );
-
-    let shuffle_writer = Arc::new(SortShuffleWriterExec::try_new(
-        "bench_job".to_owned(),
-        1,
-        input,
-        work_dir.to_owned(),
-        Partitioning::Hash(
-            vec![Arc::new(Column::new("partition_key", 1))],
-            output_partitions,
-        ),
-        config,
-    )?);
-
-    let start = Instant::now();
-
-    let input_partition_count = data.len();
-    let mut total_files = 0;
-
-    if concurrency <= 1 {
-        for partition in 0..input_partition_count {
-            let mut stream = shuffle_writer.execute(partition, task_ctx.clone())?;
-            let batches = utils::collect_stream(&mut stream).await?;
-            if let Some(batch) = batches.first() {
-                total_files += batch.num_rows();
-            }
-        }
-    } else {
-        total_files += run_concurrent(
-            shuffle_writer.clone(),
-            task_ctx.clone(),
-            input_partition_count,
-            concurrency,
-        )
-        .await?;
-    }
-
-    let elapsed = start.elapsed();
-    Ok((elapsed, total_files))
+    Ok(metrics)
 }
 
-async fn run_concurrent(
-    plan: Arc<dyn ExecutionPlan>,
-    task_ctx: Arc<TaskContext>,
-    input_partition_count: usize,
-    concurrency: usize,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let mut handles = Vec::new();
-    for partition in 0..input_partition_count {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let writer = plan.clone();
-        let ctx = task_ctx.clone();
-        handles.push(tokio::spawn(async move {
-            let mut stream = writer.execute(partition, ctx)?;
-            let batches = utils::collect_stream(&mut stream)
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-            let files = batches.first().map_or(0, |b| b.num_rows());
-            drop(permit);
-            Ok::<_, datafusion::error::DataFusionError>(files)
-        }));
-    }
-    let mut total_files = 0;
-    let mut first_err: Option<Box<dyn std::error::Error>> = None;
-    for handle in handles {
-        match handle.await {
-            Ok(Ok(files)) => total_files += files,
-            Ok(Err(e)) if first_err.is_none() => {
-                first_err = Some(Box::new(e));
+fn run_iteration(
+    args: &Args,
+    writer_kind: WriterKind,
+    partitioning_kind: PartitioningKind,
+    hash_col_indices: &[usize],
+) -> (f64, Option<MetricsSet>) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let start = Instant::now();
+        if args.concurrent_tasks <= 1 {
+            let work_dir = args.output_dir.join("task_0");
+            let metrics = execute_shuffle_write(
+                args,
+                writer_kind,
+                partitioning_kind,
+                hash_col_indices,
+                work_dir.clone(),
+                0,
+            )
+            .await
+            .expect("shuffle write failed");
+            let elapsed = start.elapsed().as_secs_f64();
+            let _ = fs::remove_dir_all(&work_dir);
+            (elapsed, Some(metrics))
+        } else {
+            let mut handles = Vec::with_capacity(args.concurrent_tasks);
+            for task_id in 0..args.concurrent_tasks {
+                let args = args.clone();
+                let hash_col_indices = hash_col_indices.to_vec();
+                let work_dir = args.output_dir.join(format!("task_{task_id}"));
+                handles.push(tokio::spawn(async move {
+                    let m = execute_shuffle_write(
+                        &args,
+                        writer_kind,
+                        partitioning_kind,
+                        &hash_col_indices,
+                        work_dir.clone(),
+                        task_id,
+                    )
+                    .await
+                    .expect("shuffle write failed");
+                    let _ = fs::remove_dir_all(&work_dir);
+                    m
+                }));
             }
-            Err(e) if first_err.is_none() => {
-                first_err = Some(e.into());
+            for h in handles {
+                let _ = h.await.expect("task panicked");
             }
-            _ => {}
+            (start.elapsed().as_secs_f64(), None)
         }
-    }
-    if let Some(e) = first_err {
-        return Err(e);
-    }
-    Ok(total_files)
+    })
 }
 
-fn count_files_in_dir(dir: &str) -> usize {
-    let mut count = 0;
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                count += 1;
-            } else if entry.path().is_dir() {
-                count += count_files_in_dir(entry.path().to_str().unwrap());
-            }
+fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
+    let total_ns = (total_wall_time_secs * 1e9) as u64;
+    let fmt_time = |nanos: usize| -> String {
+        let secs = nanos as f64 / 1e9;
+        let pct = if total_ns > 0 {
+            (nanos as f64 / total_ns as f64) * 100.0
+        } else {
+            0.0
+        };
+        format!("{secs:.3}s ({pct:.1}%)")
+    };
+    let aggregated = metrics.aggregate_by_name();
+    for m in aggregated.iter() {
+        let value = m.value();
+        let name = value.name();
+        let v = value.as_usize();
+        if v == 0 {
+            continue;
+        }
+        if matches!(
+            value,
+            MetricValue::StartTimestamp(_) | MetricValue::EndTimestamp(_)
+        ) {
+            continue;
+        }
+        let is_time = matches!(
+            value,
+            MetricValue::ElapsedCompute(_) | MetricValue::Time { .. }
+        );
+        if is_time {
+            println!("  {name}: {}", fmt_time(v));
+        } else {
+            println!("  {name}: {v}");
         }
     }
-    count
 }
 
-fn dir_size(dir: &str) -> u64 {
-    let mut size = 0;
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    size += meta.len();
-                }
-            } else if entry.path().is_dir() {
-                size += dir_size(entry.path().to_str().unwrap());
+fn describe_schema(schema: &datafusion::arrow::datatypes::Schema) -> String {
+    let mut counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for field in schema.fields() {
+        let type_name = match field.data_type() {
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => "int",
+            DataType::Float16 | DataType::Float32 | DataType::Float64 => "float",
+            DataType::Utf8 | DataType::LargeUtf8 => "string",
+            DataType::Boolean => "bool",
+            DataType::Date32 | DataType::Date64 => "date",
+            DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => "decimal",
+            DataType::Timestamp(_, _) => "timestamp",
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => {
+                "binary"
             }
-        }
+            _ => "other",
+        };
+        *counts.entry(type_name).or_insert(0) += 1;
     }
-    size
+    let mut parts: Vec<String> = counts
+        .into_iter()
+        .map(|(k, v)| format!("{v}x{k}"))
+        .collect();
+    parts.sort();
+    parts.join(", ")
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-    let opt = ShuffleBenchOpt::from_args();
+fn main() {
+    let args = Args::parse();
+    let writer_kind = parse_writer(&args.writer).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    });
+    let partitioning_kind = parse_partitioning(&args.partitioning).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    });
+    let hash_col_indices = parse_hash_columns(&args.hash_columns);
 
-    println!("Shuffle Benchmark Configuration:");
-    println!("  Rows: {}", opt.rows);
-    println!("  Input partitions: {}", opt.input_partitions);
-    println!("  Output partitions: {}", opt.partitions);
-    println!("  Batch size: {}", opt.batch_size);
-    println!("  Iterations: {}", opt.iterations);
-    println!("  Sort shuffle memory limit: {} MB", opt.memory_limit_mb);
-    println!("  Sort shuffle buffer size: {} MB", opt.buffer_size_mb);
-    println!("  Concurrency: {}", opt.concurrency);
-    println!("  Channel capacity: {}", opt.channel_capacity);
-    println!();
+    fs::create_dir_all(&args.output_dir).expect("create output dir");
 
-    let schema = create_test_schema();
+    let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
-    // Generate test data once
-    println!("Generating test data...");
-    let data = create_test_data(
-        &schema,
-        opt.rows,
-        opt.batch_size,
-        opt.input_partitions,
-        opt.partitions,
-    );
-    let total_batches: usize = data.iter().map(|p| p.len()).sum();
+    println!("=== Ballista Shuffle Benchmark ===");
+    println!("Writer:         {writer_kind:?}");
+    println!("Partitioning:   {partitioning_kind:?}");
+    println!("Input:          {}", args.input.display());
     println!(
-        "Generated {} batches across {} input partitions",
-        total_batches, opt.input_partitions
+        "Schema:         {} cols ({})",
+        schema.fields().len(),
+        describe_schema(&schema)
+    );
+    println!("Total rows:     {total_rows}");
+    println!("Partitions:     {}", args.partitions);
+    println!("Batch size:     {}", args.batch_size);
+    if let Some(m) = args.memory_limit {
+        println!("Memory limit:   {m} bytes");
+    }
+    if args.concurrent_tasks > 1 {
+        println!("Concurrent:     {} tasks", args.concurrent_tasks);
+    }
+    println!(
+        "Iterations:     {} (warmup {})",
+        args.iterations, args.warmup
     );
     println!();
 
-    let buffer_size = opt.buffer_size_mb * 1024 * 1024;
-    let memory_limit = opt.memory_limit_mb * 1024 * 1024;
+    let total_iters = args.warmup + args.iterations;
+    let mut times = Vec::with_capacity(args.iterations);
+    let mut last_metrics: Option<MetricsSet> = None;
 
-    // Benchmark hash shuffle
-    if !opt.sort_only {
-        println!("=== Hash-Based Shuffle ===");
-        let mut hash_times: Vec<Duration> = Vec::new();
-        let mut hash_file_count = 0;
-        let mut hash_total_size = 0u64;
-
-        for i in 0..opt.iterations {
-            let temp_dir = TempDir::new()?;
-            let work_dir = temp_dir.path().to_str().unwrap();
-
-            let (elapsed, _files) = benchmark_hash_shuffle(
-                &data,
-                schema.clone(),
-                opt.partitions,
-                work_dir,
-                opt.concurrency,
-                opt.channel_capacity,
-            )
-            .await?;
-
-            hash_file_count = count_files_in_dir(work_dir);
-            hash_total_size = dir_size(work_dir);
-            hash_times.push(elapsed);
-
-            println!(
-                "  Iteration {}: {:?} ({} files, {} KB)",
-                i + 1,
-                elapsed,
-                hash_file_count,
-                hash_total_size / 1024
-            );
+    for i in 0..total_iters {
+        let is_warmup = i < args.warmup;
+        let label = if is_warmup {
+            format!("warmup {}/{}", i + 1, args.warmup)
+        } else {
+            format!("iter {}/{}", i - args.warmup + 1, args.iterations)
+        };
+        let (elapsed, metrics) =
+            run_iteration(&args, writer_kind, partitioning_kind, &hash_col_indices);
+        if !is_warmup {
+            times.push(elapsed);
+            if metrics.is_some() {
+                last_metrics = metrics;
+            }
         }
-
-        let avg_time: Duration =
-            hash_times.iter().sum::<Duration>() / hash_times.len() as u32;
-        let min_time = hash_times.iter().min().unwrap();
-        let max_time = hash_times.iter().max().unwrap();
-
-        println!();
-        println!("Hash Shuffle Results:");
-        println!("  Average time: {:?}", avg_time);
-        println!("  Min time: {:?}", min_time);
-        println!("  Max time: {:?}", max_time);
-        println!("  Files created: {}", hash_file_count);
-        println!("  Total size: {} KB", hash_total_size / 1024);
-        println!(
-            "  Throughput: {:.2} MB/s",
-            (opt.rows * 30) as f64 / avg_time.as_secs_f64() / 1024.0 / 1024.0
-        );
-        println!();
+        println!("  [{label}] write: {elapsed:.3}s");
     }
 
-    // Benchmark sort shuffle
-    if !opt.hash_only {
-        println!("=== Sort-Based Shuffle ===");
-        let mut sort_times: Vec<Duration> = Vec::new();
-        let mut sort_file_count = 0;
-        let mut sort_total_size = 0u64;
-
-        for i in 0..opt.iterations {
-            let temp_dir = TempDir::new()?;
-            let work_dir = temp_dir.path().to_str().unwrap();
-
-            let (elapsed, _files) = benchmark_sort_shuffle(
-                &data,
-                schema.clone(),
-                opt.partitions,
-                work_dir,
-                buffer_size,
-                memory_limit,
-                opt.concurrency,
-            )
-            .await?;
-
-            sort_file_count = count_files_in_dir(work_dir);
-            sort_total_size = dir_size(work_dir);
-            sort_times.push(elapsed);
-
-            println!(
-                "  Iteration {}: {:?} ({} files, {} KB)",
-                i + 1,
-                elapsed,
-                sort_file_count,
-                sort_total_size / 1024
-            );
+    if !times.is_empty() {
+        let avg = times.iter().sum::<f64>() / times.len() as f64;
+        let total_writer_rows = total_rows * args.concurrent_tasks as u64;
+        println!();
+        println!("=== Results ===");
+        println!("avg time: {avg:.3}s");
+        if times.len() > 1 {
+            let min = times.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            println!("min/max:  {min:.3}s / {max:.3}s");
         }
-
-        let avg_time: Duration =
-            sort_times.iter().sum::<Duration>() / sort_times.len() as u32;
-        let min_time = sort_times.iter().min().unwrap();
-        let max_time = sort_times.iter().max().unwrap();
-
-        println!();
-        println!("Sort Shuffle Results:");
-        println!("  Average time: {:?}", avg_time);
-        println!("  Min time: {:?}", min_time);
-        println!("  Max time: {:?}", max_time);
-        println!("  Files created: {}", sort_file_count);
-        println!("  Total size: {} KB", sort_total_size / 1024);
         println!(
-            "  Throughput: {:.2} MB/s",
-            (opt.rows * 30) as f64 / avg_time.as_secs_f64() / 1024.0 / 1024.0
+            "throughput: {} rows/s (total across {} tasks)",
+            (total_writer_rows as f64 / avg) as u64,
+            args.concurrent_tasks
         );
-        println!();
+        if let Some(metrics) = last_metrics {
+            println!();
+            println!("Shuffle metrics (last iteration):");
+            print_shuffle_metrics(&metrics, avg);
+        }
     }
 
-    Ok(())
+    let _ = fs::remove_dir_all(&args.output_dir);
 }

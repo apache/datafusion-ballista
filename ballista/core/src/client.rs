@@ -55,11 +55,9 @@ pub struct BallistaClient {
     host: String,
     port: u16,
     flight_client: FlightServiceClient<tonic::transport::channel::Channel>,
+    io_retries_times: u8,
+    io_retry_wait_time_ms: u64,
 }
-
-//TODO make this configurable
-const IO_RETRIES_TIMES: u8 = 3;
-const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
 
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
@@ -70,6 +68,8 @@ impl BallistaClient {
         max_message_size: usize,
         use_tls: bool,
         customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+        io_retries_times: u8,
+        io_retry_wait_time_ms: u64,
     ) -> BResult<Self> {
         let scheme = if use_tls { "https" } else { "http" };
 
@@ -109,6 +109,8 @@ impl BallistaClient {
             flight_client,
             host: host.to_string(),
             port,
+            io_retries_times,
+            io_retry_wait_time_ms,
         })
     }
 
@@ -217,13 +219,15 @@ impl BallistaClient {
             .encode(&mut buf)
             .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        for i in 0..IO_RETRIES_TIMES {
+        let io_retries_times = self.io_retries_times;
+        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
+        for i in 0..io_retries_times {
             if i > 0 {
                 warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {IO_RETRY_WAIT_TIME_MS} ms."
+                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    IO_RETRY_WAIT_TIME_MS,
+                    io_retry_wait_time_ms,
                 ))
                 .await;
             }
@@ -237,7 +241,7 @@ impl BallistaClient {
                 Err(ref err) => {
                     // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
+                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             result.unwrap_err()
@@ -266,7 +270,7 @@ impl BallistaClient {
                     };
                 }
                 Err(e) => {
-                    if i == IO_RETRIES_TIMES - 1 || e.code() != Code::Unknown {
+                    if i == io_retries_times - 1 || e.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             e.to_string()
@@ -296,13 +300,15 @@ impl BallistaClient {
             .encode(&mut buf)
             .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        for i in 0..IO_RETRIES_TIMES {
+        let io_retries_times = self.io_retries_times;
+        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
+        for i in 0..io_retries_times {
             if i > 0 {
                 warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {IO_RETRY_WAIT_TIME_MS} ms."
+                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    IO_RETRY_WAIT_TIME_MS,
+                    io_retry_wait_time_ms,
                 ))
                 .await;
             }
@@ -317,7 +323,7 @@ impl BallistaClient {
                 Err(ref err) => {
                     // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
+                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             result.unwrap_err()
@@ -510,52 +516,52 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        match self.decode() {
-            //
-            // if there is a batch to be read from state buffer return it
-            //
-            Ok(Some(batch)) => std::task::Poll::Ready(Some(Ok(batch))),
-            //
-            // there is no batch in the state buffer, try to pull new data
-            // from remote ipc decode it try to return next batch
-            //
-            Ok(None) => match self.ipc_stream.poll_next_unpin(cx) {
-                std::task::Poll::Ready(Some(flight_data_result)) => {
-                    match flight_data_result {
-                        Ok(blob) => {
-                            self.extend_bytes(blob);
-
-                            match self.decode() {
-                                Ok(Some(batch)) => {
-                                    std::task::Poll::Ready(Some(Ok(batch)))
-                                }
-                                Ok(None) => {
-                                    cx.waker().wake_by_ref();
-                                    std::task::Poll::Pending
-                                }
-                                Err(e) => std::task::Poll::Ready(Some(Err(
-                                    ArrowError::IpcError(e.to_string()).into(),
-                                ))),
-                            }
-                        }
-                        Err(e) => std::task::Poll::Ready(Some(Err(
-                            ArrowError::IpcError(e.to_string()).into(),
-                        ))),
-                    }
+        loop {
+            match self.decode() {
+                Ok(Some(batch)) => return std::task::Poll::Ready(Some(Ok(batch))),
+                Ok(None) => {} // buffer drained, pull more bytes below
+                Err(e) if is_post_eos_error(&e) => {
+                    // Decoder reached EOS but the byte stream contains more
+                    // sub-streams (e.g. sort-shuffle's leading schema-header
+                    // stream followed by the requested partition's streams).
+                    // Reset the decoder; the schema captured at construction
+                    // time stays authoritative for downstream consumers.
+                    self.decoder = StreamDecoder::new();
+                    continue;
                 }
-                //
-                // end of IPC stream
-                //
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                // its expected that underlying stream will register waker callback
-                std::task::Poll::Pending => std::task::Poll::Pending,
-            },
-            Err(e) => std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
-                e.to_string(),
-            )
-            .into()))),
+                Err(e) => {
+                    return std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
+                        e.to_string(),
+                    )
+                    .into())));
+                }
+            }
+
+            match self.ipc_stream.poll_next_unpin(cx) {
+                std::task::Poll::Ready(Some(Ok(blob))) => {
+                    self.extend_bytes(blob);
+                    continue;
+                }
+                std::task::Poll::Ready(Some(Err(e))) => {
+                    return std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
+                        e.to_string(),
+                    )
+                    .into())));
+                }
+                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
         }
     }
+}
+
+/// Detects the `ArrowError` that `arrow_ipc::reader::stream::StreamDecoder`
+/// emits when bytes arrive after a clean EOS marker (its `DecoderState::Finished`
+/// arm in `arrow-ipc/src/reader/stream.rs` returns `IpcError("Unexpected EOS")`).
+/// `should_process_concatenated_streams` will fail if that string ever changes
+/// upstream, so a future arrow-ipc bump that breaks the contract is visible.
+fn is_post_eos_error(e: &ArrowError) -> bool {
+    matches!(e, ArrowError::IpcError(msg) if msg == "Unexpected EOS")
 }
 
 impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> RecordBatchStream
@@ -661,6 +667,48 @@ mod tests {
                 .await;
 
         assert_eq!(batches, result.unwrap())
+    }
+
+    #[tokio::test]
+    async fn should_process_concatenated_streams() {
+        let batches = generate_batches();
+
+        // Two complete IPC streams concatenated, mirroring the sort-shuffle
+        // block-IO payload `[schema-header stream][partition streams]`.
+        let mut blob = generate_ipc_stream(&batches[..1]);
+        blob.extend(generate_ipc_stream(&batches[1..]));
+        let stream = futures::stream::iter(vec![Ok(Bytes::from(blob))]);
+
+        let result: datafusion::error::Result<Vec<RecordBatch>> =
+            BlockDataStream::try_new(stream)
+                .await
+                .unwrap()
+                .try_collect()
+                .await;
+
+        assert_eq!(batches, result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn should_process_schema_only_leading_stream() {
+        // Empty-partition shape: the receiver only sees the leading
+        // schema-header stream (schema + EOS, no batches), then EOF.
+        let batches = generate_batches();
+        let schema = batches[0].schema();
+        let mut header = vec![];
+        StreamWriter::try_new(&mut header, &schema)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let stream = futures::stream::iter(vec![Ok(Bytes::from(header))]);
+
+        let bds = BlockDataStream::try_new(stream).await.unwrap();
+        let result_schema = bds.schema.clone();
+        let collected: datafusion::error::Result<Vec<RecordBatch>> =
+            bds.try_collect().await;
+
+        assert_eq!(result_schema.as_ref(), schema.as_ref());
+        assert!(collected.unwrap().is_empty());
     }
 
     #[tokio::test]

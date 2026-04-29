@@ -28,6 +28,10 @@ pub fn get_routes<
         .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
         .route("/api/version", get(handlers::get_scheduler_version))
         .route("/api/executors", get(handlers::get_executors::<T, U>))
+        .route(
+            "/api/executor/{executor_id}",
+            get(handlers::get_executor_info::<T, U>),
+        )
         .route("/api/jobs", get(handlers::get_jobs::<T, U>))
         .route(
             "/api/job/{job_id}",
