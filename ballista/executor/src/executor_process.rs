@@ -80,8 +80,7 @@ use crate::{execution_loop, executor_server};
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
 /// concurrent_tasks`). The inner env's disk manager, cache manager, and
 /// object store registry are preserved via [`RuntimeEnvBuilder::from_runtime_env`].
-#[allow(dead_code)]
-pub(crate) fn wrap_runtime_producer_with_memory_pool(
+fn wrap_runtime_producer_with_memory_pool(
     inner: RuntimeProducer,
     total_bytes: u64,
     concurrent_tasks: usize,
@@ -295,6 +294,21 @@ pub async fn start_executor_process(
                 Ok(Arc::new(runtime_env))
             })
         });
+
+    let runtime_producer = if let Some(total) = opt.memory_pool_size {
+        let producer = wrap_runtime_producer_with_memory_pool(
+            runtime_producer,
+            total,
+            concurrent_tasks,
+        )?;
+        let per_task = total / concurrent_tasks as u64;
+        info!(
+            "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
+        );
+        producer
+    } else {
+        runtime_producer
+    };
 
     let logical = opt
         .override_logical_codec
@@ -992,9 +1006,12 @@ mod memory_pool_tests {
         let concurrent = 8usize;
         let expected_per_task = (total / concurrent as u64) as usize;
 
-        let wrapped =
-            wrap_runtime_producer_with_memory_pool(baseline_producer(), total, concurrent)
-                .unwrap();
+        let wrapped = wrap_runtime_producer_with_memory_pool(
+            baseline_producer(),
+            total,
+            concurrent,
+        )
+        .unwrap();
         let env = wrapped(&SessionConfig::new()).unwrap();
 
         match env.memory_pool.memory_limit() {
@@ -1016,8 +1033,7 @@ mod memory_pool_tests {
             Ok(Arc::new(env))
         });
 
-        let wrapped =
-            wrap_runtime_producer_with_memory_pool(inner, 1024, 1).unwrap();
+        let wrapped = wrap_runtime_producer_with_memory_pool(inner, 1024, 1).unwrap();
         let env = wrapped(&SessionConfig::new()).unwrap();
 
         assert!(Arc::ptr_eq(&env.object_store_registry, &registry));
