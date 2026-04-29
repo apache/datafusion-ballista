@@ -178,7 +178,6 @@ pub struct Config {
         help = "Number of seconds established client connection should be cached if not used (0 means no cache, connection will be disposed)."
     )]
     pub client_ttl: u64,
-
 }
 
 impl TryFrom<Config> for ExecutorProcessConfig {
