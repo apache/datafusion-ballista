@@ -24,7 +24,7 @@
 use std::any::Any;
 use std::fs::File;
 use std::future::Future;
-use std::io::BufWriter;
+use std::io::{BufWriter, Seek, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -43,7 +43,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
+use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::error::{DataFusionError, Result};
@@ -399,68 +399,69 @@ fn finalize_output(
     debug!("Writing consolidated shuffle output to {:?}", data_path);
 
     let file = File::create(&data_path)?;
-    let mut buffered_writer = BufWriter::new(file);
+    let mut output = BufWriter::new(file);
 
-    let options =
+    let opts =
         IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
-    let mut writer =
-        FileWriter::try_new_with_options(&mut buffered_writer, schema, options)?;
 
-    let mut cumulative_batch_count: i64 = 0;
+    // Leading schema-header stream (schema message + EOS, no batches) so the
+    // reader can recover the schema even when the requested partition is empty.
+    {
+        let mut header =
+            StreamWriter::try_new_with_options(&mut output, schema, opts.clone())?;
+        header.finish()?;
+    }
 
-    // Take ownership of the in-memory state once. After this we can iterate
-    // each partition's indices independently without borrow-checker grief.
     let (in_memory_batches, in_memory_indices) = buffered.take();
 
     for (partition_id, partition_indices) in in_memory_indices.iter().enumerate() {
-        index.set_offset(partition_id, cumulative_batch_count);
+        // Flush before reading the kernel position so the BufWriter buffer
+        // is empty; std::io::copy below also writes directly to the inner
+        // File and would land after any pending buffered bytes otherwise.
+        output.flush()?;
+        let partition_start = output.get_mut().stream_position()? as i64;
+        index.set_offset(partition_id, partition_start);
 
-        let mut partition_rows: u64 = 0;
-        let mut partition_batches: u64 = 0;
-        let mut partition_bytes: u64 = 0;
+        let (spill_batches, spill_rows, spill_bytes) =
+            spill_manager.partition_stats(partition_id);
 
-        // First, stream any spill file for this partition.
-        if let Some(reader) = spill_manager
-            .open_spill_reader(partition_id)
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        {
-            for batch_result in reader {
-                let batch = batch_result?;
-                partition_rows += batch.num_rows() as u64;
-                partition_bytes += batch.get_array_memory_size() as u64;
-                partition_batches += 1;
-                writer.write(&batch)?;
-            }
+        if let Some(spill_path) = spill_manager.spill_path(partition_id) {
+            let mut spill_file = File::open(spill_path)?;
+            std::io::copy(&mut spill_file, output.get_mut())?;
         }
 
-        // Then write the in-memory remainder via interleave_record_batch.
+        let mut mem_batches: u64 = 0;
+        let mut mem_rows: u64 = 0;
+        let mut mem_bytes: u64 = 0;
         if !partition_indices.is_empty() {
             let iter = PartitionedBatchIterator::new(
                 &in_memory_batches,
                 partition_indices,
                 config.batch_size,
             );
+            let mut writer =
+                StreamWriter::try_new_with_options(&mut output, schema, opts.clone())?;
             for result in iter {
                 let batch = result?;
-                partition_rows += batch.num_rows() as u64;
-                partition_bytes += batch.get_array_memory_size() as u64;
-                partition_batches += 1;
+                mem_rows += batch.num_rows() as u64;
+                mem_bytes += batch.get_array_memory_size() as u64;
+                mem_batches += 1;
                 writer.write(&batch)?;
             }
+            writer.finish()?;
         }
 
         partition_stats.push((
             partition_id,
-            partition_batches,
-            partition_rows,
-            partition_bytes,
+            spill_batches + mem_batches,
+            spill_rows + mem_rows,
+            spill_bytes + mem_bytes,
         ));
-
-        cumulative_batch_count += partition_batches as i64;
     }
 
-    writer.finish()?;
-    index.set_total_length(cumulative_batch_count);
+    output.flush()?;
+    let total = output.get_mut().stream_position()? as i64;
+    index.set_total_length(total);
     index
         .write_to_file(&index_path)
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -822,25 +823,37 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
+    /// Shared helper for round-trip tests. Builds `num_batches` batches of
+    /// `rows_per_batch` rows each with schema `(k: Int64, v: Int64)`, writes
+    /// them through `SortShuffleWriterExec` into `num_partitions` output
+    /// partitions with a `memory_limit_bytes` pool, reads every partition back
+    /// via `stream_sort_shuffle_partition`, and asserts:
+    ///   - Every input key `0..total_rows` is present exactly once in the union
+    ///     of partition outputs.
+    ///   - `spill_count > 0` iff `expect_spills` is `true`.
+    ///   - The memory pool has `reserved == 0` after completion.
+    async fn run_round_trip(
+        num_batches: usize,
+        rows_per_batch: usize,
+        num_partitions: usize,
+        memory_limit_bytes: usize,
+        expect_spills: bool,
+    ) -> Result<()> {
+        use super::super::reader::stream_sort_shuffle_partition;
         use datafusion::arrow::array::Int64Array;
-        use datafusion::arrow::ipc::reader::FileReader;
         use datafusion::execution::memory_pool::FairSpillPool;
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
         use std::collections::HashSet;
 
-        // Build an input plan with many wide rows so memory growth is noticeable.
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, false),
             Field::new("v", DataType::Int64, false),
         ]));
 
-        // 10 batches of 8192 rows each. With a 512 KiB pool, this forces spilling.
-        let batches: Vec<RecordBatch> = (0..10)
+        let batches: Vec<RecordBatch> = (0..num_batches)
             .map(|b| {
-                let start = b * 8192_i64;
-                let keys: Vec<i64> = (start..start + 8192).collect();
+                let start = (b * rows_per_batch) as i64;
+                let keys: Vec<i64> = (start..start + rows_per_batch as i64).collect();
                 let values: Vec<i64> = keys.iter().map(|k| k * 2).collect();
                 RecordBatch::try_new(
                     schema.clone(),
@@ -861,10 +874,9 @@ mod tests {
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(DataSourceExec::new(memory_data_source));
 
-        // Tight memory pool to force spills.
         let runtime_env = Arc::new(
             RuntimeEnvBuilder::new()
-                .with_memory_pool(Arc::new(FairSpillPool::new(512 * 1024)))
+                .with_memory_pool(Arc::new(FairSpillPool::new(memory_limit_bytes)))
                 .build()?,
         );
         let session_ctx = SessionContext::new_with_config_rt(
@@ -876,11 +888,11 @@ mod tests {
         let work_dir = TempDir::new()?;
 
         let writer = SortShuffleWriterExec::try_new(
-            "spill_test_job".to_string(),
+            "round_trip_job".to_string(),
             1,
             input,
             work_dir.path().to_str().unwrap().to_string(),
-            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], 4),
+            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
             SortShuffleConfig::default(),
         )?;
 
@@ -898,46 +910,171 @@ mod tests {
             .find(|m| m.value().name() == "spill_count")
             .map(|m| m.value().as_usize())
             .unwrap_or(0);
-        assert!(
-            spill_count > 0,
-            "expected spilling under tight memory pool, got spill_count={spill_count}"
-        );
+        if expect_spills {
+            assert!(
+                spill_count > 0,
+                "expected spilling under tight memory pool, got spill_count={spill_count}"
+            );
+        } else {
+            assert_eq!(
+                spill_count, 0,
+                "expected no spills with generous memory pool, got spill_count={spill_count}"
+            );
+        }
 
-        // Round-trip: read back the consolidated file via Arrow IPC FileReader and
-        // verify all keys are present.
         let data_path = work_dir
             .path()
-            .join("spill_test_job")
+            .join("round_trip_job")
             .join("1")
             .join("0")
             .join("data.arrow");
-        let file = std::fs::File::open(&data_path)?;
-        let reader = FileReader::try_new(file, None)?;
+        let index_path = data_path.with_extension("arrow.index");
         let mut seen: HashSet<i64> = HashSet::new();
-        for batch_result in reader {
-            let batch = batch_result?;
-            let arr = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            for v in arr.values() {
-                seen.insert(*v);
+        let total_rows = num_batches * rows_per_batch;
+        for partition_id in 0..num_partitions {
+            let mut s =
+                stream_sort_shuffle_partition(&data_path, &index_path, partition_id)
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            while let Some(batch_result) = s.next().await {
+                let batch = batch_result?;
+                let arr = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for v in arr.values() {
+                    seen.insert(*v);
+                }
             }
         }
-        assert_eq!(seen.len(), 10 * 8192);
-        for k in 0..(10 * 8192_i64) {
+        assert_eq!(seen.len(), total_rows);
+        for k in 0..total_rows as i64 {
             assert!(seen.contains(&k), "key {k} missing from round-trip");
         }
 
-        // (c) Confirm the writer's MemoryReservation was freed.
-        // The reservation is registered on the pool during execute_shuffle_write
-        // and freed when the future completes, so the pool should now report no
-        // reserved bytes from any source.
         let pool_reserved = session_ctx.runtime_env().memory_pool.reserved();
         assert_eq!(
             pool_reserved, 0,
             "expected MemoryReservation freed after finalization, but pool reports {pool_reserved} bytes still reserved"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
+        // 10 batches of 8192 rows each. With a 512 KiB pool, this forces spilling.
+        run_round_trip(
+            /* num_batches */ 10,
+            /* rows_per_batch */ 8192,
+            /* num_partitions */ 4,
+            /* memory_limit_bytes */ 512 * 1024,
+            /* expect_spills */ true,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn multi_spill_round_trips() -> Result<()> {
+        // Larger total payload + tighter pool than the baseline test, so we
+        // expect multiple spill events per partition. The byte-copy finalize
+        // path should produce a partition section that is `spill_stream ||
+        // in_memory_stream` (two concatenated IPC streams), and the reader
+        // must yield every input row regardless.
+        run_round_trip(
+            /* num_batches */ 20,
+            /* rows_per_batch */ 8192,
+            /* num_partitions */ 2,
+            /* memory_limit_bytes */ 256 * 1024,
+            /* expect_spills */ true,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn in_memory_only_round_trips() -> Result<()> {
+        // Generous memory pool so no partition spills. Validates the path
+        // where each partition section is exactly one in-memory IPC stream.
+        run_round_trip(
+            /* num_batches */ 4,
+            /* rows_per_batch */ 1024,
+            /* num_partitions */ 4,
+            /* memory_limit_bytes */ 64 * 1024 * 1024,
+            /* expect_spills */ false,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn empty_partitions_round_trip() -> Result<()> {
+        use super::super::reader::stream_sort_shuffle_partition;
+        use datafusion::arrow::array::Int64Array;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let total_rows = 256;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![0_i64; total_rows]))],
+        )
+        .unwrap();
+        let partitions = vec![vec![batch]];
+        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema.clone(),
+            None,
+        )?);
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(memory_data_source));
+
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let work_dir = TempDir::new()?;
+
+        let num_partitions = 8;
+        let writer = SortShuffleWriterExec::try_new(
+            "empty_partitions_job".to_string(),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
+            SortShuffleConfig::default(),
+        )?;
+
+        let mut stream = writer.execute(0, task_ctx)?;
+        let _summary: Vec<RecordBatch> = stream
+            .by_ref()
+            .try_collect()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+        let data_path = work_dir
+            .path()
+            .join("empty_partitions_job")
+            .join("1")
+            .join("0")
+            .join("data.arrow");
+        let index_path = data_path.with_extension("arrow.index");
+
+        let mut row_counts = Vec::with_capacity(num_partitions);
+        for partition_id in 0..num_partitions {
+            let mut s =
+                stream_sort_shuffle_partition(&data_path, &index_path, partition_id)
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            let mut count = 0_usize;
+            while let Some(batch_result) = s.next().await {
+                let batch = batch_result?;
+                count += batch.num_rows();
+            }
+            row_counts.push(count);
+        }
+
+        let total_seen: usize = row_counts.iter().sum();
+        assert_eq!(total_seen, total_rows, "round-trip lost rows");
+        let non_empty = row_counts.iter().filter(|c| **c > 0).count();
+        assert!(non_empty >= 1, "expected at least one non-empty partition");
+        assert!(
+            non_empty < num_partitions,
+            "expected at least one empty partition"
         );
 
         Ok(())
