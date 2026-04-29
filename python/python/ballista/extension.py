@@ -163,7 +163,9 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
 
     def write_csv(self, path, with_header=False):
         df = self._to_internal_df()
-        df.write_csv(path, with_header)
+        # The PyO3-bound DataFrame.write_csv requires write_options to be
+        # passed even though its Python signature shows a None default.
+        df.write_csv(path, with_header, None)
 
     def write_parquet_with_options(
         self,
@@ -205,17 +207,16 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
                 bloom_filter_ndv=opts.bloom_filter_ndv,
             )
 
-        # raw_write_options = (
-        #     write_options._raw_write_options if write_options is not None else None
-        # )
-
         df = self._to_internal_df()
 
+        # The PyO3-bound DataFrame.write_parquet_with_options requires
+        # write_options to be passed even though its Python signature shows
+        # a None default.
         df.write_parquet_with_options(
             str(path),
             options_internal,
             column_specific_options_internal,
-            # raw_write_options,
+            None,
         )
 
     def write_parquet(
