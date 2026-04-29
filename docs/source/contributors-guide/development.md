@@ -66,6 +66,82 @@ cd examples
 cargo run --example standalone_sql --features=ballista/standalone
 ```
 
+## Building the Python Client from Source
+
+The Python client (`ballista` on PyPI) lives in the `python/` directory and is versioned and released
+independently from the main Ballista project, so it is intentionally not part of the default Cargo
+workspace. Building it from source uses [maturin](https://www.maturin.rs/) to compile the Rust
+extension module and install it into a Python virtual environment.
+
+### Prerequisites
+
+- Python 3.8 or newer
+- The Rust toolchain (see [Development Environment](#development-environment))
+- [`protoc`](https://protobuf.dev/downloads/) on your `PATH`
+
+All commands in this section are run from the `python/` directory:
+
+```shell
+cd python
+```
+
+### Create a virtual environment
+
+Using `pip`:
+
+```shell
+python3 -m venv .venv
+source .venv/bin/activate
+pip3 install -r requirements.txt
+```
+
+Using [`uv`](https://docs.astral.sh/uv/):
+
+```shell
+uv sync --dev --no-install-package ballista
+```
+
+### Build and install
+
+`maturin develop` compiles the Rust extension and installs it into the active virtual environment
+as an editable package, so subsequent Python imports pick up your local changes.
+
+Using `pip`:
+
+```shell
+maturin develop            # debug build
+maturin develop --release  # release build (slower to compile, faster at runtime)
+```
+
+Using `uv`:
+
+```shell
+uv run --no-project maturin develop --uv
+```
+
+To produce a wheel without installing it (for example, to share or publish):
+
+```shell
+uv run --no-project maturin build --release --strip
+```
+
+### Run the tests
+
+Using `pip`:
+
+```shell
+python3 -m pytest
+```
+
+Using `uv`:
+
+```shell
+uv run --no-project pytest
+```
+
+For more detail on the underlying workflow, including tips for improving build speed, see the
+[DataFusion Python contributor guide](https://datafusion.apache.org/python/contributor-guide/introduction.html).
+
 ## Benchmarking
 
 For performance testing and benchmarking with TPC-H and other datasets, see the [benchmarks README](https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md).
