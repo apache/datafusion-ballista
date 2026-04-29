@@ -17,9 +17,13 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// Tests for executor failure handling
+mod executor_failure;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 
+use crate::state::aqe::AdaptiveExecutionGraph;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
@@ -27,8 +31,10 @@ use ballista_core::serde::scheduler::{
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
+use datafusion::common::JoinType;
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use std::sync::Arc;
 
@@ -122,4 +128,78 @@ pub(crate) fn mock_context() -> SessionContext {
         .build();
 
     SessionContext::new_with_state(state)
+}
+
+/// Creates an AdaptiveExecutionGraph for an aggregation plan
+/// (count(*) grouped by c). Equivalent in spirit to test_aggregation_plan
+/// for the static graph.
+pub(crate) async fn test_aqe_aggregation_plan(
+    partition: usize,
+) -> AdaptiveExecutionGraph {
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(partition)
+        .with_round_robin_repartition(false);
+    let state = SessionStateBuilder::new()
+        .with_config(config.clone())
+        .with_default_features()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_table("t", mock_memory_table()).unwrap();
+
+    let df = ctx
+        .sql("select c, count(*) from t group by c")
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+
+    println!("{}", displayable(plan.as_ref()).indent(false));
+
+    AdaptiveExecutionGraph::try_new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(config),
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+/// Creates an AdaptiveExecutionGraph for a self-join plan on column `a`.
+pub(crate) async fn test_aqe_join_plan(partition: usize) -> AdaptiveExecutionGraph {
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(partition)
+        .with_round_robin_repartition(false);
+    let state = SessionStateBuilder::new()
+        .with_config(config.clone())
+        .with_default_features()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_table("t", mock_memory_table()).unwrap();
+    ctx.register_table("u", mock_memory_table()).unwrap();
+
+    let left = ctx.table("t").await.unwrap();
+    let right = ctx.table("u").await.unwrap();
+    let df = left
+        .join(right, JoinType::Inner, &["a"], &["a"], None)
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+
+    println!("{}", displayable(plan.as_ref()).indent(false));
+
+    AdaptiveExecutionGraph::try_new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(config),
+        None,
+        None,
+    )
+    .unwrap()
 }
