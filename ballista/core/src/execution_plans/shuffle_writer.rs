@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::execution_plans::create_shuffle_path;
+use crate::extension::SessionConfigExt;
 use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
@@ -90,8 +91,6 @@ pub struct ShuffleWriterExec {
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties
     properties: Arc<PlanProperties>,
-    /// Bounded channel capacity for the async-to-blocking I/O bridge
-    channel_capacity: usize,
 }
 
 impl std::fmt::Display for ShuffleWriterExec {
@@ -174,7 +173,6 @@ impl ShuffleWriterExec {
             shuffle_output_partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            channel_capacity: DEFAULT_SHUFFLE_CHANNEL_CAPACITY,
         })
     }
 
@@ -201,17 +199,6 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
-    /// Override the bounded-channel capacity for disk I/O offloading.
-    pub fn with_channel_capacity(mut self, capacity: usize) -> Self {
-        self.channel_capacity = capacity;
-        self
-    }
-
-    /// Get the bounded-channel capacity.
-    pub fn channel_capacity(&self) -> usize {
-        self.channel_capacity
-    }
-
     /// Executes the shuffle write operation for a single input partition.
     pub fn execute_shuffle_write(
         self,
@@ -224,6 +211,10 @@ impl ShuffleWriterExec {
 
         async move {
             let now = Instant::now();
+            let channel_capacity = context
+                .session_config()
+                .ballista_config()
+                .shuffle_writer_channel_capacity();
             let mut stream = plan.execute(input_partition, context)?;
 
             match output_partitioning {
@@ -247,7 +238,7 @@ impl ShuffleWriterExec {
                         &mut stream,
                         path.as_path(),
                         &write_metrics.write_time,
-                        self.channel_capacity,
+                        channel_capacity,
                     )
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -279,7 +270,7 @@ impl ShuffleWriterExec {
                 Some(Partitioning::Hash(exprs, num_output_partitions)) => {
                     let schema = stream.schema();
                     let (tx, mut rx) =
-                        tokio::sync::mpsc::channel::<RecordBatch>(self.channel_capacity);
+                        tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
                     let write_time = write_metrics.write_time.clone();
                     let repart_time = write_metrics.repart_time.clone();
                     let output_rows = write_metrics.output_rows.clone();
@@ -473,16 +464,13 @@ impl ExecutionPlan for ShuffleWriterExec {
                 )
             })?;
 
-            Ok(Arc::new(
-                ShuffleWriterExec::try_new(
-                    self.job_id.clone(),
-                    self.stage_id,
-                    input,
-                    self.work_dir.clone(),
-                    self.shuffle_output_partitioning.clone(),
-                )?
-                .with_channel_capacity(self.channel_capacity),
-            ))
+            Ok(Arc::new(ShuffleWriterExec::try_new(
+                self.job_id.clone(),
+                self.stage_id,
+                input,
+                self.work_dir.clone(),
+                self.shuffle_output_partitioning.clone(),
+            )?))
         } else {
             Err(DataFusionError::Plan(
                 "Ballista ShuffleWriterExec expects single child".to_owned(),
