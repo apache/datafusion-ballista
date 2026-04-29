@@ -95,7 +95,8 @@ impl DefaultBallistaClientPool {
         });
 
         let weak: Weak<Inner> = Arc::downgrade(&inner);
-        // TODO: do we limit minimum interval here?
+        // there is no empirical evidence why 15 is selected.
+        // we can revisit if interval < 15 is needed  
         let check_interval = Duration::from_secs((idle_timeout.as_secs() / 3).max(15));
 
         if enable_eviction_thread {
