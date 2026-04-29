@@ -74,7 +74,8 @@ use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
 
-/// Wrap a [`RuntimeProducer`] so that every produced [`RuntimeEnv`] carries a
+/// Wrap a [`RuntimeProducer`] so that every produced
+/// [`RuntimeEnv`](datafusion::execution::runtime_env::RuntimeEnv) carries a
 /// fresh [`FairSpillPool`] of size `total_bytes / concurrent_tasks`.
 ///
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
