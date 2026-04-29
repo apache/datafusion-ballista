@@ -179,6 +179,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             grpc_server_config: ballista_core::utils::GrpcServerConfig::default(),
             executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
             metric_collection_policy: opt.metric_collection_policy,
+            memory_pool_size: None,
             override_execution_engine: None,
             override_function_registry: None,
             override_config_producer: None,

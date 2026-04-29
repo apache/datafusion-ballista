@@ -120,6 +120,11 @@ pub struct ExecutorProcessConfig {
     pub executor_heartbeat_interval_seconds: u64,
     /// Metric collection policy of this executor instance
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
+    /// Optional total memory pool size in bytes. When set, every task's
+    /// runtime env receives a FairSpillPool of size
+    /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
+    /// installed and DataFusion falls back to its unbounded default.
+    pub memory_pool_size: Option<u64>,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -176,6 +181,7 @@ impl Default for ExecutorProcessConfig {
             grpc_server_config: Default::default(),
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
+            memory_pool_size: None,
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,
