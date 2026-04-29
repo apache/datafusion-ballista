@@ -75,7 +75,7 @@ extension module and install it into a Python virtual environment.
 
 ### Prerequisites
 
-- Python 3.8 or newer
+- Python 3.10 or newer
 - The Rust toolchain (see [Development Environment](#development-environment))
 - [`protoc`](https://protobuf.dev/downloads/) on your `PATH`
 
@@ -92,8 +92,12 @@ Using `pip`:
 ```shell
 python3 -m venv .venv
 source .venv/bin/activate
+pip3 install --upgrade pip
 pip3 install -r requirements.txt
 ```
+
+The `pip` upgrade is required because `maturin develop` invokes `pip install --group`, which
+needs pip 25.1 or newer. The pip shipped with `python3 -m venv` is often older than that.
 
 Using [`uv`](https://docs.astral.sh/uv/):
 
