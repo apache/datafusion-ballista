@@ -431,6 +431,11 @@ fn describe_schema(schema: &datafusion::arrow::datatypes::Schema) -> String {
 }
 
 fn main() {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .init();
+
     let args = Args::parse();
     let writer_kind = parse_writer(&args.writer).unwrap_or_else(|e| {
         eprintln!("error: {e}");
