@@ -83,15 +83,9 @@ mod sort_shuffle_tests {
         SessionContext::standalone_with_state(state).await.unwrap()
     }
 
-    /// Creates a standalone session context with hash-based shuffle.
+    /// Creates a standalone session context with hash-based shuffle (default).
     async fn create_hash_shuffle_context() -> SessionContext {
-        let config = SessionConfig::new_with_ballista()
-            .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "false");
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        SessionContext::standalone_with_state(state).await.unwrap()
+        SessionContext::standalone().await.unwrap()
     }
 
     /// Registers test data in the context.

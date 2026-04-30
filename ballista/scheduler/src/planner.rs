@@ -373,7 +373,7 @@ mod test {
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
-    use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
+    use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::execution::TaskContext;
@@ -709,7 +709,7 @@ order by
         /*
             expected result:
             Stage 0:
-            SortShuffleWriterExec: partitioning=Hash([l_shipmode@1], 2)
+            ShuffleWriterExec: partitioning: Hash([l_shipmode@1], 2)
               DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], file_type=csv, has_header=false
 
             Stage 1:
@@ -732,8 +732,8 @@ order by
 
         // stage0
         let stage0 = stages[0].clone();
-        let shuffle_write = downcast_exec!(stage0, SortShuffleWriterExec);
-        let partitioning = shuffle_write.shuffle_output_partitioning();
+        let shuffle_write = downcast_exec!(stage0, ShuffleWriterExec);
+        let partitioning = shuffle_write.shuffle_output_partitioning().expect("stage0");
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
