@@ -28,7 +28,6 @@ The comprehensive setup notes for end-to-end TPC-H runs (data generation, docker
 | Goal | Benchmark | Where it lives |
 |------|-----------|----------------|
 | End-to-end query latency on TPC-H | `tpch` binary | `benchmarks/src/bin/tpch.rs` |
-| End-to-end on a real-world dataset | `nyctaxi` binary | `benchmarks/src/bin/nyctaxi.rs` |
 | Single-component shuffle write timing on Parquet input | `shuffle_bench` binary | `benchmarks/src/bin/shuffle_bench.rs` |
 | Repeatable micro-benchmark for sort-shuffle (Criterion) | `sort_shuffle` Criterion bench | `benchmarks/benches/sort_shuffle.rs` |
 
@@ -103,10 +102,6 @@ cargo bench --bench sort_shuffle -- --baseline before
 ```
 
 The HTML report lands in `target/criterion/`.
-
-## NYC taxi
-
-`benchmarks/src/bin/nyctaxi.rs` runs a small set of analytical queries on the NYC taxi dataset. It is useful for reproducing user-reported issues that surface only on real-world data shapes. See the [benchmarks README](https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md#nyc-taxi-benchmark) for download instructions.
 
 ## Reading metrics
 
