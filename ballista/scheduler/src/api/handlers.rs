@@ -271,7 +271,7 @@ pub async fn get_executor_info<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(executor_id): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
     let executor_info = state
         .executor_manager
@@ -297,10 +297,11 @@ pub async fn get_executor_info<
                 executor_info,
                 os_info: metadata.os_info,
             }
-        })
-        .unwrap();
+        });
 
-    Json(executor_info)
+    executor_info
+        .map(Json)
+        .ok_or(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
 }
 
 pub async fn get_jobs<
