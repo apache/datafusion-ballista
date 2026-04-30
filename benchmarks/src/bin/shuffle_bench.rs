@@ -367,7 +367,7 @@ async fn execute_shuffle_read(
                                 path.display()
                             ))
                         })?
-                        .with_skip_validation(false)
+                        .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
                 };
                 for batch in reader {
                     let batch = batch.map_err(DataFusionError::from)?;

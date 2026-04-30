@@ -28,7 +28,8 @@ publish = false
 
 [features]
 ci = []
-default = ["mimalloc"]
+default = ["mimalloc", "arrow-ipc-optimizations"]
+arrow-ipc-optimizations = ["ballista-core/arrow-ipc-optimizations"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "53.0.0" }
