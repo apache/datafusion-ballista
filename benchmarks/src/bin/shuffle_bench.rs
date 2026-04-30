@@ -37,13 +37,17 @@
 //! ```
 
 use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::create_shuffle_path;
 use ballista_core::execution_plans::sort_shuffle::{
-    SortShuffleConfig, SortShuffleWriterExec,
+    SortShuffleConfig, SortShuffleWriterExec, get_index_path,
+    stream_sort_shuffle_partition,
 };
 use ballista_core::utils;
 use clap::Parser;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::arrow::ipc::CompressionType;
+use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::error::DataFusionError;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -52,7 +56,9 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use futures::StreamExt;
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -116,6 +122,10 @@ struct Args {
     /// Concurrent shuffle tasks to simulate executor parallelism.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Skip the read phase (write-only profiling, original behavior).
+    #[arg(long, default_value_t = false)]
+    skip_reads: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -306,17 +316,127 @@ async fn execute_shuffle_write(
     Ok(metrics)
 }
 
+/// Reads every output partition of the shuffle output produced by
+/// `execute_shuffle_write` and returns `(total_rows, total_bytes)`.
+///
+/// Mirrors the local-read fast path the executor uses in
+/// `fetch_partition_local` (`ballista/core/src/execution_plans/shuffle_reader.rs`),
+/// but driven from a fixed job_id / stage_id / input_partition matching what
+/// `execute_shuffle_write` produced. Reads are sequential.
+async fn execute_shuffle_read(
+    args: &Args,
+    writer_kind: WriterKind,
+    work_dir: &Path,
+    task_id: usize,
+) -> datafusion::error::Result<(u64, u64)> {
+    let job_id = format!("bench_job_{task_id}");
+    let stage_id = 1usize;
+    let input_partition = 0usize;
+    let mut total_rows = 0u64;
+    let mut total_bytes = 0u64;
+
+    match writer_kind {
+        WriterKind::Hash => {
+            for out_part in 0..args.partitions {
+                let path = create_shuffle_path(
+                    work_dir,
+                    &job_id,
+                    stage_id,
+                    out_part,
+                    Some(input_partition as u64),
+                    false,
+                )?;
+                if !path.exists() {
+                    // hash writer skips empty output partitions
+                    continue;
+                }
+                let file = fs::File::open(&path).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "open {} failed: {e}",
+                        path.display()
+                    ))
+                })?;
+                let reader_input = BufReader::with_capacity(256 * 1024, file);
+                // Safety: `with_skip_validation` requires unsafe; we trust the
+                // bytes we just wrote ourselves in this same process.
+                let reader = unsafe {
+                    StreamReader::try_new(reader_input, None)
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "StreamReader::try_new failed for {}: {e}",
+                                path.display()
+                            ))
+                        })?
+                        .with_skip_validation(false)
+                };
+                for batch in reader {
+                    let batch = batch.map_err(DataFusionError::from)?;
+                    total_rows += batch.num_rows() as u64;
+                    total_bytes += batch.get_array_memory_size() as u64;
+                }
+            }
+        }
+        WriterKind::Sort => {
+            // For sort shuffle, all output partitions live in a single data
+            // file per input partition. partition_id is ignored when
+            // is_sort_shuffle=true and file_id=Some(_).
+            let data_path = create_shuffle_path(
+                work_dir,
+                &job_id,
+                stage_id,
+                0,
+                Some(input_partition as u64),
+                true,
+            )?;
+            if !data_path.exists() {
+                return Ok((0, 0));
+            }
+            let index_path = get_index_path(&data_path);
+            for out_part in 0..args.partitions {
+                let mut stream =
+                    stream_sort_shuffle_partition(&data_path, &index_path, out_part)
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "stream_sort_shuffle_partition({out_part}) failed: {e}"
+                            ))
+                        })?;
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    total_rows += batch.num_rows() as u64;
+                    total_bytes += batch.get_array_memory_size() as u64;
+                }
+            }
+        }
+    }
+
+    Ok((total_rows, total_bytes))
+}
+
+/// Result of one timed iteration: write time, read time (0 if skipped),
+/// total wall time, last writer metrics (only available when
+/// `concurrent_tasks <= 1`), rows read, bytes read.
+struct IterationResult {
+    write_secs: f64,
+    read_secs: f64,
+    total_secs: f64,
+    metrics: Option<MetricsSet>,
+    rows_read: u64,
+    bytes_read: u64,
+}
+
 fn run_iteration(
     args: &Args,
     writer_kind: WriterKind,
     partitioning_kind: PartitioningKind,
     hash_col_indices: &[usize],
-) -> (f64, Option<MetricsSet>) {
+) -> IterationResult {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let start = Instant::now();
+        let total_start = Instant::now();
         if args.concurrent_tasks <= 1 {
             let work_dir = args.output_dir.join("task_0");
+
+            let write_start = Instant::now();
             let metrics = execute_shuffle_write(
                 args,
                 writer_kind,
@@ -327,9 +447,28 @@ fn run_iteration(
             )
             .await
             .expect("shuffle write failed");
-            let elapsed = start.elapsed().as_secs_f64();
+            let write_secs = write_start.elapsed().as_secs_f64();
+
+            let (read_secs, rows_read, bytes_read) = if args.skip_reads {
+                (0.0, 0, 0)
+            } else {
+                let read_start = Instant::now();
+                let (rows, bytes) = execute_shuffle_read(args, writer_kind, &work_dir, 0)
+                    .await
+                    .expect("shuffle read failed");
+                (read_start.elapsed().as_secs_f64(), rows, bytes)
+            };
+
+            let total_secs = total_start.elapsed().as_secs_f64();
             let _ = fs::remove_dir_all(&work_dir);
-            (elapsed, Some(metrics))
+            IterationResult {
+                write_secs,
+                read_secs,
+                total_secs,
+                metrics: Some(metrics),
+                rows_read,
+                bytes_read,
+            }
         } else {
             let mut handles = Vec::with_capacity(args.concurrent_tasks);
             for task_id in 0..args.concurrent_tasks {
@@ -337,7 +476,8 @@ fn run_iteration(
                 let hash_col_indices = hash_col_indices.to_vec();
                 let work_dir = args.output_dir.join(format!("task_{task_id}"));
                 handles.push(tokio::spawn(async move {
-                    let m = execute_shuffle_write(
+                    let write_start = Instant::now();
+                    let _ = execute_shuffle_write(
                         &args,
                         writer_kind,
                         partitioning_kind,
@@ -347,14 +487,47 @@ fn run_iteration(
                     )
                     .await
                     .expect("shuffle write failed");
+                    let write_secs = write_start.elapsed().as_secs_f64();
+
+                    let (read_secs, rows, bytes) = if args.skip_reads {
+                        (0.0, 0u64, 0u64)
+                    } else {
+                        let read_start = Instant::now();
+                        let (r, b) =
+                            execute_shuffle_read(&args, writer_kind, &work_dir, task_id)
+                                .await
+                                .expect("shuffle read failed");
+                        (read_start.elapsed().as_secs_f64(), r, b)
+                    };
+
                     let _ = fs::remove_dir_all(&work_dir);
-                    m
+                    (write_secs, read_secs, rows, bytes)
                 }));
             }
+            let mut max_write = 0.0f64;
+            let mut max_read = 0.0f64;
+            let mut total_rows = 0u64;
+            let mut total_bytes = 0u64;
             for h in handles {
-                let _ = h.await.expect("task panicked");
+                let (w, r, rows, bytes) = h.await.expect("task panicked");
+                if w > max_write {
+                    max_write = w;
+                }
+                if r > max_read {
+                    max_read = r;
+                }
+                total_rows += rows;
+                total_bytes += bytes;
             }
-            (start.elapsed().as_secs_f64(), None)
+            let total_secs = total_start.elapsed().as_secs_f64();
+            IterationResult {
+                write_secs: max_write,
+                read_secs: max_read,
+                total_secs,
+                metrics: None,
+                rows_read: total_rows,
+                bytes_read: total_bytes,
+            }
         }
     })
 }
@@ -474,8 +647,12 @@ fn main() {
     println!();
 
     let total_iters = args.warmup + args.iterations;
-    let mut times = Vec::with_capacity(args.iterations);
+    let mut write_times = Vec::with_capacity(args.iterations);
+    let mut read_times = Vec::with_capacity(args.iterations);
+    let mut total_times = Vec::with_capacity(args.iterations);
     let mut last_metrics: Option<MetricsSet> = None;
+    let mut last_rows_read: u64 = 0;
+    let mut last_bytes_read: u64 = 0;
 
     for i in 0..total_iters {
         let is_warmup = i < args.warmup;
@@ -484,37 +661,86 @@ fn main() {
         } else {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
-        let (elapsed, metrics) =
+        let result =
             run_iteration(&args, writer_kind, partitioning_kind, &hash_col_indices);
         if !is_warmup {
-            times.push(elapsed);
-            if metrics.is_some() {
-                last_metrics = metrics;
+            write_times.push(result.write_secs);
+            read_times.push(result.read_secs);
+            total_times.push(result.total_secs);
+            if result.metrics.is_some() {
+                last_metrics = result.metrics;
             }
+            last_rows_read = result.rows_read;
+            last_bytes_read = result.bytes_read;
         }
-        println!("  [{label}] write: {elapsed:.3}s");
+        if args.skip_reads {
+            println!("  [{label}] write: {:.3}s", result.write_secs);
+        } else {
+            println!(
+                "  [{label}] write: {:.3}s  read: {:.3}s  total: {:.3}s  ({} rows read)",
+                result.write_secs, result.read_secs, result.total_secs, result.rows_read
+            );
+        }
     }
 
-    if !times.is_empty() {
-        let avg = times.iter().sum::<f64>() / times.len() as f64;
+    if !write_times.is_empty() {
+        let avg = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+        let min = |xs: &[f64]| xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = |xs: &[f64]| xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        let avg_write = avg(&write_times);
+        let avg_total = avg(&total_times);
         let total_writer_rows = total_rows * args.concurrent_tasks as u64;
+
         println!();
         println!("=== Results ===");
-        println!("avg time: {avg:.3}s");
-        if times.len() > 1 {
-            let min = times.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max = times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            println!("min/max:  {min:.3}s / {max:.3}s");
+        if args.skip_reads {
+            println!("avg write: {avg_write:.3}s");
+            if write_times.len() > 1 {
+                println!(
+                    "write min/max: {:.3}s / {:.3}s",
+                    min(&write_times),
+                    max(&write_times)
+                );
+            }
+            println!(
+                "write throughput: {} rows/s (total across {} tasks)",
+                (total_writer_rows as f64 / avg_write) as u64,
+                args.concurrent_tasks
+            );
+        } else {
+            let avg_read = avg(&read_times);
+            println!(
+                "avg time:    write {avg_write:.3}s   read {avg_read:.3}s   total {avg_total:.3}s"
+            );
+            if write_times.len() > 1 {
+                println!(
+                    "min/max:     write {:.3}s / {:.3}s   read {:.3}s / {:.3}s   total {:.3}s / {:.3}s",
+                    min(&write_times),
+                    max(&write_times),
+                    min(&read_times),
+                    max(&read_times),
+                    min(&total_times),
+                    max(&total_times)
+                );
+            }
+            println!(
+                "write throughput: {} rows/s (total across {} tasks)",
+                (total_writer_rows as f64 / avg_write) as u64,
+                args.concurrent_tasks
+            );
+            if avg_read > 0.0 {
+                println!(
+                    "read throughput:  {} rows/s ({} bytes, last iteration)",
+                    (last_rows_read as f64 / avg_read) as u64,
+                    last_bytes_read
+                );
+            }
         }
-        println!(
-            "throughput: {} rows/s (total across {} tasks)",
-            (total_writer_rows as f64 / avg) as u64,
-            args.concurrent_tasks
-        );
         if let Some(metrics) = last_metrics {
             println!();
             println!("Shuffle metrics (last iteration):");
-            print_shuffle_metrics(&metrics, avg);
+            print_shuffle_metrics(&metrics, avg_write);
         }
     }
 
