@@ -50,6 +50,32 @@ To run against a real Ballista cluster, use `benchmark ballista` and pass `--hos
 
 While iterating, pick a representative single query rather than running the full suite. Common picks: `--query 1` (aggregation-heavy), `--query 5` (joins), `--query 22` (correlated subquery). Use `--iterations 3` so you can look at min/avg/max and ignore the first cold run.
 
+## Setting session configs
+
+Both subcommands accept repeatable `-c key=value` (or `--config key=value`) flags to override DataFusion or Ballista session config keys. Each occurrence of `-c` overrides one key:
+
+```shell
+cargo run --release --bin tpch -- benchmark datafusion \
+    --query 1 --path /tmp/tpch-sf10 --format parquet --iterations 3 \
+    -c datafusion.execution.target_partitions=16 \
+    -c datafusion.execution.batch_size=16384
+```
+
+Common keys worth tuning when benchmarking:
+
+| Key | Effect |
+|-----|--------|
+| `datafusion.execution.target_partitions` | Number of partitions DataFusion uses for parallel execution |
+| `datafusion.execution.batch_size` | Rows per batch flowing through operators |
+| `datafusion.execution.collect_statistics` | Whether to collect file-level statistics during planning |
+| `ballista.shuffle.sort_based.enabled` | Use the sort-based shuffle writer (default: true) |
+| `ballista.shuffle.sort_based.batch_size` | Rows per batch when materializing buffered shuffle output |
+| `ballista.shuffle.max_concurrent_read_requests` | Concurrent shuffle-read requests per executor |
+
+`benchmark ballista` propagates these to the executors via the session config, so an override set on the client takes effect on the workers. `benchmark datafusion` applies them to the in-process `SessionContext` directly.
+
+Unknown keys are skipped with a `Warning: could not set config '...'` message rather than failing the run, so check stdout if a config you set seems to have no effect.
+
 ## Reading metrics
 
 The TPC-H binary prints per-iteration timings and per-query results. For a deeper look at where time is going inside a stage, ask DataFusion for the executed physical plan with metrics. The scheduler's REST API exposes per-stage metrics for distributed runs, and an explain plan with `analyze` shows them for the in-process runs. The [Metrics user guide](../user-guide/metrics.md) lists what each metric name means.
