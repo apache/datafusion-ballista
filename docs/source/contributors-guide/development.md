@@ -148,11 +148,4 @@ For more detail on the underlying workflow, including tips for improving build s
 
 ## Benchmarking
 
-For performance testing and benchmarking with TPC-H and other datasets, see the [benchmarks README](https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md).
-
-This includes instructions for:
-
-- Generating TPC-H test data
-- Running benchmarks against DataFusion and Ballista
-- Comparing performance with Apache Spark
-- Running load tests
+See the [Benchmarking guide](benchmarking.md) for which benchmark to reach for, how to run each one, how to read the metrics they print, and how to capture a flame graph when something is unexpectedly slow. The [benchmarks README](https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md) has the comprehensive setup details for end-to-end TPC-H runs and Spark comparison.

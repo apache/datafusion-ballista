@@ -67,6 +67,7 @@ Table of content
    contributors-guide/architecture
    contributors-guide/code-organization
    contributors-guide/development
+   contributors-guide/benchmarking
    Source code <https://github.com/apache/datafusion-ballista/>
 
 .. _toc.community:
