@@ -87,7 +87,7 @@ fn render_plans(
         PlanTab::Logical => details.logical_plan.as_deref().unwrap_or("N/A"),
     };
 
-    let title = format!(" Job: {} ", details.job_id,);
+    let title = format!(" {:?} plan for job '{}' ", tab, details.job_id,);
 
     let block = Block::default()
         .title(title)
