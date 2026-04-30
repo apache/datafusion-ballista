@@ -104,7 +104,10 @@ struct SortShuffleWriteMetrics {
     input_rows: metrics::Count,
     /// Number of output rows
     output_rows: metrics::Count,
-    /// Number of batches spilled to disk
+    /// Number of times the writer flushed buffered partitions to disk under
+    /// memory pressure. One event typically writes one batch per non-empty
+    /// output partition, so this is strictly less than or equal to the number
+    /// of batches written into spill files.
     spill_count: metrics::Count,
     /// Bytes spilled to disk
     spill_bytes: metrics::Count,
@@ -236,6 +239,7 @@ impl SortShuffleWriterExec {
                     .register(&context.runtime_env().memory_pool);
 
             let mut hash_buffer: Vec<u64> = Vec::new();
+            let mut spill_events: u64 = 0;
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
@@ -260,13 +264,29 @@ impl SortShuffleWriterExec {
 
                 if reservation.try_grow(growth).is_err() {
                     let spill_timer = metrics.spill_time.timer();
-                    spill_all_partitions(
+                    let (event_batches, event_bytes) = spill_all_partitions(
                         &mut buffered,
                         &mut spill_manager,
                         &mut reservation,
                         config.batch_size,
                     )?;
                     spill_timer.done();
+
+                    if event_batches > 0 {
+                        spill_events += 1;
+                        info!(
+                            "Sort shuffle writer for input partition {} spilled \
+                             event #{}: {} batches, {} bytes \
+                             (cumulative: {} events, {} batches, {} bytes)",
+                            input_partition,
+                            spill_events,
+                            event_batches,
+                            event_bytes,
+                            spill_events,
+                            spill_manager.total_spilled_batches(),
+                            spill_manager.total_bytes_spilled(),
+                        );
+                    }
                 }
             }
 
@@ -288,7 +308,7 @@ impl SortShuffleWriterExec {
             )?;
             timer.done();
 
-            metrics.spill_count.add(spill_manager.total_spills());
+            metrics.spill_count.add(spill_events as usize);
             metrics
                 .spill_bytes
                 .add(spill_manager.total_bytes_spilled() as usize);
@@ -298,7 +318,7 @@ impl SortShuffleWriterExec {
 
             // Snapshot spill counters before cleanup (cleanup doesn't touch them
             // but we want to be explicit about ordering for the log line below).
-            let total_spills = spill_manager.total_spills();
+            let total_spilled_batches = spill_manager.total_spilled_batches();
             let total_bytes_spilled = spill_manager.total_bytes_spilled();
 
             spill_manager
@@ -310,12 +330,14 @@ impl SortShuffleWriterExec {
 
             info!(
                 "Sort shuffle write for partition {} completed in {} seconds. \
-                 Output: {:?}, Index: {:?}, Spill batches: {}, Spill bytes: {}",
+                 Output: {:?}, Index: {:?}, Spill events: {}, Spill batches: {}, \
+                 Spill bytes: {}",
                 input_partition,
                 now.elapsed().as_secs(),
                 data_path,
                 index_path,
-                total_spills,
+                spill_events,
+                total_spilled_batches,
                 total_bytes_spilled
             );
 
@@ -342,15 +364,21 @@ impl SortShuffleWriterExec {
 /// indices through `PartitionedBatchIterator` and appends each yielded batch
 /// to that partition's spill file. After this call, `buffered.is_empty()` is
 /// true and `reservation.size() == 0`.
+///
+/// Returns `(batches_written, bytes_written)` for this single spill event so
+/// the caller can log per-event diagnostics. A return of `(0, 0)` means there
+/// was nothing buffered and no event occurred.
 fn spill_all_partitions(
     buffered: &mut BufferedBatches,
     spill_manager: &mut SpillManager,
     reservation: &mut MemoryReservation,
     batch_size: usize,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     if buffered.is_empty() {
-        return Ok(());
+        return Ok((0, 0));
     }
+    let mut batches_written: u64 = 0;
+    let mut bytes_written: u64 = 0;
     let (batches, indices) = buffered.take();
     for (partition_id, partition_indices) in indices.iter().enumerate() {
         if partition_indices.is_empty() {
@@ -359,13 +387,15 @@ fn spill_all_partitions(
         let iter = PartitionedBatchIterator::new(&batches, partition_indices, batch_size);
         for result in iter {
             let batch = result?;
-            spill_manager
+            let written = spill_manager
                 .spill(partition_id, &batch)
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            batches_written += 1;
+            bytes_written += written;
         }
     }
     reservation.free();
-    Ok(())
+    Ok((batches_written, bytes_written))
 }
 
 /// Finalizes the output by writing the consolidated data file and index file.
