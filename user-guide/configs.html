@@ -414,7 +414,7 @@
 <h2>Shuffle Settings<a class="headerlink" href="#shuffle-settings" title="Link to this heading">¶</a></h2>
 <p>The following session-level keys control Ballista’s shuffle behavior. See
 the <a class="reference internal" href="tuning-guide.html#shuffle-implementation"><span class="std std-ref">tuning guide</span></a> for an
-explanation of the hash-based (default) and sort-based shuffle writers.</p>
+explanation of the sort-based (default) and hash-based shuffle writers.</p>
 <table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>key</p></th>
@@ -441,7 +441,7 @@ explanation of the hash-based (default) and sort-based shuffle writers.</p>
 </tr>
 <tr class="row-odd"><td><p>ballista.shuffle.sort_based.enabled</p></td>
 <td><p>Boolean</p></td>
-<td><p>false</p></td>
+<td><p>true</p></td>
 <td><p>Enables the sort-based shuffle writer (consolidated data file per input partition with an index, instead of one file per (input partition, output partition) pair).</p></td>
 </tr>
 <tr class="row-even"><td><p>ballista.shuffle.sort_based.buffer_size</p></td>

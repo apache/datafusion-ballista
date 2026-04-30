@@ -99,18 +99,7 @@ upstream task to local files, which downstream tasks read either from disk
 available, with different trade-offs around file count, memory use, and
 write latency.
 
-### Hash-based shuffle (default)
-
-The default writer hashes each incoming `RecordBatch` and immediately
-encodes the per-partition slices to Arrow IPC, streaming them into one
-file per `(input_partition, output_partition)` pair. Nothing is buffered
-in memory across batches.
-
-This is simple and low latency, but for `N` input partitions and `M`
-output partitions it produces `N × M` files. Wide shuffles can therefore
-generate a large number of small files.
-
-### Sort-based shuffle (opt-in)
+### Sort-based shuffle (default)
 
 The sort-based writer accumulates batches in a per-output-partition
 in-memory buffer. When the total buffered size crosses a threshold, the
@@ -122,21 +111,30 @@ an index file that lets readers seek directly to a given output partition.
 This produces `2 × N` files instead of `N × M`, coalesces small batches
 to a target size before writing, and bounds shuffle memory use via
 spilling — at the cost of higher write latency than the hash writer.
-Consider enabling it for queries with high partition fan-out or when
-file-count pressure on local storage is a concern.
 
-The sort-based writer is disabled by default and is enabled per session:
+### Hash-based shuffle (opt-in)
+
+The hash-based writer hashes each incoming `RecordBatch` and immediately
+encodes the per-partition slices to Arrow IPC, streaming them into one
+file per `(input_partition, output_partition)` pair. Nothing is buffered
+in memory across batches.
+
+This is simple and low latency, but for `N` input partitions and `M`
+output partitions it produces `N × M` files. Wide shuffles can therefore
+generate a large number of small files. Consider switching to the
+hash-based writer for narrow shuffles where the additional buffering
+and merging of the sort-based writer is unnecessary overhead:
 
 ```rust
 let session_config = SessionConfig::new_with_ballista()
-    .set_bool("ballista.shuffle.sort_based.enabled", true);
+    .set_bool("ballista.shuffle.sort_based.enabled", false);
 ```
 
 The following session-level keys tune its behavior:
 
 | key                                         | type    | default   | description                                                                                               |
 | ------------------------------------------- | ------- | --------- | --------------------------------------------------------------------------------------------------------- |
-| ballista.shuffle.sort_based.enabled         | Boolean | false     | Enables the sort-based shuffle writer.                                                                    |
+| ballista.shuffle.sort_based.enabled         | Boolean | true      | Enables the sort-based shuffle writer.                                                                    |
 | ballista.shuffle.sort_based.buffer_size     | UInt64  | 1048576   | Per-partition buffer size in bytes (1 MiB default).                                                       |
 | ballista.shuffle.sort_based.memory_limit    | UInt64  | 268435456 | Total in-memory budget across all output-partition buffers (256 MiB default).                             |
 | ballista.shuffle.sort_based.spill_threshold | Utf8    | "0.8"     | Fraction of `memory_limit` at which the largest buffers begin spilling to disk. Must be in the range 0–1. |
