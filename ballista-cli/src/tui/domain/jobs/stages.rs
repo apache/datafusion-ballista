@@ -65,14 +65,16 @@ pub struct TaskDurationPercentiles {
 
 #[derive(Debug)]
 pub struct JobStagesPopup {
+    pub job_id: String,
     pub stages: JobStagesResponse,
     pub table_state: TableState,
     pub show_tasks: bool,
 }
 
 impl JobStagesPopup {
-    pub fn new(stages: JobStagesResponse) -> Self {
+    pub fn new(job_id: String, stages: JobStagesResponse) -> Self {
         Self {
+            job_id,
             stages,
             table_state: TableState::default(),
             show_tasks: false,

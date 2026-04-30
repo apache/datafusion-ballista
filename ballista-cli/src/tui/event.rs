@@ -33,7 +33,7 @@ pub enum UiData {
     Jobs(Vec<Job>),
     JobDetails(JobDetails),
     JobStagesGraph(StagesGraph),
-    JobStagesData(JobStagesResponse),
+    JobStagesData(String, JobStagesResponse),
 }
 
 #[derive(Clone, Debug)]

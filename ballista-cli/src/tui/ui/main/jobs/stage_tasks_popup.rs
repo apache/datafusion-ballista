@@ -80,7 +80,11 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     )
     .block(
         Block::default()
-            .title(format!("  Tasks for Stage '{}' (Esc close) ", stage.id))
+            .title(format!(
+                " Tasks for stage '{}' of job '{}' (Esc close) ",
+                stage.id,
+                popup.job_id.clone()
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightYellow)),
     )

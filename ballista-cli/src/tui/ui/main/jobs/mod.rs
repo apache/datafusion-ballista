@@ -76,7 +76,7 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
 }
 
 pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
-    let stages = app
+    let mut stages = app
         .http_client
         .get_job_stages(job_id)
         .await
@@ -85,8 +85,10 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
             tracing::error!("Failed to load stages for job '{job_id}': {e:?}")
         })?;
 
+    stages.stages.sort_by(|a, b| a.id.cmp(&b.id));
+
     app.send_event(Event::DataLoaded {
-        data: UiData::JobStagesData(stages),
+        data: UiData::JobStagesData(job_id.to_owned(), stages),
     })
     .await
 }

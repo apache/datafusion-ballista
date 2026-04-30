@@ -112,8 +112,8 @@ pub async fn tui_main() -> TuiResult<()> {
                         app.job_dot_popup = Some(graph);
                         app.job_dot_scroll = 0;
                     }
-                    UiData::JobStagesData(stages) => {
-                        app.job_stages_popup = Some(JobStagesPopup::new(stages));
+                    UiData::JobStagesData(job_id, stages) => {
+                        app.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
                     }
                   }
                 }

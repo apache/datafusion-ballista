@@ -67,7 +67,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     )
     .block(
         Block::default()
-            .title(" Job Stages (↑↓ - navigate | Enter - show tasks | Esc - close) ")
+            .title(format!(" Stages for job '{}' (↑↓ - navigate | Enter - show tasks | Esc - close) ", popup.job_id.clone()))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightBlue)),
     )
