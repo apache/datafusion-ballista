@@ -18,6 +18,7 @@
 //! This module contains execution plans that are needed to distribute DataFusion's execution plans into
 //! several Ballista executors.
 
+mod distributed_explain_analyze;
 mod distributed_query;
 mod shuffle_reader;
 mod shuffle_writer;
@@ -28,6 +29,7 @@ mod unresolved_shuffle;
 use std::path::{Path, PathBuf};
 
 use datafusion::common::exec_err;
+pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::DistributedQueryExec;
 pub use shuffle_reader::ShuffleReaderExec;
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};

@@ -20,24 +20,14 @@
 use datafusion::arrow::ipc::CompressionType;
 
 /// Configuration for sort-based shuffle.
-///
-/// Controls memory buffering, spilling behavior, and compression settings
-/// for the sort-based shuffle writer.
 #[derive(Debug, Clone)]
 pub struct SortShuffleConfig {
-    /// Whether sort-based shuffle is enabled (default: false)
+    /// Whether sort-based shuffle is enabled (default: false).
     pub enabled: bool,
-    /// Per-partition buffer size in bytes before considering spill (default: 1MB)
-    pub buffer_size: usize,
-    /// Total memory limit for all shuffle buffers combined (default: 256MB)
-    pub memory_limit: usize,
-    /// Spill threshold as fraction of memory limit (default: 0.8)
-    /// When total memory usage exceeds `memory_limit * spill_threshold`,
-    /// the largest buffers are spilled to disk.
-    pub spill_threshold: f64,
-    /// Compression codec for shuffle data (default: LZ4_FRAME)
+    /// Compression codec for shuffle data (default: LZ4_FRAME).
     pub compression: CompressionType,
-    /// Target batch size in rows when coalescing small batches (default: 8192)
+    /// Target batch size in rows when materializing buffered indices via
+    /// `interleave_record_batch` (default: 8192).
     pub batch_size: usize,
 }
 
@@ -45,9 +35,6 @@ impl Default for SortShuffleConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            buffer_size: 1024 * 1024,        // 1 MB
-            memory_limit: 256 * 1024 * 1024, // 256 MB
-            spill_threshold: 0.8,
             compression: CompressionType::LZ4_FRAME,
             batch_size: 8192,
         }
@@ -55,28 +42,13 @@ impl Default for SortShuffleConfig {
 }
 
 impl SortShuffleConfig {
-    /// Creates a new configuration with the specified settings.
-    pub fn new(
-        enabled: bool,
-        buffer_size: usize,
-        memory_limit: usize,
-        spill_threshold: f64,
-        compression: CompressionType,
-        batch_size: usize,
-    ) -> Self {
+    /// Creates a new configuration.
+    pub fn new(enabled: bool, compression: CompressionType, batch_size: usize) -> Self {
         Self {
             enabled,
-            buffer_size,
-            memory_limit,
-            spill_threshold,
             compression,
             batch_size,
         }
-    }
-
-    /// Returns the memory threshold at which spilling should occur.
-    pub fn spill_memory_threshold(&self) -> usize {
-        (self.memory_limit as f64 * self.spill_threshold) as usize
     }
 }
 
@@ -88,18 +60,15 @@ mod tests {
     fn test_default_config() {
         let config = SortShuffleConfig::default();
         assert!(!config.enabled);
-        assert_eq!(config.buffer_size, 1024 * 1024);
-        assert_eq!(config.memory_limit, 256 * 1024 * 1024);
-        assert!((config.spill_threshold - 0.8).abs() < f64::EPSILON);
+        assert!(matches!(config.compression, CompressionType::LZ4_FRAME));
+        assert_eq!(config.batch_size, 8192);
     }
 
     #[test]
-    fn test_spill_memory_threshold() {
-        let config = SortShuffleConfig {
-            memory_limit: 100,
-            spill_threshold: 0.8,
-            ..Default::default()
-        };
-        assert_eq!(config.spill_memory_threshold(), 80);
+    fn test_new() {
+        let config = SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, 4096);
+        assert!(config.enabled);
+        assert!(matches!(config.compression, CompressionType::LZ4_FRAME));
+        assert_eq!(config.batch_size, 4096);
     }
 }

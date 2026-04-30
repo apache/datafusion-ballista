@@ -299,7 +299,7 @@ impl App {
             KeyCode::Char('g') if self.is_jobs_view() => {
                 self.load_job_dot_data().await;
             }
-            KeyCode::Char('D') if self.is_jobs_view() => {
+            KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
             }
             KeyCode::Char('e') if self.is_scheduler_up() => {

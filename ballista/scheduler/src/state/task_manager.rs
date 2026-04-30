@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::config::SchedulerConfig;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
@@ -53,12 +54,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
-
-// TODO move to configuration file
-/// Default maximum number of failure attempts for task-level retry before the task is considered failed.
-pub const TASK_MAX_FAILURES: usize = 4;
-/// Default maximum number of failure attempts for stage-level retry before the stage is considered failed.
-pub const STAGE_MAX_FAILURES: usize = 4;
 
 /// Trait for launching tasks on executors.
 ///
@@ -136,6 +131,10 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     active_job_cache: ActiveJobCache,
     /// Task launcher implementation.
     launcher: Arc<dyn TaskLauncher>,
+    /// Maximum number of failure attempts for task-level retry before the task is considered failed
+    task_max_failures: usize,
+    /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
+    stage_max_failures: usize,
 }
 
 /// Cache for active job information managed by this scheduler.
@@ -223,6 +222,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         state: Arc<dyn JobState>,
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
             state,
@@ -230,6 +230,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             scheduler_id: scheduler_id.clone(),
             active_job_cache: Arc::new(DashMap::new()),
             launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
+            task_max_failures: config.task_max_failures,
+            stage_max_failures: config.stage_max_failures,
         }
     }
 
@@ -239,6 +241,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
         launcher: Arc<dyn TaskLauncher>,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
             state,
@@ -246,6 +249,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             scheduler_id,
             active_job_cache: Arc::new(DashMap::new()),
             launcher,
+            task_max_failures: config.task_max_failures,
+            stage_max_failures: config.stage_max_failures,
         }
     }
 
@@ -378,7 +383,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get the execution graph of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs.
-    #[cfg(feature = "rest-api")]
     pub(crate) async fn get_job_execution_graph(
         &self,
         job_id: &str,
@@ -423,8 +427,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 graph.update_task_status(
                     executor,
                     statuses,
-                    TASK_MAX_FAILURES,
-                    STAGE_MAX_FAILURES,
+                    self.task_max_failures,
+                    self.stage_max_failures,
                 )?
             } else {
                 // TODO Deal with curator changed case

@@ -343,9 +343,6 @@ fn create_shuffle_writer_with_config(
         if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
             let sort_config = SortShuffleConfig::new(
                 true,
-                ballista_config.shuffle_sort_based_buffer_size(),
-                ballista_config.shuffle_sort_based_memory_limit(),
-                ballista_config.shuffle_sort_based_spill_threshold(),
                 datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
                 ballista_config.shuffle_sort_based_batch_size(),
             );

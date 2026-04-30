@@ -48,7 +48,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                     page_key_bindings.push(Span::from("[c] Cancel job, "));
                 }
                 if app.has_selected_completed_job() {
-                    page_key_bindings.push(Span::from("[D] View job plans, "));
+                    page_key_bindings.push(Span::from("[p] View job plans, "));
                 }
                 if !page_key_bindings.is_empty() {
                     page_key_bindings.insert(0, Span::from("Jobs key bindings: "));

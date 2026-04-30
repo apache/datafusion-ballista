@@ -68,10 +68,7 @@ message SortShuffleWriterExecNode {
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
   datafusion.PhysicalHashRepartition output_partitioning = 4;
-  // Configuration for sort shuffle
-  uint64 buffer_size = 5;
-  uint64 memory_limit = 6;
-  double spill_threshold = 7;
+  // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;
 }
 
@@ -341,6 +338,7 @@ message ExecutorMetadata {
   uint32 port = 3;
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
+  ExecutorOperatingSystemSpecification os_info = 6;
 }
 
 
@@ -352,6 +350,7 @@ message ExecutorRegistration {
   uint32 port = 3;
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
+  ExecutorOperatingSystemSpecification os_info = 6;
 }
 
 message ExecutorHeartbeat {
@@ -360,12 +359,20 @@ message ExecutorHeartbeat {
   uint64 timestamp = 2;
   repeated ExecutorMetric metrics = 3;
   ExecutorStatus status = 4;
+  uint64 peak_proc_physical_memory = 5;
+  uint64 peak_proc_virtual_memory = 6;
 }
 
 message ExecutorMetric {
   // TODO add more metrics
   oneof metric {
     uint64 available_memory = 1;
+    uint64 total_memory = 2;
+    uint64 used_memory = 3;
+    uint64 proc_physical_memory = 4;
+    uint64 proc_virtual_memory = 5;
+    uint64 peak_physical_memory = 6;
+    uint64 peak_virtual_memory = 7;
   }
 }
 
@@ -383,10 +390,21 @@ message ExecutorSpecification {
 }
 
 message ExecutorResource {
-  // TODO add more resources
   oneof resource {
     uint32 task_slots = 1;
   }
+}
+
+message ExecutorOperatingSystemSpecification {
+  string system_name = 1;
+  string kernel_ver = 2;
+  string os_ver = 3;
+  string os_ver_long = 4;
+  uint32 physical_cores = 5;
+  uint32 num_disks = 6;
+  uint64 total_disk_space = 7;
+  uint64 total_available_disk_space = 8;
+  uint64 open_files_limit = 9;
 }
 
 message AvailableTaskSlots {
@@ -650,6 +668,27 @@ message GetJobStatusParams {
   string job_id = 1;
 }
 
+message GetJobMetricsParams {
+  string job_id = 1;
+}
+
+message JobStageMetrics {
+  uint32 stage_id = 1;
+  uint32 partitions = 2;
+  repeated OperatorWithMetrics operators = 3;
+}
+
+message OperatorWithMetrics {
+  uint32 depth = 1;
+  string operator_type = 2;
+  string operator_desc = 3;
+  repeated OperatorMetric metrics = 4;
+}
+
+message GetJobMetricsResult {
+  repeated JobStageMetrics stages = 1;
+}
+
 message SuccessfulJob {
   repeated PartitionLocation partition_location = 1;
   uint64 queued_at = 2;
@@ -779,6 +818,8 @@ service SchedulerGrpc {
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
   rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}
+
+  rpc GetJobMetrics (GetJobMetricsParams) returns (GetJobMetricsResult) {}
 
   // Used by Executor to tell Scheduler it is stopped.
   rpc ExecutorStopped (ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
