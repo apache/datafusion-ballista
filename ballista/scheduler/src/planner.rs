@@ -355,7 +355,7 @@ fn create_shuffle_writer_with_config(
                 stage_id,
                 plan,
                 "".to_owned(),
-                Partitioning::Hash(exprs, partition_count),
+                Some(Partitioning::Hash(exprs, partition_count)),
                 sort_config,
             )?));
         }
