@@ -139,12 +139,12 @@ impl SortShuffleWriterExec {
         shuffle_output_partitioning: Option<Partitioning>,
         config: SortShuffleConfig,
     ) -> Result<Self> {
-        if let Some(p) = &shuffle_output_partitioning {
-            if !matches!(p, Partitioning::Hash(_, _)) {
-                return Err(DataFusionError::Plan(format!(
-                    "SortShuffleWriterExec only supports Hash or None partitioning, got: {p:?}"
-                )));
-            }
+        if let Some(p) = &shuffle_output_partitioning
+            && !matches!(p, Partitioning::Hash(_, _))
+        {
+            return Err(DataFusionError::Plan(format!(
+                "SortShuffleWriterExec only supports Hash or None partitioning, got: {p:?}"
+            )));
         }
 
         // When no shuffle partitioning is requested, mirror ShuffleWriterExec and

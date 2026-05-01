@@ -293,7 +293,7 @@ async fn execute_shuffle_write(
                 1,
                 input,
                 work_dir_str,
-                partitioning,
+                Some(partitioning),
                 cfg,
             )?;
             let task_ctx = ctx.task_ctx();

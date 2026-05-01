@@ -375,9 +375,7 @@ mod test {
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
-    use ballista_core::execution_plans::{
-        ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
-    };
+    use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::execution::TaskContext;
@@ -737,7 +735,9 @@ order by
         // stage0
         let stage0 = stages[0].clone();
         let shuffle_write = downcast_exec!(stage0, SortShuffleWriterExec);
-        let partitioning = shuffle_write.shuffle_output_partitioning();
+        let partitioning = shuffle_write
+            .shuffle_output_partitioning()
+            .expect("expected hash partitioning");
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
@@ -873,7 +873,10 @@ order by
         assert!(stages.len() >= 2, "expected at least 2 stages");
         for (i, stage) in stages.iter().enumerate() {
             assert!(
-                stage.as_any().downcast_ref::<SortShuffleWriterExec>().is_some(),
+                stage
+                    .as_any()
+                    .downcast_ref::<SortShuffleWriterExec>()
+                    .is_some(),
                 "stage {i} expected SortShuffleWriterExec, got {}",
                 stage.name()
             );
