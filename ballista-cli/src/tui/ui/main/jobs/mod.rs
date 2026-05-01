@@ -23,26 +23,26 @@ pub mod stage_plan_popup;
 pub mod stage_tasks_popup;
 
 use crate::tui::{
-    TuiResult,
     app::App,
     domain::{
-        SortOrder,
         jobs::{Job, SortColumn},
+        SortOrder,
     },
     event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
+    TuiResult,
 };
 
 use ratatui::style::Color;
 use ratatui::{
-    Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Text,
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
+    Frame,
 };
 
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
@@ -86,7 +86,9 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
             tracing::error!("Failed to load stages for job '{job_id}': {e:?}")
         })?;
 
-    stages.stages.sort_by(|a, b| a.id.cmp(&b.id));
+    stages
+        .stages
+        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
 
     app.send_event(Event::DataLoaded {
         data: UiData::JobStagesData(job_id.to_owned(), stages),
@@ -293,7 +295,7 @@ fn render_job_status_cell(job: &Job) -> Cell<'_> {
 #[cfg(test)]
 mod tests {
     use super::column_suffix;
-    use crate::tui::domain::{SortOrder, jobs::SortColumn};
+    use crate::tui::domain::{jobs::SortColumn, SortOrder};
 
     #[test]
     fn column_suffix_active_ascending_returns_up_arrow() {
