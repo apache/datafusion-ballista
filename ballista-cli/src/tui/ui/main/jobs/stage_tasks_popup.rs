@@ -84,8 +84,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(format!(
                 " Tasks for stage '{}' of job '{}' ",
-                stage.id,
-                popup.job_id.clone()
+                stage.id, &popup.job_id
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightYellow))
