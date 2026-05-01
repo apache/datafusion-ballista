@@ -29,10 +29,13 @@ pub struct JobStageResponse {
     pub id: String,
     #[serde(rename = "stage_status")]
     pub status: String,
+    #[serde(rename = "stage_plan")]
+    pub plan: String,
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: String,
-    pub task_duration_percentiles: TaskDurationPercentiles,
+    pub task_duration_percentiles: TaskPercentiles,
+    pub task_input_percentiles: TaskPercentiles,
     pub tasks: Vec<StageTaskResponse>,
 }
 
@@ -55,7 +58,7 @@ pub struct StageTaskResponse {
 
 // Percentiles
 #[derive(Deserialize, Clone, Debug)]
-pub struct TaskDurationPercentiles {
+pub struct TaskPercentiles {
     pub min: u64,
     pub max: u64,
     pub median: u64,
@@ -63,12 +66,19 @@ pub struct TaskDurationPercentiles {
     pub p75: u64,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum StageDetailsView {
+    None,
+    Tasks,
+    Plan,
+}
+
 #[derive(Debug)]
 pub struct JobStagesPopup {
     pub job_id: String,
     pub stages: JobStagesResponse,
     pub table_state: TableState,
-    pub show_tasks: bool,
+    details_view: StageDetailsView,
 }
 
 impl JobStagesPopup {
@@ -77,8 +87,32 @@ impl JobStagesPopup {
             job_id,
             stages,
             table_state: TableState::default(),
-            show_tasks: false,
+            details_view: StageDetailsView::None,
         }
+    }
+
+    pub fn set_tasks_view(&mut self) {
+        self.details_view = StageDetailsView::Tasks;
+    }
+
+    pub fn set_plan_view(&mut self) {
+        self.details_view = StageDetailsView::Plan;
+    }
+
+    pub fn set_no_details_view(&mut self) {
+        self.details_view = StageDetailsView::None;
+    }
+
+    pub fn is_no_details_view(&self) -> bool {
+        self.details_view == StageDetailsView::None
+    }
+
+    pub fn is_tasks_view(&self) -> bool {
+        self.details_view == StageDetailsView::Tasks
+    }
+
+    pub fn is_plan_view(&self) -> bool {
+        self.details_view == StageDetailsView::Plan
     }
 
     pub fn scroll_down(&mut self) {

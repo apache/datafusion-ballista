@@ -204,16 +204,21 @@ impl App {
         }
 
         if let Some(popup) = &mut self.job_stages_popup {
-            if popup.show_tasks
+            if popup.is_tasks_view()
                 && let KeyCode::Esc = key.code
             {
-                popup.show_tasks = false;
-            } else if !popup.show_tasks {
+                popup.set_no_details_view();
+            } else if popup.is_plan_view() {
+                popup.set_no_details_view();
+            } else if popup.is_no_details_view() {
                 match key.code {
                     KeyCode::Up => popup.scroll_up(),
                     KeyCode::Down => popup.scroll_down(),
                     KeyCode::Enter => {
-                        popup.show_tasks = true;
+                        popup.set_tasks_view();
+                    }
+                    KeyCode::Char('p') => {
+                        popup.set_plan_view();
                     }
                     KeyCode::Esc => {
                         self.job_stages_popup = None;
@@ -506,14 +511,42 @@ impl App {
         self.jobs_data.selected_job(&self.search_term).is_some()
     }
 
-    pub fn has_selected_completed_job(&self) -> bool {
+    pub fn is_selected_job_completed(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
             .is_some_and(|j| j.status == "Completed")
     }
 
+    pub fn is_selected_job_cancelable(&self) -> bool {
+        self.jobs_data
+            .selected_job(&self.search_term)
+            .is_some_and(|j| j.status == "Running" || j.status == "Queued")
+    }
+
     pub fn has_more_than_one_job(&self) -> bool {
         self.jobs_data.jobs.len() > 1
+    }
+
+    pub fn is_job_stages_popup_open(&self) -> bool {
+        self.job_stages_popup.is_some()
+    }
+
+    pub fn is_job_stage_no_details_popup_open(&self) -> bool {
+        self.job_stages_popup
+            .as_ref()
+            .is_some_and(|popup| popup.is_no_details_view())
+    }
+
+    pub fn is_job_stage_tasks_popup_open(&self) -> bool {
+        self.job_stages_popup
+            .as_ref()
+            .is_some_and(|popup| popup.is_tasks_view())
+    }
+
+    pub fn is_job_stage_plan_popup_open(&self) -> bool {
+        self.job_stages_popup
+            .as_ref()
+            .is_some_and(|popup| popup.is_plan_view())
     }
 
     fn open_job_plan_popup(&mut self) {

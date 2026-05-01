@@ -35,23 +35,41 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             global_key_bindings.push(Span::from("[j] Jobs, "));
             global_key_bindings.push(Span::from("[e] Executors, "));
             global_key_bindings.push(Span::from("[m] Metrics, "));
+
             if app.is_jobs_view() {
                 if app.has_more_than_one_job() {
+                    page_key_bindings.push(Span::from("[↑↓] Navigate, "));
                     page_key_bindings.push(Span::from("[/] Search jobs, "));
                     page_key_bindings.push(Span::from(
                         "[1,2,3] Sort by first/second/third/... column, ",
                     ));
                 }
                 if app.has_selected_job() {
-                    page_key_bindings.push(Span::from("[Enter] View stages, "));
-                    page_key_bindings.push(Span::from("[g] View job stages graph, "));
-                    page_key_bindings.push(Span::from("[c] Cancel job, "));
-                }
-                if app.has_selected_completed_job() {
-                    page_key_bindings.push(Span::from("[p] View job plans, "));
+                    if !app.is_job_stages_popup_open() {
+                        page_key_bindings.push(Span::from("[Enter] View stages, "));
+                        page_key_bindings.push(Span::from("[g] View job stages graph, "));
+
+                        if app.is_selected_job_cancelable() {
+                            page_key_bindings.push(Span::from("[c] Cancel job, "));
+                        }
+
+                        if app.is_selected_job_completed() {
+                            page_key_bindings.push(Span::from("[p] View job plans, "));
+                        }
+                    } else if app.is_job_stage_no_details_popup_open() {
+                        page_key_bindings.push(Span::from("[↑↓] Navigate, "));
+                        page_key_bindings.push(Span::from("[Enter] View tasks, "));
+                        page_key_bindings.push(Span::from("[p] View plan, "));
+                        page_key_bindings.push(Span::from("[Esc] Close popup, "));
+                    } else if app.is_job_stage_tasks_popup_open()
+                        || app.is_job_stage_plan_popup_open()
+                    {
+                        page_key_bindings.push(Span::from("[Esc] Close popup, "));
+                    }
                 }
                 if !page_key_bindings.is_empty() {
-                    page_key_bindings.insert(0, Span::from("Jobs key bindings: "));
+                    page_key_bindings
+                        .insert(0, Span::from("Current view key bindings: "));
                 }
             } else if app.is_executors_view() {
                 page_key_bindings

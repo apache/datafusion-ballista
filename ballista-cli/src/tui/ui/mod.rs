@@ -30,7 +30,7 @@ use footer::render_footer;
 pub use main::{
     job_dot_popup, job_plan_popup, job_stages_popup, load_executors_data,
     load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
-    load_metrics_data, stage_tasks_popup,
+    load_metrics_data, stage_plan_popup, stage_tasks_popup,
 };
 use main::{render_executors, render_jobs, render_metrics};
 use ratatui::{
@@ -60,8 +60,10 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
     } else if app.cancel_job_result.is_some() {
         cancel_result_popup::render_cancel_result_popup(f, app);
     } else if let Some(popup) = &app.job_stages_popup {
-        if popup.show_tasks {
+        if popup.is_tasks_view() {
             stage_tasks_popup::render_stage_tasks_popup(f, app);
+        } else if popup.is_plan_view() {
+            stage_plan_popup::render_stage_plan_popup(f, app);
         } else {
             job_stages_popup::render_job_stages_popup(f, app);
         }

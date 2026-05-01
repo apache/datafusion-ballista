@@ -31,10 +31,7 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(format!(
-            " Stages for job '{}' (↑↓ scroll | Esc close) ",
-            graph.job_id
-        ))
+        .title(format!(" Stages graph for job '{}' ", graph.job_id))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 

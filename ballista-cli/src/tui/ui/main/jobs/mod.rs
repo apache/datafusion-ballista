@@ -19,6 +19,7 @@ mod dot_parser;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
 pub mod job_stages_popup;
+pub mod stage_plan_popup;
 pub mod stage_tasks_popup;
 
 use crate::tui::{

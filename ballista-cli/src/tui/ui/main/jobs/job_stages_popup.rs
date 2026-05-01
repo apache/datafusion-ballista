@@ -39,7 +39,8 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         "Input Rows",
         "Output Rows",
         "Elapsed Compute",
-        "Task Durations\n(min/p25/med/p75/max ms)",
+        "Input percentiles\n(min/p25/med/p75/max ms)",
+        "Duration percentiles\n(min/p25/med/p75/max ms)",
     ]
     .into_iter()
     .map(|h| Cell::from(Text::from(h).centered()))
@@ -57,17 +58,18 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(15),
             Constraint::Percentage(12),
-            Constraint::Percentage(13),
-            Constraint::Percentage(13),
-            Constraint::Percentage(20),
-            Constraint::Percentage(27),
+            Constraint::Percentage(10),
+            Constraint::Percentage(10),
+            Constraint::Percentage(10),
+            Constraint::Percentage(17),
+            Constraint::Percentage(17),
+            Constraint::Percentage(24),
         ],
     )
     .block(
         Block::default()
-            .title(format!(" Stages for job '{}' (↑↓ - navigate | Enter - show tasks | Esc - close) ", popup.job_id.clone()))
+            .title(format!(" Stages for job '{}' ", popup.job_id.clone()))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightBlue)),
     )
@@ -94,7 +96,11 @@ fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
     };
 
     let p = &stage.task_duration_percentiles;
-    let task_summary = format!("{}/{}/{}/{}/{}", p.min, p.p25, p.median, p.p75, p.max);
+    let duration_percentiles =
+        format!("{}/{}/{}/{}/{}", p.min, p.p25, p.median, p.p75, p.max);
+    let p = &stage.task_input_percentiles;
+    let input_percentiles =
+        format!("{}/{}/{}/{}/{}", p.min, p.p25, p.median, p.p75, p.max);
 
     Row::new(vec![
         Cell::from(Text::from(stage.id.clone()).centered()),
@@ -106,7 +112,8 @@ fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
         Cell::from(Text::from(human_readable_count(stage.input_rows)).centered()),
         Cell::from(Text::from(human_readable_count(stage.output_rows)).centered()),
         Cell::from(Text::from(stage.elapsed_compute.clone()).centered()),
-        Cell::from(Text::from(task_summary).centered()),
+        Cell::from(Text::from(input_percentiles).centered()),
+        Cell::from(Text::from(duration_percentiles).centered()),
     ])
     .style(Style::default().bg(bg))
 }

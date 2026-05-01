@@ -81,7 +81,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     .block(
         Block::default()
             .title(format!(
-                " Tasks for stage '{}' of job '{}' (Esc close) ",
+                " Tasks for stage '{}' of job '{}' ",
                 stage.id,
                 popup.job_id.clone()
             ))
