@@ -16,13 +16,24 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::jobs::stages::JobStageResponse;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 pub(crate) fn render_stage_plan_popup(f: &mut Frame, app: &App) {
+    let area = crate::tui::ui::centered_rect(80, 70, f.area());
+    f.render_widget(Clear, area);
+
+    let areas = Layout::vertical([
+        Constraint::Min(0), // Plans
+    ])
+    .split(area);
+
+    render_plans(f, areas[0], app);
+}
+
+fn render_plans(f: &mut Frame, area: Rect, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
         return;
     };
@@ -31,26 +42,7 @@ pub(crate) fn render_stage_plan_popup(f: &mut Frame, app: &App) {
         return;
     };
 
-    let area = crate::tui::ui::centered_rect(80, 70, f.area());
-    f.render_widget(Clear, area);
-
-    let areas = Layout::vertical([
-        Constraint::Min(0),    // Plans
-        Constraint::Length(3), // Navigation
-    ])
-    .split(area);
-
-    render_plans(f, areas[0], stage, &popup.job_id, app);
-}
-
-fn render_plans(
-    f: &mut Frame,
-    area: Rect,
-    stage: &JobStageResponse,
-    job_id: &str,
-    app: &App,
-) {
-    let title = format!(" Plan for stage '{}' of job '{}' ", stage.id, job_id,);
+    let title = format!(" Plan for stage '{}' of job '{}' ", stage.id, popup.job_id);
 
     let block = Block::default()
         .title(title)
@@ -58,14 +50,7 @@ fn render_plans(
         .border_style(Style::default().fg(Color::Cyan))
         .border_type(BorderType::Thick);
 
-    let scroll_position = app
-        .job_plan_popup
-        .as_ref()
-        .map(|p| p.scroll_position)
-        .unwrap_or(0);
-    let paragraph = Paragraph::new(stage.plan.clone())
-        .block(block)
-        .scroll((scroll_position, 0));
+    let paragraph = Paragraph::new(stage.plan.clone()).block(block);
 
     f.render_widget(paragraph, area);
 }

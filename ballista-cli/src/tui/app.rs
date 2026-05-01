@@ -196,7 +196,9 @@ impl App {
                 && let KeyCode::Esc = key.code
             {
                 popup.set_no_details_view();
-            } else if popup.is_plan_view() {
+            } else if popup.is_plan_view()
+                && let KeyCode::Esc = key.code
+            {
                 popup.set_no_details_view();
             } else if popup.is_no_details_view() {
                 match key.code {
