@@ -26,7 +26,7 @@ use crate::state::execution_graph::{
 use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
@@ -193,7 +193,7 @@ impl AdaptiveExecutionGraph {
 impl AdaptiveExecutionGraph {
     fn create_resolved_stage(
         session_config: Arc<SessionConfig>,
-        stage: Arc<ShuffleWriterExec>,
+        stage: Arc<dyn ShuffleWriter>,
     ) -> ballista_core::error::Result<(usize, ExecutionStage)> {
         let stage_id = stage.stage_id();
         let stage = ExecutionStage::Resolved(ResolvedStage::new(

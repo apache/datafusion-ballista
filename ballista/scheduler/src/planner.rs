@@ -324,7 +324,7 @@ pub fn rollback_resolved_shuffles(
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
-fn create_shuffle_writer_with_config(
+pub(crate) fn create_shuffle_writer_with_config(
     job_id: &str,
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,

@@ -53,9 +53,16 @@ mod sort_shuffle_tests {
 
     /// Creates a standalone session context with sort-based shuffle enabled.
     async fn create_sort_shuffle_context(read_mode: ReadMode) -> SessionContext {
+        create_sort_shuffle_context_with_aqe(read_mode, false).await
+    }
+
+    async fn create_sort_shuffle_context_with_aqe(
+        read_mode: ReadMode,
+        aqe_enabled: bool,
+    ) -> SessionContext {
         let mut config = SessionConfig::new_with_ballista()
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
-            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, false) // AQE does not support sort shuffle at the moment
+            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, aqe_enabled)
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE, "1048576") // 1MB
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT, "268435456"); // 256MB
 
@@ -126,13 +133,15 @@ mod sort_shuffle_tests {
     // ==================== Basic Aggregation Tests ====================
 
     #[rstest]
-    #[case::local(ReadMode::Local)]
-    #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::local(ReadMode::Local, false)]
+    #[case::remote_flight(ReadMode::RemoteFlight, false)]
+    #[case::local_aqe(ReadMode::Local, true)]
     #[tokio::test]
     async fn test_sort_shuffle_group_by_single_column(
         #[case] read_mode: ReadMode,
+        #[case] aqe_enabled: bool,
     ) -> Result<()> {
-        let ctx = create_sort_shuffle_context(read_mode).await;
+        let ctx = create_sort_shuffle_context_with_aqe(read_mode, aqe_enabled).await;
         register_test_data(&ctx).await;
 
         let df = ctx
