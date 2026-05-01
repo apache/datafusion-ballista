@@ -345,6 +345,9 @@ fn create_shuffle_writer_with_config(
                 true,
                 datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
                 ballista_config.shuffle_sort_based_batch_size(),
+            )
+            .with_memory_limit_per_task_bytes(
+                ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
             );
 
             return Ok(Arc::new(SortShuffleWriterExec::try_new(

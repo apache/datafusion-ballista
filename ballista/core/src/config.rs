@@ -75,6 +75,10 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
+/// Configuration key for the per-task buffered-bytes budget at which the
+/// sort shuffle writer spills its in-memory batches to disk.
+pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
+    "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -140,6 +144,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
                          Some((8192).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES.to_string(),
+                         "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
+                         in-memory batches to disk. Counted independently of the runtime memory pool, so \
+                         spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle \
+                         memory per executor is approximately concurrent_tasks * this value.".to_string(),
+                         DataType::UInt64,
+                         Some((256 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -344,6 +355,12 @@ impl BallistaConfig {
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Returns the per-task buffered-bytes budget at which the sort shuffle
+    /// writer spills its in-memory batches to disk.
+    pub fn shuffle_sort_based_memory_limit_per_task_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES)
     }
 
     /// Should client employ pull or push job tracking strategy
