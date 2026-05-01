@@ -15,10 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from datafusion import SessionContext, DataFrame, ParquetWriterOptions
+from datafusion import (
+    SessionConfig,
+    SessionContext,
+    DataFrame,
+    ParquetWriterOptions,
+    DataFrameWriteOptions
+)
 from datafusion.dataframe import Compression
-
 from typing import (
+    Dict,
     List,
     Union,
     Optional,
@@ -26,15 +32,26 @@ from typing import (
 )
 import warnings
 
-
 from ._internal_ballista import create_ballista_data_frame
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
+
 import pathlib
 
 # class used to redefine DataFrame object
 # intercepting execution methods and methods
 # which returns `DataFrame`
+EXECUTION_METHODS = [
+    "collect",
+    "collect_partitioned",
+    "show",
+    "count",
+    "to_arrow_table",
+    "to_pandas",
+    "to_polars",
+]
+
+
 class RedefiningDataFrameMeta(type):
     def __new__(cls, name, bases, attrs):
         # wrapper function intercept all execution functions
@@ -74,6 +91,13 @@ class RedefiningDataFrameMeta(type):
                 #
                 attrs[base_name] = __wrap_dataframe_result(base_value)
 
+        # Wrap execution methods to route through _to_internal_df() so they
+        # execute on the Ballista cluster rather than locally. Skip any method
+        # already explicitly defined on the subclass.
+        for func in EXECUTION_METHODS:
+            if func not in attrs:
+                attrs[func] = __wrap_dataframe_execution(func)
+
         return super().__new__(cls, name, bases, attrs)
 
 
@@ -81,10 +105,14 @@ class RedefiningSessionContextMeta(type):
     def __new__(cls, name, bases, attrs):
         def __wrap_dataframe_result(func):
             def method_wrapper(*args, **kwargs):
-                address = args[0].address
-                session_id = args[0].session_id
+                ctx = args[0]
                 df = func(*args, **kwargs)
-                return DistributedDataFrame(df, session_id, address)
+                return DistributedDataFrame(
+                    df,
+                    ctx.session_id,
+                    ctx.address,
+                    ctx.cluster_config,
+                )
 
             return method_wrapper
 
@@ -111,28 +139,45 @@ class RedefiningSessionContextMeta(type):
 # serialize it and invoke ballista client to execute it
 #
 # this class keeps reference to remote ballista
-class DistributedDataFrame(DataFrame, metaclass=type):
-    def __init__(self, df: DataFrame, session_id: str, address: str):
+class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
+    def __init__(
+        self,
+        df: DataFrame,
+        session_id: str,
+        address: str,
+        cluster_config: Optional[Dict[str, str]] = None,
+    ):
         super().__init__(df.df)
         self.address = address
-        self._session_id = session_id
+        self.session_id = session_id
+        self.cluster_config = cluster_config
     #
     # this will create a ballista dataframe, which has ballista
     # session context, and ballista planner.
     #
     def _to_internal_df(self):
-        blob_plan = self.logical_plan().to_proto()
-        df = create_ballista_data_frame(blob_plan, self.address, self._session_id)
+        blob_plan = self.optimized_logical_plan().to_proto()
+        df = create_ballista_data_frame(
+            blob_plan,
+            self.address,
+            self.session_id,
+            self.cluster_config,
+        )
         return df
-
-    def write_csv(self, path, with_header=False):
+    
+    def write_json(self, path, write_options: Union[DataFrameWriteOptions, None] = None):
         df = self._to_internal_df()
-        df.write_csv(path, with_header)
+        df.write_json(path, None)
+
+    def write_csv(self, path, with_header=False, write_options: Union[DataFrameWriteOptions, None] = None,):
+        df = self._to_internal_df()
+        df.write_csv(path, with_header, None)
 
     def write_parquet_with_options(
         self,
         path: str,
         options: ParquetWriterOptions,
+        write_options: Union[DataFrameWriteOptions, None] = None,
     ):
         options_internal = ParquetWriterOptionsInternal(
             options.data_pagesize_limit,
@@ -179,7 +224,7 @@ class DistributedDataFrame(DataFrame, metaclass=type):
             str(path),
             options_internal,
             column_specific_options_internal,
-            # raw_write_options,
+            None
         )
 
     def write_parquet(
@@ -187,6 +232,7 @@ class DistributedDataFrame(DataFrame, metaclass=type):
         path: Union[str, pathlib.Path],
         compression: Union[str, Compression, ParquetWriterOptions] = Compression.ZSTD,
         compression_level: Union[int, None] = None,
+        write_options: Union[DataFrameWriteOptions, None] = None,
     ) -> None:
         if isinstance(compression, ParquetWriterOptions):
             if compression_level is not None:
@@ -204,7 +250,7 @@ class DistributedDataFrame(DataFrame, metaclass=type):
         ):
             compression_level = compression.get_default_level()
         df = self._to_internal_df()
-        df.write_parquet(str(path), compression.value, compression_level)
+        df.write_parquet(str(path), compression.value, compression_level, None)
 
     def explain_visual(self, analyze: bool = False) -> "ExecutionPlanVisualization":
         """
@@ -498,16 +544,48 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         >>> df = ctx.sql("SELECT * FROM my_table LIMIT 10")
         >>> df.show()
 
+    To override DataFusion / Ballista session settings on the cluster
+    (e.g. the number of target partitions used by the scheduler):
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     cluster_config={"datafusion.execution.target_partitions": "256"},
+        ... )
+
     For Jupyter notebook users:
         >>> %load_ext ballista.jupyter
         >>> %ballista connect df://localhost:50050
         >>> %sql SELECT * FROM my_table
     """
 
-    def __init__(self, address: str, config=None, runtime=None):
+    def __init__(
+        self,
+        address: str,
+        config=None,
+        runtime=None,
+        cluster_config: Optional[Dict[str, str]] = None,
+    ):
+        self.cluster_config = (
+            {str(k): str(v) for k, v in cluster_config.items()}
+            if cluster_config is not None
+            else None
+        )
+        # Apply overrides to the local SessionContext too: some settings
+        # (e.g. datafusion.execution.listing_table_factory_infer_partitions)
+        # are consulted during local table registration / planning, before
+        # the plan is shipped to the scheduler. Ballista-namespaced keys
+        # are not understood by the local SessionConfig and are forwarded
+        # to the scheduler only.
+        if self.cluster_config:
+            if config is None:
+                config = SessionConfig()
+            for key, value in self.cluster_config.items():
+                if key.startswith("ballista."):
+                    continue
+                config = config.set(key, value)
         super().__init__(config, runtime)
         self.address = address
-        self.session_id_internal = super().session_id() 
+        self.session_id_internal = super().session_id()
 
     @property
     def session_id(self):
@@ -527,4 +605,3 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
             warnings.warn(f"Could not retrieve tables from catalog: {e}")
             pass
         return {}
-    

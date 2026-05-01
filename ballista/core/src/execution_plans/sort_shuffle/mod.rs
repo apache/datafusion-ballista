@@ -19,7 +19,7 @@
 //!
 //! This module provides an alternative to the hash-based shuffle. It writes
 //! a single consolidated file per input partition (sorted by output partition ID)
-//! along with an index file mapping partition IDs to batch ranges.
+//! along with an index file mapping partition IDs to byte ranges.
 //!
 //! This approach reduces file count from `N × M` (N input partitions × M output partitions)
 //! to `2 × N` files (one data + one index per input partition).
@@ -32,16 +32,15 @@
 mod buffer;
 mod config;
 mod index;
+mod multi_stream_reader;
+mod partitioned_batch_iterator;
 mod reader;
 mod spill;
 mod writer;
 
-pub use buffer::PartitionBuffer;
+pub use buffer::BufferedBatches;
 pub use config::SortShuffleConfig;
 pub use index::ShuffleIndex;
-pub use reader::{
-    get_index_path, is_sort_shuffle_output, read_all_batches,
-    read_sort_shuffle_partition, stream_sort_shuffle_partition,
-};
+pub use reader::{get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition};
 pub use spill::SpillManager;
 pub use writer::SortShuffleWriterExec;

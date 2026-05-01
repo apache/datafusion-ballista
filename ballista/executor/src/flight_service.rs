@@ -28,7 +28,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::sort_shuffle::{
-    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+    ShuffleIndex, get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
 };
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
@@ -283,42 +283,18 @@ impl FlightService for BallistaFlightService {
 
                         debug!("FetchPartition reading {path:?}");
 
-                        // Block transport doesn't support sort-based shuffle because it
-                        // transfers the entire file, which contains all partitions.
-                        // Use flight transport (do_get) for sort-based shuffle.
-                        if is_sort_shuffle_output(&path) {
-                            return Err(Status::unimplemented(
-                                "IO_BLOCK_TRANSPORT does not support sort-based shuffle. \
-                                 Set ballista.shuffle.remote_read_prefer_flight=true to use \
-                                 flight transport instead.",
-                            ));
-                        }
+                        let stream = if is_sort_shuffle_output(&path) {
+                            // Sort-shuffle: stream the leading schema-header
+                            // bytes followed by the requested partition's
+                            // byte range. The receiver (BlockDataStream) walks
+                            // the resulting concatenated IPC streams.
+                            stream_sort_shuffle_block(&path, *partition_id).await?
+                        } else {
+                            // Hash-shuffle: file contains exactly one partition.
+                            stream_whole_file(&path).await?
+                        };
 
-                        let file = tokio::fs::File::open(&path).await.map_err(|e| {
-                            Status::internal(format!("Failed to open file: {e}"))
-                        })?;
-
-                        debug!(
-                            "streaming file: {:?} with size: {}",
-                            path,
-                            file.metadata().await?.len()
-                        );
-                        let reader = tokio::io::BufReader::with_capacity(
-                            BLOCK_BUFFER_CAPACITY,
-                            file,
-                        );
-                        let file_stream =
-                            ReaderStream::with_capacity(reader, BLOCK_BUFFER_CAPACITY);
-
-                        let flight_data_stream = file_stream.map(|result| {
-                            result
-                                .map(|bytes| arrow_flight::Result { body: bytes })
-                                .map_err(|e| Status::internal(format!("I/O error: {e}")))
-                        });
-
-                        Ok(Response::new(
-                            Box::pin(flight_data_stream) as Self::DoActionStream
-                        ))
+                        Ok(Response::new(stream))
                     }
                 }
             }
@@ -356,6 +332,76 @@ impl FlightService for BallistaFlightService {
     ) -> Result<Response<PollInfo>, Status> {
         Err(Status::unimplemented("poll_flight_info"))
     }
+}
+
+async fn stream_whole_file(
+    path: &std::path::Path,
+) -> Result<<BallistaFlightService as FlightService>::DoActionStream, Status> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| Status::internal(format!("Failed to open file: {e}")))?;
+    debug!(
+        "streaming file: {:?} with size: {}",
+        path,
+        file.metadata().await?.len()
+    );
+    let file_stream = ReaderStream::with_capacity(file, BLOCK_BUFFER_CAPACITY);
+    Ok(Box::pin(file_stream.map(|result| {
+        result
+            .map(|bytes| arrow_flight::Result { body: bytes })
+            .map_err(|e| Status::internal(format!("I/O error: {e}")))
+    })))
+}
+
+async fn stream_sort_shuffle_block(
+    data_path: &std::path::Path,
+    partition_id: usize,
+) -> Result<<BallistaFlightService as FlightService>::DoActionStream, Status> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let index_path = get_index_path(data_path);
+    let index =
+        ShuffleIndex::read_from_file(&index_path).map_err(|e| from_ballista_err(&e))?;
+
+    if partition_id >= index.partition_count() {
+        return Err(Status::out_of_range(format!(
+            "partition_id {partition_id} not found in index (max: {})",
+            index.partition_count()
+        )));
+    }
+
+    // The leading [0, header_end) bytes hold the schema-header IPC stream.
+    // We always prepend it to the partition's byte range so the receiver
+    // recovers the schema even when the partition is empty.
+    let header_end = index.header_end_offset() as u64;
+    let (start, end) = index.get_partition_range(partition_id);
+    let (start, end) = (start as u64, end as u64);
+
+    // One open + dup gives us two independent file cursors over the same
+    // inode: one reads the header from offset 0, the other seeks to the
+    // partition. `chain` and `take` consume their readers by value, so two
+    // cursors are unavoidable here.
+    let header_file = tokio::fs::File::open(data_path)
+        .await
+        .map_err(|e| Status::internal(format!("Failed to open file: {e}")))?;
+    let mut partition_file = header_file
+        .try_clone()
+        .await
+        .map_err(|e| Status::internal(format!("dup file handle: {e}")))?;
+    partition_file
+        .seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(|e| Status::internal(format!("seek partition: {e}")))?;
+
+    let combined = header_file
+        .take(header_end)
+        .chain(partition_file.take(end - start));
+    let file_stream = ReaderStream::with_capacity(combined, BLOCK_BUFFER_CAPACITY);
+    Ok(Box::pin(file_stream.map(|result| {
+        result
+            .map(|bytes| arrow_flight::Result { body: bytes })
+            .map_err(|e| Status::internal(format!("I/O error: {e}")))
+    })))
 }
 
 fn read_partition<T>(

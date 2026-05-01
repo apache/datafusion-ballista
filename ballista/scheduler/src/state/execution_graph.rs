@@ -259,7 +259,6 @@ pub struct StaticExecutionGraph {
     end_time: u64,
     /// Map from Stage ID -> ExecutionStage
     stages: HashMap<usize, ExecutionStage>,
-
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
     /// Task ID generator, generate unique TID in the execution graph

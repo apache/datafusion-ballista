@@ -41,20 +41,29 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
 /// max message size for gRPC clients
-pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
-    "ballista.grpc_client_max_message_size";
+pub const BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE: &str =
+    "ballista.client.grpc_max_message_size";
 /// Configuration key for gRPC client connection timeout in seconds.
-pub const BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS: &str =
-    "ballista.grpc.client.connect_timeout_seconds";
+pub const BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS: &str =
+    "ballista.client.grpc_connect_timeout_seconds";
 /// Configuration key for gRPC client request timeout in seconds.
-pub const BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS: &str =
-    "ballista.grpc.client.timeout_seconds";
+pub const BALLISTA_CLIENT_GRPC_TIMEOUT_SECONDS: &str =
+    "ballista.client.grpc_timeout_seconds";
 /// Configuration key for TCP keep-alive interval for gRPC clients in seconds.
-pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
-    "ballista.grpc.client.tcp_keepalive_seconds";
+pub const BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS: &str =
+    "ballista.client.grpc_tcp_keepalive_seconds";
 /// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
-pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
-    "ballista.grpc.client.http2_keepalive_interval_seconds";
+pub const BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
+    "ballista.client.grpc_http2_keepalive_interval_seconds";
+/// Should client employ pull or push job tracking strategy
+pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
+/// Should client use tls connection
+pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
+/// Number of retries for IO operations in the Ballista client
+pub const BALLISTA_CLIENT_IO_RETRIES_TIMES: &str = "ballista.client.io_retries_times";
+/// Wait time in milliseconds between IO retries in the Ballista client
+pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
+    "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
 /// Number of times that the optimizer will attempt to optimize the plan
@@ -63,26 +72,13 @@ pub const BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES: &str =
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
-/// Configuration key for sort shuffle per-partition buffer size in bytes.
-pub const BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE: &str =
-    "ballista.shuffle.sort_based.buffer_size";
-/// Configuration key for sort shuffle total memory limit in bytes.
-pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT: &str =
-    "ballista.shuffle.sort_based.memory_limit";
-/// Configuration key for sort shuffle spill threshold (0.0-1.0).
-pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
-    "ballista.shuffle.sort_based.spill_threshold";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
-/// Should client employ pull or push job tracking strategy
-pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
-/// Should client use tls connection
-pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
-/// Number of retries for IO operations in the Ballista client
-pub const BALLISTA_IO_RETRIES_TIMES: &str = "ballista.client.io_retries_times";
-/// Wait time in milliseconds between IO retries in the Ballista client
-pub const BALLISTA_IO_RETRY_WAIT_TIME_MS: &str = "ballista.client.io_retry_wait_time_ms";
+/// Configuration key for the per-task buffered-bytes budget at which the
+/// sort shuffle writer spills its in-memory batches to disk.
+pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
+    "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -112,23 +108,23 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
                          Some((16 * 1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS.to_string(),
                          "Connection timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((20).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_TIMEOUT_SECONDS.to_string(),
                          "Request timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((20).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS.to_string(),
                          "TCP keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((3600).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((300).to_string())),
@@ -143,23 +139,18 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE.to_string(),
-                         "Per-partition buffer size in bytes for sort shuffle".to_string(),
-                         DataType::UInt64,
-                         Some((1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT.to_string(),
-                         "Total memory limit in bytes for sort shuffle buffers".to_string(),
-                         DataType::UInt64,
-                         Some((256 * 1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD.to_string(),
-                         "Spill threshold as decimal fraction (0.0-1.0) of memory limit".to_string(),
-                         DataType::Utf8,
-                         Some("0.8".to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
                          Some((8192).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES.to_string(),
+                         "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
+                         in-memory batches to disk. Counted independently of the runtime memory pool, so \
+                         spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle \
+                         memory per executor is approximately concurrent_tasks * this value.".to_string(),
+                         DataType::UInt64,
+                         Some((256 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -168,11 +159,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Should connection between client, scheduler, and executors use TLS.".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_IO_RETRIES_TIMES.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_IO_RETRIES_TIMES.to_string(),
                          "Number of retries for IO operations in the Ballista client.".to_string(),
                          DataType::UInt16,
                          Some(3.to_string())),
-        ConfigEntry::new(BALLISTA_IO_RETRY_WAIT_TIME_MS.to_string(),
+        ConfigEntry::new(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS.to_string(),
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
                          Some(3000.to_string()))
@@ -299,27 +290,27 @@ impl BallistaConfig {
 
     /// Returns the gRPC client connection timeout in seconds.
     pub fn grpc_client_connect_timeout_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS)
     }
 
     /// Returns the gRPC client request timeout in seconds.
     pub fn grpc_client_timeout_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_TIMEOUT_SECONDS)
     }
 
     /// Returns the TCP keep-alive interval for gRPC clients in seconds.
     pub fn grpc_client_tcp_keepalive_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS)
     }
 
     /// Returns the HTTP/2 keep-alive interval for gRPC clients in seconds.
     pub fn grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
     }
 
     /// Returns the maximum message size for gRPC clients in bytes.
     pub fn grpc_client_max_message_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
+        self.get_usize_setting(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE)
     }
 
     /// Returns whether the default cache node extension is disabled.
@@ -361,24 +352,15 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_SHUFFLE_SORT_BASED_ENABLED)
     }
 
-    /// Returns the per-partition buffer size for sort-based shuffle in bytes.
-    pub fn shuffle_sort_based_buffer_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE)
-    }
-
-    /// Returns the total memory limit for sort-based shuffle buffers in bytes.
-    pub fn shuffle_sort_based_memory_limit(&self) -> usize {
-        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT)
-    }
-
-    /// Returns the spill threshold for sort-based shuffle (0.0-1.0).
-    pub fn shuffle_sort_based_spill_threshold(&self) -> f64 {
-        self.get_f64_setting(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD)
-    }
-
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Returns the per-task buffered-bytes budget at which the sort shuffle
+    /// writer spills its in-memory batches to disk.
+    pub fn shuffle_sort_based_memory_limit_per_task_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES)
     }
 
     /// Should client employ pull or push job tracking strategy
@@ -393,12 +375,12 @@ impl BallistaConfig {
 
     /// Returns the number of retries for IO operations in the Ballista client.
     pub fn io_retries_times(&self) -> usize {
-        self.get_usize_setting(BALLISTA_IO_RETRIES_TIMES)
+        self.get_usize_setting(BALLISTA_CLIENT_IO_RETRIES_TIMES)
     }
 
     /// Returns the wait time in milliseconds between IO retries in the Ballista client.
     pub fn io_retry_wait_time_ms(&self) -> usize {
-        self.get_usize_setting(BALLISTA_IO_RETRY_WAIT_TIME_MS)
+        self.get_usize_setting(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
@@ -435,16 +417,6 @@ impl BallistaConfig {
             // infallible because we validate all configs in the constructor
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.to_string()
-        }
-    }
-
-    fn get_f64_setting(&self, key: &str) -> f64 {
-        if let Some(v) = self.settings.get(key) {
-            v.parse::<f64>().unwrap()
-        } else {
-            let entries = Self::valid_entries();
-            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
-            v.parse::<f64>().unwrap()
         }
     }
 }

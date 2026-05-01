@@ -23,103 +23,10 @@
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::coop::CooperativeExec;
-use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{ExecutionPlan, displayable, execution_plan};
+use datafusion::physical_plan::{ExecutionPlan, displayable};
 use log::warn;
 use std::sync::Arc;
 
-// not required anymore
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
-pub struct EliminateRoundRobbinRule {}
-impl EliminateRoundRobbinRule {
-    fn transform(
-        execution_plan: Arc<dyn ExecutionPlan>,
-    ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(repartition) =
-            execution_plan.as_any().downcast_ref::<RepartitionExec>()
-        {
-            match repartition.partitioning() {
-                execution_plan::Partitioning::RoundRobinBatch(_) => {
-                    Ok(Transformed::yes(repartition.input().clone()))
-                }
-                _ => Ok(Transformed::no(execution_plan)),
-            }
-        } else {
-            Ok(Transformed::no(execution_plan))
-        }
-    }
-}
-
-impl PhysicalOptimizerRule for EliminateRoundRobbinRule {
-    fn optimize(
-        &self,
-        execution_plan: Arc<dyn ExecutionPlan>,
-        _config: &datafusion::config::ConfigOptions,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        Ok(execution_plan.transform_up(Self::transform)?.data)
-    }
-
-    fn name(&self) -> &str {
-        "EliminateRoundRobbinRule"
-    }
-
-    fn schema_check(&self) -> bool {
-        false
-    }
-}
-
-/// In some cases double [CooperativeExec] will be inserted.
-/// Until we get chance to investigate the issue this rule will
-/// eliminate doubles
-//
-// TODO: this has been fixed in datafusion 53, should be removed when updated
-//
-#[derive(Debug, Clone, Default)]
-pub struct EliminateCooperativeExecRule {}
-/// for some reason double CoalesceBatchesExec
-/// show
-impl EliminateCooperativeExecRule {
-    fn transform(
-        execution_plan: Arc<dyn ExecutionPlan>,
-    ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(coalesce) = execution_plan.as_any().downcast_ref::<CooperativeExec>()
-        {
-            if coalesce
-                .input()
-                .as_any()
-                .downcast_ref::<CooperativeExec>()
-                .is_some()
-            {
-                Ok(Transformed::yes(coalesce.input().clone()))
-            } else {
-                Ok(Transformed::no(execution_plan))
-            }
-        } else {
-            Ok(Transformed::no(execution_plan))
-        }
-    }
-}
-
-impl PhysicalOptimizerRule for EliminateCooperativeExecRule {
-    fn optimize(
-        &self,
-        execution_plan: Arc<dyn ExecutionPlan>,
-        _config: &datafusion::config::ConfigOptions,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        let result = execution_plan.transform_up(Self::transform)?;
-        Ok(result.data)
-    }
-
-    fn name(&self) -> &str {
-        "EliminateCooperativeExecRule"
-    }
-
-    fn schema_check(&self) -> bool {
-        false
-    }
-}
 /// This rule is just for DEBUG purposes as some
 /// physical rules are not idempotent.
 #[derive(Debug, Clone, Default)]

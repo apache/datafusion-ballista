@@ -63,8 +63,82 @@ Increasing this configuration setting will increase the number of tasks that eac
 this will also mean that the executor will use more memory. If executors are failing due to out-of-memory errors then
 decreasing the number of concurrent tasks may help.
 
-In the future, Ballista will have better support for tracking memory usage and allocating tasks based on available
-memory, as well as supporting spill-to-disk to reduce memory pressure.
+## Configuring Executor Memory Pool
+
+By default the executor uses DataFusion's unbounded memory pool, so spillable
+operators (sort, hash join, hash aggregate) grow until the host runs out of
+memory. To bound executor memory and let those operators spill to disk under
+pressure, pass `--memory-pool-size` when starting the executor:
+
+```sh
+ballista-executor --memory-pool-size 8GB --concurrent-tasks 8
+```
+
+The argument accepts human-readable sizes (`8GB`, `512MiB`) or a plain byte
+count. SI suffixes (`KB`/`MB`/`GB`) are powers of 10; IEC suffixes
+(`KiB`/`MiB`/`GiB`) are powers of 2.
+
+The total budget is divided equally across concurrent task slots: each task
+receives its own `FairSpillPool` of size `memory_pool_size / concurrent_tasks`.
+With `--memory-pool-size 8GB --concurrent-tasks 8`, every task sees a 1 GB
+pool, fully isolated from other tasks. Idle slots do not lend their share to
+busy ones, which keeps task memory predictable at the cost of some unused
+capacity when the executor is under-utilized.
+
+The executor refuses to start if the per-task share would round to zero (i.e.
+`memory_pool_size < concurrent_tasks`).
+
+When `--memory-pool-size` is not set, the executor behaves as before with no
+memory pool installed.
+
+## Shuffle Implementation
+
+Ballista exchanges data between query stages by writing the output of each
+upstream task to local files, which downstream tasks read either from disk
+(when co-located) or over Arrow Flight. Two shuffle implementations are
+available, with different trade-offs around file count, memory use, and
+write latency.
+
+### Sort-based shuffle (default)
+
+The sort-based writer accumulates batches in a per-output-partition
+in-memory buffer. When the total buffered size crosses a threshold, the
+largest buffers are spilled to disk. After the input stream finishes, the
+remaining in-memory data and any spilled batches are merged and written
+into a single consolidated Arrow IPC file per input partition, alongside
+an index file that lets readers seek directly to a given output partition.
+
+This produces `2 × N` files instead of `N × M`, coalesces small batches
+to a target size before writing, and bounds shuffle memory use via
+spilling — at the cost of higher write latency than the hash writer.
+
+### Hash-based shuffle (opt-in)
+
+The hash-based writer hashes each incoming `RecordBatch` and immediately
+encodes the per-partition slices to Arrow IPC, streaming them into one
+file per `(input_partition, output_partition)` pair. Nothing is buffered
+in memory across batches.
+
+This is simple and low latency, but for `N` input partitions and `M`
+output partitions it produces `N × M` files. Wide shuffles can therefore
+generate a large number of small files. Consider switching to the
+hash-based writer for narrow shuffles where the additional buffering
+and merging of the sort-based writer is unnecessary overhead:
+
+```rust
+let session_config = SessionConfig::new_with_ballista()
+    .set_bool("ballista.shuffle.sort_based.enabled", false);
+```
+
+The following session-level keys tune its behavior:
+
+| key                                         | type    | default   | description                                                                                               |
+| ------------------------------------------- | ------- | --------- | --------------------------------------------------------------------------------------------------------- |
+| ballista.shuffle.sort_based.enabled         | Boolean | true      | Enables the sort-based shuffle writer.                                                                    |
+| ballista.shuffle.sort_based.buffer_size     | UInt64  | 1048576   | Per-partition buffer size in bytes (1 MiB default).                                                       |
+| ballista.shuffle.sort_based.memory_limit    | UInt64  | 268435456 | Total in-memory budget across all output-partition buffers (256 MiB default).                             |
+| ballista.shuffle.sort_based.spill_threshold | Utf8    | "0.8"     | Fraction of `memory_limit` at which the largest buffers begin spilling to disk. Must be in the range 0–1. |
+| ballista.shuffle.sort_based.batch_size      | UInt64  | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                     |
 
 ## Push-based vs Pull-based Task Scheduling
 

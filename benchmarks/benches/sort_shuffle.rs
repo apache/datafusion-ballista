@@ -214,20 +214,29 @@ fn create_input(num_batches: usize) -> Arc<dyn datafusion::physical_plan::Execut
 fn run_sort_shuffle(
     input: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     work_dir: &str,
-    memory_limit: usize,
+    memory_limit: Option<usize>,
 ) {
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let session_ctx = SessionContext::new();
+
+    let session_ctx = if let Some(limit) = memory_limit {
+        let runtime_env = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_limit(limit, 1.0)
+                .build()
+                .unwrap(),
+        );
+        SessionContext::new_with_config_rt(
+            datafusion::execution::config::SessionConfig::new(),
+            runtime_env,
+        )
+    } else {
+        SessionContext::new()
+    };
     let task_ctx = session_ctx.task_ctx();
 
-    let config = SortShuffleConfig::new(
-        true,
-        1024 * 1024, // 1MB buffer
-        memory_limit,
-        0.8,
-        CompressionType::LZ4_FRAME,
-        8192,
-    );
+    let config = SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, 8192);
 
     let writer = SortShuffleWriterExec::try_new(
         "bench_job".to_string(),
@@ -255,11 +264,7 @@ fn bench_no_spill(c: &mut Criterion) {
 
     group.bench_function("10_batches_200_partitions", |b| {
         b.iter(|| {
-            run_sort_shuffle(
-                input.clone(),
-                work_dir.path().to_str().unwrap(),
-                256 * 1024 * 1024,
-            );
+            run_sort_shuffle(input.clone(), work_dir.path().to_str().unwrap(), None);
         });
     });
 
@@ -267,11 +272,7 @@ fn bench_no_spill(c: &mut Criterion) {
     let input = create_input(50);
     group.bench_function("50_batches_200_partitions", |b| {
         b.iter(|| {
-            run_sort_shuffle(
-                input.clone(),
-                work_dir.path().to_str().unwrap(),
-                256 * 1024 * 1024,
-            );
+            run_sort_shuffle(input.clone(), work_dir.path().to_str().unwrap(), None);
         });
     });
 
@@ -284,26 +285,26 @@ fn bench_with_spill(c: &mut Criterion) {
 
     let work_dir = TempDir::new().unwrap();
 
-    // 50 batches with 8MB memory limit to force spilling
+    // 50 batches; constrained 8 MiB pool forces spilling.
     let input = create_input(50);
     group.bench_function("50_batches_200_partitions_8mb_limit", |b| {
         b.iter(|| {
             run_sort_shuffle(
                 input.clone(),
                 work_dir.path().to_str().unwrap(),
-                8 * 1024 * 1024,
+                Some(8 * 1024 * 1024),
             );
         });
     });
 
-    // 50 batches with 2MB memory limit to force heavy spilling
+    // 50 batches; constrained 2 MiB pool forces heavy spilling.
     let input = create_input(50);
     group.bench_function("50_batches_200_partitions_2mb_limit", |b| {
         b.iter(|| {
             run_sort_shuffle(
                 input.clone(),
                 work_dir.path().to_str().unwrap(),
-                2 * 1024 * 1024,
+                Some(2 * 1024 * 1024),
             );
         });
     });
