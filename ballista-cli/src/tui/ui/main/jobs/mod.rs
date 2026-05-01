@@ -201,7 +201,7 @@ fn render_jobs_table(
         format!("Id{id_suffix}"),
         format!("Name{name_suffix}"),
         format!("Status{status_suffix}"),
-        format!("Stages Completes{stages_suffix}"),
+        format!("Stages Completed{stages_suffix}"),
         format!("Percent Completed{percent_suffix}"),
         format!("Start time{start_time_suffix}"),
     ]
