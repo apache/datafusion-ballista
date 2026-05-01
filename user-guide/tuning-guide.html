@@ -320,6 +320,28 @@
   </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#adaptive-query-execution-experimental">
+   Adaptive Query Execution (Experimental)
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#configuration">
+     Configuration
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#what-aqe-does-today">
+     What AQE does today
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#current-limitations">
+     Current limitations
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#push-based-vs-pull-based-task-scheduling">
    Push-based vs Pull-based Task Scheduling
   </a>
@@ -509,6 +531,76 @@ and merging of the sort-based writer is unnecessary overhead:</p>
 </tr>
 </tbody>
 </table>
+</section>
+</section>
+<section id="adaptive-query-execution-experimental">
+<h2>Adaptive Query Execution (Experimental)<a class="headerlink" href="#adaptive-query-execution-experimental" title="Link to this heading">¶</a></h2>
+<p>Ballista has experimental support for adaptive query execution (AQE), where the
+scheduler re-runs the DataFusion physical optimizer between query stages. This
+lets the planner make decisions using statistics collected from completed
+stages rather than relying solely on pre-execution estimates.</p>
+<p>AQE is disabled by default. To enable it, set
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> on your <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">&quot;ballista.planner.adaptive.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>When AQE is enabled, the scheduler logs a warning at job submission so it is
+clear that AQE was used:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!
+</pre></div>
+</div>
+<section id="configuration">
+<h3>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">¶</a></h3>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>type</p></th>
+<th class="head"><p>default</p></th>
+<th class="head"><p>description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ballista.planner.adaptive.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Enables the adaptive planner. Experimental.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.adaptive.planner_pass</p></td>
+<td><p>UInt64</p></td>
+<td><p>3</p></td>
+<td><p>Maximum optimizer passes the adaptive planner runs per replan.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="what-aqe-does-today">
+<h3>What AQE does today<a class="headerlink" href="#what-aqe-does-today" title="Link to this heading">¶</a></h3>
+<p>When AQE is enabled, the scheduler builds the stage DAG incrementally. As each
+shuffle stage completes, the planner re-optimizes the remaining plan and emits
+the next set of runnable stages. Two adaptive optimizations are currently
+implemented:</p>
+<ul class="simple">
+<li><p><strong>Join reordering.</strong> Uses runtime row counts from completed stages so the
+smaller side drives the join.</p></li>
+<li><p><strong>Empty stage elimination.</strong> When a completed stage produces zero rows, its
+downstream exchange is replaced with an empty execution node, and emptiness
+is propagated up the plan so downstream stages are skipped entirely.</p></li>
+</ul>
+</section>
+<section id="current-limitations">
+<h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">¶</a></h3>
+<p>The implementation covers the happy path only. The following are known to be
+missing or incomplete:</p>
+<ul class="simple">
+<li><p>Executor failure handling on the AQE path</p></li>
+<li><p>Dynamic coalescing of shuffle partitions</p></li>
+<li><p>Switching from hash join to sort-merge join based on runtime statistics</p></li>
+<li><p>Switching from streaming aggregation to hash aggregation based on runtime statistics</p></li>
+</ul>
+<p>Until these gaps are closed, AQE should be used for testing and experimentation
+rather than production workloads. See <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/387">issue #387</a>
+for the tracking issue and ongoing work.</p>
 </section>
 </section>
 <section id="push-based-vs-pull-based-task-scheduling">
