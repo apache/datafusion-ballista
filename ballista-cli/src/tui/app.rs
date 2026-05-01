@@ -67,20 +67,17 @@ pub(crate) struct App {
     pub executors_data: ExecutorsData,
     pub metrics_data: MetricsData,
 
-    // Popups
-    pub show_help: bool,
-    pub show_scheduler_info: bool,
-
     pub cancel_job_result: Option<CancelJobResult>,
 
     pub search_term: String,
 
     pub job_details: Option<JobDetails>,
 
+    // Popups
+    pub show_help: bool,
+    pub show_scheduler_info: bool,
     pub job_dot_popup: Option<StagesGraph>,
-
     pub job_plan_popup: Option<JobPlansPopup>,
-
     pub job_stages_popup: Option<JobStagesPopup>,
 
     pub http_client: Arc<HttpClient>,
@@ -205,10 +202,10 @@ impl App {
                 match key.code {
                     KeyCode::Up => popup.scroll_up(),
                     KeyCode::Down => popup.scroll_down(),
-                    KeyCode::Enter => {
+                    KeyCode::Enter if popup.selected_stage().is_some() => {
                         popup.set_tasks_view();
                     }
-                    KeyCode::Char('p') => {
+                    KeyCode::Char('p') if popup.selected_stage().is_some() => {
                         popup.set_plan_view();
                     }
                     KeyCode::Esc => {
