@@ -20,7 +20,7 @@ use crate::tui::domain::jobs::stages::JobStageResponse;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 pub(crate) fn render_stage_plan_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
@@ -55,7 +55,8 @@ fn render_plans(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::Cyan))
+        .border_type(BorderType::Thick);
 
     let paragraph = Paragraph::new(stage.plan.clone())
         .block(block)

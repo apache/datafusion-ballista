@@ -19,7 +19,7 @@ use crate::tui::app::App;
 use crate::tui::domain::jobs::GraphNode;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
@@ -33,7 +33,8 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
     let block = Block::default()
         .title(format!(" Stages graph for job '{}' ", graph.job_id))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::Cyan))
+        .border_type(BorderType::Thick);
 
     // Width of the area inside the popup block borders.
     let inner_width = area.width.saturating_sub(2) as usize;

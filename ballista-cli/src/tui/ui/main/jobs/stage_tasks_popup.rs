@@ -22,7 +22,9 @@ use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Borders, Cell, Clear, HighlightSpacing, Row, Table};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Row, Table,
+};
 
 pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
@@ -86,7 +88,8 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
                 popup.job_id.clone()
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightYellow)),
+            .border_style(Style::default().fg(Color::LightYellow))
+            .border_type(BorderType::Thick),
     )
     .header(header)
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))

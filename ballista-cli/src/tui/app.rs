@@ -198,6 +198,7 @@ impl App {
             return Ok(());
         }
 
+        // The cancellation result is rendered just once
         if self.cancel_job_result.is_some() {
             self.cancel_job_result = None;
             return Ok(());

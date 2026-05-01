@@ -21,7 +21,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     let Some((details, tab)) = &app.job_plan_popup else {
@@ -92,7 +92,8 @@ fn render_plans(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::Cyan))
+        .border_type(BorderType::Thick);
 
     let paragraph = Paragraph::new(plan)
         .block(block)
