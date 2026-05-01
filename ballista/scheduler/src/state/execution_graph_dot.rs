@@ -459,7 +459,7 @@ filter_expr="]
 	}
 	subgraph cluster4 {
 		label = "Stage 5 [Unresolved]";
-		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_5_0 [shape=box, label="SortShuffleWriter [48 partitions]"]
 		stage_5_0_0 [shape=box, label="HashJoin
 join_expr=b@3 = b@1
 filter_expr="]
@@ -528,7 +528,7 @@ filter_expr="]
 	}
 	subgraph cluster3 {
 		label = "Stage 4 [Unresolved]";
-		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_4_0 [shape=box, label="SortShuffleWriter [48 partitions]"]
 		stage_4_0_0 [shape=box, label="HashJoin
 join_expr=a@1 = a@0
 filter_expr="]
@@ -560,7 +560,7 @@ filter_expr="]
             .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
-		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_4_0 [shape=box, label="SortShuffleWriter [48 partitions]"]
 		stage_4_0_0 [shape=box, label="HashJoin
 join_expr=a@1 = a@0
 filter_expr="]

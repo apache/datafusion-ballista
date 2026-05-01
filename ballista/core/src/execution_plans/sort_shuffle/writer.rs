@@ -383,11 +383,23 @@ impl SortShuffleWriterExec {
                 total_bytes_spilled
             );
 
+            // For None partitioning we mirror legacy `ShuffleWriterExec`
+            // semantics: each input partition becomes its own output partition
+            // tagged with `partition_id = input_partition`. Otherwise the
+            // scheduler keys every task's result under partition 0 and the
+            // downstream `SortPreservingMergeExec` collapses 16 hash buckets
+            // into a single concatenated stream, which is not globally sorted.
+            let none_partitioning = partitioning.is_none();
             let mut results = Vec::new();
             for (part_id, num_batches, num_rows, num_bytes) in partition_stats {
                 if num_rows > 0 {
+                    let scheduler_partition_id = if none_partitioning {
+                        input_partition as u64
+                    } else {
+                        part_id as u64
+                    };
                     results.push(ShuffleWritePartition {
-                        partition_id: part_id as u64,
+                        partition_id: scheduler_partition_id,
                         num_batches,
                         num_rows,
                         num_bytes,
@@ -1263,9 +1275,12 @@ mod tests {
                 .execute_shuffle_write(input_partition, task_ctx.clone())
                 .await?;
 
-            // Exactly one output partition (partition 0) per input partition
+            // Exactly one output partition per input partition. With None
+            // partitioning the writer mirrors legacy `ShuffleWriterExec`
+            // semantics: each input partition becomes its own scheduler-level
+            // output partition tagged with `partition_id = input_partition`.
             assert_eq!(results.len(), 1, "expected 1 output partition");
-            assert_eq!(results[0].partition_id, 0);
+            assert_eq!(results[0].partition_id, input_partition as u64);
             assert!(results[0].is_sort_shuffle);
             total_rows += results[0].num_rows;
 
