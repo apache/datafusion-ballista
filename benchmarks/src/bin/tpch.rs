@@ -85,7 +85,7 @@ struct BallistaBenchmarkOpt {
     expected_results: Option<String>,
 
     /// Number of iterations of each test run
-    #[structopt(short = "i", long = "iterations", default_value = "3")]
+    #[structopt(short = "i", long = "iterations", default_value = "1")]
     iterations: usize,
 
     /// Batch size when reading CSV or Parquet files
@@ -138,7 +138,7 @@ struct DataFusionBenchmarkOpt {
     debug: bool,
 
     /// Number of iterations of each test run
-    #[structopt(short = "i", long = "iterations", default_value = "3")]
+    #[structopt(short = "i", long = "iterations", default_value = "1")]
     iterations: usize,
 
     /// Number of partitions to process in parallel
@@ -333,10 +333,11 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
 
     let mut benchmark_run = BenchmarkRun::new();
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
+    let total_start = Instant::now();
 
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
-        let mut millis = vec![];
+        let mut secs = vec![];
 
         // run benchmark
         let sqls = get_query_sql(query)?;
@@ -354,20 +355,20 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                 let df = ctx.sql(sql).await?;
                 result = df.collect().await?;
             }
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            let elapsed = start.elapsed().as_secs_f64();
             if opt.debug {
                 pretty::print_batches(&result)?;
             }
-            millis.push(elapsed);
+            secs.push(elapsed);
             let row_count = result.iter().map(|b| b.num_rows()).sum();
             if opt.iterations == 1 {
                 println!(
-                    "Query {} took {:.1} ms and returned {} rows",
+                    "Query {} took {:.3} s and returned {} rows",
                     query, elapsed, row_count
                 );
             } else {
                 println!(
-                    "Query {} iteration {} took {:.1} ms and returned {} rows",
+                    "Query {} iteration {} took {:.3} s and returned {} rows",
                     query, i, elapsed, row_count
                 );
             }
@@ -375,12 +376,15 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         }
 
         if opt.iterations > 1 {
-            let avg = millis.iter().sum::<f64>() / millis.len() as f64;
-            println!("Query {} avg time: {:.1} ms", query, avg);
+            let avg = secs.iter().sum::<f64>() / secs.len() as f64;
+            println!("Query {} avg time: {:.3} s", query, avg);
         }
 
         benchmark_run.add_query_run(query_run);
     }
+
+    let total_elapsed = total_start.elapsed().as_secs_f64();
+    println!("Total time: {total_elapsed:.3} s");
 
     if let Some(path) = &opt.output_path {
         write_summary_json(&benchmark_run, path)?;
@@ -405,6 +409,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .unwrap_or_else(|| (1..=22).collect());
 
     let mut benchmark_run = BenchmarkRun::new();
+    let total_start = Instant::now();
 
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
@@ -441,7 +446,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
 
         register_tables(path, file_format, &ctx, opt.debug).await?;
 
-        let mut millis = vec![];
+        let mut secs = vec![];
 
         // run benchmark
         let sqls = get_query_sql(query)?;
@@ -467,17 +472,17 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
             }
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-            millis.push(elapsed);
+            let elapsed = start.elapsed().as_secs_f64();
+            secs.push(elapsed);
             let row_count = batches.iter().map(|b| b.num_rows()).sum();
             if opt.iterations == 1 {
                 println!(
-                    "Query {} took {:.1} ms and returned {} rows",
+                    "Query {} took {:.3} s and returned {} rows",
                     query, elapsed, row_count
                 );
             } else {
                 println!(
-                    "Query {} iteration {} took {:.1} ms and returned {} rows",
+                    "Query {} iteration {} took {:.3} s and returned {} rows",
                     query, i, elapsed, row_count
                 );
             }
@@ -493,12 +498,15 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         }
 
         if opt.iterations > 1 {
-            let avg = millis.iter().sum::<f64>() / millis.len() as f64;
-            println!("Query {} avg time: {:.1} ms", query, avg);
+            let avg = secs.iter().sum::<f64>() / secs.len() as f64;
+            println!("Query {} avg time: {:.3} s", query, avg);
         }
 
         benchmark_run.add_query_run(query_run);
     }
+
+    let total_elapsed = total_start.elapsed().as_secs_f64();
+    println!("Total time: {total_elapsed:.3} s");
 
     if let Some(path) = &opt.output_path {
         write_summary_json(&benchmark_run, path)?;
