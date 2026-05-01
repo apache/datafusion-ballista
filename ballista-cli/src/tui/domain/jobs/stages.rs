@@ -185,3 +185,246 @@ impl StagesGraph {
         self.scroll_position = self.scroll_position.saturating_add(1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        JobStageResponse, JobStagesPopup, JobStagesResponse, StagesGraph, TaskPercentiles,
+    };
+
+    fn make_percentiles() -> TaskPercentiles {
+        TaskPercentiles {
+            min: 0,
+            max: 100,
+            median: 50,
+            p25: 25,
+            p75: 75,
+        }
+    }
+
+    fn make_stage(id: &str) -> JobStageResponse {
+        JobStageResponse {
+            id: id.to_string(),
+            status: "Completed".to_string(),
+            plan: String::new(),
+            input_rows: 0,
+            output_rows: 0,
+            elapsed_compute: "0".to_string(),
+            task_duration_percentiles: make_percentiles(),
+            task_input_percentiles: make_percentiles(),
+            tasks: Vec::new(),
+        }
+    }
+
+    fn make_stages_response(n: usize) -> JobStagesResponse {
+        JobStagesResponse {
+            stages: (0..n).map(|i| make_stage(&i.to_string())).collect(),
+        }
+    }
+
+    fn make_popup(n: usize) -> JobStagesPopup {
+        JobStagesPopup::new("job1".to_string(), make_stages_response(n))
+    }
+
+    fn make_stages_graph(n_stages: usize) -> StagesGraph {
+        StagesGraph {
+            job_id: "job1".to_string(),
+            stages: Vec::new(),
+            edges: Vec::new(),
+            scroll_position: n_stages as u16,
+        }
+    }
+
+    // --- JobStagesPopup view-state transitions ---
+
+    #[test]
+    fn new_popup_is_no_details_view() {
+        let popup = make_popup(2);
+        assert!(popup.is_no_details_view());
+        assert!(!popup.is_tasks_view());
+        assert!(!popup.is_plan_view());
+    }
+
+    #[test]
+    fn set_tasks_view_transitions_to_tasks() {
+        let mut popup = make_popup(2);
+        popup.set_tasks_view();
+        assert!(popup.is_tasks_view());
+        assert!(!popup.is_no_details_view());
+        assert!(!popup.is_plan_view());
+    }
+
+    #[test]
+    fn set_plan_view_transitions_to_plan() {
+        let mut popup = make_popup(2);
+        popup.set_plan_view();
+        assert!(popup.is_plan_view());
+        assert!(!popup.is_no_details_view());
+        assert!(!popup.is_tasks_view());
+    }
+
+    #[test]
+    fn set_no_details_view_resets_from_tasks() {
+        let mut popup = make_popup(2);
+        popup.set_tasks_view();
+        popup.set_no_details_view();
+        assert!(popup.is_no_details_view());
+    }
+
+    #[test]
+    fn set_no_details_view_resets_from_plan() {
+        let mut popup = make_popup(2);
+        popup.set_plan_view();
+        popup.set_no_details_view();
+        assert!(popup.is_no_details_view());
+    }
+
+    #[test]
+    fn is_tasks_view_false_when_plan() {
+        let mut popup = make_popup(2);
+        popup.set_plan_view();
+        assert!(!popup.is_tasks_view());
+    }
+
+    #[test]
+    fn is_plan_view_false_when_tasks() {
+        let mut popup = make_popup(2);
+        popup.set_tasks_view();
+        assert!(!popup.is_plan_view());
+    }
+
+    #[test]
+    fn only_one_view_active_at_a_time() {
+        let mut popup = make_popup(2);
+        popup.set_tasks_view();
+        let active_count = [
+            popup.is_no_details_view(),
+            popup.is_tasks_view(),
+            popup.is_plan_view(),
+        ]
+        .iter()
+        .filter(|&&v| v)
+        .count();
+        assert_eq!(active_count, 1);
+    }
+
+    // --- JobStagesPopup scroll_down ---
+
+    #[test]
+    fn scroll_down_empty_stays_none() {
+        let mut popup = make_popup(0);
+        popup.scroll_down();
+        assert_eq!(popup.table_state.selected(), None);
+    }
+
+    #[test]
+    fn scroll_down_no_selection_selects_first() {
+        let mut popup = make_popup(3);
+        popup.scroll_down();
+        assert_eq!(popup.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn scroll_down_advances_selection() {
+        let mut popup = make_popup(3);
+        popup.table_state.select(Some(0));
+        popup.scroll_down();
+        assert_eq!(popup.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn scroll_down_at_last_deselects() {
+        let mut popup = make_popup(3);
+        popup.table_state.select(Some(2));
+        popup.scroll_down();
+        assert_eq!(popup.table_state.selected(), None);
+    }
+
+    // --- JobStagesPopup scroll_up ---
+
+    #[test]
+    fn scroll_up_empty_stays_none() {
+        let mut popup = make_popup(0);
+        popup.scroll_up();
+        assert_eq!(popup.table_state.selected(), None);
+    }
+
+    #[test]
+    fn scroll_up_no_selection_selects_last() {
+        let mut popup = make_popup(3);
+        popup.scroll_up();
+        assert_eq!(popup.table_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn scroll_up_moves_back() {
+        let mut popup = make_popup(3);
+        popup.table_state.select(Some(2));
+        popup.scroll_up();
+        assert_eq!(popup.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn scroll_up_at_first_deselects() {
+        let mut popup = make_popup(3);
+        popup.table_state.select(Some(0));
+        popup.scroll_up();
+        assert_eq!(popup.table_state.selected(), None);
+    }
+
+    // --- JobStagesPopup::selected_stage ---
+
+    #[test]
+    fn selected_stage_none_when_no_selection() {
+        let popup = make_popup(3);
+        assert!(popup.selected_stage().is_none());
+    }
+
+    #[test]
+    fn selected_stage_returns_correct_stage() {
+        let mut popup = make_popup(3);
+        popup.table_state.select(Some(1));
+        let stage = popup.selected_stage().unwrap();
+        assert_eq!(stage.id, "1");
+    }
+
+    #[test]
+    fn selected_stage_none_after_deselect() {
+        let mut popup = make_popup(3);
+        popup.table_state.select(Some(0));
+        popup.table_state.select(None);
+        assert!(popup.selected_stage().is_none());
+    }
+
+    // --- StagesGraph scroll ---
+
+    #[test]
+    fn stages_graph_scroll_down_increments_position() {
+        let mut graph = make_stages_graph(0);
+        graph.scroll_down();
+        assert_eq!(graph.scroll_position, 1);
+    }
+
+    #[test]
+    fn stages_graph_scroll_down_multiple_times() {
+        let mut graph = make_stages_graph(0);
+        graph.scroll_down();
+        graph.scroll_down();
+        graph.scroll_down();
+        assert_eq!(graph.scroll_position, 3);
+    }
+
+    #[test]
+    fn stages_graph_scroll_up_decrements_position() {
+        let mut graph = make_stages_graph(5);
+        graph.scroll_up();
+        assert_eq!(graph.scroll_position, 4);
+    }
+
+    #[test]
+    fn stages_graph_scroll_up_saturates_at_zero() {
+        let mut graph = make_stages_graph(0);
+        graph.scroll_up();
+        assert_eq!(graph.scroll_position, 0);
+    }
+}

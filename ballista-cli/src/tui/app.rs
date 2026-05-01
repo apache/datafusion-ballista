@@ -541,7 +541,11 @@ mod tests {
     use crate::tui::App;
     use crate::tui::Settings;
     use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
-    use crate::tui::domain::{SchedulerState, SortOrder, jobs::Job};
+    use crate::tui::domain::{
+        SchedulerState, SortOrder,
+        jobs::Job,
+        jobs::stages::{JobStagesPopup, JobStagesResponse},
+    };
 
     fn make_app() -> App {
         let settings =
@@ -731,5 +735,84 @@ mod tests {
         app.sort_metrics_by(MetricsSortColumn::Name);
         app.sort_metrics_by(MetricsSortColumn::Name);
         assert_eq!(app.metrics_data.sort_column, MetricsSortColumn::None);
+    }
+
+    // --- Popup state tests ---
+
+    fn make_stages_popup() -> JobStagesPopup {
+        JobStagesPopup::new("job1".to_string(), JobStagesResponse { stages: Vec::new() })
+    }
+
+    #[test]
+    fn is_job_stages_popup_open_false_when_none() {
+        let app = make_app();
+        assert!(!app.is_job_stages_popup_open());
+    }
+
+    #[test]
+    fn is_job_stages_popup_open_true_when_some() {
+        let mut app = make_app();
+        app.job_stages_popup = Some(make_stages_popup());
+        assert!(app.is_job_stages_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_no_details_popup_open_true() {
+        let mut app = make_app();
+        app.job_stages_popup = Some(make_stages_popup());
+        assert!(app.is_job_stage_no_details_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_tasks_popup_open_true() {
+        let mut app = make_app();
+        let mut popup = make_stages_popup();
+        popup.set_tasks_view();
+        app.job_stages_popup = Some(popup);
+        assert!(app.is_job_stage_tasks_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_plan_popup_open_true() {
+        let mut app = make_app();
+        let mut popup = make_stages_popup();
+        popup.set_plan_view();
+        app.job_stages_popup = Some(popup);
+        assert!(app.is_job_stage_plan_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_no_details_when_tasks_returns_false() {
+        let mut app = make_app();
+        let mut popup = make_stages_popup();
+        popup.set_tasks_view();
+        app.job_stages_popup = Some(popup);
+        assert!(!app.is_job_stage_no_details_popup_open());
+    }
+
+    // --- is_selected_job_cancelable tests ---
+
+    #[test]
+    fn is_selected_job_cancelable_true_for_running() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.is_selected_job_cancelable());
+    }
+
+    #[test]
+    fn is_selected_job_cancelable_true_for_queued() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Queued")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.is_selected_job_cancelable());
+    }
+
+    #[test]
+    fn is_selected_job_cancelable_false_for_completed() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Completed")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(!app.is_selected_job_cancelable());
     }
 }

@@ -37,7 +37,7 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     ])
     .split(area);
 
-    render_plans(f, areas[0], &job_plans);
+    render_plans(f, areas[0], job_plans);
     render_navigation(f, areas[1], &job_plans.tab);
 }
 

@@ -241,7 +241,9 @@ impl JobPlansPopup {
 #[cfg(test)]
 mod tests {
     use crate::tui::domain::SortOrder;
-    use crate::tui::domain::jobs::{Job, JobsData, SortColumn};
+    use crate::tui::domain::jobs::{
+        Job, JobDetails, JobPlansPopup, JobsData, PlanTab, SortColumn,
+    };
 
     fn make_job(
         id: &str,
@@ -603,5 +605,47 @@ mod tests {
         data.table_state.select(Some(0));
         data.scroll_up();
         assert_eq!(data.table_state.selected(), None);
+    }
+
+    // --- JobPlansPopup tests ---
+
+    fn make_job_details(id: &str) -> JobDetails {
+        JobDetails {
+            job_id: id.to_string(),
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
+        }
+    }
+
+    #[test]
+    fn job_plans_popup_new_scroll_position_is_zero() {
+        let popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        assert_eq!(popup.scroll_position, 0);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_down_increments() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_down();
+        assert_eq!(popup.scroll_position, 1);
+        popup.scroll_down();
+        assert_eq!(popup.scroll_position, 2);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_up_decrements() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_down();
+        popup.scroll_down();
+        popup.scroll_up();
+        assert_eq!(popup.scroll_position, 1);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_up_saturates_at_zero() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_up();
+        assert_eq!(popup.scroll_position, 0);
     }
 }

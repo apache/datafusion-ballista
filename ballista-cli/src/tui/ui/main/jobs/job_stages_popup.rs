@@ -31,7 +31,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         return;
     };
 
-    let area = crate::tui::ui::centered_rect(80, 70, f.area());
+    let area = crate::tui::ui::centered_rect(85, 70, f.area());
     f.render_widget(Clear, area);
 
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
