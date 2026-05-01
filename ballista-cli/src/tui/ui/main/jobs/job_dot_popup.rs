@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::jobs::GraphNode;
+use crate::tui::domain::jobs::stages::GraphNode;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
@@ -173,7 +173,7 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((app.job_dot_scroll, 0));
+        .scroll((graph.scroll_position, 0));
 
     f.render_widget(paragraph, area);
 }

@@ -23,7 +23,7 @@ use crate::tui::{
         executors::{ExecutorsData, SortColumn as ExecutorsSortColumn},
         jobs::{
             CancelJobResult, JobDetails, JobsData, SortColumn as JobsSortColumn,
-            StagesGraph, stages::JobStagesPopup,
+            stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
@@ -84,7 +84,6 @@ pub(crate) struct App {
     pub job_details: Option<JobDetails>,
 
     pub job_dot_popup: Option<StagesGraph>,
-    pub job_dot_scroll: u16,
 
     pub job_plan_popup: Option<(JobDetails, PlanTab)>,
     pub job_plan_popup_scroll: u16,
@@ -107,7 +106,6 @@ impl App {
             cancel_job_result: None,
             job_details: None,
             job_dot_popup: None,
-            job_dot_scroll: 0,
             job_plan_popup: None,
             job_plan_popup_scroll: 0,
             job_stages_popup: None,
@@ -230,17 +228,16 @@ impl App {
             return Ok(());
         }
 
-        if self.job_dot_popup.is_some() {
+        if let Some(ref mut job_graph_popup) = self.job_dot_popup {
             match key.code {
                 KeyCode::Up => {
-                    self.job_dot_scroll = self.job_dot_scroll.saturating_sub(1);
+                    job_graph_popup.scroll_up();
                 }
                 KeyCode::Down => {
-                    self.job_dot_scroll = self.job_dot_scroll.saturating_add(1);
+                    job_graph_popup.scroll_down();
                 }
                 KeyCode::Esc => {
                     self.job_dot_popup = None;
-                    self.job_dot_scroll = 0;
                 }
                 _ => {}
             }
@@ -660,19 +657,19 @@ mod tests {
     }
 
     #[test]
-    fn has_selected_completed_job_true_when_completed_job_selected() {
+    fn is_selected_job_completed_true_when_completed_job_selected() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Completed")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(app.has_selected_completed_job());
+        assert!(app.is_selected_job_completed());
     }
 
     #[test]
-    fn has_selected_completed_job_false_for_running_job() {
+    fn is_selected_job_completed_false_for_running_job() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Running")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.has_selected_completed_job());
+        assert!(!app.is_selected_job_completed());
     }
 
     // --- sort_jobs_by toggle tests ---

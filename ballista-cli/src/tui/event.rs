@@ -22,7 +22,10 @@ use tokio::sync::mpsc;
 use crate::tui::domain::{
     SchedulerState,
     executors::Executor,
-    jobs::{Job, JobDetails, StagesGraph, stages::JobStagesResponse},
+    jobs::{
+        Job, JobDetails,
+        stages::{JobStagesResponse, StagesGraph},
+    },
     metrics::Metric,
 };
 

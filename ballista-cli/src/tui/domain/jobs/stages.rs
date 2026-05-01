@@ -155,3 +155,33 @@ impl JobStagesPopup {
             .and_then(|i| self.stages.stages.get(i))
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct GraphNode {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GraphStage {
+    pub label: String,
+    pub nodes: Vec<GraphNode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StagesGraph {
+    pub job_id: String,
+    pub stages: Vec<GraphStage>,
+    pub edges: Vec<(String, String)>,
+    pub scroll_position: u16,
+}
+
+impl StagesGraph {
+    pub fn scroll_up(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_sub(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_add(1);
+    }
+}
