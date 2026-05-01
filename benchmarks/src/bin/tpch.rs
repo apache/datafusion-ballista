@@ -333,7 +333,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
 
     let mut benchmark_run = BenchmarkRun::new();
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
-    let total_start = Instant::now();
+    let mut total_elapsed = 0.0;
 
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
@@ -378,12 +378,14 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         if opt.iterations > 1 {
             let avg = secs.iter().sum::<f64>() / secs.len() as f64;
             println!("Query {} avg time: {:.3} s", query, avg);
+            total_elapsed += avg;
+        } else {
+            total_elapsed += secs.iter().sum::<f64>();
         }
 
         benchmark_run.add_query_run(query_run);
     }
 
-    let total_elapsed = total_start.elapsed().as_secs_f64();
     println!("Total time: {total_elapsed:.3} s");
 
     if let Some(path) = &opt.output_path {
@@ -409,7 +411,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .unwrap_or_else(|| (1..=22).collect());
 
     let mut benchmark_run = BenchmarkRun::new();
-    let total_start = Instant::now();
+    let mut total_elapsed = 0.0;
 
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
@@ -500,12 +502,14 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         if opt.iterations > 1 {
             let avg = secs.iter().sum::<f64>() / secs.len() as f64;
             println!("Query {} avg time: {:.3} s", query, avg);
+            total_elapsed += avg;
+        } else {
+            total_elapsed += secs.iter().sum::<f64>();
         }
 
         benchmark_run.add_query_run(query_run);
     }
 
-    let total_elapsed = total_start.elapsed().as_secs_f64();
     println!("Total time: {total_elapsed:.3} s");
 
     if let Some(path) = &opt.output_path {
