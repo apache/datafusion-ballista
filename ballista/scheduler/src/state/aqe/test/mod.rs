@@ -20,6 +20,8 @@ mod alter_stages;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 
+use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
@@ -113,6 +115,20 @@ pub(crate) fn mock_memory_table() -> Arc<dyn TableProvider> {
 
 pub(crate) fn mock_context() -> SessionContext {
     let config = SessionConfig::new()
+        .with_target_partitions(2)
+        .with_round_robin_repartition(false);
+
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+
+    SessionContext::new_with_state(state)
+}
+
+pub(crate) fn mock_context_sort_shuffle() -> SessionContext {
+    let config = SessionConfig::new_with_ballista()
+        .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
         .with_target_partitions(2)
         .with_round_robin_repartition(false);
 

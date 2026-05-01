@@ -19,8 +19,10 @@ use crate::assert_plan;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
-    mock_batch, mock_context, mock_memory_table, mock_partitions_with_statistics,
+    mock_batch, mock_context, mock_context_sort_shuffle, mock_memory_table,
+    mock_partitions_with_statistics,
 };
+use ballista_core::execution_plans::{ShuffleWriterExec, SortShuffleWriterExec};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ColumnStatistics;
 use datafusion::physical_plan::Statistics;
@@ -426,6 +428,58 @@ async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
 
     let runnable_stages = planner.runnable_stages()?.unwrap();
     assert_eq!(0, runnable_stages.len());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_use_sort_shuffle_when_enabled() -> datafusion::error::Result<()> {
+    let ctx = mock_context_sort_shuffle();
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let q = r#"
+            select min(a) as c0, max(b) as c1, c as c2 from t group by c
+        "#;
+
+    let plan = ctx.sql(q).await?.create_physical_plan().await?;
+    let mut planner =
+        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+
+    let plan = stages.first().unwrap().plan.as_ref();
+    assert!(
+        plan.as_any()
+            .downcast_ref::<SortShuffleWriterExec>()
+            .is_some(),
+        "expected SortShuffleWriterExec when sort shuffle is enabled, got plan: {plan:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_use_hash_shuffle_by_default() -> datafusion::error::Result<()> {
+    let ctx = mock_context();
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let q = r#"
+            select min(a) as c0, max(b) as c1, c as c2 from t group by c
+        "#;
+
+    let plan = ctx.sql(q).await?.create_physical_plan().await?;
+    let mut planner =
+        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+
+    let plan = stages.first().unwrap().plan.as_ref();
+    assert!(
+        plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some(),
+        "expected ShuffleWriterExec by default, got plan: {plan:?}"
+    );
 
     Ok(())
 }
