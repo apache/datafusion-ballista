@@ -453,10 +453,10 @@ overhead.</p>
 <h3>Registering Tables<a class="headerlink" href="#registering-tables" title="Link to this heading">¶</a></h3>
 <p>Before running SQL queries, register tables with the context using a <code class="docutils literal notranslate"><span class="pre">register_*</span></code>
 method or a <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">EXTERNAL</span> <span class="pre">TABLE</span></code> statement:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;trips&quot;</span><span class="p">,</span> <span class="s2">&quot;/mnt/bigdata/nyctaxi&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;trips&quot;</span><span class="p">,</span> <span class="s2">&quot;/mnt/bigdata/trips&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION &#39;/mnt/bigdata/nyctaxi&#39;&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION &#39;/mnt/bigdata/trips&#39;&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>

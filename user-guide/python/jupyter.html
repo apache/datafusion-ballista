@@ -363,7 +363,7 @@ HTML tables when displayed in a notebook cell.</p>
 
 <span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">)</span>
 
-<span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;trips&quot;</span><span class="p">,</span> <span class="s2">&quot;/path/to/nyctaxi.parquet&quot;</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;trips&quot;</span><span class="p">,</span> <span class="s2">&quot;/path/to/trips.parquet&quot;</span><span class="p">)</span>
 
 <span class="c1"># The result renders as an HTML table when this is the last expression in a cell</span>
 <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT * FROM trips LIMIT 10&quot;</span><span class="p">)</span>
