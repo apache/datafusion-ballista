@@ -67,28 +67,7 @@ impl JobsData {
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-#[derive(Deserialize, Debug)]
-pub struct CancelJobResponse {
-    pub canceled: bool,
-}
-
-pub enum CancelJobResult {
-    Success { job_id: String },
-    NotCanceled { job_id: String },
-    Failure { job_id: String, error: String },
-}
-
-#[derive(Clone, Debug)]
-pub struct JobDetails {
-    pub job_id: String,
-    pub logical_plan: Option<String>,
-    pub physical_plan: Option<String>,
-    pub stage_plan: Option<String>,
-}
-
-impl JobsData {
     pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
         match self.sort_column {
             SortColumn::Id => jobs.sort_by(|a, b| {
@@ -205,6 +184,57 @@ impl JobsData {
         self.scrollbar_state = self
             .scrollbar_state
             .position(self.get_selected_job_index().unwrap_or(0));
+    }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CancelJobResponse {
+    pub canceled: bool,
+}
+
+pub enum CancelJobResult {
+    Success { job_id: String },
+    NotCanceled { job_id: String },
+    Failure { job_id: String, error: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct JobDetails {
+    pub job_id: String,
+    pub logical_plan: Option<String>,
+    pub physical_plan: Option<String>,
+    pub stage_plan: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PlanTab {
+    Stage,
+    Physical,
+    Logical,
+}
+
+#[derive(Clone, Debug)]
+pub struct JobPlansPopup {
+    pub details: JobDetails,
+    pub tab: PlanTab,
+    pub scroll_position: u16,
+}
+
+impl JobPlansPopup {
+    pub fn new(details: JobDetails, tab: PlanTab) -> Self {
+        Self {
+            details,
+            tab,
+            scroll_position: 0,
+        }
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_sub(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_add(1);
     }
 }
 

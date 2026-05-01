@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::app::{App, PlanTab};
-use crate::tui::domain::jobs::JobDetails;
+use crate::tui::app::App;
+use crate::tui::domain::jobs::{JobPlansPopup, PlanTab};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
@@ -24,7 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
-    let Some((details, tab)) = &app.job_plan_popup else {
+    let Some(job_plans) = &app.job_plan_popup else {
         return;
     };
 
@@ -37,8 +37,8 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     ])
     .split(area);
 
-    render_plans(f, areas[0], details, tab, app);
-    render_navigation(f, areas[1], tab);
+    render_plans(f, areas[0], &job_plans);
+    render_navigation(f, areas[1], &job_plans.tab);
 }
 
 fn render_navigation(f: &mut Frame, area: Rect, tab: &PlanTab) {
@@ -74,20 +74,17 @@ fn render_navigation(f: &mut Frame, area: Rect, tab: &PlanTab) {
     f.render_widget(paragraph, area);
 }
 
-fn render_plans(
-    f: &mut Frame,
-    area: Rect,
-    details: &JobDetails,
-    tab: &PlanTab,
-    app: &App,
-) {
+fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
+    let details = &job_plans.details;
+    let tab = &job_plans.tab;
+
     let plan = match tab {
         PlanTab::Stage => details.stage_plan.as_deref().unwrap_or("N/A"),
         PlanTab::Physical => details.physical_plan.as_deref().unwrap_or("N/A"),
         PlanTab::Logical => details.logical_plan.as_deref().unwrap_or("N/A"),
     };
 
-    let title = format!(" {:?} plan for job '{}' ", tab, details.job_id,);
+    let title = format!(" {:?} plan for job '{}' ", tab, details.job_id);
 
     let block = Block::default()
         .title(title)
@@ -97,7 +94,7 @@ fn render_plans(
 
     let paragraph = Paragraph::new(plan)
         .block(block)
-        .scroll((app.job_plan_popup_scroll, 0));
+        .scroll((job_plans.scroll_position, 0));
 
     f.render_widget(paragraph, area);
 }

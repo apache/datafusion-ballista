@@ -58,9 +58,14 @@ fn render_plans(
         .border_style(Style::default().fg(Color::Cyan))
         .border_type(BorderType::Thick);
 
+    let scroll_position = app
+        .job_plan_popup
+        .as_ref()
+        .map(|p| p.scroll_position)
+        .unwrap_or(0);
     let paragraph = Paragraph::new(stage.plan.clone())
         .block(block)
-        .scroll((app.job_plan_popup_scroll, 0));
+        .scroll((scroll_position, 0));
 
     f.render_widget(paragraph, area);
 }

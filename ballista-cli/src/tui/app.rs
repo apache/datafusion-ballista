@@ -22,7 +22,8 @@ use crate::tui::{
         SortOrder,
         executors::{ExecutorsData, SortColumn as ExecutorsSortColumn},
         jobs::{
-            CancelJobResult, JobDetails, JobsData, SortColumn as JobsSortColumn,
+            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
+            SortColumn as JobsSortColumn,
             stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
@@ -54,13 +55,6 @@ enum InputMode {
     Edit,
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum PlanTab {
-    Stage,
-    Physical,
-    Logical,
-}
-
 pub(crate) struct App {
     should_quit: bool,
 
@@ -85,8 +79,7 @@ pub(crate) struct App {
 
     pub job_dot_popup: Option<StagesGraph>,
 
-    pub job_plan_popup: Option<(JobDetails, PlanTab)>,
-    pub job_plan_popup_scroll: u16,
+    pub job_plan_popup: Option<JobPlansPopup>,
 
     pub job_stages_popup: Option<JobStagesPopup>,
 
@@ -107,7 +100,6 @@ impl App {
             job_details: None,
             job_dot_popup: None,
             job_plan_popup: None,
-            job_plan_popup_scroll: 0,
             job_stages_popup: None,
             executors_data: ExecutorsData::new(),
             jobs_data: JobsData::new(),
@@ -244,36 +236,24 @@ impl App {
             return Ok(());
         }
 
-        if self.job_plan_popup.is_some() {
+        if let Some(ref mut plans_popup) = self.job_plan_popup {
             match key.code {
-                KeyCode::Up => {
-                    self.job_plan_popup_scroll =
-                        self.job_plan_popup_scroll.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    self.job_plan_popup_scroll += 1;
-                }
+                KeyCode::Up => plans_popup.scroll_up(),
+                KeyCode::Down => plans_popup.scroll_down(),
                 KeyCode::Char('s') => {
-                    if let Some((_, tab)) = &mut self.job_plan_popup {
-                        *tab = PlanTab::Stage;
-                        self.job_plan_popup_scroll = 0;
-                    }
+                    plans_popup.tab = PlanTab::Stage;
+                    plans_popup.scroll_position = 0;
                 }
                 KeyCode::Char('p') => {
-                    if let Some((_, tab)) = &mut self.job_plan_popup {
-                        *tab = PlanTab::Physical;
-                        self.job_plan_popup_scroll = 0;
-                    }
+                    plans_popup.tab = PlanTab::Physical;
+                    plans_popup.scroll_position = 0;
                 }
                 KeyCode::Char('l') => {
-                    if let Some((_, tab)) = &mut self.job_plan_popup {
-                        *tab = PlanTab::Logical;
-                        self.job_plan_popup_scroll = 0;
-                    }
+                    plans_popup.tab = PlanTab::Logical;
+                    plans_popup.scroll_position = 0;
                 }
                 KeyCode::Esc => {
                     self.job_plan_popup = None;
-                    self.job_plan_popup_scroll = 0;
                 }
                 _ => {}
             }
@@ -553,8 +533,8 @@ impl App {
             .selected_job(&self.search_term)
             .is_some_and(|j| j.status == "Completed");
         if is_completed && let Some(details) = &self.job_details {
-            self.job_plan_popup = Some((details.clone(), PlanTab::Stage));
-            self.job_plan_popup_scroll = 0;
+            self.job_plan_popup =
+                Some(JobPlansPopup::new(details.clone(), PlanTab::Stage));
         }
     }
 }
