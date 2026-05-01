@@ -74,6 +74,18 @@ use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
 
+/// Default memory budget per concurrent task slot, used when the operator
+/// does not provide an explicit `--memory-pool-size`.
+///
+/// At the executor level the total budget is `concurrent_tasks` ×
+/// this value; that total is then split equally across the per-task
+/// `FairSpillPool`s by [`wrap_runtime_producer_with_memory_pool`]. Sized
+/// to keep a default 8-slot executor under ~8 GiB of headroom so a
+/// laptop running multiple executors does not over-commit, while still
+/// giving each task enough room to materialise reasonable batches before
+/// spilling.
+pub const DEFAULT_MEMORY_POOL_BYTES_PER_TASK: u64 = 1024 * 1024 * 1024;
+
 /// Wrap a [`RuntimeProducer`] so that every produced
 /// [`RuntimeEnv`](datafusion::execution::runtime_env::RuntimeEnv) carries a
 /// fresh [`FairSpillPool`] of size `total_bytes / concurrent_tasks`.
@@ -151,8 +163,9 @@ pub struct ExecutorProcessConfig {
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
     /// Optional total memory pool size in bytes. When set, every task's
     /// runtime env receives a FairSpillPool of size
-    /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
-    /// installed and DataFusion falls back to its unbounded default.
+    /// `memory_pool_size / concurrent_tasks`. When `None`, defaults to
+    /// `concurrent_tasks * DEFAULT_MEMORY_POOL_BYTES_PER_TASK` (1 GiB per
+    /// task slot).
     pub memory_pool_size: Option<u64>,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
@@ -296,20 +309,22 @@ pub async fn start_executor_process(
             })
         });
 
-    let runtime_producer = if let Some(total) = opt.memory_pool_size {
-        let producer = wrap_runtime_producer_with_memory_pool(
-            runtime_producer,
-            total,
-            concurrent_tasks,
-        )?;
-        let per_task = total / concurrent_tasks as u64;
-        info!(
-            "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
-        );
-        producer
-    } else {
-        runtime_producer
+    let (total, source) = match opt.memory_pool_size {
+        Some(t) => (t, "explicit"),
+        None => (
+            concurrent_tasks as u64 * DEFAULT_MEMORY_POOL_BYTES_PER_TASK,
+            "default",
+        ),
     };
+    let runtime_producer = wrap_runtime_producer_with_memory_pool(
+        runtime_producer,
+        total,
+        concurrent_tasks,
+    )?;
+    let per_task = total / concurrent_tasks as u64;
+    info!(
+        "Memory pool ({source}): total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
+    );
 
     let logical = opt
         .override_logical_codec
