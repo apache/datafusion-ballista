@@ -64,10 +64,16 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
           submodules: true
 
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
       - name: Show host info
         run: |
           uname -a
           cargo --version
+          protoc --version
           docker version
           docker compose version
           nproc
