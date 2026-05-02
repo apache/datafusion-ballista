@@ -798,7 +798,7 @@ mod test {
             .expect("Expected UnresolvedShuffleExec");
 
         assert_eq!(decoded_exec.stage_id, 7);
-        assert_eq!(decoded_exec.broadcast, true);
+        assert!(decoded_exec.broadcast);
         assert_eq!(decoded_exec.upstream_partition_count, 4);
         assert_eq!(decoded_exec.output_partition_count, 1);
     }
@@ -825,7 +825,7 @@ mod test {
             .expect("Expected ShuffleReaderExec");
 
         assert_eq!(decoded_exec.stage_id, 7);
-        assert_eq!(decoded_exec.broadcast, true);
+        assert!(decoded_exec.broadcast);
         assert_eq!(decoded_exec.upstream_partition_count, 4);
         assert_eq!(decoded_exec.partition.len(), 1);
     }
