@@ -223,6 +223,10 @@ impl ExecutionPlan for ShuffleReaderExec {
     ) -> Result<SendableRecordBatchStream> {
         let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
         debug!("ShuffleReaderExec::execute({task_id})");
+        // Broadcast readers have a single logical output partition; always
+        // serve from partition[0] regardless of which physical partition the
+        // caller asked for.
+        let partition = if self.broadcast { 0 } else { partition };
 
         let config = context.session_config();
         let batch_size = config.batch_size();
@@ -285,6 +289,20 @@ impl ExecutionPlan for ShuffleReaderExec {
     }
 
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if self.broadcast {
+            let all_locations: &[PartitionLocation] =
+                self.partition.first().map(|v| v.as_slice()).unwrap_or(&[]);
+            let stats = stats_for_partitions(
+                self.schema.fields().len(),
+                all_locations.iter().map(|loc| loc.partition_stats),
+            );
+            trace!(
+                "broadcast shuffle reader at stage {} returned aggregated statistics: {:?}",
+                self.stage_id,
+                stats
+            );
+            return Ok(stats);
+        }
         if let Some(idx) = partition {
             let partition_count = self.properties().partitioning.partition_count();
             if idx >= partition_count {
@@ -1439,5 +1457,43 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_reader_aggregates_stats_across_upstream_partitions() {
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+
+        let locs: Vec<PartitionLocation> = (0..3)
+            .map(|partition_id| PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: "j".to_string(),
+                    stage_id: 7,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: format!("exec-{partition_id}"),
+                    host: "localhost".to_string(),
+                    port: 50051,
+                    grpc_port: 50052,
+                    specification: ExecutorSpecification::default(),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                partition_stats: PartitionStats::new(Some(100), Some(1), Some(1024)),
+                file_id: None,
+                is_sort_shuffle: false,
+            })
+            .collect();
+
+        let reader = ShuffleReaderExec::try_new_broadcast(7, locs, schema, 3).unwrap();
+
+        assert!(reader.broadcast);
+        assert_eq!(reader.upstream_partition_count, 3);
+        assert_eq!(reader.properties().partitioning.partition_count(), 1);
+        assert_eq!(reader.partition[0].len(), 3);
+
+        let stats = reader.partition_statistics(Some(0)).unwrap();
+        assert_eq!(stats.num_rows.get_value().copied(), Some(300));
+        assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
     }
 }
