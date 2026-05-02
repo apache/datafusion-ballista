@@ -149,6 +149,8 @@ mod sort_shuffle_tests {
     #[case::remote_flight(ReadMode::RemoteFlight, false)]
     #[case::remote_block_io(ReadMode::RemoteBlockIo, false)]
     #[case::local_aqe(ReadMode::Local, true)]
+    #[case::remote_flight_aqe(ReadMode::RemoteFlight, true)]
+    #[case::remote_block_io_aqe(ReadMode::RemoteBlockIo, true)]
     #[tokio::test]
     async fn test_sort_shuffle_group_by_single_column(
         #[case] read_mode: ReadMode,
