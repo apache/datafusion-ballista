@@ -425,13 +425,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
-                let shuffle_reader = ShuffleReaderExec::try_new(
-                    stage_id,
-                    partition_location,
-                    schema,
-                    partitioning,
-                )?;
-                Ok(Arc::new(shuffle_reader))
+                let exec = if shuffle_reader.broadcast {
+                    let all_locations =
+                        partition_location.into_iter().next().unwrap_or_default();
+                    ShuffleReaderExec::try_new_broadcast(
+                        stage_id,
+                        all_locations,
+                        schema,
+                        shuffle_reader.upstream_partition_count as usize,
+                    )?
+                } else {
+                    ShuffleReaderExec::try_new(
+                        stage_id,
+                        partition_location,
+                        schema,
+                        partitioning,
+                    )?
+                };
+                Ok(Arc::new(exec))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
@@ -445,11 +456,20 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
-                Ok(Arc::new(UnresolvedShuffleExec::new(
-                    unresolved_shuffle.stage_id as usize,
-                    schema,
-                    partitioning,
-                )))
+                let exec = if unresolved_shuffle.broadcast {
+                    UnresolvedShuffleExec::new_broadcast(
+                        unresolved_shuffle.stage_id as usize,
+                        schema,
+                        unresolved_shuffle.upstream_partition_count as usize,
+                    )
+                } else {
+                    UnresolvedShuffleExec::new(
+                        unresolved_shuffle.stage_id as usize,
+                        schema,
+                        partitioning,
+                    )
+                };
+                Ok(Arc::new(exec))
             }
         }
     }
@@ -564,7 +584,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 self.default_codec.as_ref(),
                 &converter,
             )?;
-            // TODO(Task 6): wire exec.broadcast and exec.upstream_partition_count here.
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
@@ -572,8 +591,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partition,
                         schema: Some(exec.schema().as_ref().try_into()?),
                         partitioning: Some(partitioning),
-                        broadcast: false,
-                        upstream_partition_count: 0,
+                        broadcast: exec.broadcast,
+                        upstream_partition_count: exec.upstream_partition_count as u32,
                     },
                 )),
             };
@@ -591,15 +610,14 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 self.default_codec.as_ref(),
                 &converter,
             )?;
-            // TODO(Task 6): wire exec.broadcast and exec.upstream_partition_count here.
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::UnresolvedShuffle(
                     protobuf::UnresolvedShuffleExecNode {
                         stage_id: exec.stage_id as u32,
                         schema: Some(exec.schema().as_ref().try_into()?),
                         partitioning: Some(partitioning),
-                        broadcast: false,
-                        upstream_partition_count: 0,
+                        broadcast: exec.broadcast,
+                        upstream_partition_count: exec.upstream_partition_count as u32,
                     },
                 )),
             };
@@ -758,5 +776,57 @@ mod test {
         assert_eq!(decoded_exec.stage_id, 1);
         assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
         assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_unresolved_shuffle_exec_roundtrip() {
+        let schema = create_test_schema();
+        let original_exec = UnresolvedShuffleExec::new_broadcast(7, schema.clone(), 4);
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+
+        let decoded_exec = decoded_plan
+            .as_any()
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+
+        assert_eq!(decoded_exec.stage_id, 7);
+        assert_eq!(decoded_exec.broadcast, true);
+        assert_eq!(decoded_exec.upstream_partition_count, 4);
+        assert_eq!(decoded_exec.output_partition_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_shuffle_reader_exec_roundtrip() {
+        let schema = create_test_schema();
+        let original_exec =
+            ShuffleReaderExec::try_new_broadcast(7, Vec::new(), schema.clone(), 4)
+                .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+
+        let decoded_exec = decoded_plan
+            .as_any()
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+
+        assert_eq!(decoded_exec.stage_id, 7);
+        assert_eq!(decoded_exec.broadcast, true);
+        assert_eq!(decoded_exec.upstream_partition_count, 4);
+        assert_eq!(decoded_exec.partition.len(), 1);
     }
 }
