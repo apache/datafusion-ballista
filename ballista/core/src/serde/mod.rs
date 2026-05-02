@@ -426,8 +426,12 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
                 let exec = if shuffle_reader.broadcast {
-                    let all_locations =
-                        partition_location.into_iter().next().unwrap_or_default();
+                    let all_locations = partition_location
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| proto_error(
+                            "broadcast ShuffleReaderExec: expected exactly one partition in proto"
+                        ))?;
                     ShuffleReaderExec::try_new_broadcast(
                         stage_id,
                         all_locations,
