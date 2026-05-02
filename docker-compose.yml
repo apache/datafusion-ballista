@@ -20,7 +20,7 @@ services:
     build:
       dockerfile: dev/docker/ballista-scheduler.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0"
+    command: "--bind-host 0.0.0.0 --external-host ballista-scheduler"
     ports:
       - "50050:50050"
     environment:
