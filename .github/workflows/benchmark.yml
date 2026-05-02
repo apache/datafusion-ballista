@@ -1,0 +1,81 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: TPC-H Benchmark (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to benchmark'
+        required: true
+        default: 'main'
+      scale_factor:
+        description: 'TPC-H scale factor'
+        required: true
+        default: '10'
+      partitions:
+        description: 'Number of partitions / target_partitions'
+        required: true
+        default: '16'
+      iterations:
+        description: 'Iterations per query'
+        required: true
+        default: '3'
+
+concurrency:
+  group: benchmark-${{ github.event.inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: TPC-H SF${{ github.event.inputs.scale_factor }}, ${{ github.event.inputs.partitions }} partitions
+    # Use ASF-funded runs-on.com large runner inside apache/, fall back to
+    # ubuntu-latest on forks (slow but exercises the full pipeline).
+    # Ballista binaries are built inside the dockerized builder (see
+    # dev/build-ballista-executables.sh) so the host only needs cargo to
+    # install tpchgen-cli for data generation - both runner images ship cargo.
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=32,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=ballista', github.run_id) || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
+        if: ${{ github.repository_owner == 'apache' }}
+
+      - name: Checkout ${{ github.event.inputs.ref }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          submodules: true
+
+      - name: Show host info
+        run: |
+          uname -a
+          cargo --version
+          docker version
+          docker compose version
+          nproc
+
+      - name: Run integration benchmark
+        env:
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor }}
+          PARTITIONS: ${{ github.event.inputs.partitions }}
+          ITERATIONS: ${{ github.event.inputs.iterations }}
+        run: ./dev/integration-tests.sh
+
+      - name: Collect compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=500 || true
