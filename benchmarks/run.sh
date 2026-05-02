@@ -41,5 +41,6 @@ do
     --path /data \
     --format parquet \
     --partitions "$PARTITIONS" \
-    --iterations "$ITERATIONS"
+    --iterations "$ITERATIONS" \
+    -c datafusion.optimizer.prefer_hash_join=false
 done
