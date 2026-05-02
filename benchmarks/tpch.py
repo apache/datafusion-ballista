@@ -22,7 +22,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Run SQL benchmarks.')
 parser.add_argument('--query', help='query to run, such as q1')
 parser.add_argument('--path', help='path to data files')
-parser.add_argument('--ext', default='', help='optional file extension, such as parquet')
+parser.add_argument('--ext', default='parquet', help='optional file extension, such as parquet')
 
 args = parser.parse_args()
 
@@ -30,10 +30,10 @@ query = args.query
 path = args.path
 table_ext = args.ext
 
-from ballista import BallistaBuilder
+from ballista import BallistaSessionContext
 from datafusion.context import SessionContext
     
-ctx: SessionContext = BallistaBuilder().remote("df://127.0.0.1:50050")
+ctx: SessionContext = BallistaSessionContext("df://127.0.0.1:50050")
 
 tables = ["part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region"]
 

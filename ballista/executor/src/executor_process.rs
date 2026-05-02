@@ -41,7 +41,9 @@ use tokio::task::JoinHandle;
 use tokio::{fs, time};
 use uuid::Uuid;
 
+use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::prelude::SessionConfig;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
@@ -71,6 +73,33 @@ use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
+
+/// Wrap a [`RuntimeProducer`] so that every produced
+/// [`RuntimeEnv`](datafusion::execution::runtime_env::RuntimeEnv) carries a
+/// fresh [`FairSpillPool`] of size `total_bytes / concurrent_tasks`.
+///
+/// Returns an error if the per-task share would be zero (i.e. `total_bytes <
+/// concurrent_tasks`). The inner env's disk manager, cache manager, and
+/// object store registry are preserved via [`RuntimeEnvBuilder::from_runtime_env`].
+fn wrap_runtime_producer_with_memory_pool(
+    inner: RuntimeProducer,
+    total_bytes: u64,
+    concurrent_tasks: usize,
+) -> Result<RuntimeProducer, BallistaError> {
+    let per_task = (total_bytes / concurrent_tasks as u64) as usize;
+    if per_task == 0 {
+        return Err(BallistaError::Configuration(format!(
+            "memory_pool_size ({total_bytes} bytes) is smaller than concurrent_tasks ({concurrent_tasks})"
+        )));
+    }
+    Ok(Arc::new(move |session_config: &SessionConfig| {
+        let inner_env = inner(session_config)?;
+        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
+        RuntimeEnvBuilder::from_runtime_env(&inner_env)
+            .with_memory_pool(pool)
+            .build_arc()
+    }))
+}
 
 /// Configuration for the executor process.
 ///
@@ -120,6 +149,11 @@ pub struct ExecutorProcessConfig {
     pub executor_heartbeat_interval_seconds: u64,
     /// Metric collection policy of this executor instance
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
+    /// Optional total memory pool size in bytes. When set, every task's
+    /// runtime env receives a FairSpillPool of size
+    /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
+    /// installed and DataFusion falls back to its unbounded default.
+    pub memory_pool_size: Option<u64>,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -176,6 +210,7 @@ impl Default for ExecutorProcessConfig {
             grpc_server_config: Default::default(),
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
+            memory_pool_size: None,
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,
@@ -260,6 +295,21 @@ pub async fn start_executor_process(
                 Ok(Arc::new(runtime_env))
             })
         });
+
+    let runtime_producer = if let Some(total) = opt.memory_pool_size {
+        let producer = wrap_runtime_producer_with_memory_pool(
+            runtime_producer,
+            total,
+            concurrent_tasks,
+        )?;
+        let per_task = total / concurrent_tasks as u64;
+        info!(
+            "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
+        );
+        producer
+    } else {
+        runtime_producer
+    };
 
     let logical = opt
         .override_logical_codec
@@ -926,5 +976,67 @@ mod tests {
             fs::create_dir(&path).unwrap();
         }
         path
+    }
+}
+
+#[cfg(test)]
+mod memory_pool_tests {
+    use super::*;
+    use datafusion::execution::memory_pool::MemoryLimit;
+    use datafusion::execution::object_store::DefaultObjectStoreRegistry;
+    use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+    use std::sync::Arc;
+
+    fn baseline_producer() -> RuntimeProducer {
+        Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())))
+    }
+
+    #[test]
+    fn returns_error_when_total_smaller_than_concurrent_tasks() {
+        let inner = baseline_producer();
+        let result = wrap_runtime_producer_with_memory_pool(inner, 4, 8);
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("memory_pool_size"));
+        assert!(msg.contains("concurrent_tasks"));
+    }
+
+    #[test]
+    fn produces_runtime_with_fair_spill_pool_of_per_task_size() {
+        let total = 8u64 * 1024 * 1024 * 1024;
+        let concurrent = 8usize;
+        let expected_per_task = (total / concurrent as u64) as usize;
+
+        let wrapped = wrap_runtime_producer_with_memory_pool(
+            baseline_producer(),
+            total,
+            concurrent,
+        )
+        .unwrap();
+        let env = wrapped(&SessionConfig::new()).unwrap();
+
+        match env.memory_pool.memory_limit() {
+            MemoryLimit::Finite(n) => assert_eq!(n, expected_per_task),
+            MemoryLimit::Infinite => panic!("expected Finite limit, got Infinite"),
+            MemoryLimit::Unknown => panic!("expected Finite limit, got Unknown"),
+        }
+    }
+
+    #[test]
+    fn preserves_inner_object_store_registry() {
+        let registry: Arc<dyn datafusion::execution::object_store::ObjectStoreRegistry> =
+            Arc::new(DefaultObjectStoreRegistry::new());
+        let registry_for_inner = registry.clone();
+        let inner: RuntimeProducer = Arc::new(move |_| {
+            let env = RuntimeEnvBuilder::new()
+                .with_object_store_registry(registry_for_inner.clone())
+                .build()?;
+            Ok(Arc::new(env))
+        });
+
+        let wrapped = wrap_runtime_producer_with_memory_pool(inner, 1024, 1).unwrap();
+        let env = wrapped(&SessionConfig::new()).unwrap();
+
+        assert!(Arc::ptr_eq(&env.object_store_registry, &registry));
     }
 }

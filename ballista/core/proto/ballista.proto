@@ -68,10 +68,7 @@ message SortShuffleWriterExecNode {
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
   datafusion.PhysicalHashRepartition output_partitioning = 4;
-  // Configuration for sort shuffle
-  uint64 buffer_size = 5;
-  uint64 memory_limit = 6;
-  double spill_threshold = 7;
+  // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;
 }
 
@@ -671,6 +668,27 @@ message GetJobStatusParams {
   string job_id = 1;
 }
 
+message GetJobMetricsParams {
+  string job_id = 1;
+}
+
+message JobStageMetrics {
+  uint32 stage_id = 1;
+  uint32 partitions = 2;
+  repeated OperatorWithMetrics operators = 3;
+}
+
+message OperatorWithMetrics {
+  uint32 depth = 1;
+  string operator_type = 2;
+  string operator_desc = 3;
+  repeated OperatorMetric metrics = 4;
+}
+
+message GetJobMetricsResult {
+  repeated JobStageMetrics stages = 1;
+}
+
 message SuccessfulJob {
   repeated PartitionLocation partition_location = 1;
   uint64 queued_at = 2;
@@ -800,6 +818,8 @@ service SchedulerGrpc {
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
   rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}
+
+  rpc GetJobMetrics (GetJobMetricsParams) returns (GetJobMetricsResult) {}
 
   // Used by Executor to tell Scheduler it is stopped.
   rpc ExecutorStopped (ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
