@@ -25,7 +25,7 @@ mod supported {
     };
     use ballista_core::config::BallistaConfig;
 
-    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::array::{Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
@@ -37,6 +37,26 @@ mod supported {
     #[rstest::fixture]
     fn test_data() -> String {
         crate::common::example_test_data()
+    }
+
+    /// Concatenate the `plan` column of an EXPLAIN result into a single
+    /// string for substring assertions.
+    fn plan_text(batches: &[RecordBatch]) -> String {
+        let mut out = String::new();
+        for batch in batches {
+            let col = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("plan column should be Utf8");
+            for i in 0..col.len() {
+                if !col.is_null(i) {
+                    out.push_str(col.value(i));
+                    out.push('\n');
+                }
+            }
+        }
+        out
     }
 
     #[rstest]
@@ -950,7 +970,8 @@ mod supported {
     }
 
     // Sort Merge Join is supported since DF.v50
-    // testing if it will work in ballista
+    // Ballista defaults to sort-merge join (see issue #1648). This test
+    // verifies that default by inspecting the physical plan.
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -974,16 +995,26 @@ mod supported {
             Default::default(),
         )
         .await?;
-        ctx.sql("SET datafusion.optimizer.prefer_hash_join = false")
+
+        let join_sql =
+            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+
+        let plan = ctx
+            .sql(&format!("EXPLAIN {join_sql}"))
             .await?
-            .show()
+            .collect()
             .await?;
-        let result = ctx.sql(
-            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5",
-        )
-        .await?
-        .collect()
-        .await?;
+        let plan_text = plan_text(&plan);
+        assert!(
+            plan_text.contains("SortMergeJoinExec"),
+            "expected SortMergeJoinExec in plan, got:\n{plan_text}"
+        );
+        assert!(
+            !plan_text.contains("HashJoinExec"),
+            "did not expect HashJoinExec in plan, got:\n{plan_text}"
+        );
+
+        let result = ctx.sql(join_sql).await?.collect().await?;
 
         let expected = [
             "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",
