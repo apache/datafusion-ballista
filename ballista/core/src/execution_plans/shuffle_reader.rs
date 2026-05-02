@@ -68,6 +68,15 @@ pub struct ShuffleReaderExec {
     pub(crate) schema: SchemaRef,
     /// Each partition of a shuffle can read data from multiple locations
     pub partition: Vec<Vec<PartitionLocation>>,
+    /// When true, every call to `execute(partition)` reads `partition[0]`
+    /// (which holds the flattened concatenation of all upstream partition
+    /// locations) regardless of the partition index. Used for the
+    /// distributed broadcast hash-join lowering.
+    pub broadcast: bool,
+    /// Number of shuffle output partitions on the upstream stage. Useful for
+    /// metrics and EXPLAIN output. For non-broadcast readers this equals
+    /// `partition.len()`.
+    pub upstream_partition_count: usize,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -75,13 +84,15 @@ pub struct ShuffleReaderExec {
 }
 
 impl ShuffleReaderExec {
-    /// Create a new ShuffleReaderExec
+    /// Create a new ShuffleReaderExec for a standard one-to-one
+    /// per-partition read.
     pub fn try_new(
         stage_id: usize,
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
         partitioning: Partitioning,
     ) -> Result<Self> {
+        let upstream_partition_count = partition.len();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
@@ -92,9 +103,39 @@ impl ShuffleReaderExec {
             stage_id,
             schema,
             partition,
+            broadcast: false,
+            upstream_partition_count,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: None, // to be updated at the executor side
+            work_dir: None,
+        })
+    }
+
+    /// Create a broadcast ShuffleReaderExec. `all_locations` is the
+    /// flattened concatenation of every upstream partition's locations.
+    /// The reader has one logical output partition that fans in all of
+    /// them.
+    pub fn try_new_broadcast(
+        stage_id: usize,
+        all_locations: Vec<PartitionLocation>,
+        schema: SchemaRef,
+        upstream_partition_count: usize,
+    ) -> Result<Self> {
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            stage_id,
+            schema,
+            partition: vec![all_locations],
+            broadcast: true,
+            upstream_partition_count,
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+            work_dir: None,
         })
     }
 
@@ -104,6 +145,8 @@ impl ShuffleReaderExec {
             stage_id: self.stage_id,
             schema: self.schema.clone(),
             partition: self.partition.clone(),
+            broadcast: self.broadcast,
+            upstream_partition_count: self.upstream_partition_count,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
