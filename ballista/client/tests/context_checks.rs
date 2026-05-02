@@ -1045,6 +1045,7 @@ mod supported {
             Default::default(),
         )
         .await?;
+
         ctx.register_parquet(
             "t1",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -1070,8 +1071,13 @@ mod supported {
             plan_text.contains("HashJoinExec"),
             "expected HashJoinExec in plan after opt-in, got:\n{plan_text}"
         );
+        assert!(
+            !plan_text.contains("SortMergeJoinExec"),
+            "did not expect SortMergeJoinExec in plan after opt-in, got:\n{plan_text}"
+        );
 
         let result = ctx.sql(join_sql).await?.collect().await?;
+
         let expected = [
             "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",
             "| 3  |", "+----+",
