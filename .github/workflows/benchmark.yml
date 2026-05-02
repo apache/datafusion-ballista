@@ -41,6 +41,9 @@ concurrency:
   group: benchmark-${{ github.event.inputs.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     name: TPC-H SF${{ github.event.inputs.scale_factor }}, ${{ github.event.inputs.partitions }} partitions
