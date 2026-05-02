@@ -949,6 +949,102 @@ order by
     }
 
     #[tokio::test]
+    async fn distributed_join_plan_no_broadcast_when_threshold_zero()
+    -> Result<(), BallistaError> {
+        use ballista_core::config::{
+            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BallistaConfig,
+        };
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::physical_plan::joins::PartitionMode;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("name", DataType::Int32, false),
+        ]));
+
+        let big_batch = RecordBatch::try_new(
+            big_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from(
+                    (0..1000).map(|i| i * 2).collect::<Vec<i32>>(),
+                )),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+        let small_batch = RecordBatch::try_new(
+            small_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        let session_config = SessionConfig::new().with_target_partitions(2).set_usize(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        );
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+        ctx.register_batch("small", small_batch)?;
+
+        let mut settings = std::collections::HashMap::new();
+        settings.insert(
+            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
+            "0".to_string(),
+        );
+        let options_arc = ctx.state().config().options().clone();
+        let mut options = (*options_arc).clone();
+        options
+            .extensions
+            .insert(BallistaConfig::with_settings(settings).unwrap());
+
+        let df = ctx
+            .sql("select count(*) from big join small on big.k = small.k")
+            .await?;
+
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(unresolved) =
+                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
+                {
+                    assert!(
+                        !unresolved.broadcast,
+                        "no broadcast reader expected with threshold=0"
+                    );
+                }
+                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                    assert_ne!(
+                        *hj.partition_mode(),
+                        PartitionMode::CollectLeft,
+                        "no CollectLeft promotion expected with threshold=0"
+                    );
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remove_unresolved_shuffles_broadcasts_locations() -> Result<(), BallistaError>
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
