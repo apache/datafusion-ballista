@@ -403,7 +403,6 @@ pub fn remove_unresolved_shuffles(
         if let Some(unresolved_shuffle) =
             child.as_any().downcast_ref::<UnresolvedShuffleExec>()
         {
-            let mut relevant_locations = vec![];
             let p = partition_locations
                 .get(&unresolved_shuffle.stage_id)
                 .ok_or_else(|| {
@@ -414,23 +413,38 @@ pub fn remove_unresolved_shuffles(
                 })?
                 .clone();
 
-            for i in 0..unresolved_shuffle.output_partition_count {
-                if let Some(x) = p.get(&i) {
-                    relevant_locations.push(x.to_owned());
-                } else {
-                    relevant_locations.push(vec![]);
+            if unresolved_shuffle.broadcast {
+                let mut all_locations = vec![];
+                for i in 0..unresolved_shuffle.upstream_partition_count {
+                    if let Some(locs) = p.get(&i) {
+                        all_locations.extend(locs.iter().cloned());
+                    }
                 }
+                new_children.push(Arc::new(ShuffleReaderExec::try_new_broadcast(
+                    unresolved_shuffle.stage_id,
+                    all_locations,
+                    unresolved_shuffle.schema().clone(),
+                    unresolved_shuffle.upstream_partition_count,
+                )?));
+            } else {
+                let mut relevant_locations = vec![];
+                for i in 0..unresolved_shuffle.output_partition_count {
+                    if let Some(x) = p.get(&i) {
+                        relevant_locations.push(x.to_owned());
+                    } else {
+                        relevant_locations.push(vec![]);
+                    }
+                }
+                new_children.push(Arc::new(ShuffleReaderExec::try_new(
+                    unresolved_shuffle.stage_id,
+                    relevant_locations,
+                    unresolved_shuffle.schema().clone(),
+                    unresolved_shuffle
+                        .properties()
+                        .output_partitioning()
+                        .clone(),
+                )?));
             }
-
-            new_children.push(Arc::new(ShuffleReaderExec::try_new(
-                unresolved_shuffle.stage_id,
-                relevant_locations,
-                unresolved_shuffle.schema().clone(),
-                unresolved_shuffle
-                    .properties()
-                    .output_partitioning()
-                    .clone(),
-            )?))
         } else {
             new_children.push(remove_unresolved_shuffles(
                 child.clone(),
@@ -451,13 +465,20 @@ pub fn rollback_resolved_shuffles(
     for child in stage.children() {
         if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
             let stage_id = shuffle_reader.stage_id;
-
-            let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
-                stage_id,
-                shuffle_reader.schema(),
-                shuffle_reader.properties().partitioning.clone(),
-            ));
-            new_children.push(unresolved_shuffle);
+            let unresolved = if shuffle_reader.broadcast {
+                Arc::new(UnresolvedShuffleExec::new_broadcast(
+                    stage_id,
+                    shuffle_reader.schema(),
+                    shuffle_reader.upstream_partition_count,
+                ))
+            } else {
+                Arc::new(UnresolvedShuffleExec::new(
+                    stage_id,
+                    shuffle_reader.schema(),
+                    shuffle_reader.properties().partitioning.clone(),
+                ))
+            };
+            new_children.push(unresolved);
         } else {
             new_children.push(rollback_resolved_shuffles(child.clone())?);
         }
@@ -923,6 +944,100 @@ order by
             found_broadcast_join,
             "expected a broadcast HashJoinExec in stages"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_unresolved_shuffles_broadcasts_locations() -> Result<(), BallistaError>
+    {
+        use ballista_core::execution_plans::ShuffleReaderExec;
+        use ballista_core::serde::scheduler::{
+            ExecutorMetadata, ExecutorOperatingSystemSpecification,
+            ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+        };
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+        let unresolved =
+            Arc::new(UnresolvedShuffleExec::new_broadcast(42, schema.clone(), 3))
+                as Arc<dyn ExecutionPlan>;
+
+        let make_loc = |partition_id: usize| PartitionLocation {
+            map_partition_id: partition_id,
+            partition_id: PartitionId {
+                job_id: "job".to_string(),
+                stage_id: 42,
+                partition_id,
+            },
+            executor_meta: ExecutorMetadata {
+                id: format!("exec-{partition_id}"),
+                host: "localhost".to_string(),
+                port: 50050,
+                grpc_port: 50051,
+                specification: ExecutorSpecification::default().with_task_slots(1),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+            partition_stats: PartitionStats::new(Some(10), None, Some(1)),
+            file_id: None,
+            is_sort_shuffle: false,
+        };
+
+        let mut by_partition: std::collections::HashMap<usize, Vec<PartitionLocation>> =
+            Default::default();
+        by_partition.insert(0, vec![make_loc(0)]);
+        by_partition.insert(1, vec![make_loc(1)]);
+        by_partition.insert(2, vec![make_loc(2)]);
+
+        let mut by_stage = std::collections::HashMap::new();
+        by_stage.insert(42usize, by_partition);
+
+        let parent: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
+                unresolved,
+            ),
+        );
+
+        let resolved = crate::planner::remove_unresolved_shuffles(parent, &by_stage)?;
+
+        let resolved_child = resolved.children()[0].clone();
+        let reader = resolved_child
+            .as_any()
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("expected resolved ShuffleReaderExec");
+        assert!(reader.broadcast);
+        assert_eq!(reader.upstream_partition_count, 3);
+        assert_eq!(reader.partition.len(), 1);
+        assert_eq!(reader.partition[0].len(), 3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rollback_resolved_shuffles_preserves_broadcast() -> Result<(), BallistaError>
+    {
+        use ballista_core::execution_plans::ShuffleReaderExec;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+        let reader = Arc::new(
+            ShuffleReaderExec::try_new_broadcast(42, vec![], schema, 3).unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let parent: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
+                reader,
+            ),
+        );
+
+        let rolled_back = crate::planner::rollback_resolved_shuffles(parent)?;
+        let child = rolled_back.children()[0].clone();
+        let unresolved = child
+            .as_any()
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("expected rolled-back UnresolvedShuffleExec");
+        assert!(unresolved.broadcast);
+        assert_eq!(unresolved.upstream_partition_count, 3);
+        assert_eq!(unresolved.output_partition_count, 1);
 
         Ok(())
     }
