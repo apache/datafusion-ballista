@@ -25,7 +25,7 @@ mod supported {
     };
     use ballista_core::config::BallistaConfig;
 
-    use datafusion::arrow::array::{Array, StringArray};
+    use datafusion::arrow::array::StringArray;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
@@ -44,16 +44,18 @@ mod supported {
     fn plan_text(batches: &[RecordBatch]) -> String {
         let mut out = String::new();
         for batch in batches {
+            let idx = batch
+                .schema()
+                .index_of("plan")
+                .expect("EXPLAIN output should have a 'plan' column");
             let col = batch
-                .column(1)
+                .column(idx)
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .expect("plan column should be Utf8");
-            for i in 0..col.len() {
-                if !col.is_null(i) {
-                    out.push_str(col.value(i));
-                    out.push('\n');
-                }
+            for val in col.iter().flatten() {
+                out.push_str(val);
+                out.push('\n');
             }
         }
         out
