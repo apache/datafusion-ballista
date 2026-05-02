@@ -653,6 +653,15 @@ impl SessionConfigHelperExt for SessionConfig {
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
                 0,
             )
+            //
+            // DataFusion's hash join has no spill support, so each parallel
+            // task on an executor must hold the full build side in memory.
+            // Default to sort-merge join, which spills, until DataFusion gains
+            // a spilling hash join. Users can opt back in with
+            // `SET datafusion.optimizer.prefer_hash_join = true`.
+            //
+            // See https://github.com/apache/datafusion-ballista/issues/1648
+            .set_bool("datafusion.optimizer.prefer_hash_join", false)
     }
 }
 
