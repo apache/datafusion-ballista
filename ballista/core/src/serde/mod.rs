@@ -571,6 +571,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partition,
                         schema: Some(exec.schema().as_ref().try_into()?),
                         partitioning: Some(partitioning),
+                        broadcast: false,
+                        upstream_partition_count: 0,
                     },
                 )),
             };
@@ -594,6 +596,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         stage_id: exec.stage_id as u32,
                         schema: Some(exec.schema().as_ref().try_into()?),
                         partitioning: Some(partitioning),
+                        broadcast: false,
+                        upstream_partition_count: 0,
                     },
                 )),
             };
