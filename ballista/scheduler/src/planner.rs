@@ -1045,6 +1045,112 @@ order by
     }
 
     #[tokio::test]
+    async fn distributed_broadcast_join_plan_multi_partition_build()
+    -> Result<(), BallistaError> {
+        use ballista_core::config::{
+            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BallistaConfig,
+        };
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::datasource::MemTable;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("name", DataType::Int32, false),
+        ]));
+
+        let big_batch = RecordBatch::try_new(
+            big_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from(
+                    (0..1000).map(|i| i * 2).collect::<Vec<i32>>(),
+                )),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        // Build a MemTable with THREE partitions on the small side, so the
+        // broadcast build stage has 3 input partitions and writes 3 shuffle
+        // files. The broadcast UnresolvedShuffleExec must report
+        // upstream_partition_count = 3.
+        let mk_small = || -> std::result::Result<RecordBatch, BallistaError> {
+            RecordBatch::try_new(
+                small_schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2])),
+                    Arc::new(Int32Array::from(vec![10, 20])),
+                ],
+            )
+            .map_err(|e| BallistaError::General(e.to_string()))
+        };
+        let small_partitions: Vec<Vec<RecordBatch>> =
+            vec![vec![mk_small()?], vec![mk_small()?], vec![mk_small()?]];
+        let small_table = MemTable::try_new(small_schema, small_partitions)
+            .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        let session_config = SessionConfig::new().with_target_partitions(2).set_usize(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        );
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+        ctx.register_table("small", Arc::new(small_table))?;
+
+        let mut settings = std::collections::HashMap::new();
+        settings.insert(
+            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
+            (10 * 1024 * 1024).to_string(),
+        );
+        let options_arc = ctx.state().config().options().clone();
+        let mut options = (*options_arc).clone();
+        options
+            .extensions
+            .insert(BallistaConfig::with_settings(settings).unwrap());
+
+        let df = ctx
+            .sql("select count(*) from big join small on big.k = small.k")
+            .await?;
+
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        for (i, stage) in stages.iter().enumerate() {
+            println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
+        }
+
+        let mut max_upstream = 0;
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(unresolved) =
+                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
+                    && unresolved.broadcast
+                {
+                    max_upstream = max_upstream.max(unresolved.upstream_partition_count);
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+        assert!(
+            max_upstream >= 2,
+            "expected broadcast UnresolvedShuffleExec with upstream_partition_count >= 2, got {max_upstream}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remove_unresolved_shuffles_broadcasts_locations() -> Result<(), BallistaError>
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
