@@ -290,6 +290,13 @@ impl ExecutionPlan for ShuffleReaderExec {
 
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
         if self.broadcast {
+            if let Some(idx) = partition
+                && idx != 0
+            {
+                return datafusion::common::internal_err!(
+                    "Broadcast ShuffleReaderExec: invalid partition index {idx}, only partition 0 exists"
+                );
+            }
             let all_locations: &[PartitionLocation] =
                 self.partition.first().map(|v| v.as_slice()).unwrap_or(&[]);
             let stats = stats_for_partitions(
@@ -1494,5 +1501,17 @@ mod tests {
         let stats = reader.partition_statistics(Some(0)).unwrap();
         assert_eq!(stats.num_rows.get_value().copied(), Some(300));
         assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
+    }
+
+    #[test]
+    fn broadcast_reader_rejects_out_of_range_partition_index() {
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+        let reader = ShuffleReaderExec::try_new_broadcast(7, vec![], schema, 3).unwrap();
+        let err = reader.partition_statistics(Some(1)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid partition index 1"),
+            "unexpected error message: {msg}"
+        );
     }
 }
