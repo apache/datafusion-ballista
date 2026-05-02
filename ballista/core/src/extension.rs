@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS, BALLISTA_JOB_NAME,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
@@ -177,6 +178,17 @@ pub trait SessionConfigExt {
     ///
     /// This option to be used to configure standalone session context
     fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self;
+
+    /// Returns the byte-size threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern in
+    /// the distributed planner. `0` disables promotion.
+    fn ballista_broadcast_join_threshold_bytes(&self) -> usize;
+
+    /// Sets the byte-size threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern in
+    /// the distributed planner. Setting `0` disables promotion.
+    fn with_ballista_broadcast_join_threshold_bytes(self, threshold_bytes: usize)
+    -> Self;
 
     /// retrieves grpc client max message size
     fn ballista_grpc_client_max_message_size(&self) -> usize;
@@ -423,6 +435,26 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        }
+    }
+
+    fn ballista_broadcast_join_threshold_bytes(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.broadcast_join_threshold_bytes())
+            .unwrap_or_else(|| BallistaConfig::default().broadcast_join_threshold_bytes())
+    }
+
+    fn with_ballista_broadcast_join_threshold_bytes(
+        self,
+        threshold_bytes: usize,
+    ) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, threshold_bytes)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, threshold_bytes)
         }
     }
 

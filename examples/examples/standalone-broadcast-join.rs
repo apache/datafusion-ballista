@@ -39,7 +39,6 @@ use ballista::datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_core::config::BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -130,7 +129,7 @@ async fn main() -> Result<()> {
         // threshold via ballista_restricted_configuration(), so we only need
         // to ensure the Ballista threshold is set to a value large enough that
         // the small table (5 rows, ~300 B as Parquet) is promoted.
-        .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, 10 * 1024 * 1024);
+        .with_ballista_broadcast_join_threshold_bytes(10 * 1024 * 1024);
 
     let state = SessionStateBuilder::new()
         .with_config(config)
