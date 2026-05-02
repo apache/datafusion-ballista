@@ -564,6 +564,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 self.default_codec.as_ref(),
                 &converter,
             )?;
+            // TODO(Task 6): wire exec.broadcast and exec.upstream_partition_count here.
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
@@ -590,6 +591,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 self.default_codec.as_ref(),
                 &converter,
             )?;
+            // TODO(Task 6): wire exec.broadcast and exec.upstream_partition_count here.
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::UnresolvedShuffle(
                     protobuf::UnresolvedShuffleExecNode {
