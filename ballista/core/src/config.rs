@@ -79,6 +79,11 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 /// sort shuffle writer spills its in-memory batches to disk.
 pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
     "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
+/// Configuration key for the byte-size threshold below which a hash join's
+/// smaller side is promoted to `CollectLeft` and lowered via the broadcast
+/// pattern in the distributed planner. Set to `0` to disable promotion.
+pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
+    "ballista.optimizer.broadcast_join_threshold_bytes";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -151,6 +156,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          memory per executor is approximately concurrent_tasks * this value.".to_string(),
                          DataType::UInt64,
                          Some((256 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
+                         "Byte-size threshold below which a hash join's smaller side is \
+                          promoted to CollectLeft and lowered via the broadcast pattern. \
+                          Set to 0 to disable promotion.".to_string(),
+                         DataType::UInt64,
+                         Some((10 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -361,6 +372,13 @@ impl BallistaConfig {
     /// writer spills its in-memory batches to disk.
     pub fn shuffle_sort_based_memory_limit_per_task_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES)
+    }
+
+    /// Returns the byte-size threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern.
+    /// `0` disables promotion.
+    pub fn broadcast_join_threshold_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
     /// Should client employ pull or push job tracking strategy
