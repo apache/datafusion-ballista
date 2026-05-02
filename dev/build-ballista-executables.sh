@@ -17,14 +17,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+# Build the binaries that the per-image Dockerfiles
+# (ballista-scheduler/executor/benchmarks) COPY into the runtime images.
+#
+# This used to run `cargo build` inside a builder container; the host build
+# is simpler and avoids dragging a separate Rust toolchain image along. Run
+# this on a host with the project's Rust toolchain available (see
+# rust-toolchain.toml).
 
-RELEASE_FLAG=${RELEASE_FLAG:=release}
+set -euo pipefail
 
-# TODO: it would be very nice if we could make CI work the exact same way so the build logic isn't duplicated
+RELEASE_FLAG="${RELEASE_FLAG:=release}"
 
-# build a docker container in which to run the build - this is to make life easier for Windows & Mac users
-docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
-
-# run cargo & yarn builds inside the builder container
-docker run -v $(pwd):/home/builder/workspace --env RELEASE_FLAG=$RELEASE_FLAG ballista-builder
+cargo build \
+  --profile "$RELEASE_FLAG" \
+  --features rest-api \
+  -p ballista-scheduler \
+  -p ballista-executor \
+  -p ballista-benchmarks --bin tpch

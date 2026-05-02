@@ -49,9 +49,9 @@ jobs:
     name: TPC-H SF${{ github.event.inputs.scale_factor }}, ${{ github.event.inputs.partitions }} partitions
     # Use ASF-funded runs-on.com large runner inside apache/, fall back to
     # ubuntu-latest on forks (slow but exercises the full pipeline).
-    # Ballista binaries are built inside the dockerized builder (see
-    # dev/build-ballista-executables.sh) so the host only needs cargo to
-    # install tpchgen-cli for data generation - both runner images ship cargo.
+    # Ballista binaries and tpchgen-cli are both built on the host via cargo
+    # (see dev/build-ballista-executables.sh and benchmarks/tpch-gen.sh);
+    # both runner images ship a stable Rust toolchain.
     runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=32,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=ballista', github.run_id) || 'ubuntu-latest' }}
     timeout-minutes: 120
     steps:
