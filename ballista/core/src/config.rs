@@ -225,7 +225,7 @@ impl Default for BallistaConfig {
 
 impl BallistaConfig {
     /// Create a new configuration based on key-value pairs
-    fn with_settings(settings: HashMap<String, String>) -> Result<Self> {
+    pub fn with_settings(settings: HashMap<String, String>) -> Result<Self> {
         let supported_entries = BallistaConfig::valid_entries();
         for (name, entry) in supported_entries {
             if let Some(v) = settings.get(name) {
