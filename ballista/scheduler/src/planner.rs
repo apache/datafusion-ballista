@@ -106,8 +106,19 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
         info!("planning query stages for job {job_id}");
-        let (new_plan, mut stages) =
-            self.plan_query_stages_internal(job_id, execution_plan, config)?;
+        let broadcast_threshold = config
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.broadcast_join_threshold_bytes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().broadcast_join_threshold_bytes()
+            });
+        let (new_plan, mut stages) = self.plan_query_stages_internal(
+            job_id,
+            execution_plan,
+            config,
+            broadcast_threshold,
+        )?;
         stages.push(create_shuffle_writer_with_config(
             job_id,
             self.next_stage_id(),
@@ -128,17 +139,11 @@ impl DefaultDistributedPlanner {
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
+        broadcast_threshold_bytes: usize,
     ) -> Result<PartialQueryStageResult> {
         // Apply broadcast-join promotion before recursing.
-        let ballista_config = config
-            .extensions
-            .get::<BallistaConfig>()
-            .cloned()
-            .unwrap_or_default();
-        let execution_plan = Self::maybe_promote_to_broadcast(
-            execution_plan,
-            ballista_config.broadcast_join_threshold_bytes(),
-        )?;
+        let execution_plan =
+            Self::maybe_promote_to_broadcast(execution_plan, broadcast_threshold_bytes)?;
 
         // recurse down and replace children
         if execution_plan.children().is_empty() {
@@ -158,8 +163,12 @@ impl DefaultDistributedPlanner {
             {
                 build = coalesce.children()[0].clone();
             }
-            let (build, mut stages) =
-                self.plan_query_stages_internal(job_id, build, config)?;
+            let (build, mut stages) = self.plan_query_stages_internal(
+                job_id,
+                build,
+                config,
+                broadcast_threshold_bytes,
+            )?;
             let build_partitions =
                 build.properties().output_partitioning().partition_count();
 
@@ -182,6 +191,7 @@ impl DefaultDistributedPlanner {
                 job_id,
                 hash_join.right().clone(),
                 config,
+                broadcast_threshold_bytes,
             )?;
             stages.append(&mut probe_stages);
 
@@ -193,8 +203,12 @@ impl DefaultDistributedPlanner {
         let mut stages = vec![];
         let mut children = vec![];
         for child in execution_plan.children() {
-            let (new_child, mut child_stages) =
-                self.plan_query_stages_internal(job_id, child.clone(), config)?;
+            let (new_child, mut child_stages) = self.plan_query_stages_internal(
+                job_id,
+                child.clone(),
+                config,
+                broadcast_threshold_bytes,
+            )?;
             children.push(new_child);
             stages.append(&mut child_stages);
         }
@@ -355,7 +369,10 @@ impl DefaultDistributedPlanner {
             promoted_join.left().clone()
         };
         let new_right = promoted_join.right().clone();
-        Ok(promoted.with_new_children(vec![new_left, new_right])?)
+        Ok(with_new_children_if_necessary(
+            promoted,
+            vec![new_left, new_right],
+        )?)
     }
 }
 
@@ -658,25 +675,12 @@ mod test {
 
     #[tokio::test]
     async fn distributed_join_plan() -> Result<(), BallistaError> {
-        use ballista_core::config::{
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BallistaConfig,
-        };
-
         let ctx = datafusion_test_context("testdata").await?;
         let session_state = ctx.state();
 
-        // Disable broadcast promotion so this test exercises the existing
-        // partitioned-join path without interference from the new rule.
-        let options_arc = ctx.state().config().options().clone();
-        let mut options = (*options_arc).clone();
-        let mut settings = std::collections::HashMap::new();
-        settings.insert(
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
-            "0".to_string(),
-        );
-        options
-            .extensions
-            .insert(BallistaConfig::with_settings(settings).unwrap());
+        // CSV files have no byte stats, so broadcast promotion never fires
+        // even with the default threshold — no opt-out needed.
+        let options = ctx.state().config().options().clone();
 
         // simplified form of TPC-H query 12
         let df = ctx
@@ -851,61 +855,9 @@ order by
 
     #[tokio::test]
     async fn distributed_broadcast_join_plan() -> Result<(), BallistaError> {
-        use ballista_core::config::{
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BallistaConfig,
-        };
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::arrow::record_batch::RecordBatch;
         use datafusion::physical_plan::joins::PartitionMode;
-        use datafusion::prelude::SessionConfig;
 
-        let big_schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("v", DataType::Int32, false),
-        ]));
-        let small_schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("name", DataType::Int32, false),
-        ]));
-
-        let big_batch = RecordBatch::try_new(
-            big_schema.clone(),
-            vec![
-                Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>())),
-                Arc::new(Int32Array::from(
-                    (0..1000).map(|i| i * 2).collect::<Vec<i32>>(),
-                )),
-            ],
-        )
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-        let small_batch = RecordBatch::try_new(
-            small_schema.clone(),
-            vec![
-                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
-                Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])),
-            ],
-        )
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-
-        let session_config = SessionConfig::new().with_target_partitions(2).set_usize(
-            "datafusion.optimizer.hash_join_single_partition_threshold",
-            0,
-        );
-        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
-        ctx.register_batch("big", big_batch)?;
-        ctx.register_batch("small", small_batch)?;
-
-        let mut settings = std::collections::HashMap::new();
-        settings.insert(
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
-            (10 * 1024 * 1024).to_string(),
-        );
-        let options_arc = ctx.state().config().options().clone();
-        let mut options = (*options_arc).clone();
-        options
-            .extensions
-            .insert(BallistaConfig::with_settings(settings).unwrap());
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -951,61 +903,9 @@ order by
     #[tokio::test]
     async fn distributed_join_plan_no_broadcast_when_threshold_zero()
     -> Result<(), BallistaError> {
-        use ballista_core::config::{
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BallistaConfig,
-        };
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::arrow::record_batch::RecordBatch;
         use datafusion::physical_plan::joins::PartitionMode;
-        use datafusion::prelude::SessionConfig;
 
-        let big_schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("v", DataType::Int32, false),
-        ]));
-        let small_schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("name", DataType::Int32, false),
-        ]));
-
-        let big_batch = RecordBatch::try_new(
-            big_schema.clone(),
-            vec![
-                Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>())),
-                Arc::new(Int32Array::from(
-                    (0..1000).map(|i| i * 2).collect::<Vec<i32>>(),
-                )),
-            ],
-        )
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-        let small_batch = RecordBatch::try_new(
-            small_schema.clone(),
-            vec![
-                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
-                Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])),
-            ],
-        )
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-
-        let session_config = SessionConfig::new().with_target_partitions(2).set_usize(
-            "datafusion.optimizer.hash_join_single_partition_threshold",
-            0,
-        );
-        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
-        ctx.register_batch("big", big_batch)?;
-        ctx.register_batch("small", small_batch)?;
-
-        let mut settings = std::collections::HashMap::new();
-        settings.insert(
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
-            "0".to_string(),
-        );
-        let options_arc = ctx.state().config().options().clone();
-        let mut options = (*options_arc).clone();
-        options
-            .extensions
-            .insert(BallistaConfig::with_settings(settings).unwrap());
+        let (ctx, options) = make_broadcast_test_ctx(0, 1)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1047,72 +947,11 @@ order by
     #[tokio::test]
     async fn distributed_broadcast_join_plan_multi_partition_build()
     -> Result<(), BallistaError> {
-        use ballista_core::config::{
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BallistaConfig,
-        };
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::arrow::record_batch::RecordBatch;
-        use datafusion::datasource::MemTable;
-        use datafusion::prelude::SessionConfig;
-
-        let big_schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("v", DataType::Int32, false),
-        ]));
-        let small_schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("name", DataType::Int32, false),
-        ]));
-
-        let big_batch = RecordBatch::try_new(
-            big_schema.clone(),
-            vec![
-                Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>())),
-                Arc::new(Int32Array::from(
-                    (0..1000).map(|i| i * 2).collect::<Vec<i32>>(),
-                )),
-            ],
-        )
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-
         // Build a MemTable with THREE partitions on the small side, so the
         // broadcast build stage has 3 input partitions and writes 3 shuffle
         // files. The broadcast UnresolvedShuffleExec must report
         // upstream_partition_count = 3.
-        let mk_small = || -> std::result::Result<RecordBatch, BallistaError> {
-            RecordBatch::try_new(
-                small_schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2])),
-                    Arc::new(Int32Array::from(vec![10, 20])),
-                ],
-            )
-            .map_err(|e| BallistaError::General(e.to_string()))
-        };
-        let small_partitions: Vec<Vec<RecordBatch>> =
-            vec![vec![mk_small()?], vec![mk_small()?], vec![mk_small()?]];
-        let small_table = MemTable::try_new(small_schema, small_partitions)
-            .map_err(|e| BallistaError::General(e.to_string()))?;
-
-        let session_config = SessionConfig::new().with_target_partitions(2).set_usize(
-            "datafusion.optimizer.hash_join_single_partition_threshold",
-            0,
-        );
-        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
-        ctx.register_batch("big", big_batch)?;
-        ctx.register_table("small", Arc::new(small_table))?;
-
-        let mut settings = std::collections::HashMap::new();
-        settings.insert(
-            BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
-            (10 * 1024 * 1024).to_string(),
-        );
-        let options_arc = ctx.state().config().options().clone();
-        let mut options = (*options_arc).clone();
-        options
-            .extensions
-            .insert(BallistaConfig::with_settings(settings).unwrap());
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1401,6 +1240,82 @@ order by
         );
 
         Ok(())
+    }
+
+    fn make_broadcast_test_ctx(
+        threshold_bytes: usize,
+        small_partitions: usize,
+    ) -> Result<
+        (
+            datafusion::prelude::SessionContext,
+            datafusion::config::ConfigOptions,
+        ),
+        BallistaError,
+    > {
+        use ballista_core::extension::SessionConfigExt;
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::datasource::MemTable;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("name", DataType::Int32, false),
+        ]));
+
+        let big_batch = RecordBatch::try_new(
+            big_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from(
+                    (0..1000).map(|i| i * 2).collect::<Vec<i32>>(),
+                )),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        let mk_small = || -> Result<RecordBatch, BallistaError> {
+            RecordBatch::try_new(
+                small_schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2])),
+                    Arc::new(Int32Array::from(vec![10, 20])),
+                ],
+            )
+            .map_err(|e| BallistaError::General(e.to_string()))
+        };
+
+        let session_config = SessionConfig::new()
+            .with_target_partitions(2)
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                0,
+            )
+            .with_ballista_broadcast_join_threshold_bytes(threshold_bytes);
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+
+        if small_partitions <= 1 {
+            let small_batch = mk_small()?;
+            ctx.register_batch("small", small_batch)?;
+        } else {
+            let mut partitions: Vec<Vec<RecordBatch>> =
+                Vec::with_capacity(small_partitions);
+            for _ in 0..small_partitions {
+                partitions.push(vec![mk_small()?]);
+            }
+            let small_table = MemTable::try_new(small_schema, partitions)
+                .map_err(|e| BallistaError::General(e.to_string()))?;
+            ctx.register_table("small", Arc::new(small_table))?;
+        }
+
+        let options = ctx.state().config().options().clone();
+        Ok((ctx, (*options).clone()))
     }
 
     fn roundtrip_operator(
