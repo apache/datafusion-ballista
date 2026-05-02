@@ -22,7 +22,7 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_context_sort_shuffle, mock_memory_table,
     mock_partitions_with_statistics,
 };
-use ballista_core::execution_plans::{ShuffleWriterExec, SortShuffleWriterExec};
+use ballista_core::execution_plans::SortShuffleWriterExec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ColumnStatistics;
 use datafusion::physical_plan::Statistics;
@@ -130,7 +130,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: Hash([c@0], 2)
+    SortShuffleWriterExec: partitioning=Hash([c@0], 2)
       AggregateExec: mode=Partial, gby=[c@2 as c], aggr=[min(t.a), max(t.b)]
         DataSourceExec: partitions=1, partition_sizes=[1]
     ");
@@ -460,7 +460,7 @@ async fn should_use_sort_shuffle_when_enabled() -> datafusion::error::Result<()>
 }
 
 #[tokio::test]
-async fn should_use_hash_shuffle_by_default() -> datafusion::error::Result<()> {
+async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
     let ctx = mock_context();
     ctx.register_batch("t", mock_batch()?)?;
 
@@ -477,8 +477,10 @@ async fn should_use_hash_shuffle_by_default() -> datafusion::error::Result<()> {
 
     let plan = stages.first().unwrap().plan.as_ref();
     assert!(
-        plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some(),
-        "expected ShuffleWriterExec by default, got plan: {plan:?}"
+        plan.as_any()
+            .downcast_ref::<SortShuffleWriterExec>()
+            .is_some(),
+        "expected SortShuffleWriterExec by default, got plan: {plan:?}"
     );
 
     Ok(())
