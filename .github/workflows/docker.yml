@@ -31,6 +31,10 @@ jobs:
         uses: actions/checkout@v6.0.2
       - name: Installs Rust and Cargo
         run: curl -y --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
       - name: Run script
         run: |
 
