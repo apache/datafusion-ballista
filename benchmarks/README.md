@@ -167,18 +167,43 @@ cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 
 
 ## Running the Ballista Benchmarks on docker-compose
 
-To start a Rust scheduler and executor using Docker Compose:
+The `docker-compose.yml` at the repo root brings up one scheduler and two
+executors (8 vCPU / 8 GB memory pool each) plus a benchmark client. End to
+end, including data generation, image builds, and running all 22 TPC-H
+queries:
 
 ```bash
-cargo build --release
-docker-compose up --build
+./dev/integration-tests.sh
 ```
 
-Then you can run the benchmark with:
+Defaults to SF=10, 16 partitioned Parquet files per table, 3 iterations per
+query. Override with env vars:
 
 ```bash
-docker-compose run ballista-client bash -c '/root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query 1 --path /data --format tbl'
+SCALE_FACTOR=1 PARTITIONS=8 ITERATIONS=1 ./dev/integration-tests.sh
 ```
+
+The script generates Parquet via [`tpchgen-cli`](https://crates.io/crates/tpchgen-cli)
+(installed via `cargo install` if missing), builds the host binaries
+(`dev/build-ballista-executables.sh`), builds the docker images
+(`dev/build-ballista-docker.sh`), waits for healthy services, runs the queries,
+and tears down the stack on exit (success or failure).
+
+To run pieces by hand:
+
+```bash
+SCALE_FACTOR=1 ./benchmarks/tpch-gen.sh   # generate Parquet under benchmarks/data
+./dev/build-ballista-executables.sh        # cargo build the binaries on the host
+./dev/build-ballista-docker.sh             # build docker images that COPY the binaries
+docker compose up -d --wait                # bring up scheduler + 2 executors + client
+docker compose run --rm ballista-client /root/run.sh
+docker compose down --remove-orphans
+```
+
+> **Note:** `dev/build-ballista-executables.sh` builds the binaries on the host,
+> so the host needs a Rust toolchain that targets Linux (matching the runtime
+> images). Linux hosts work directly; macOS/Windows users need to either build
+> on a Linux host or arrange cross-compilation.
 
 ## Expected output
 
