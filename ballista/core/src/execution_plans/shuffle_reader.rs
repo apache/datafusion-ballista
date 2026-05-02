@@ -298,8 +298,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             );
             trace!(
                 "broadcast shuffle reader at stage {} returned aggregated statistics: {:?}",
-                self.stage_id,
-                stats
+                self.stage_id, stats
             );
             return Ok(stats);
         }
