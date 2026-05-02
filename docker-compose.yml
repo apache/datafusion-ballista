@@ -39,7 +39,7 @@ services:
     build:
       dockerfile: dev/docker/ballista-executor.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --concurrent-tasks 8 --memory-pool-size 8GB --work-dir /work"
+    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --concurrent-tasks 4 --memory-pool-size 8GB --work-dir /work"
     deploy:
       replicas: 2
       resources:
@@ -50,8 +50,6 @@ services:
       - RUST_LOG=ballista=info
     volumes:
       - ./benchmarks/data:/data:ro
-    tmpfs:
-      - /work
     depends_on:
       ballista-scheduler:
         condition: service_healthy
