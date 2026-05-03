@@ -324,7 +324,10 @@ impl DefaultDistributedPlanner {
 
         fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
             let Ok(stats) = plan.partition_statistics(None) else {
-                info!("broadcast check: partition_statistics returned error for {}", plan.name());
+                info!(
+                    "broadcast check: partition_statistics returned error for {}",
+                    plan.name()
+                );
                 return false;
             };
             info!(
@@ -338,20 +341,24 @@ impl DefaultDistributedPlanner {
                 *bytes != 0 && *bytes < threshold
             } else if let Some(rows) = stats.num_rows.get_value() {
                 let schema = plan.schema();
-                let bytes_per_row: usize = schema.fields().iter().map(|f| {
-                    match f.data_type() {
-                        DataType::Boolean => 1,
-                        DataType::Int8 | DataType::UInt8 => 1,
-                        DataType::Int16 | DataType::UInt16 => 2,
-                        DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
-                        DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
-                        DataType::Date32 => 4,
-                        DataType::Date64 => 8,
-                        DataType::Decimal128(_, _) => 16,
-                        DataType::Decimal256(_, _) => 32,
-                        _ => 32, // conservative estimate for variable-length types
-                    }
-                }).sum();
+                let bytes_per_row: usize = schema
+                    .fields()
+                    .iter()
+                    .map(|f| {
+                        match f.data_type() {
+                            DataType::Boolean => 1,
+                            DataType::Int8 | DataType::UInt8 => 1,
+                            DataType::Int16 | DataType::UInt16 => 2,
+                            DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
+                            DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
+                            DataType::Date32 => 4,
+                            DataType::Date64 => 8,
+                            DataType::Decimal128(_, _) => 16,
+                            DataType::Decimal256(_, _) => 32,
+                            _ => 32, // conservative estimate for variable-length types
+                        }
+                    })
+                    .sum();
                 let estimated_bytes = *rows * bytes_per_row.max(8);
                 info!(
                     "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
@@ -383,7 +390,10 @@ impl DefaultDistributedPlanner {
 
         let promoted: Arc<dyn ExecutionPlan> = if swap {
             if !hash_join.join_type().supports_swap() {
-                info!("broadcast check: join type {:?} does not support swap, skipping", hash_join.join_type());
+                info!(
+                    "broadcast check: join type {:?} does not support swap, skipping",
+                    hash_join.join_type()
+                );
                 return Ok(plan);
             }
             hash_join.swap_inputs(PartitionMode::CollectLeft)?
