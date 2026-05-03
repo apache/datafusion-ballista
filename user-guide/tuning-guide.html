@@ -303,6 +303,11 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#join-algorithm-selection">
+   Join Algorithm Selection
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#shuffle-implementation">
    Shuffle Implementation
   </a>
@@ -459,6 +464,42 @@ capacity when the executor is under-utilized.</p>
 <code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">&lt;</span> <span class="pre">concurrent_tasks</span></code>).</p>
 <p>When <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> is not set, the executor behaves as before with no
 memory pool installed.</p>
+</section>
+<section id="join-algorithm-selection">
+<h2>Join Algorithm Selection<a class="headerlink" href="#join-algorithm-selection" title="Link to this heading">¶</a></h2>
+<p>For equi-joins, DataFusion (and therefore Ballista) defaults to
+<code class="docutils literal notranslate"><span class="pre">HashJoinExec</span></code>. Hash join is fast but builds an in-memory hash table on one
+side of the join, which can blow past the executor’s memory budget on
+queries that join several large tables (TPC-H q9 is the canonical example:
+a 6-way join across <code class="docutils literal notranslate"><span class="pre">part</span></code>, <code class="docutils literal notranslate"><span class="pre">supplier</span></code>, <code class="docutils literal notranslate"><span class="pre">lineitem</span></code>, <code class="docutils literal notranslate"><span class="pre">partsupp</span></code>, <code class="docutils literal notranslate"><span class="pre">orders</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">nation</span></code>).</p>
+<p>When an executor is OOM-killed mid-query, the symptoms are:</p>
+<ul class="simple">
+<li><p>one (or more) executor process exits with <code class="docutils literal notranslate"><span class="pre">Killed</span></code> in its log</p></li>
+<li><p>the kernel’s cgroup OOM killer fires (visible in <code class="docutils literal notranslate"><span class="pre">dmesg</span></code> /
+<code class="docutils literal notranslate"><span class="pre">journalctl</span> <span class="pre">-k</span></code>)</p></li>
+<li><p>the in-flight job appears to hang on the client, because the scheduler
+had assigned tasks to the now-dead executor</p></li>
+</ul>
+<p>Two ways to relieve memory pressure on join-heavy queries:</p>
+<p><strong>Increase the executor memory budget.</strong> Raise the executor container’s
+memory limit and/or <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code>, keeping the pool comfortably
+below the container limit so that parquet decode buffers, shuffle reader
+buffers, and runtime overhead all fit alongside it.</p>
+<p><strong>Switch to sort-merge join.</strong> Set
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span> <span class="pre">=</span> <span class="pre">false</span></code> to make the planner pick
+<code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> for equi-joins where both inputs can be sorted on the
+join keys. Sort-merge avoids the build-side hash table at the cost of
+sorting both inputs, so peak memory is typically lower but wall-clock time
+is higher. As a rough data point, on the bundled TPC-H bench at SF10 with
+a 12 GB executor cap, q9 OOMs with hash join but completes in about 5.4 s
+with sort-merge.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">&quot;datafusion.optimizer.prefer_hash_join&quot;</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>The same key can be passed to the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> benchmark binary via
+<code class="docutils literal notranslate"><span class="pre">-c</span> <span class="pre">datafusion.optimizer.prefer_hash_join=false</span></code>.</p>
 </section>
 <section id="shuffle-implementation">
 <h2>Shuffle Implementation<a class="headerlink" href="#shuffle-implementation" title="Link to this heading">¶</a></h2>
