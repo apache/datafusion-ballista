@@ -68,6 +68,15 @@ pub struct ShuffleReaderExec {
     pub(crate) schema: SchemaRef,
     /// Each partition of a shuffle can read data from multiple locations
     pub partition: Vec<Vec<PartitionLocation>>,
+    /// When true, every call to `execute(partition)` reads `partition[0]`
+    /// (which holds the flattened concatenation of all upstream partition
+    /// locations) regardless of the partition index. Used for the
+    /// distributed broadcast hash-join lowering.
+    pub broadcast: bool,
+    /// Number of shuffle output partitions on the upstream stage. Useful for
+    /// metrics and EXPLAIN output. For non-broadcast readers this equals
+    /// `partition.len()`.
+    pub upstream_partition_count: usize,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -75,13 +84,15 @@ pub struct ShuffleReaderExec {
 }
 
 impl ShuffleReaderExec {
-    /// Create a new ShuffleReaderExec
+    /// Create a new ShuffleReaderExec for a standard one-to-one
+    /// per-partition read.
     pub fn try_new(
         stage_id: usize,
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
         partitioning: Partitioning,
     ) -> Result<Self> {
+        let upstream_partition_count = partition.len();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
@@ -92,9 +103,39 @@ impl ShuffleReaderExec {
             stage_id,
             schema,
             partition,
+            broadcast: false,
+            upstream_partition_count,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: None, // to be updated at the executor side
+            work_dir: None,
+        })
+    }
+
+    /// Create a broadcast ShuffleReaderExec. `all_locations` is the
+    /// flattened concatenation of every upstream partition's locations.
+    /// The reader has one logical output partition that fans in all of
+    /// them.
+    pub fn try_new_broadcast(
+        stage_id: usize,
+        all_locations: Vec<PartitionLocation>,
+        schema: SchemaRef,
+        upstream_partition_count: usize,
+    ) -> Result<Self> {
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            stage_id,
+            schema,
+            partition: vec![all_locations],
+            broadcast: true,
+            upstream_partition_count,
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+            work_dir: None,
         })
     }
 
@@ -104,6 +145,8 @@ impl ShuffleReaderExec {
             stage_id: self.stage_id,
             schema: self.schema.clone(),
             partition: self.partition.clone(),
+            broadcast: self.broadcast,
+            upstream_partition_count: self.upstream_partition_count,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -119,11 +162,19 @@ impl DisplayAs for ShuffleReaderExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
-                    f,
-                    "ShuffleReaderExec: partitioning: {}",
-                    self.properties.partitioning,
-                )
+                if self.broadcast {
+                    write!(
+                        f,
+                        "ShuffleReaderExec: broadcast=true, upstream_partitions: {}",
+                        self.upstream_partition_count,
+                    )
+                } else {
+                    write!(
+                        f,
+                        "ShuffleReaderExec: partitioning: {}",
+                        self.properties.partitioning,
+                    )
+                }
             }
             DisplayFormatType::TreeRender => {
                 write!(f, "partitioning={}", self.properties.partitioning)
@@ -172,6 +223,10 @@ impl ExecutionPlan for ShuffleReaderExec {
     ) -> Result<SendableRecordBatchStream> {
         let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
         debug!("ShuffleReaderExec::execute({task_id})");
+        // Broadcast readers have a single logical output partition; always
+        // serve from partition[0] regardless of which physical partition the
+        // caller asked for.
+        let partition = if self.broadcast { 0 } else { partition };
 
         let config = context.session_config();
         let batch_size = config.batch_size();
@@ -234,6 +289,26 @@ impl ExecutionPlan for ShuffleReaderExec {
     }
 
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if self.broadcast {
+            if let Some(idx) = partition
+                && idx != 0
+            {
+                return datafusion::common::internal_err!(
+                    "Broadcast ShuffleReaderExec: invalid partition index {idx}, only partition 0 exists"
+                );
+            }
+            let all_locations: &[PartitionLocation] =
+                self.partition.first().map(|v| v.as_slice()).unwrap_or(&[]);
+            let stats = stats_for_partitions(
+                self.schema.fields().len(),
+                all_locations.iter().map(|loc| loc.partition_stats),
+            );
+            trace!(
+                "broadcast shuffle reader at stage {} returned aggregated statistics: {:?}",
+                self.stage_id, stats
+            );
+            return Ok(stats);
+        }
         if let Some(idx) = partition {
             let partition_count = self.properties().partitioning.partition_count();
             if idx >= partition_count {
@@ -1388,5 +1463,55 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_reader_aggregates_stats_across_upstream_partitions() {
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+
+        let locs: Vec<PartitionLocation> = (0..3)
+            .map(|partition_id| PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: "j".to_string(),
+                    stage_id: 7,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: format!("exec-{partition_id}"),
+                    host: "localhost".to_string(),
+                    port: 50051,
+                    grpc_port: 50052,
+                    specification: ExecutorSpecification::default(),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                partition_stats: PartitionStats::new(Some(100), Some(1), Some(1024)),
+                file_id: None,
+                is_sort_shuffle: false,
+            })
+            .collect();
+
+        let reader = ShuffleReaderExec::try_new_broadcast(7, locs, schema, 3).unwrap();
+
+        assert!(reader.broadcast);
+        assert_eq!(reader.upstream_partition_count, 3);
+        assert_eq!(reader.properties().partitioning.partition_count(), 1);
+        assert_eq!(reader.partition[0].len(), 3);
+
+        let stats = reader.partition_statistics(Some(0)).unwrap();
+        assert_eq!(stats.num_rows.get_value().copied(), Some(300));
+        assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
+    }
+
+    #[test]
+    fn broadcast_reader_rejects_out_of_range_partition_index() {
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+        let reader = ShuffleReaderExec::try_new_broadcast(7, vec![], schema, 3).unwrap();
+        let err = reader.partition_statistics(Some(1)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid partition index 1"),
+            "unexpected error message: {msg}"
+        );
     }
 }

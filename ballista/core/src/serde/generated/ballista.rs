@@ -91,6 +91,10 @@ pub struct UnresolvedShuffleExecNode {
     pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
     #[prost(message, optional, tag = "5")]
     pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
+    #[prost(bool, tag = "6")]
+    pub broadcast: bool,
+    #[prost(uint32, tag = "7")]
+    pub upstream_partition_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
@@ -103,6 +107,10 @@ pub struct ShuffleReaderExecNode {
     pub stage_id: u32,
     #[prost(message, optional, tag = "4")]
     pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
+    #[prost(bool, tag = "5")]
+    pub broadcast: bool,
+    #[prost(uint32, tag = "6")]
+    pub upstream_partition_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderPartition {

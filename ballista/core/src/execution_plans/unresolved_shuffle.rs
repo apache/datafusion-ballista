@@ -41,12 +41,24 @@ pub struct UnresolvedShuffleExec {
     /// The partition count this node will have once it is replaced with a ShuffleReaderExec.
     pub output_partition_count: usize,
 
+    /// The number of shuffle output partitions on the upstream stage. For
+    /// non-broadcast readers this equals `output_partition_count`. For
+    /// broadcast readers this is M (one logical output partition fans in
+    /// all M upstream partition files).
+    pub upstream_partition_count: usize,
+
+    /// When true, the resolved `ShuffleReaderExec` reads *all* upstream
+    /// partition files into its single output partition (broadcast pattern).
+    pub broadcast: bool,
+
     properties: Arc<PlanProperties>,
 }
 
 impl UnresolvedShuffleExec {
-    /// Create a new UnresolvedShuffleExec
+    /// Create a new UnresolvedShuffleExec for a standard one-to-one
+    /// per-partition read.
     pub fn new(stage_id: usize, schema: SchemaRef, partitioning: Partitioning) -> Self {
+        let partition_count = partitioning.partition_count();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
@@ -56,7 +68,33 @@ impl UnresolvedShuffleExec {
         Self {
             stage_id,
             schema,
-            output_partition_count: properties.partitioning.partition_count(),
+            output_partition_count: partition_count,
+            upstream_partition_count: partition_count,
+            broadcast: false,
+            properties,
+        }
+    }
+
+    /// Create a broadcast UnresolvedShuffleExec. The resolved reader has
+    /// one logical output partition that fans in all `upstream_partition_count`
+    /// shuffle files from the upstream stage.
+    pub fn new_broadcast(
+        stage_id: usize,
+        schema: SchemaRef,
+        upstream_partition_count: usize,
+    ) -> Self {
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Self {
+            stage_id,
+            schema,
+            output_partition_count: 1,
+            upstream_partition_count,
+            broadcast: true,
             properties,
         }
     }
@@ -70,11 +108,19 @@ impl DisplayAs for UnresolvedShuffleExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
-                    f,
-                    "UnresolvedShuffleExec: partitioning: {}",
-                    self.properties().output_partitioning()
-                )
+                if self.broadcast {
+                    write!(
+                        f,
+                        "UnresolvedShuffleExec: broadcast=true, upstream_partitions: {}",
+                        self.upstream_partition_count,
+                    )
+                } else {
+                    write!(
+                        f,
+                        "UnresolvedShuffleExec: partitioning: {}",
+                        self.properties().output_partitioning()
+                    )
+                }
             }
             DisplayFormatType::TreeRender => {
                 write!(
