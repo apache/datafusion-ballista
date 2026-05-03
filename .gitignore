@@ -114,3 +114,5 @@ CLAUDE.md
 
 # git worktrees (local only)
 .worktrees/
+# ignore insta captures
+*-snap
