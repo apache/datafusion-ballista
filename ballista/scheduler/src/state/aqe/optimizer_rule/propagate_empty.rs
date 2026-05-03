@@ -17,6 +17,7 @@
 
 use crate::state::aqe::execution_plan::ExchangeExec;
 use datafusion::common::JoinType::Inner;
+use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -90,6 +91,14 @@ impl PropagateEmptyExecRule {
             && (is_empty_exec!(hash_join.left) || is_empty_exec!(hash_join.right))
         {
             empty_exec!(hash_join)
+        } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+            let stats = exchange.partition_statistics(None)?;
+            match stats.num_rows {
+                Precision::Exact(0) => Ok(Transformed::yes(Arc::new(EmptyExec::new(
+                    plan.schema().clone(),
+                )))),
+                _ => Ok(Transformed::no(plan)),
+            }
         }
         // TODO: implement others
         else {
