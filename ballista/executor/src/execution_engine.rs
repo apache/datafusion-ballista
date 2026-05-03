@@ -115,8 +115,6 @@ impl ExecutionEngine for DefaultExecutionEngine {
         let plan = plan
             .transform(|p| {
                 if let Some(reader) = p.as_any().downcast_ref::<ShuffleReaderExec>() {
-                    // if client_pool is not None we need to get clone of it and
-                    // invoke reader.with_client_pool_and_work_dir
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
                             reader
