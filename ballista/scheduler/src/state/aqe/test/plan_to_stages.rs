@@ -174,23 +174,24 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
     let planner =
         AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
 
+    // plan has only two exchanges after initial planning
+    // other stages will be added as stages get resolved
     assert_plan!(planner.current_plan(), @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=4, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending
       ProjectionExec: expr=[sum(t0.c0)@1 as sum(t0.c0)]
         AggregateExec: mode=FinalPartitioned, gby=[c0@0 as c0], aggr=[sum(t0.c0)]
-          ExchangeExec: partitioning=Hash([c0@0], 2), plan_id=3, stage_id=pending, stage_resolved=false
+          RepartitionExec: partitioning=Hash([c0@0], 2), input_partitions=2
             AggregateExec: mode=Partial, gby=[c0@0 as c0], aggr=[sum(t0.c0)]
               HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p2@0, c2@1)], projection=[c0@1]
                 CoalescePartitionsExec
-                  ExchangeExec: partitioning=None, plan_id=1, stage_id=pending, stage_resolved=false
-                    ProjectionExec: expr=[c@0 as p2]
-                      AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[]
-                        ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
-                          AggregateExec: mode=Partial, gby=[c@0 as c], aggr=[]
-                            DataSourceExec: partitions=1, partition_sizes=[1]
+                  ProjectionExec: expr=[c@0 as p2]
+                    AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[]
+                      ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
+                        AggregateExec: mode=Partial, gby=[c@0 as c], aggr=[]
+                          DataSourceExec: partitions=1, partition_sizes=[1]
                 ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
                   AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
-                    ExchangeExec: partitioning=Hash([c@0], 2), plan_id=2, stage_id=pending, stage_resolved=false
+                    ExchangeExec: partitioning=Hash([c@0], 2), plan_id=1, stage_id=pending, stage_resolved=false
                       AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
                         DataSourceExec: partitions=1, partition_sizes=[1]
     ");

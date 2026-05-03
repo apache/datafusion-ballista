@@ -17,10 +17,8 @@
 
 pub mod datafusion_patch;
 pub mod distributed_exchange;
-pub mod eliminate_empty;
 pub mod propagate_empty;
 
 pub use datafusion_patch::*;
 pub use distributed_exchange::*;
-pub use eliminate_empty::*;
 pub use propagate_empty::*;

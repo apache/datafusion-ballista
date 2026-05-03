@@ -17,8 +17,7 @@
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
-    DistributedExchangeRule, EliminateEmptyExchangeRule, PropagateEmptyExecRule,
-    WarnOnDuplicateExecRule,
+    DistributedExchangeRule, PropagateEmptyExecRule, WarnOnDuplicateExecRule,
 };
 
 use crate::state::execution_stage::StageOutput;
@@ -32,7 +31,7 @@ use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::prelude::SessionConfig;
-use log::{debug, warn};
+use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -63,6 +62,8 @@ pub struct AdaptivePlanner {
     runnable_stage_cache: HashMap<usize, Arc<dyn ExecutionPlan>>,
     /// Optimizer max passes before it gives up
     // to be configured from a configuration
+    #[allow(dead_code)]
+    // TODO: remove this once we're sure we do not need multi pass optimization
     max_passes: usize,
     /// job name
     job_name: String,
@@ -249,24 +250,11 @@ impl AdaptivePlanner {
             displayable(plan.as_ref()).indent(false)
         );
 
-        for pass in 0..self.max_passes {
-            plan = self.physical_planner.optimize_physical_plan(
-                plan.clone(),
-                &self.session_state,
-                |_, _| {},
-            )?;
-
-            if DistributedExchangeRule::default().plan_invalid(plan.clone())? {
-                if pass >= self.max_passes - 1 {
-                    warn!("plan needs another distributed optimizer pass");
-                    exec_err!("plan needs another distributed optimizer pass")?
-                }
-                debug!("plan does not look correct correct");
-            } else {
-                debug!("plan looks correct correct");
-                break;
-            }
-        }
+        plan = self.physical_planner.optimize_physical_plan(
+            plan.clone(),
+            &self.session_state,
+            |_, _| {},
+        )?;
 
         debug!(
             "Distributed physical plan (after optimization):\n{}\n",
@@ -441,20 +429,15 @@ impl AdaptivePlanner {
     /// # Returns
     /// A vector of default physical optimizer rules.
     fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
-        let mut physical_optimizers: Vec<PhysicalOptimizerRuleRef> = vec![
-            // TODO: do we keep it here or make it last
-            Arc::new(DistributedExchangeRule::default()),
-            Arc::new(EliminateEmptyExchangeRule::default()),
-        ];
-
-        let default_optimizers = PhysicalOptimizer::new();
-        physical_optimizers.extend(default_optimizers.rules.iter().cloned());
+        let mut physical_optimizers = PhysicalOptimizer::new().rules;
+        //physical_optimizers.push(Arc::new(EliminateEmptyExchangeRule::default()));
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
-        // we should remove it at the later stage
-        // this is just temporary to detect possible duplicate
-        // execs
+        // `DistributedExchangeRule` should be the last plan mutator rule in the chain
+        physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
+        // we should remove it at the later stage this is just temporary
+        // to detect possible duplicate execs.
+        // rule does not mutate plan hance it can go after `DistributedExchangeRule`
         physical_optimizers.push(Arc::new(WarnOnDuplicateExecRule::default()));
-        // physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
 
         physical_optimizers
     }
