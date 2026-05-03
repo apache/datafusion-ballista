@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::planner::create_shuffle_writer_with_config;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptiveStageInfo;
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
+use ballista_core::execution_plans::ShuffleReaderExec;
 use datafusion::common::exec_err;
+use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
@@ -34,7 +36,7 @@ pub(crate) struct BallistaAdapter {
 ///
 /// Used to transform plan nodes used in adaptive planning
 /// to ballista specific nodes such as
-/// [ShuffleWriterExec] or [ShuffleReaderExec]
+/// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
 ///
 impl BallistaAdapter {
     fn transform_children(
@@ -66,10 +68,11 @@ impl BallistaAdapter {
 
     /// Converts Adaptive plan to plan which ballista expects
     /// This is to be used to convert [ExchangeExec] to
-    /// [ShuffleWriterExec] and [ShuffleReaderExec]
+    /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
     pub fn adapt_to_ballista(
         plan: Arc<dyn ExecutionPlan>,
         job_id: &str,
+        config: &ConfigOptions,
     ) -> datafusion::error::Result<AdaptiveStageInfo> {
         if let Some(root) = plan.as_any().downcast_ref::<ExchangeExec>() {
             let mut adapter = BallistaAdapter::default();
@@ -84,16 +87,18 @@ impl BallistaAdapter {
                 )
             })?;
             let partitioning = root.partitioning.clone();
-            let work_dir = "".to_string();
+
+            let writer = create_shuffle_writer_with_config(
+                job_id,
+                stage_id,
+                plan,
+                partitioning,
+                config,
+            )
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
             Ok(AdaptiveStageInfo {
-                plan: Arc::new(ShuffleWriterExec::try_new(
-                    job_id.to_string(),
-                    stage_id,
-                    plan,
-                    work_dir,
-                    partitioning,
-                )?),
+                plan: writer,
                 inputs: adapter.inputs,
             })
         } else if let Some(root) = plan.as_any().downcast_ref::<AdaptiveDatafusionExec>()
@@ -110,16 +115,12 @@ impl BallistaAdapter {
                 )
             })?;
 
-            let work_dir = "".to_string();
+            let writer =
+                create_shuffle_writer_with_config(job_id, stage_id, plan, None, config)
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
             Ok(AdaptiveStageInfo {
-                plan: Arc::new(ShuffleWriterExec::try_new(
-                    job_id.to_string(),
-                    stage_id,
-                    plan,
-                    work_dir,
-                    None,
-                )?),
+                plan: writer,
                 inputs: adapter.inputs,
             })
         } else {

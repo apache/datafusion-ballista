@@ -167,18 +167,43 @@ cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 
 
 ## Running the Ballista Benchmarks on docker-compose
 
-To start a Rust scheduler and executor using Docker Compose:
+The `docker-compose.yml` at the repo root brings up one scheduler and two
+executors (8 vCPU / 8 GB memory pool each) plus a benchmark client. End to
+end, including data generation, image builds, and running all 22 TPC-H
+queries:
 
 ```bash
-cargo build --release
-docker-compose up --build
+./dev/integration-tests.sh
 ```
 
-Then you can run the benchmark with:
+Defaults to SF=10, 16 partitioned Parquet files per table, 3 iterations per
+query. Override with env vars:
 
 ```bash
-docker-compose run ballista-client bash -c '/root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query 1 --path /data --format tbl'
+SCALE_FACTOR=1 PARTITIONS=8 ITERATIONS=1 ./dev/integration-tests.sh
 ```
+
+The script generates Parquet via [`tpchgen-cli`](https://crates.io/crates/tpchgen-cli)
+(installed via `cargo install` if missing), builds the host binaries
+(`dev/build-ballista-executables.sh`), builds the docker images
+(`dev/build-ballista-docker.sh`), waits for healthy services, runs the queries,
+and tears down the stack on exit (success or failure).
+
+To run pieces by hand:
+
+```bash
+SCALE_FACTOR=1 ./benchmarks/tpch-gen.sh   # generate Parquet under benchmarks/data
+./dev/build-ballista-executables.sh        # cargo build the binaries on the host
+./dev/build-ballista-docker.sh             # build docker images that COPY the binaries
+docker compose up -d --wait                # bring up scheduler + 2 executors + client
+docker compose run --rm ballista-client /root/run.sh
+docker compose down --remove-orphans
+```
+
+> **Note:** `dev/build-ballista-executables.sh` builds the binaries on the host,
+> so the host needs a Rust toolchain that targets Linux (matching the runtime
+> images). Linux hosts work directly; macOS/Windows users need to either build
+> on a Linux host or arrange cross-compilation.
 
 ## Expected output
 
@@ -258,24 +283,6 @@ $SPARK_HOME/bin/spark-submit \
     --query 1
 ```
 
-## NYC Taxi Benchmark
-
-These benchmarks are based on the [New York Taxi and Limousine Commission][2] data set.
-
-```bash
-cargo run --release --bin nyctaxi -- --iterations 3 --path /mnt/nyctaxi/csv --format csv --batch-size 4096
-```
-
-Example output:
-
-```bash
-Running benchmarks with the following options: Opt { debug: false, iterations: 3, batch_size: 4096, path: "/mnt/nyctaxi/csv", file_format: "csv" }
-Executing 'fare_amt_by_passenger'
-Query 'fare_amt_by_passenger' iteration 0 took 7138 ms
-Query 'fare_amt_by_passenger' iteration 1 took 7599 ms
-Query 'fare_amt_by_passenger' iteration 2 took 7969 ms
-```
-
 ## Running the Ballista Loadtest
 
 ```bash
@@ -292,4 +299,3 @@ Query 'fare_amt_by_passenger' iteration 2 took 7969 ms
 ```
 
 [1]: http://www.tpc.org/tpch/
-[2]: https://www1.nyc.gov/site/tlc/about/tlc-trip-record-data.page
