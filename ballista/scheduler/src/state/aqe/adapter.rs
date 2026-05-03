@@ -36,7 +36,7 @@ pub(crate) struct BallistaAdapter {
 ///
 /// Used to transform plan nodes used in adaptive planning
 /// to ballista specific nodes such as
-/// [ShuffleWriterExec] or [ShuffleReaderExec]
+/// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
 ///
 impl BallistaAdapter {
     fn transform_children(
@@ -68,7 +68,7 @@ impl BallistaAdapter {
 
     /// Converts Adaptive plan to plan which ballista expects
     /// This is to be used to convert [ExchangeExec] to
-    /// [ShuffleWriterExec] and [ShuffleReaderExec]
+    /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
     pub fn adapt_to_ballista(
         plan: Arc<dyn ExecutionPlan>,
         job_id: &str,
