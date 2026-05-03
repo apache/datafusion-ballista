@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
-use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -37,16 +37,17 @@ pub struct DistributedExchangeRule {
 }
 
 impl DistributedExchangeRule {
+    // TODO: remove this once we're sure we do not need multi pass optimization
     // check if plan is going to be transformed if this
     // rule executed
-    pub(crate) fn is_plan_transformed(
-        &self,
-        execution_plan: Arc<dyn ExecutionPlan>,
-    ) -> datafusion::error::Result<bool> {
-        execution_plan
-            .transform_up(|p| self.transform(p))
-            .transformed()
-    }
+    // pub(crate) fn is_plan_transformed(
+    //     &self,
+    //     execution_plan: Arc<dyn ExecutionPlan>,
+    // ) -> datafusion::error::Result<bool> {
+    //     execution_plan
+    //         .transform_up(|p| self.transform(p))
+    //         .transformed()
+    // }
 
     pub(crate) fn transform(
         &self,
