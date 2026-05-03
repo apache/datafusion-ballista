@@ -28,6 +28,7 @@ use ballista_core::JobStatusSubscriber;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use rand::distr::Alphanumeric;
 
@@ -284,7 +285,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_config: Arc<SessionConfig>,
         subscriber: Option<JobStatusSubscriber>,
         logical_plan: Option<String>,
-        physical_plan: Option<String>,
+        physical_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
 

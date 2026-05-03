@@ -20,12 +20,13 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::display::DisplayableBallistaExecutionPlan;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::distributed_explain::{
@@ -444,7 +445,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         } else {
             None
         };
-
+        // let logical_plan_tree = DisplayableExecutionPlan::new(plan.as_ref());
         let logical_plan_str = plan.display_indent().to_string();
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
@@ -452,9 +453,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
         );
-        let physical_plan_str = DisplayableExecutionPlan::new(plan.as_ref())
-            .indent(false)
-            .to_string();
+        let cloned_plan = plan.clone();
 
         let plan = plan.transform_down(&|node: Arc<dyn ExecutionPlan>| {
             if node.output_partitioning().partition_count() == 0 {
@@ -498,7 +497,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 session_config,
                 subscriber,
                 Some(logical_plan_str),
-                Some(physical_plan_str),
+                cloned_plan,
             )
             .await?;
 

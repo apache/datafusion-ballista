@@ -17,6 +17,12 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use std::sync::Arc;
 
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct JobQueryParams {
+    pub include_logical: Option<bool>,
+    pub tree_rendered: Option<bool>,
+}
+
 /// All routes configured for rest-api.
 pub fn get_routes<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,

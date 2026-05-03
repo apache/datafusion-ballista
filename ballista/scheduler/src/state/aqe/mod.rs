@@ -34,7 +34,7 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
@@ -111,8 +111,8 @@ pub(crate) struct AdaptiveExecutionGraph {
     session_config: Arc<SessionConfig>,
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
-    /// Physical plan as a human-readable string, captured at submission time.
-    physical_plan: Option<String>,
+    /// Physical plan, captured at submission time.
+    physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl AdaptiveExecutionGraph {
@@ -130,7 +130,7 @@ impl AdaptiveExecutionGraph {
         queued_at: u64,
         session_config: Arc<SessionConfig>,
         logical_plan: Option<String>,
-        physical_plan: Option<String>,
+        physical_plan: Arc<dyn ExecutionPlan>,
     ) -> ballista_core::error::Result<Self> {
         let mut planner =
             AdaptivePlanner::try_new(&session_config, plan, job_name.to_owned())?;
@@ -515,8 +515,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.logical_plan.as_deref()
     }
 
-    fn physical_plan(&self) -> Option<&str> {
-        self.physical_plan.as_deref()
+    fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
+        self.physical_plan.clone()
     }
 
     fn start_time(&self) -> u64 {

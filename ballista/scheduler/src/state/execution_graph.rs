@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept, displayable};
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 
@@ -116,7 +116,7 @@ pub trait ExecutionGraph: Debug {
     fn logical_plan(&self) -> Option<&str>;
 
     /// Returns the physical plan as a string, if captured at submission time.
-    fn physical_plan(&self) -> Option<&str>;
+    fn physical_plan(&self) -> Arc<dyn ExecutionPlan>;
 
     /// Returns the timestamp when this job started execution.
     fn start_time(&self) -> u64;
@@ -271,7 +271,7 @@ pub struct StaticExecutionGraph {
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
     /// Physical plan as a human-readable string, captured at submission time.
-    physical_plan: Option<String>,
+    physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 /// Information about a currently running task.
@@ -308,7 +308,7 @@ impl StaticExecutionGraph {
         session_config: Arc<SessionConfig>,
         planner: &mut dyn DistributedPlanner,
         logical_plan: Option<String>,
-        physical_plan: Option<String>,
+        physical_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
         let shuffle_stages =
             planner.plan_query_stages(job_id, plan, session_config.options())?;
@@ -652,8 +652,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.logical_plan.as_deref()
     }
 
-    fn physical_plan(&self) -> Option<&str> {
-        self.physical_plan.as_deref()
+    fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
+        self.physical_plan.clone()
     }
 
     fn start_time(&self) -> u64 {

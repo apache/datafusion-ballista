@@ -14,6 +14,7 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
 use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
+use axum::extract::Query;
 use axum::{
     Json,
     extract::{Path, State},
@@ -28,6 +29,7 @@ use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
 use datafusion::DATAFUSION_VERSION;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -203,6 +205,12 @@ pub struct QueryStageSummary {
     pub tasks: Vec<Option<TaskSummary>>,
 }
 
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct JobQueryParams {
+    pub include_logical: Option<bool>,
+    pub tree_rendered: Option<bool>,
+}
+
 pub async fn get_scheduler_state<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -353,6 +361,7 @@ pub async fn get_job<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
+    query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let graph = data_server
         .state
@@ -374,6 +383,15 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
+    let render_tree = query.tree_rendered.unwrap_or(false);
+    let include_logical = query.include_logical.unwrap_or(false);
+
+    let physical_plan = if render_tree {
+        displayable(job.physical_plan().as_ref()).tree_render().to_string()
+    } else {
+        DisplayableExecutionPlan::new(job.physical_plan().as_ref()).indent(false).to_string()
+    };
+    
     Ok(Json(JobResponse {
         job_id: job.job_id().to_string(),
         job_name: job.job_name().to_string(),
@@ -384,8 +402,12 @@ pub async fn get_job<
         num_stages,
         completed_stages,
         percent_complete,
-        logical_plan: job.logical_plan().map(str::to_owned),
-        physical_plan: job.physical_plan().map(str::to_owned),
+        logical_plan: if include_logical {
+            job.logical_plan().map(str::to_owned)
+        } else {
+            None
+        },
+        physical_plan: Some(physical_plan),
         stage_plan: Some(stage_plan),
     }))
 }
