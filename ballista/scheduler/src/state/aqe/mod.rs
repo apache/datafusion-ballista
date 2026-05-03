@@ -34,7 +34,7 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
-use datafusion::physical_plan::{ExecutionPlan, displayable};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};

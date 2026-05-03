@@ -28,7 +28,6 @@ use ballista_core::JobStatusSubscriber;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use rand::distr::Alphanumeric;
 

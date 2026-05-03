@@ -20,13 +20,12 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::display::DisplayableBallistaExecutionPlan;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::distributed_explain::{

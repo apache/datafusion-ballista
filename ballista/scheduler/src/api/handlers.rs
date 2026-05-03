@@ -387,11 +387,15 @@ pub async fn get_job<
     let include_logical = query.include_logical.unwrap_or(false);
 
     let physical_plan = if render_tree {
-        displayable(job.physical_plan().as_ref()).tree_render().to_string()
+        displayable(job.physical_plan().as_ref())
+            .tree_render()
+            .to_string()
     } else {
-        DisplayableExecutionPlan::new(job.physical_plan().as_ref()).indent(false).to_string()
+        DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+            .indent(false)
+            .to_string()
     };
-    
+
     Ok(Json(JobResponse {
         job_id: job.job_id().to_string(),
         job_name: job.job_name().to_string(),
