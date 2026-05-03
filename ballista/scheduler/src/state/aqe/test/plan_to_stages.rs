@@ -174,7 +174,7 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
     let planner =
         AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
 
-    // plan has only two exchanges after initial planning 
+    // plan has only two exchanges after initial planning
     // other stages will be added as stages get resolved
     assert_plan!(planner.current_plan(), @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending
