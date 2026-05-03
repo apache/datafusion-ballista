@@ -384,7 +384,7 @@ pub async fn get_job<
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
     let render_tree = query.tree_rendered.unwrap_or(false);
-    let include_logical = query.include_logical.unwrap_or(false);
+    let include_logical = query.include_logical.unwrap_or(true);
 
     let physical_plan = if render_tree {
         displayable(job.physical_plan().as_ref())
