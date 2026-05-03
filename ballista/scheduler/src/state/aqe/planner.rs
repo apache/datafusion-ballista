@@ -441,20 +441,14 @@ impl AdaptivePlanner {
     /// # Returns
     /// A vector of default physical optimizer rules.
     fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
-        let mut physical_optimizers: Vec<PhysicalOptimizerRuleRef> = vec![
-            // TODO: do we keep it here or make it last
-            Arc::new(DistributedExchangeRule::default()),
-            Arc::new(EliminateEmptyExchangeRule::default()),
-        ];
 
-        let default_optimizers = PhysicalOptimizer::new();
-        physical_optimizers.extend(default_optimizers.rules.iter().cloned());
+        let mut physical_optimizers = PhysicalOptimizer::new().rules;
+        physical_optimizers.push(Arc::new(EliminateEmptyExchangeRule::default()));
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
-        // we should remove it at the later stage
-        // this is just temporary to detect possible duplicate
-        // execs
+        physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
+        // we should remove it at the later stage this is just temporary 
+        // to detect possible duplicate execs
         physical_optimizers.push(Arc::new(WarnOnDuplicateExecRule::default()));
-        // physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
 
         physical_optimizers
     }
