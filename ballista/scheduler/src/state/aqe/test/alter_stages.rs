@@ -86,27 +86,24 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
 #[tokio::test]
 async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<()> {
     //
-    // [stage 2] --------------------------------------------------------------------------------------------------
-    // AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=
+    // [stage 1] --------------------------------------------------------------------------------------------------
+    // AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=
     //   ProjectionExec: expr=[c0@0 as c0, count(Int64(1))@1 as count(*)]
     //     AggregateExec: mode=FinalPartitioned, gby=[c0@0 as c0], aggr=[count(Int64(1))]
-    //       CoalesceBatchesExec: target_batch_size=8192
-    // [stage 1] --------------------------------------------------------------------------------------------------
-    //         ExchangeExec: partitioning=Hash([c0@0], 2), plan_id=1, stage_id=None, stage_resolved=false
-    //           AggregateExec: mode=Partial, gby=[c0@0 as c0], aggr=[count(Int64(1))]
-    //             ProjectionExec: expr=[min(t.a)@1 as c0]
-    //               AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
-    //                 CoalesceBatchesExec: target_batch_size=8192
+    //       RepartitionExec: partitioning=Hash([c0@0], 2), input_partitions=2  <- deferred, resolved after stage 0
+    //         AggregateExec: mode=Partial, gby=[c0@0 as c0], aggr=[count(Int64(1))]
+    //           ProjectionExec: expr=[min(t.a)@1 as c0]
+    //             AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
     // [stage 0] --------------------------------------------------------------------------------------------------
-    //                    ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=None, stage_resolved=false
-    //                      AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
-    //                        DataSourceExec: partitions=1, partition_sizes=[1]
+    //               ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=None, stage_resolved=false
+    //                 AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
+    //                   DataSourceExec: partitions=1, partition_sizes=[1]
     // ------------------------------------------------------------------------------------------------------------
     //
     // test scenario:
     //
     // - stage 0 will produce empty shuffle files (no data)
-    // - this should trigger plan re-write, and stage 1 should be totally removed
+    // - this should trigger plan re-write, and the outer repartition is removed entirely
     // - result plan will produce empty output
 
     let ctx = mock_context();
@@ -121,10 +118,10 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
         AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
       ProjectionExec: expr=[c0@0 as c0, count(Int64(1))@1 as count(*)]
         AggregateExec: mode=FinalPartitioned, gby=[c0@0 as c0], aggr=[count(Int64(1))]
-          ExchangeExec: partitioning=Hash([c0@0], 2), plan_id=1, stage_id=pending, stage_resolved=false
+          RepartitionExec: partitioning=Hash([c0@0], 2), input_partitions=2
             AggregateExec: mode=Partial, gby=[c0@0 as c0], aggr=[count(Int64(1))]
               ProjectionExec: expr=[min(t.a)@1 as c0]
                 AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
