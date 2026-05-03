@@ -111,8 +111,8 @@ pub(crate) struct AdaptiveExecutionGraph {
     session_config: Arc<SessionConfig>,
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
-    /// Physical plan as a human-readable string, captured at submission time.
-    physical_plan: Option<String>,
+    /// Physical plan, captured at submission time.
+    physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl AdaptiveExecutionGraph {
@@ -130,10 +130,9 @@ impl AdaptiveExecutionGraph {
         queued_at: u64,
         session_config: Arc<SessionConfig>,
         logical_plan: Option<String>,
-        physical_plan: Option<String>,
     ) -> ballista_core::error::Result<Self> {
         let mut planner =
-            AdaptivePlanner::try_new(&session_config, plan, job_name.to_owned())?;
+            AdaptivePlanner::try_new(&session_config, plan.clone(), job_name.to_owned())?;
 
         //let stages = HashMap::new();
         let started_at = timestamp_millis();
@@ -185,7 +184,7 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            physical_plan,
+            physical_plan: plan,
         })
     }
 }
@@ -515,8 +514,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.logical_plan.as_deref()
     }
 
-    fn physical_plan(&self) -> Option<&str> {
-        self.physical_plan.as_deref()
+    fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
+        self.physical_plan.clone()
     }
 
     fn start_time(&self) -> u64 {

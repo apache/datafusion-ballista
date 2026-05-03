@@ -614,7 +614,6 @@ filter_expr="]
             Arc::new(SessionConfig::new_with_ballista()),
             &mut planner,
             None,
-            None,
         )
     }
 
@@ -651,7 +650,6 @@ filter_expr="]
             0,
             Arc::new(SessionConfig::new_with_ballista()),
             &mut planner,
-            None,
             None,
         )
     }
