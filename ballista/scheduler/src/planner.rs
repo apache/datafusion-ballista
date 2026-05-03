@@ -338,27 +338,26 @@ pub(crate) fn create_shuffle_writer_with_config(
         .cloned()
         .unwrap_or_default();
 
-    if ballista_config.shuffle_sort_based_enabled() {
-        // Sort shuffle requires hash partitioning
-        if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
-            let sort_config = SortShuffleConfig::new(
-                true,
-                datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
-                ballista_config.shuffle_sort_based_batch_size(),
-            )
-            .with_memory_limit_per_task_bytes(
-                ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
-            );
+    if ballista_config.shuffle_sort_based_enabled()
+        && matches!(partitioning, None | Some(Partitioning::Hash(_, _)))
+    {
+        let sort_config = SortShuffleConfig::new(
+            true,
+            datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
+            ballista_config.shuffle_sort_based_batch_size(),
+        )
+        .with_memory_limit_per_task_bytes(
+            ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
+        );
 
-            return Ok(Arc::new(SortShuffleWriterExec::try_new(
-                job_id.to_owned(),
-                stage_id,
-                plan,
-                "".to_owned(),
-                Partitioning::Hash(exprs, partition_count),
-                sort_config,
-            )?));
-        }
+        return Ok(Arc::new(SortShuffleWriterExec::try_new(
+            job_id.to_owned(),
+            stage_id,
+            plan,
+            "".to_owned(),
+            partitioning,
+            sort_config,
+        )?));
     }
 
     // Fall back to standard shuffle writer
@@ -736,7 +735,9 @@ order by
         // stage0
         let stage0 = stages[0].clone();
         let shuffle_write = downcast_exec!(stage0, SortShuffleWriterExec);
-        let partitioning = shuffle_write.shuffle_output_partitioning();
+        let partitioning = shuffle_write
+            .shuffle_output_partitioning()
+            .expect("expected hash partitioning");
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
@@ -830,6 +831,56 @@ order by
             format!("{partial_hash_serde:?}")
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sort_shuffle_used_for_none_partitioning() -> Result<(), BallistaError> {
+        use ballista_core::config::BallistaConfig;
+        use datafusion::config::{ConfigOptions, ExtensionOptions};
+
+        // With sort-based shuffle enabled, every stage in the distributed plan
+        // should use SortShuffleWriterExec - including the final stage(s)
+        // whose shuffle partitioning is None.
+        let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
+
+        let df = ctx
+            .sql(
+                "select l_returnflag, sum(l_extendedprice) as total
+            from lineitem
+            group by l_returnflag
+            order by l_returnflag",
+            )
+            .await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
+
+        let mut ballista_config = BallistaConfig::default();
+        ballista_config
+            .set("shuffle.sort_based.enabled", "true")
+            .expect("set sort-based-enabled");
+        let mut config_options = ConfigOptions::new();
+        config_options.extensions.insert(ballista_config);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let stages = planner.plan_query_stages("job-none", plan, &config_options)?;
+
+        // The query produces multiple stages: a Hash-partitioned partial
+        // aggregate, a None-partitioned final-aggregate, and a None-partitioned
+        // sort-preserving merge. All should be SortShuffleWriterExec.
+        assert!(stages.len() >= 2, "expected at least 2 stages");
+        for (i, stage) in stages.iter().enumerate() {
+            assert!(
+                stage
+                    .as_any()
+                    .downcast_ref::<SortShuffleWriterExec>()
+                    .is_some(),
+                "stage {i} expected SortShuffleWriterExec, got {}",
+                stage.name()
+            );
+        }
         Ok(())
     }
 

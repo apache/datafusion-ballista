@@ -129,7 +129,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 stage_id,
                 plan.children()[0].clone(),
                 work_dir.to_string(),
-                sort_shuffle_writer.shuffle_output_partitioning().clone(),
+                sort_shuffle_writer.shuffle_output_partitioning().cloned(),
                 sort_shuffle_writer.config().clone(),
             )?;
             Ok(Arc::new(DefaultQueryStageExec::new(

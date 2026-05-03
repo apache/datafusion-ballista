@@ -18,7 +18,7 @@
 use crate::client::BallistaClient;
 use crate::error::BallistaError;
 use crate::execution_plans::sort_shuffle::{
-    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+    ShuffleIndex, get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
 };
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
@@ -576,19 +576,32 @@ fn fetch_partition_local(
             partition_id.partition_id, data_path
         );
         let index_path = get_index_path(data_path);
-        return stream_sort_shuffle_partition(
-            data_path,
-            &index_path,
-            partition_id.partition_id,
-        )
-        .map_err(|e| {
+        // None-partitioning sort-shuffle files have a single logical bucket;
+        // map any request on a single-bucket file to bucket 0 (the
+        // scheduler-level partition_id is the input partition number, not the
+        // file-level partition).
+        let index = ShuffleIndex::read_from_file(&index_path).map_err(|e| {
             BallistaError::FetchFailed(
                 metadata.id.clone(),
                 partition_id.stage_id,
                 partition_id.partition_id,
                 e.to_string(),
             )
-        });
+        })?;
+        let file_partition_id = if index.partition_count() == 1 {
+            0
+        } else {
+            partition_id.partition_id
+        };
+        return stream_sort_shuffle_partition(data_path, &index_path, file_partition_id)
+            .map_err(|e| {
+                BallistaError::FetchFailed(
+                    metadata.id.clone(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    e.to_string(),
+                )
+            });
     }
     debug!("fetch local partition file: {data_path:?} ");
     // Standard hash-based shuffle - read the file directly
