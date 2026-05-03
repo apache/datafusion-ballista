@@ -165,10 +165,11 @@ pub struct Config {
     /// Optional total memory budget for the executor. Accepts human-readable
     /// values like "8GB", "512MiB", or a plain byte count. When set, every
     /// task gets a FairSpillPool of size `memory_pool_size / concurrent_tasks`.
+    /// When unset, defaults to `concurrent_tasks * 1 GiB`.
     #[arg(
         long,
         value_parser = parse_memory_pool_size,
-        help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share."
+        help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share. Defaults to concurrent_tasks * 1 GiB."
     )]
     pub memory_pool_size: Option<u64>,
 }
