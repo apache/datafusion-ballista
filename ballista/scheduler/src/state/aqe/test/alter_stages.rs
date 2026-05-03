@@ -161,58 +161,73 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
     Ok(())
 }
 
+// this test initially handled cross join where new repartition
+// is inserted due to new statistic information.
+// with lazy stage computation this plan is adjusted much earlier
+// hance no late exchange addition.
+//
+// will keep the test,
 #[tokio::test]
-#[ignore = "temporary disabled"]
-async fn should_insert_new_stage() -> datafusion::error::Result<()> {
+async fn should_support_cross_join() -> datafusion::error::Result<()> {
     let ctx = mock_context();
 
     let join = create_plan_with_scan()?;
+
+    //
+    // initial plan
+    //
+    assert_plan!(join.as_ref(),  @ r"
+    CrossJoinExec
+      RepartitionExec: partitioning=Hash([big_col@0], 2), input_partitions=2
+        StatisticsExec: col_count=1, row_count=Inexact(262144)
+      MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
+    ");
+
     let mut planner =
         AdaptivePlanner::try_new(ctx.state().config(), join, "test_job".to_string())?;
 
-    assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
-      CrossJoinExec
-        CoalescePartitionsExec
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
-            StatisticsExec: col_count=1, row_count=Inexact(262144)
-        CooperativeExec
-          MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
-    ");
+    //
+    // plan after AQE, note the join has already been re-ordered
+    //
 
-    let stages = planner.runnable_stages()?.unwrap();
-    assert_eq!(1, stages.len());
-
-    assert_plan!(stages[0].plan.as_ref(),  @ r"
-    SortShuffleWriterExec: partitioning=Hash([big_col@0], 2)
-      StatisticsExec: col_count=1, row_count=Inexact(262144)
-    ");
-
-    planner.finalise_stage_internal(0, big_statistics_exchange())?;
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
       ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
         CrossJoinExec
           CoalescePartitionsExec
-            ExchangeExec: partitioning=None, plan_id=2, stage_id=pending, stage_resolved=false
-              CooperativeExec
-                MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
-            CooperativeExec
-              StatisticsExec: col_count=1, row_count=Inexact(262144)
+            ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+              MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
+          CooperativeExec
+            StatisticsExec: col_count=1, row_count=Inexact(262144)
     ");
+
+    //
+    // first stage to be resolve is build side of the join
+    // which should be resolved with "small statistics"
+    //
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
 
     assert_plan!(stages[0].plan.as_ref(),  @ r"
     ShuffleWriterExec: partitioning: None
-      CooperativeExec
-        MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
+      MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
     ");
 
-    planner.finalise_stage_internal(1, small_statistics_exchange())?;
-    let stages = planner.runnable_stages()?.unwrap();
-    assert_eq!(1, stages.len());
+    planner.finalise_stage_internal(0, small_statistics_exchange())?;
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
+      ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
+        CrossJoinExec
+          CoalescePartitionsExec
+            ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=true
+              MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
+          CooperativeExec
+            StatisticsExec: col_count=1, row_count=Inexact(262144)
+    ");
+
+    //
+    // next stage should be final stage as well
+    //
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
@@ -223,10 +238,24 @@ async fn should_insert_new_stage() -> datafusion::error::Result<()> {
         CrossJoinExec
           CoalescePartitionsExec
             ShuffleReaderExec: partitioning: UnknownPartitioning(2)
-          ShuffleReaderExec: partitioning: Hash([big_col@0], 2)
+          CooperativeExec
+            StatisticsExec: col_count=1, row_count=Inexact(262144)
     ");
 
-    planner.finalise_stage_internal(2, small_statistics_exchange())?;
+    planner.finalise_stage_internal(1, big_statistics_exchange())?;
+
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1
+      ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
+        CrossJoinExec
+          CoalescePartitionsExec
+            ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=true
+              MockPartitionedScan: num_partitions=2, statistics=[Rows=Inexact(1024), Bytes=Inexact(8192), [(Col[0]:)]]
+          CooperativeExec
+            StatisticsExec: col_count=1, row_count=Inexact(262144)
+    ");
+
+    // should be no more runnable stages after final stage has been finalized
     let stages = planner.runnable_stages()?;
     assert!(stages.is_none());
 
