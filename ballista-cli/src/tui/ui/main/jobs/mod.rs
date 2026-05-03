@@ -18,6 +18,9 @@
 mod dot_parser;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
+pub mod job_stages_popup;
+pub mod stage_plan_popup;
+pub mod stage_tasks_popup;
 
 use crate::tui::{
     TuiResult,
@@ -62,7 +65,7 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
         Ok(dot_content) => {
             let graph = dot_parser::parse_dot(job_id, &dot_content);
             app.send_event(Event::DataLoaded {
-                data: UiData::JobDot(graph),
+                data: UiData::JobStagesGraph(graph),
             })
             .await
         }
@@ -71,6 +74,26 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
             Ok(())
         }
     }
+}
+
+pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
+    let mut stages = app
+        .http_client
+        .get_job_stages(job_id)
+        .await
+        .inspect(|stages| tracing::trace!("Loaded stages for job '{job_id}': {stages:?}"))
+        .inspect_err(|e| {
+            tracing::error!("Failed to load stages for job '{job_id}': {e:?}")
+        })?;
+
+    stages
+        .stages
+        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobStagesData(job_id.to_owned(), stages),
+    })
+    .await
 }
 
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
@@ -178,7 +201,7 @@ fn render_jobs_table(
         format!("Id{id_suffix}"),
         format!("Name{name_suffix}"),
         format!("Status{status_suffix}"),
-        format!("Stages Completes{stages_suffix}"),
+        format!("Stages Completed{stages_suffix}"),
         format!("Percent Completed{percent_suffix}"),
         format!("Start time{start_time_suffix}"),
     ]
@@ -271,8 +294,8 @@ fn render_job_status_cell(job: &Job) -> Cell<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tui::domain::SortOrder;
+    use super::column_suffix;
+    use crate::tui::domain::{SortOrder, jobs::SortColumn};
 
     #[test]
     fn column_suffix_active_ascending_returns_up_arrow() {

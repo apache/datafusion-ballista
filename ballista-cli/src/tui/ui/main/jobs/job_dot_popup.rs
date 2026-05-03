@@ -16,10 +16,10 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::jobs::GraphNode;
+use crate::tui::domain::jobs::stages::GraphNode;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
@@ -31,12 +31,10 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(format!(
-            " Job Stages: {} (↑↓ scroll, any other key to close) ",
-            graph.job_id
-        ))
+        .title(format!(" Stages graph for job '{}' ", graph.job_id))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::Cyan))
+        .border_type(BorderType::Thick);
 
     // Width of the area inside the popup block borders.
     let inner_width = area.width.saturating_sub(2) as usize;
@@ -175,7 +173,7 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((app.job_dot_scroll, 0));
+        .scroll((graph.scroll_position, 0));
 
     f.render_widget(paragraph, area);
 }
@@ -255,7 +253,11 @@ fn arrow_connector(total_width: usize, arrow_col: usize, style: Style) -> Line<'
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        arrow_connector, node_bottom_border, node_text_row, node_top_border,
+        truncate_to_width,
+    };
+    use ratatui::prelude::Style;
 
     // --- truncate_to_width ---
 

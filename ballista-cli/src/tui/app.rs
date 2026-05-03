@@ -22,8 +22,9 @@ use crate::tui::{
         SortOrder,
         executors::{ExecutorsData, SortColumn as ExecutorsSortColumn},
         jobs::{
-            CancelJobResult, JobDetails, JobsData, SortColumn as JobsSortColumn,
-            StagesGraph,
+            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
+            SortColumn as JobsSortColumn,
+            stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
@@ -37,8 +38,8 @@ use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
 use crate::tui::ui::{
-    load_executors_data, load_job_details, load_job_dot, load_jobs_data,
-    load_metrics_data,
+    load_executors_data, load_job_details, load_job_dot, load_job_stages_popup,
+    load_jobs_data, load_metrics_data,
 };
 
 #[derive(Debug, PartialEq)]
@@ -54,13 +55,6 @@ enum InputMode {
     Edit,
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum PlanTab {
-    Stage,
-    Physical,
-    Logical,
-}
-
 pub(crate) struct App {
     should_quit: bool,
 
@@ -73,21 +67,18 @@ pub(crate) struct App {
     pub executors_data: ExecutorsData,
     pub metrics_data: MetricsData,
 
-    // Popups
-    pub show_help: bool,
-    pub show_scheduler_info: bool,
-
     pub cancel_job_result: Option<CancelJobResult>,
 
     pub search_term: String,
 
     pub job_details: Option<JobDetails>,
 
+    // Popups
+    pub show_help: bool,
+    pub show_scheduler_info: bool,
     pub job_dot_popup: Option<StagesGraph>,
-    pub job_dot_scroll: u16,
-
-    pub job_plan_popup: Option<(JobDetails, PlanTab)>,
-    pub job_plan_popup_scroll: u16,
+    pub job_plan_popup: Option<JobPlansPopup>,
+    pub job_stages_popup: Option<JobStagesPopup>,
 
     pub http_client: Arc<HttpClient>,
 }
@@ -105,9 +96,8 @@ impl App {
             cancel_job_result: None,
             job_details: None,
             job_dot_popup: None,
-            job_dot_scroll: 0,
             job_plan_popup: None,
-            job_plan_popup_scroll: 0,
+            job_stages_popup: None,
             executors_data: ExecutorsData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
@@ -195,57 +185,74 @@ impl App {
             return Ok(());
         }
 
+        // The cancellation result is rendered just once
         if self.cancel_job_result.is_some() {
             self.cancel_job_result = None;
             return Ok(());
         }
 
-        if self.job_dot_popup.is_some() {
-            match key.code {
-                KeyCode::Up => {
-                    self.job_dot_scroll = self.job_dot_scroll.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    self.job_dot_scroll = self.job_dot_scroll.saturating_add(1);
-                }
-                _ => {
-                    self.job_dot_popup = None;
-                    self.job_dot_scroll = 0;
+        if let Some(popup) = &mut self.job_stages_popup {
+            if popup.is_tasks_view()
+                && let KeyCode::Esc = key.code
+            {
+                popup.set_no_details_view();
+            } else if popup.is_plan_view()
+                && let KeyCode::Esc = key.code
+            {
+                popup.set_no_details_view();
+            } else if popup.is_no_details_view() {
+                match key.code {
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    KeyCode::Enter if popup.selected_stage().is_some() => {
+                        popup.set_tasks_view();
+                    }
+                    KeyCode::Char('p') if popup.selected_stage().is_some() => {
+                        popup.set_plan_view();
+                    }
+                    KeyCode::Esc => {
+                        self.job_stages_popup = None;
+                    }
+                    _ => {}
                 }
             }
             return Ok(());
         }
 
-        if self.job_plan_popup.is_some() {
+        if let Some(ref mut job_graph_popup) = self.job_dot_popup {
             match key.code {
                 KeyCode::Up => {
-                    self.job_plan_popup_scroll =
-                        self.job_plan_popup_scroll.saturating_sub(1);
+                    job_graph_popup.scroll_up();
                 }
                 KeyCode::Down => {
-                    self.job_plan_popup_scroll += 1;
+                    job_graph_popup.scroll_down();
                 }
+                KeyCode::Esc => {
+                    self.job_dot_popup = None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        if let Some(ref mut plans_popup) = self.job_plan_popup {
+            match key.code {
+                KeyCode::Up => plans_popup.scroll_up(),
+                KeyCode::Down => plans_popup.scroll_down(),
                 KeyCode::Char('s') => {
-                    if let Some((_, tab)) = &mut self.job_plan_popup {
-                        *tab = PlanTab::Stage;
-                        self.job_plan_popup_scroll = 0;
-                    }
+                    plans_popup.tab = PlanTab::Stage;
+                    plans_popup.scroll_position = 0;
                 }
                 KeyCode::Char('p') => {
-                    if let Some((_, tab)) = &mut self.job_plan_popup {
-                        *tab = PlanTab::Physical;
-                        self.job_plan_popup_scroll = 0;
-                    }
+                    plans_popup.tab = PlanTab::Physical;
+                    plans_popup.scroll_position = 0;
                 }
                 KeyCode::Char('l') => {
-                    if let Some((_, tab)) = &mut self.job_plan_popup {
-                        *tab = PlanTab::Logical;
-                        self.job_plan_popup_scroll = 0;
-                    }
+                    plans_popup.tab = PlanTab::Logical;
+                    plans_popup.scroll_position = 0;
                 }
                 KeyCode::Esc => {
                     self.job_plan_popup = None;
-                    self.job_plan_popup_scroll = 0;
                 }
                 _ => {}
             }
@@ -267,6 +274,9 @@ impl App {
             }
             KeyCode::Char('i') => {
                 self.show_scheduler_info = true;
+            }
+            KeyCode::Enter if self.is_jobs_view() => {
+                self.load_job_stages_popup_data().await;
             }
             KeyCode::Char('g') if self.is_jobs_view() => {
                 self.load_job_dot_data().await;
@@ -380,6 +390,15 @@ impl App {
         }
     }
 
+    async fn load_job_stages_popup_data(&self) {
+        if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
+            let job_id = job.job_id.clone();
+            if let Err(e) = load_job_stages_popup(self, &job_id).await {
+                tracing::error!("Failed to load job stages popup for '{job_id}': {e:?}");
+            }
+        }
+    }
+
     async fn load_executors_data(&mut self) {
         if let Err(e) = load_executors_data(self).await {
             tracing::error!("Failed to load executors data on tick: {e:?}");
@@ -469,14 +488,42 @@ impl App {
         self.jobs_data.selected_job(&self.search_term).is_some()
     }
 
-    pub fn has_selected_completed_job(&self) -> bool {
+    pub fn is_selected_job_completed(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
             .is_some_and(|j| j.status == "Completed")
     }
 
+    pub fn is_selected_job_cancelable(&self) -> bool {
+        self.jobs_data
+            .selected_job(&self.search_term)
+            .is_some_and(|j| j.status == "Running" || j.status == "Queued")
+    }
+
     pub fn has_more_than_one_job(&self) -> bool {
         self.jobs_data.jobs.len() > 1
+    }
+
+    pub fn is_job_stages_popup_open(&self) -> bool {
+        self.job_stages_popup.is_some()
+    }
+
+    pub fn is_job_stage_no_details_popup_open(&self) -> bool {
+        self.job_stages_popup
+            .as_ref()
+            .is_some_and(|popup| popup.is_no_details_view())
+    }
+
+    pub fn is_job_stage_tasks_popup_open(&self) -> bool {
+        self.job_stages_popup
+            .as_ref()
+            .is_some_and(|popup| popup.is_tasks_view())
+    }
+
+    pub fn is_job_stage_plan_popup_open(&self) -> bool {
+        self.job_stages_popup
+            .as_ref()
+            .is_some_and(|popup| popup.is_plan_view())
     }
 
     fn open_job_plan_popup(&mut self) {
@@ -485,8 +532,8 @@ impl App {
             .selected_job(&self.search_term)
             .is_some_and(|j| j.status == "Completed");
         if is_completed && let Some(details) = &self.job_details {
-            self.job_plan_popup = Some((details.clone(), PlanTab::Stage));
-            self.job_plan_popup_scroll = 0;
+            self.job_plan_popup =
+                Some(JobPlansPopup::new(details.clone(), PlanTab::Stage));
         }
     }
 }
@@ -496,7 +543,11 @@ mod tests {
     use crate::tui::App;
     use crate::tui::Settings;
     use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
-    use crate::tui::domain::{SchedulerState, SortOrder, jobs::Job};
+    use crate::tui::domain::{
+        SchedulerState, SortOrder,
+        jobs::Job,
+        jobs::stages::{JobStagesPopup, JobStagesResponse},
+    };
 
     fn make_app() -> App {
         let settings =
@@ -589,19 +640,19 @@ mod tests {
     }
 
     #[test]
-    fn has_selected_completed_job_true_when_completed_job_selected() {
+    fn is_selected_job_completed_true_when_completed_job_selected() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Completed")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(app.has_selected_completed_job());
+        assert!(app.is_selected_job_completed());
     }
 
     #[test]
-    fn has_selected_completed_job_false_for_running_job() {
+    fn is_selected_job_completed_false_for_running_job() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Running")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.has_selected_completed_job());
+        assert!(!app.is_selected_job_completed());
     }
 
     // --- sort_jobs_by toggle tests ---
@@ -686,5 +737,84 @@ mod tests {
         app.sort_metrics_by(MetricsSortColumn::Name);
         app.sort_metrics_by(MetricsSortColumn::Name);
         assert_eq!(app.metrics_data.sort_column, MetricsSortColumn::None);
+    }
+
+    // --- Popup state tests ---
+
+    fn make_stages_popup() -> JobStagesPopup {
+        JobStagesPopup::new("job1".to_string(), JobStagesResponse { stages: Vec::new() })
+    }
+
+    #[test]
+    fn is_job_stages_popup_open_false_when_none() {
+        let app = make_app();
+        assert!(!app.is_job_stages_popup_open());
+    }
+
+    #[test]
+    fn is_job_stages_popup_open_true_when_some() {
+        let mut app = make_app();
+        app.job_stages_popup = Some(make_stages_popup());
+        assert!(app.is_job_stages_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_no_details_popup_open_true() {
+        let mut app = make_app();
+        app.job_stages_popup = Some(make_stages_popup());
+        assert!(app.is_job_stage_no_details_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_tasks_popup_open_true() {
+        let mut app = make_app();
+        let mut popup = make_stages_popup();
+        popup.set_tasks_view();
+        app.job_stages_popup = Some(popup);
+        assert!(app.is_job_stage_tasks_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_plan_popup_open_true() {
+        let mut app = make_app();
+        let mut popup = make_stages_popup();
+        popup.set_plan_view();
+        app.job_stages_popup = Some(popup);
+        assert!(app.is_job_stage_plan_popup_open());
+    }
+
+    #[test]
+    fn is_job_stage_no_details_when_tasks_returns_false() {
+        let mut app = make_app();
+        let mut popup = make_stages_popup();
+        popup.set_tasks_view();
+        app.job_stages_popup = Some(popup);
+        assert!(!app.is_job_stage_no_details_popup_open());
+    }
+
+    // --- is_selected_job_cancelable tests ---
+
+    #[test]
+    fn is_selected_job_cancelable_true_for_running() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.is_selected_job_cancelable());
+    }
+
+    #[test]
+    fn is_selected_job_cancelable_true_for_queued() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Queued")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.is_selected_job_cancelable());
+    }
+
+    #[test]
+    fn is_selected_job_cancelable_false_for_completed() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Completed")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(!app.is_selected_job_cancelable());
     }
 }
