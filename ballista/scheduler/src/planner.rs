@@ -31,6 +31,7 @@ use ballista_core::{
     },
     serde::scheduler::PartitionLocation,
 };
+use datafusion::arrow::datatypes::DataType;
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
@@ -300,11 +301,17 @@ impl DefaultDistributedPlanner {
         threshold_bytes: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if threshold_bytes == 0 {
+            info!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
         let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() else {
             return Ok(plan);
         };
+        info!(
+            "broadcast check: evaluating HashJoinExec mode={:?} join_type={:?} threshold={threshold_bytes}",
+            hash_join.partition_mode(),
+            hash_join.join_type(),
+        );
         if *hash_join.partition_mode() != PartitionMode::Partitioned {
             return Ok(plan);
         }
@@ -317,10 +324,40 @@ impl DefaultDistributedPlanner {
 
         fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
             let Ok(stats) = plan.partition_statistics(None) else {
+                info!("broadcast check: partition_statistics returned error for {}", plan.name());
                 return false;
             };
+            info!(
+                "broadcast check: {} total_byte_size={:?} num_rows={:?} threshold={}",
+                plan.name(),
+                stats.total_byte_size,
+                stats.num_rows,
+                threshold,
+            );
             if let Some(bytes) = stats.total_byte_size.get_value() {
                 *bytes != 0 && *bytes < threshold
+            } else if let Some(rows) = stats.num_rows.get_value() {
+                let schema = plan.schema();
+                let bytes_per_row: usize = schema.fields().iter().map(|f| {
+                    match f.data_type() {
+                        DataType::Boolean => 1,
+                        DataType::Int8 | DataType::UInt8 => 1,
+                        DataType::Int16 | DataType::UInt16 => 2,
+                        DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
+                        DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
+                        DataType::Date32 => 4,
+                        DataType::Date64 => 8,
+                        DataType::Decimal128(_, _) => 16,
+                        DataType::Decimal256(_, _) => 32,
+                        _ => 32, // conservative estimate for variable-length types
+                    }
+                }).sum();
+                let estimated_bytes = *rows * bytes_per_row.max(8);
+                info!(
+                    "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
+                    schema.fields().len(),
+                );
+                estimated_bytes != 0 && estimated_bytes < threshold
             } else {
                 false
             }
@@ -329,6 +366,7 @@ impl DefaultDistributedPlanner {
         let left_under = under(&**left, threshold_bytes);
         let right_under = under(&**right, threshold_bytes);
         if !left_under && !right_under {
+            info!("broadcast check: neither side under threshold, skipping promotion");
             return Ok(plan);
         }
 
@@ -339,8 +377,13 @@ impl DefaultDistributedPlanner {
             right_under
         };
 
+        info!(
+            "broadcast check: promoting to CollectLeft (left_under={left_under}, right_under={right_under}, swap={swap})"
+        );
+
         let promoted: Arc<dyn ExecutionPlan> = if swap {
             if !hash_join.join_type().supports_swap() {
+                info!("broadcast check: join type {:?} does not support swap, skipping", hash_join.join_type());
                 return Ok(plan);
             }
             hash_join.swap_inputs(PartitionMode::CollectLeft)?
