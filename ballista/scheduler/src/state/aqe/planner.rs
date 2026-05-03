@@ -256,27 +256,6 @@ impl AdaptivePlanner {
             |_, _| {},
         )?;
 
-        // TODO: remove this once we're sure we do not need multi pass optimization
-        //
-        // for pass in 0..self.max_passes {
-        //     plan = self.physical_planner.optimize_physical_plan(
-        //         plan.clone(),
-        //         &self.session_state,
-        //         |_, _| {},
-        //     )?;
-
-        //     if DistributedExchangeRule::default().is_plan_transformed(plan.clone())? {
-        //         if pass >= self.max_passes - 1 {
-        //             warn!("plan needs another distributed optimizer pass");
-        //             exec_err!("plan needs another distributed optimizer pass")?
-        //         }
-        //         debug!("plan does not look correct correct");
-        //     } else {
-        //         debug!("plan looks correct correct");
-        //         break;
-        //     }
-        // }
-
         debug!(
             "Distributed physical plan (after optimization):\n{}\n",
             displayable(plan.as_ref()).indent(false)
