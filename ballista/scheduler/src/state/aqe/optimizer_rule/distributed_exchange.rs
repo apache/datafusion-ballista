@@ -31,14 +31,13 @@ enum ExchangeStatus {
     Unresolved,
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub struct DistributedExchangeRule {
     plan_id_generator: Arc<AtomicUsize>,
 }
 
 impl DistributedExchangeRule {
-    // check if plan is going to be transformed if this 
+    // check if plan is going to be transformed if this
     // rule executed
     pub(crate) fn is_plan_transformed(
         &self,
@@ -91,18 +90,17 @@ impl DistributedExchangeRule {
             }
         } else if let Some(repartition) =
             execution_plan.as_any().downcast_ref::<RepartitionExec>()
+            && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
         {
-            if let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning() {
-                let input = repartition.input();
-                if !matches!(find_exchange_status(input), ExchangeStatus::Unresolved) {
-                    let exchange_exec = ExchangeExec::new(
-                        input.clone(),
-                        Some(repartition.partitioning().clone()),
-                        self.plan_id_generator
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                    );
-                    return Ok(Transformed::yes(Arc::new(exchange_exec)));
-                }
+            let input = repartition.input();
+            if !matches!(find_exchange_status(input), ExchangeStatus::Unresolved) {
+                let exchange_exec = ExchangeExec::new(
+                    input.clone(),
+                    Some(repartition.partitioning().clone()),
+                    self.plan_id_generator
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                );
+                return Ok(Transformed::yes(Arc::new(exchange_exec)));
             }
         }
         Ok(Transformed::no(execution_plan))
