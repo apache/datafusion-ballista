@@ -37,7 +37,6 @@ pub struct DistributedExchangeRule {
 }
 
 impl DistributedExchangeRule {
-
     pub(crate) fn transform(
         &self,
         execution_plan: Arc<dyn ExecutionPlan>,
