@@ -16,29 +16,34 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-set -e
+set -euo pipefail
 
-echo "Generating benchmark data ..."
-pushd benchmarks
-./tpch-gen.sh
-popd
+# Env overrides forwarded to tpch-gen.sh / run.sh:
+#   SCALE_FACTOR    TPC-H scale factor (default: 10)
+#   PARTITIONS      Number of partitions (default: 16)
+#   ITERATIONS      Iterations per query (default: 3)
 
-echo "Building Docker images ..."
+export SCALE_FACTOR="${SCALE_FACTOR:-10}"
+export PARTITIONS="${PARTITIONS:-16}"
+export ITERATIONS="${ITERATIONS:-3}"
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
+cleanup() {
+  echo "Tearing down docker compose stack..."
+  docker compose down --remove-orphans || true
+}
+trap cleanup EXIT
+
+echo "Generating benchmark data (SF=${SCALE_FACTOR}, parts=${PARTITIONS})..."
+./benchmarks/tpch-gen.sh
+
+echo "Building Docker images..."
 ./dev/build-ballista-docker.sh
 
-echo "Starting docker-compose in background ..."
-docker-compose up -d
+echo "Starting docker compose in background..."
+docker compose up -d --wait
 
-# give the scheduler a chance to start up
-echo "Sleeping (wait for scheduler to start)..."
-sleep 10
-
-echo "Running benchmarks ..."
-docker-compose run ballista-client /root/run.sh
-
-#TODO need to call docker-compose down even if benchmarks fail
-
-echo "Stopping docker-compose ..."
-docker-compose down
-
-popd
+echo "Running benchmarks..."
+docker compose run --rm ballista-client /root/run.sh

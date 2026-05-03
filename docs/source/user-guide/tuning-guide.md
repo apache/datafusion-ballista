@@ -91,6 +91,47 @@ The executor refuses to start if the per-task share would round to zero (i.e.
 When `--memory-pool-size` is not set, the executor behaves as before with no
 memory pool installed.
 
+## Join Algorithm Selection
+
+For equi-joins, DataFusion (and therefore Ballista) defaults to
+`HashJoinExec`. Hash join is fast but builds an in-memory hash table on one
+side of the join, which can blow past the executor's memory budget on
+queries that join several large tables (TPC-H q9 is the canonical example:
+a 6-way join across `part`, `supplier`, `lineitem`, `partsupp`, `orders`,
+and `nation`).
+
+When an executor is OOM-killed mid-query, the symptoms are:
+
+- one (or more) executor process exits with `Killed` in its log
+- the kernel's cgroup OOM killer fires (visible in `dmesg` /
+  `journalctl -k`)
+- the in-flight job appears to hang on the client, because the scheduler
+  had assigned tasks to the now-dead executor
+
+Two ways to relieve memory pressure on join-heavy queries:
+
+**Increase the executor memory budget.** Raise the executor container's
+memory limit and/or `--memory-pool-size`, keeping the pool comfortably
+below the container limit so that parquet decode buffers, shuffle reader
+buffers, and runtime overhead all fit alongside it.
+
+**Switch to sort-merge join.** Set
+`datafusion.optimizer.prefer_hash_join = false` to make the planner pick
+`SortMergeJoinExec` for equi-joins where both inputs can be sorted on the
+join keys. Sort-merge avoids the build-side hash table at the cost of
+sorting both inputs, so peak memory is typically lower but wall-clock time
+is higher. As a rough data point, on the bundled TPC-H bench at SF10 with
+a 12 GB executor cap, q9 OOMs with hash join but completes in about 5.4 s
+with sort-merge.
+
+```rust
+let session_config = SessionConfig::new_with_ballista()
+    .set_bool("datafusion.optimizer.prefer_hash_join", false);
+```
+
+The same key can be passed to the `tpch` benchmark binary via
+`-c datafusion.optimizer.prefer_hash_join=false`.
+
 ## Shuffle Implementation
 
 Ballista exchanges data between query stages by writing the output of each
