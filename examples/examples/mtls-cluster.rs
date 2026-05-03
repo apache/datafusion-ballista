@@ -381,7 +381,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
         ))
     });
 
-    let executor = Arc::new(Executor::new(
+    let executor = Arc::new(Executor::with_default_execution_engine(
         executor_meta,
         &work_dir_str,
         runtime_producer,
@@ -389,7 +389,6 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
         Default::default(), // function_registry
         Arc::new(LoggingMetricsCollector::default()), // metrics_collector
         4,                  // concurrent_tasks
-        None,               // execution_engine
     ));
 
     // Start Flight service with mTLS for serving shuffle data

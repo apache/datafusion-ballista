@@ -18,6 +18,8 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+/// Connection pool for `BallistaClient` instances.
+mod client_pool;
 /// Execution plan for collecting distributed query results into a single partition.
 pub mod collect;
 /// Command-line configuration for the executor binary.

@@ -112,7 +112,7 @@ impl Executor {
             Arc::new(BallistaFunctionRegistry::default()),
             Arc::new(LoggingMetricsCollector::default()),
             concurrent_tasks,
-            None,
+            Arc::new(DefaultExecutionEngine::new()),
         )
     }
 
@@ -127,7 +127,7 @@ impl Executor {
         function_registry: Arc<BallistaFunctionRegistry>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
-        execution_engine: Option<Arc<dyn ExecutionEngine>>,
+        execution_engine: Arc<dyn ExecutionEngine>,
     ) -> Self {
         Self {
             metadata,
@@ -138,8 +138,30 @@ impl Executor {
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
-            execution_engine: execution_engine
-                .unwrap_or_else(|| Arc::new(DefaultExecutionEngine {})),
+            execution_engine,
+        }
+    }
+    /// Creates new Executor with default `ExecutionEngine`.
+    /// Default `ExecutionEngine` does not cache client connections.
+    pub fn with_default_execution_engine(
+        metadata: ExecutorRegistration,
+        work_dir: &str,
+        runtime_producer: RuntimeProducer,
+        config_producer: ConfigProducer,
+        function_registry: Arc<BallistaFunctionRegistry>,
+        metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+        concurrent_tasks: usize,
+    ) -> Self {
+        Self {
+            metadata,
+            work_dir: work_dir.to_owned(),
+            function_registry,
+            runtime_producer,
+            config_producer,
+            metrics_collector,
+            concurrent_tasks,
+            abort_handles: Default::default(),
+            execution_engine: Arc::new(DefaultExecutionEngine::new()),
         }
     }
 }
