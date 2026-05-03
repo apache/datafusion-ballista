@@ -284,7 +284,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_config: Arc<SessionConfig>,
         subscriber: Option<JobStatusSubscriber>,
         logical_plan: Option<String>,
-        physical_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
 
@@ -302,7 +301,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 queued_at,
                 session_config,
                 logical_plan,
-                physical_plan,
             )?) as ExecutionGraphBox
         } else {
             debug!("Using static query planner for job planning");
@@ -316,7 +314,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 session_config,
                 &mut planner,
                 logical_plan,
-                physical_plan,
             )?) as ExecutionGraphBox
         };
 

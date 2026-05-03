@@ -130,10 +130,9 @@ impl AdaptiveExecutionGraph {
         queued_at: u64,
         session_config: Arc<SessionConfig>,
         logical_plan: Option<String>,
-        physical_plan: Arc<dyn ExecutionPlan>,
     ) -> ballista_core::error::Result<Self> {
         let mut planner =
-            AdaptivePlanner::try_new(&session_config, plan, job_name.to_owned())?;
+            AdaptivePlanner::try_new(&session_config, plan.clone(), job_name.to_owned())?;
 
         //let stages = HashMap::new();
         let started_at = timestamp_millis();
@@ -185,7 +184,7 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            physical_plan,
+            physical_plan: plan,
         })
     }
 }

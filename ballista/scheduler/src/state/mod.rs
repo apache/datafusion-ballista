@@ -444,7 +444,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         } else {
             None
         };
-        // let logical_plan_tree = DisplayableExecutionPlan::new(plan.as_ref());
         let logical_plan_str = plan.display_indent().to_string();
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
@@ -452,7 +451,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
         );
-        let cloned_plan = plan.clone();
 
         let plan = plan.transform_down(&|node: Arc<dyn ExecutionPlan>| {
             if node.output_partitioning().partition_count() == 0 {
@@ -496,7 +494,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 session_config,
                 subscriber,
                 Some(logical_plan_str),
-                cloned_plan,
             )
             .await?;
 

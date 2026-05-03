@@ -912,7 +912,6 @@ pub async fn test_aggregation_plan_with_job_id(
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let cloned_plan = plan.clone();
     StaticExecutionGraph::new(
         "localhost:50050",
         job_id,
@@ -923,7 +922,6 @@ pub async fn test_aggregation_plan_with_job_id(
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        cloned_plan,
     )
     .unwrap()
 }
@@ -962,7 +960,6 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let cloned_plan = plan.clone();
 
     StaticExecutionGraph::new(
         "localhost:50050",
@@ -974,7 +971,6 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        cloned_plan,
     )
     .unwrap()
 }
@@ -1005,7 +1001,6 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
         .await
         .unwrap();
     let mut planner = DefaultDistributedPlanner::new();
-    let cloned_plan = plan.clone();
 
     StaticExecutionGraph::new(
         "localhost:50050",
@@ -1017,7 +1012,6 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        cloned_plan,
     )
     .unwrap()
 }
@@ -1069,7 +1063,6 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let cloned_plan = plan.clone();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -1080,7 +1073,6 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        cloned_plan,
     )
     .unwrap();
 
@@ -1114,7 +1106,6 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let cloned_plan = plan.clone();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -1125,7 +1116,6 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        cloned_plan,
     )
     .unwrap();
 
@@ -1159,7 +1149,6 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let cloned_plan = plan.clone();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -1170,7 +1159,6 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        cloned_plan,
     )
     .unwrap();
 

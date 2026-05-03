@@ -308,10 +308,9 @@ impl StaticExecutionGraph {
         session_config: Arc<SessionConfig>,
         planner: &mut dyn DistributedPlanner,
         logical_plan: Option<String>,
-        physical_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
         let shuffle_stages =
-            planner.plan_query_stages(job_id, plan, session_config.options())?;
+            planner.plan_query_stages(job_id, plan.clone(), session_config.options())?;
 
         let builder = ExecutionStageBuilder::new(session_config.clone());
         let stages = builder.build(shuffle_stages)?;
@@ -342,7 +341,7 @@ impl StaticExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            physical_plan,
+            physical_plan: plan,
         })
     }
 

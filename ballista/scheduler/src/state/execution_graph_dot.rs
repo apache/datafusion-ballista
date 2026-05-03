@@ -603,7 +603,6 @@ filter_expr="]
             .await?;
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
-        let cloned_plan = plan.clone();
         let mut planner = DefaultDistributedPlanner::new();
         StaticExecutionGraph::new(
             "scheduler_id",
@@ -615,7 +614,6 @@ filter_expr="]
             Arc::new(SessionConfig::new_with_ballista()),
             &mut planner,
             None,
-            cloned_plan,
         )
     }
 
@@ -642,7 +640,6 @@ filter_expr="]
             .await?;
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
-        let cloned_plan = plan.clone();
         let mut planner = DefaultDistributedPlanner::new();
         StaticExecutionGraph::new(
             "scheduler_id",
@@ -654,7 +651,6 @@ filter_expr="]
             Arc::new(SessionConfig::new_with_ballista()),
             &mut planner,
             None,
-            cloned_plan,
         )
     }
 }
