@@ -256,7 +256,7 @@ impl AdaptivePlanner {
                 |_, _| {},
             )?;
 
-            if DistributedExchangeRule::default().plan_invalid(plan.clone())? {
+            if DistributedExchangeRule::default().is_plan_transformed(plan.clone())? {
                 if pass >= self.max_passes - 1 {
                     warn!("plan needs another distributed optimizer pass");
                     exec_err!("plan needs another distributed optimizer pass")?

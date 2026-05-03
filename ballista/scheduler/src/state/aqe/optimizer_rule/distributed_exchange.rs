@@ -25,13 +25,22 @@ use datafusion::physical_plan::{ExecutionPlan, execution_plan};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+enum ExchangeStatus {
+    None,
+    Resolved,
+    Unresolved,
+}
+
+
 #[derive(Debug, Clone, Default)]
 pub struct DistributedExchangeRule {
     plan_id_generator: Arc<AtomicUsize>,
 }
 
 impl DistributedExchangeRule {
-    pub fn plan_invalid(
+    // check if plan is going to be transformed if this 
+    // rule executed
+    pub(crate) fn is_plan_transformed(
         &self,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<bool> {
@@ -47,60 +56,56 @@ impl DistributedExchangeRule {
         if let Some(coalesce) = execution_plan
             .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
-            && coalesce
-                .input()
-                .as_any()
-                .downcast_ref::<ExchangeExec>()
-                .is_none()
         {
-            let exchange_exec = ExchangeExec::new(
-                coalesce.input().clone(),
-                None,
-                self.plan_id_generator
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            );
-            Ok(Transformed::yes(
-                execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-            ))
+            let input = coalesce.input();
+            if input.as_any().downcast_ref::<ExchangeExec>().is_none()
+                && !matches!(find_exchange_status(input), ExchangeStatus::Unresolved)
+            {
+                let exchange_exec = ExchangeExec::new(
+                    input.clone(),
+                    None,
+                    self.plan_id_generator
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                );
+                return Ok(Transformed::yes(
+                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
+                ));
+            }
         } else if let Some(sort_preserving_merge) = execution_plan
             .as_any()
             .downcast_ref::<SortPreservingMergeExec>(
-        ) && sort_preserving_merge
-            .input()
-            .as_any()
-            .downcast_ref::<ExchangeExec>()
-            .is_none()
-        {
-            let exchange_exec = ExchangeExec::new(
-                sort_preserving_merge.input().clone(),
-                None,
-                self.plan_id_generator
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            );
-            Ok(Transformed::yes(
-                execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-            ))
+        ) {
+            let input = sort_preserving_merge.input();
+            if input.as_any().downcast_ref::<ExchangeExec>().is_none()
+                && !matches!(find_exchange_status(input), ExchangeStatus::Unresolved)
+            {
+                let exchange_exec = ExchangeExec::new(
+                    input.clone(),
+                    None,
+                    self.plan_id_generator
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                );
+                return Ok(Transformed::yes(
+                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
+                ));
+            }
         } else if let Some(repartition) =
             execution_plan.as_any().downcast_ref::<RepartitionExec>()
         {
-            match repartition.partitioning() {
-                execution_plan::Partitioning::Hash(_, _) => {
+            if let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning() {
+                let input = repartition.input();
+                if !matches!(find_exchange_status(input), ExchangeStatus::Unresolved) {
                     let exchange_exec = ExchangeExec::new(
-                        repartition.input().clone(),
+                        input.clone(),
                         Some(repartition.partitioning().clone()),
                         self.plan_id_generator
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                     );
-                    Ok(Transformed::yes(Arc::new(exchange_exec)))
-                }
-                execution_plan::Partitioning::RoundRobinBatch(_)
-                | execution_plan::Partitioning::UnknownPartitioning(_) => {
-                    Ok(Transformed::no(execution_plan))
+                    return Ok(Transformed::yes(Arc::new(exchange_exec)));
                 }
             }
-        } else {
-            Ok(Transformed::no(execution_plan))
         }
+        Ok(Transformed::no(execution_plan))
     }
 }
 
@@ -136,5 +141,36 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
 
     fn schema_check(&self) -> bool {
         false
+    }
+}
+
+/// Scans the subtree for the nearest `ExchangeExec` in each path and returns the
+/// aggregate status. Stops recursing at `ExchangeExec` boundaries so that only the
+/// shallowest exchange in each branch is considered.
+///
+/// Returns `Unresolved` as soon as any branch contains an unresolved exchange
+/// (short-circuits), `Resolved` if every branch that has an exchange has a resolved
+/// one, and `None` if no exchange is found anywhere.
+fn find_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
+    if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        if exchange.shuffle_created() {
+            ExchangeStatus::Resolved
+        } else {
+            ExchangeStatus::Unresolved
+        }
+    } else {
+        let mut found_resolved = false;
+        for child in plan.children() {
+            match find_exchange_status(child) {
+                ExchangeStatus::Unresolved => return ExchangeStatus::Unresolved,
+                ExchangeStatus::Resolved => found_resolved = true,
+                ExchangeStatus::None => {}
+            }
+        }
+        if found_resolved {
+            ExchangeStatus::Resolved
+        } else {
+            ExchangeStatus::None
+        }
     }
 }
