@@ -91,6 +91,38 @@ The executor refuses to start if the per-task share would round to zero (i.e.
 When `--memory-pool-size` is not set, the executor behaves as before with no
 memory pool installed.
 
+## Join Strategy
+
+Ballista defaults to **sort-merge join** rather than hash join. This is the
+opposite of DataFusion's standalone default and reflects two facts:
+
+- DataFusion's hash join implementation does not yet support spilling: the
+  full build side must fit in memory per task.
+- Ballista executors run multiple tasks in parallel per host, so per-task
+  build sides aggregate quickly under load and can OOM the executor.
+
+Sort-merge join spills under memory pressure (via the executor's memory
+pool, when configured), making it the safer default for distributed
+execution.
+
+If you know the build side of a particular query fits comfortably in
+memory and you want hash-join performance, opt back in at the session
+level:
+
+```sql
+SET datafusion.optimizer.prefer_hash_join = true;
+```
+
+or in code:
+
+```rust
+let session_config = SessionConfig::new_with_ballista()
+    .set_bool("datafusion.optimizer.prefer_hash_join", true);
+```
+
+This setting applies per session and does not require restarting the
+scheduler or executors.
+
 ## Shuffle Implementation
 
 Ballista exchanges data between query stages by writing the output of each
