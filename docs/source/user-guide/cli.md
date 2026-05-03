@@ -28,6 +28,12 @@ Use Cargo to install:
 cargo install ballista-cli
 ```
 
+To install with the Terminal User Interface (TUI) feature enabled:
+
+```bash
+cargo install ballista-cli --features tui
+```
+
 ## Usage
 
 ```
@@ -45,6 +51,7 @@ OPTIONS:
         --port <PORT>                Ballista scheduler port
     -q, --quiet                      Reduce printing other than the results and work quietly
     -r, --rc <RC>...                 Run the provided files on startup instead of ~/.ballistarc
+        --tui                        Enables terminal user interface (requires `tui` feature)
     -V, --version                    Print version information
 ```
 
@@ -130,3 +137,39 @@ Available commands inside Ballista CLI are:
 ```bash
 > \h function_table
 ```
+
+## Terminal User Interface (TUI)
+
+When Ballista CLI is built with the `tui` feature, you can launch an interactive terminal user interface
+that provides a visual overview of the Ballista cluster.
+
+### Launching the TUI
+
+```bash
+ballista-cli --tui
+```
+
+### TUI Features
+
+The TUI provides the following views:
+
+- **Executors**: Lists all registered executors with their host, port, CPU cores, memory, and current job count. Supports sorting by any column.
+- **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting and shows job details on selection.
+- **Metrics**: Fetches and displays Prometheus metrics from the scheduler, including query execution statistics.
+- **Scheduler Info**: Shows the current scheduler state and configuration.
+
+### TUI Navigation
+
+| Key             | Action                                           |
+| --------------- | ------------------------------------------------ |
+| `j`             | Switch to Jobs tab                               |
+| `e`             | Switch to Executors tab                          |
+| `m`             | Switch to Metrics tab                            |
+| `↑` / `↓`       | Navigate rows in the current table               |
+| `1` / `2` / `3` | Toggle sort by column (press again to reverse)   |
+| `Enter`         | Open details popup for the selected job          |
+| `Esc`           | Close popup or quit details view                 |
+| `q`             | Quit the TUI                                     |
+| `?`             | Show help overlay with all key bindings          |
+
+The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
