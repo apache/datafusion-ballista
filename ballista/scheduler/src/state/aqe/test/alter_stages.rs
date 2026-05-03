@@ -226,7 +226,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
     ");
 
     //
-    // next stage should be final stage as well
+    // next stage is final stage
     //
 
     let stages = planner.runnable_stages()?.unwrap();
