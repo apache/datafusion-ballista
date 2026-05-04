@@ -157,7 +157,14 @@ impl ExecutionPlan for ShuffleReaderExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.is_empty() {
-            Ok(self)
+            Ok(Arc::new(Self {
+                stage_id: self.stage_id,
+                schema: self.schema.clone(),
+                partition: self.partition.clone(),
+                metrics: ExecutionPlanMetricsSet::new(),
+                properties: self.properties.clone(),
+                work_dir: self.work_dir.clone(),
+            }))
         } else {
             Err(DataFusionError::Plan(
                 "Ballista ShuffleReaderExec does not support children plans".to_owned(),
