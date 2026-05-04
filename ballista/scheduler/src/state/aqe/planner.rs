@@ -22,7 +22,6 @@ use crate::state::aqe::optimizer_rule::{
 
 use crate::state::execution_stage::StageOutput;
 use ballista_core::execution_plans::ShuffleWriter;
-use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
@@ -63,8 +62,6 @@ pub struct AdaptivePlanner {
     /// Optimizer max passes before it gives up
     // to be configured from a configuration
     #[allow(dead_code)]
-    // TODO: remove this once we're sure we do not need multi pass optimization
-    max_passes: usize,
     /// job name
     job_name: String,
 
@@ -96,8 +93,6 @@ impl AdaptivePlanner {
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
         job_name: String,
     ) -> common::Result<Self> {
-        let max_passes = session_config.adaptive_query_planner_max_passes();
-
         let session_state =
             Self::create_session_state(session_config, physical_optimizer_rules);
         let planner = DefaultPhysicalPlanner::default();
@@ -109,7 +104,6 @@ impl AdaptivePlanner {
             physical_planner: planner.into(),
             plan,
             runnable_stage_cache: HashMap::new(),
-            max_passes,
             job_name,
             runnable_stage_output: HashMap::new(),
         })

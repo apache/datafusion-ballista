@@ -208,9 +208,6 @@ pub trait SessionConfigExt {
     /// Is adaptive query planner enabled
     fn ballista_adaptive_query_planner_enabled(&self) -> bool;
 
-    /// Number of times that the adaptive optimizer will attempt to optimize the plan
-    fn adaptive_query_planner_max_passes(&self) -> usize;
-
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
 
@@ -506,16 +503,6 @@ impl SessionConfigExt for SessionConfig {
             .get::<BallistaConfig>()
             .map(|c| c.adaptive_query_planner_enabled())
             .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner_enabled())
-    }
-
-    fn adaptive_query_planner_max_passes(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.adaptive_query_planner_max_passes())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().adaptive_query_planner_max_passes()
-            })
     }
 
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {

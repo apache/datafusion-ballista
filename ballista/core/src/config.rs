@@ -66,9 +66,6 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
-/// Number of times that the optimizer will attempt to optimize the plan
-pub const BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES: &str =
-    "ballista.planner.adaptive.planner_pass";
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
@@ -132,10 +129,6 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES.to_string(),
-                         "Number of times that the adaptive optimizer will attempt to optimize the plan".to_string(),
-                         DataType::UInt64,
-                         Some(3.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
@@ -338,10 +331,6 @@ impl BallistaConfig {
     /// Is Adaptive Query Planner enabled
     pub fn adaptive_query_planner_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
-    }
-    /// Number of times that the adaptive optimizer will attempt to optimize the plan
-    pub fn adaptive_query_planner_max_passes(&self) -> usize {
-        self.get_usize_setting(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES)
     }
 
     /// Returns whether sort-based shuffle is enabled.
