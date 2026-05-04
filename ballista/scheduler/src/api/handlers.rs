@@ -207,7 +207,7 @@ pub struct QueryStageSummary {
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct JobQueryParams {
-    pub include_logical: Option<bool>,
+    /// Flag to tree-style render for physical plan
     pub tree_rendered: Option<bool>,
 }
 
@@ -384,7 +384,6 @@ pub async fn get_job<
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
     let render_tree = query.tree_rendered.unwrap_or(false);
-    let include_logical = query.include_logical.unwrap_or(true);
 
     let physical_plan = if render_tree {
         displayable(job.physical_plan().as_ref())
@@ -406,11 +405,7 @@ pub async fn get_job<
         num_stages,
         completed_stages,
         percent_complete,
-        logical_plan: if include_logical {
-            job.logical_plan().map(str::to_owned)
-        } else {
-            None
-        },
+        logical_plan: job.logical_plan().map(str::to_owned),
         physical_plan: Some(physical_plan),
         stage_plan: Some(stage_plan),
     }))
