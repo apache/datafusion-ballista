@@ -205,9 +205,9 @@ Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes onl
 
 ### Configuration
 
-| key                                    | type    | default | description                                                    |
-| -------------------------------------- | ------- | ------- | -------------------------------------------------------------- |
-| ballista.planner.adaptive.enabled      | Boolean | false   | Enables the adaptive planner. Experimental.                    |
+| key                               | type    | default | description                                 |
+| --------------------------------- | ------- | ------- | ------------------------------------------- |
+| ballista.planner.adaptive.enabled | Boolean | false   | Enables the adaptive planner. Experimental. |
 
 ### What AQE does today
 
