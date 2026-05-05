@@ -208,7 +208,7 @@ pub struct QueryStageSummary {
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct JobQueryParams {
     /// Flag to tree-style render for physical plan
-    pub tree_rendered: Option<bool>,
+    pub render_tree: Option<bool>,
 }
 
 pub async fn get_scheduler_state<
@@ -383,7 +383,7 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let render_tree = query.tree_rendered.unwrap_or(false);
+    let render_tree = query.render_tree.unwrap_or(false);
 
     let physical_plan = if render_tree {
         displayable(job.physical_plan().as_ref())
@@ -489,7 +489,10 @@ pub async fn get_query_stages<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
+    query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
+    let render_tree = query.render_tree.unwrap_or(false);
+
     if let Some(graph) = data_server
         .state
         .task_manager
@@ -521,7 +524,11 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = Some(displayable(running_stage.plan.as_ref()).indent(false).to_string());
+                        summary.stage_plan = if render_tree {
+                            Some(displayable(running_stage.plan.as_ref()).tree_render().to_string())
+                        } else {
+                            Some(displayable(running_stage.plan.as_ref()).indent(false).to_string())
+                        };
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -584,7 +591,11 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string());
+                        summary.stage_plan = if render_tree {
+                            Some(displayable(completed_stage.plan.as_ref()).tree_render().to_string())
+                        } else {
+                            Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string())
+                        };
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
