@@ -1950,9 +1950,9 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "0.12.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8f521dd9c9e5f03986eb5c674b14b21e9ccf2eb9f98fecb681100214d5e9e4f"
+checksum = "f7335955a5f85f95f3188623240e081e7b2059a8ad1bae68944b7cfdd718fb10"
 dependencies = [
  "link-section",
  "linktime-proc-macro",
@@ -4266,9 +4266,9 @@ dependencies = [
 
 [[package]]
 name = "link-section"
-version = "0.12.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0567ec9fe5ffdf9241cd90a7629f250a5f903d6ff4573cf7903308662d6fce40"
+checksum = "ea2c24837c4fd5ab6a31d64133eae954f5199247523cf29586117e85245c0dd3"
 
 [[package]]
 name = "linktime-proc-macro"
