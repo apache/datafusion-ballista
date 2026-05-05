@@ -59,9 +59,6 @@ pub struct AdaptivePlanner {
     plan: Arc<dyn ExecutionPlan>,
     /// caches current runnable stages
     runnable_stage_cache: HashMap<usize, Arc<dyn ExecutionPlan>>,
-    /// Optimizer max passes before it gives up
-    // to be configured from a configuration
-    #[allow(dead_code)]
     /// job name
     job_name: String,
 

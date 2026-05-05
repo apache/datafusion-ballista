@@ -208,7 +208,6 @@ Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes onl
 | key                                    | type    | default | description                                                    |
 | -------------------------------------- | ------- | ------- | -------------------------------------------------------------- |
 | ballista.planner.adaptive.enabled      | Boolean | false   | Enables the adaptive planner. Experimental.                    |
-| ballista.planner.adaptive.planner_pass | UInt64  | 3       | Maximum optimizer passes the adaptive planner runs per replan. |
 
 ### What AQE does today
 
