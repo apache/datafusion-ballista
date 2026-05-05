@@ -180,6 +180,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 metrics: ExecutionPlanMetricsSet::new(),
                 properties: self.properties.clone(),
                 work_dir: self.work_dir.clone(),
+                client_pool: self.client_pool.clone(),
             }))
         } else {
             Err(DataFusionError::Plan(
