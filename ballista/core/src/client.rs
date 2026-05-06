@@ -114,6 +114,24 @@ impl BallistaClient {
         })
     }
 
+    /// creates a ballista client to be used for testing
+    /// it connects lazily and which can not really
+    /// be reconfigured.
+    pub fn new_for_test(host: &str, port: u16) -> Self {
+        use tonic::transport::Endpoint;
+        let addr = format!("http://{host}:{port}");
+        let channel = Endpoint::from_shared(addr)
+            .expect("valid address")
+            .connect_lazy();
+        Self {
+            io_retries_times: 3,
+            io_retry_wait_time_ms: 250,
+            host: host.to_string(),
+            port,
+            flight_client: FlightServiceClient::new(channel),
+        }
+    }
+
     /// Retrieves a partition from an executor.
     ///
     /// Depending on the value of the `flight_transport` parameter, this method will utilize either

@@ -51,8 +51,10 @@ pub struct SpillManager {
     active_writers: HashMap<usize, StreamWriter<BufWriter<File>>>,
     /// Compression codec for spill files
     compression: CompressionType,
-    /// Total number of spills performed (counts batches, not events)
-    total_spills: usize,
+    /// Total number of batches written across all spill files. One call to
+    /// `spill_all_partitions` typically increments this multiple times (once
+    /// per partition that had buffered rows).
+    total_spilled_batches: u64,
     /// Total bytes spilled
     total_bytes_spilled: u64,
     /// Per-partition counters: partition_id -> (batches, rows, bytes)
@@ -91,7 +93,7 @@ impl SpillManager {
             spill_files: HashMap::new(),
             active_writers: HashMap::new(),
             compression,
-            total_spills: 0,
+            total_spilled_batches: 0,
             total_bytes_spilled: 0,
             partition_counters: HashMap::new(),
         })
@@ -138,7 +140,7 @@ impl SpillManager {
         entry.1 += batch.num_rows() as u64;
         entry.2 += bytes_written;
 
-        self.total_spills += 1;
+        self.total_spilled_batches += 1;
         self.total_bytes_spilled += bytes_written;
 
         Ok(bytes_written)
@@ -186,9 +188,13 @@ impl SpillManager {
         Ok(())
     }
 
-    /// Returns the total number of batches spilled across all partitions.
-    pub fn total_spills(&self) -> usize {
-        self.total_spills
+    /// Returns the total number of batches written to spill files across all
+    /// partitions. Note this counts batches, not spill *events*: a single
+    /// memory-pressure event in the writer typically produces one batch per
+    /// non-empty output partition. Spill-event accounting lives at the writer
+    /// layer because the spill manager only sees batch-level calls.
+    pub fn total_spilled_batches(&self) -> u64 {
+        self.total_spilled_batches
     }
 
     /// Returns the total bytes spilled to disk.
@@ -228,7 +234,7 @@ impl std::fmt::Debug for SpillManager {
             .field("spill_dir", &self.spill_dir)
             .field("spill_files", &self.spill_files)
             .field("compression", &self.compression)
-            .field("total_spills", &self.total_spills)
+            .field("total_spilled_batches", &self.total_spilled_batches)
             .field("total_bytes_spilled", &self.total_bytes_spilled)
             .finish()
     }
@@ -281,7 +287,7 @@ mod tests {
 
         assert!(manager.has_spill_files(0));
         assert!(!manager.has_spill_files(1));
-        assert_eq!(manager.total_spills(), 2);
+        assert_eq!(manager.total_spilled_batches(), 2);
 
         manager.finish_writers()?;
 
@@ -314,7 +320,7 @@ mod tests {
 
         assert!(manager.has_spill_files(0));
         assert!(manager.has_spill_files(1));
-        assert_eq!(manager.total_spills(), 2);
+        assert_eq!(manager.total_spilled_batches(), 2);
 
         manager.finish_writers()?;
 

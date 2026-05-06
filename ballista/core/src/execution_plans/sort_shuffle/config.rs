@@ -29,6 +29,10 @@ pub struct SortShuffleConfig {
     /// Target batch size in rows when materializing buffered indices via
     /// `interleave_record_batch` (default: 8192).
     pub batch_size: usize,
+    /// Per-task buffered-bytes budget at which the writer spills its in-memory
+    /// batches to disk. Counted independently of the runtime `MemoryPool`, so
+    /// spilling kicks in even when the pool is unbounded.
+    pub memory_limit_per_task_bytes: usize,
 }
 
 impl Default for SortShuffleConfig {
@@ -37,18 +41,26 @@ impl Default for SortShuffleConfig {
             enabled: false,
             compression: CompressionType::LZ4_FRAME,
             batch_size: 8192,
+            memory_limit_per_task_bytes: 256 * 1024 * 1024,
         }
     }
 }
 
 impl SortShuffleConfig {
-    /// Creates a new configuration.
+    /// Creates a new configuration with the default per-task memory limit.
     pub fn new(enabled: bool, compression: CompressionType, batch_size: usize) -> Self {
         Self {
             enabled,
             compression,
             batch_size,
+            memory_limit_per_task_bytes: Self::default().memory_limit_per_task_bytes,
         }
+    }
+
+    /// Sets the per-task buffered-bytes budget.
+    pub fn with_memory_limit_per_task_bytes(mut self, bytes: usize) -> Self {
+        self.memory_limit_per_task_bytes = bytes;
+        self
     }
 }
 
@@ -62,6 +74,7 @@ mod tests {
         assert!(!config.enabled);
         assert!(matches!(config.compression, CompressionType::LZ4_FRAME));
         assert_eq!(config.batch_size, 8192);
+        assert_eq!(config.memory_limit_per_task_bytes, 256 * 1024 * 1024);
     }
 
     #[test]
@@ -70,5 +83,12 @@ mod tests {
         assert!(config.enabled);
         assert!(matches!(config.compression, CompressionType::LZ4_FRAME));
         assert_eq!(config.batch_size, 4096);
+        assert_eq!(config.memory_limit_per_task_bytes, 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_with_memory_limit_per_task_bytes() {
+        let config = SortShuffleConfig::default().with_memory_limit_per_task_bytes(1024);
+        assert_eq!(config.memory_limit_per_task_bytes, 1024);
     }
 }

@@ -18,10 +18,44 @@
 //! Iterator that materializes per-partition rows into well-sized
 //! `RecordBatch`es using `arrow::compute::interleave_record_batch`.
 
+use datafusion::arrow::array::{Array, ArrayRef, BinaryViewArray, StringViewArray};
 use datafusion::arrow::compute::interleave_record_batch;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use std::sync::Arc;
+
+/// Compacts `Utf8View` / `BinaryView` columns by running `gc()` on them.
+///
+/// `interleave_record_batch` preserves the original data buffers for view
+/// arrays, so the output references every source data buffer the inputs
+/// touched even if it only emits a few rows. Without compaction, downstream
+/// IPC writes serialize all those source buffers (potentially hundreds of MB)
+/// rather than just the bytes the views point at.
+fn compact_view_columns(batch: RecordBatch) -> Result<RecordBatch> {
+    let mut changed = false;
+    let columns: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|c| -> ArrayRef {
+            if let Some(a) = c.as_any().downcast_ref::<StringViewArray>() {
+                changed = true;
+                Arc::new(a.gc())
+            } else if let Some(a) = c.as_any().downcast_ref::<BinaryViewArray>() {
+                changed = true;
+                Arc::new(a.gc())
+            } else {
+                c.clone()
+            }
+        })
+        .collect();
+    if !changed {
+        return Ok(batch);
+    }
+    RecordBatch::try_new(batch.schema(), columns).map_err(|e| {
+        DataFusionError::ArrowError(Box::new(e), Some(DataFusionError::get_back_trace()))
+    })
+}
 
 /// Iterator over per-partition output `RecordBatch`es.
 ///
@@ -79,7 +113,7 @@ impl<'a> Iterator for PartitionedBatchIterator<'a> {
         self.pos = end;
 
         match interleave_record_batch(&self.batch_refs, &self.scratch) {
-            Ok(batch) => Some(Ok(batch)),
+            Ok(batch) => Some(compact_view_columns(batch)),
             Err(e) => Some(Err(DataFusionError::ArrowError(
                 Box::new(e),
                 Some(DataFusionError::get_back_trace()),

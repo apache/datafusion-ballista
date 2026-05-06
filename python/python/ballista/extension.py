@@ -15,9 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from datafusion import SessionConfig, SessionContext, DataFrame, ParquetWriterOptions
+from datafusion import (
+    SessionConfig,
+    SessionContext,
+    DataFrame,
+    ParquetWriterOptions,
+    DataFrameWriteOptions
+)
 from datafusion.dataframe import Compression
-
 from typing import (
     Dict,
     List,
@@ -27,10 +32,10 @@ from typing import (
 )
 import warnings
 
-
 from ._internal_ballista import create_ballista_data_frame
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
+
 import pathlib
 
 # class used to redefine DataFrame object
@@ -44,7 +49,6 @@ EXECUTION_METHODS = [
     "to_arrow_table",
     "to_pandas",
     "to_polars",
-    "write_json",
 ]
 
 
@@ -145,7 +149,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
     ):
         super().__init__(df.df)
         self.address = address
-        self._session_id = session_id
+        self.session_id = session_id
         self.cluster_config = cluster_config
     #
     # this will create a ballista dataframe, which has ballista
@@ -156,19 +160,24 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
         df = create_ballista_data_frame(
             blob_plan,
             self.address,
-            self._session_id,
+            self.session_id,
             self.cluster_config,
         )
         return df
-
-    def write_csv(self, path, with_header=False):
+    
+    def write_json(self, path, write_options: Union[DataFrameWriteOptions, None] = None):
         df = self._to_internal_df()
-        df.write_csv(path, with_header)
+        df.write_json(path, None)
+
+    def write_csv(self, path, with_header=False, write_options: Union[DataFrameWriteOptions, None] = None,):
+        df = self._to_internal_df()
+        df.write_csv(path, with_header, None)
 
     def write_parquet_with_options(
         self,
         path: str,
         options: ParquetWriterOptions,
+        write_options: Union[DataFrameWriteOptions, None] = None,
     ):
         options_internal = ParquetWriterOptionsInternal(
             options.data_pagesize_limit,
@@ -215,7 +224,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
             str(path),
             options_internal,
             column_specific_options_internal,
-            # raw_write_options,
+            None
         )
 
     def write_parquet(
@@ -223,6 +232,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
         path: Union[str, pathlib.Path],
         compression: Union[str, Compression, ParquetWriterOptions] = Compression.ZSTD,
         compression_level: Union[int, None] = None,
+        write_options: Union[DataFrameWriteOptions, None] = None,
     ) -> None:
         if isinstance(compression, ParquetWriterOptions):
             if compression_level is not None:
@@ -240,7 +250,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
         ):
             compression_level = compression.get_default_level()
         df = self._to_internal_df()
-        df.write_parquet(str(path), compression.value, compression_level)
+        df.write_parquet(str(path), compression.value, compression_level, None)
 
     def explain_visual(self, analyze: bool = False) -> "ExecutionPlanVisualization":
         """
@@ -595,4 +605,3 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
             warnings.warn(f"Could not retrieve tables from catalog: {e}")
             pass
         return {}
-    

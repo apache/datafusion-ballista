@@ -60,7 +60,7 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: Hash([c@0], 2)
+    SortShuffleWriterExec: partitioning=Hash([c@0], 2)
       AggregateExec: mode=Partial, gby=[c@2 as c], aggr=[min(t.a), max(t.b)]
         DataSourceExec: partitions=1, partition_sizes=[1]
     ");
@@ -137,7 +137,7 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: Hash([c@0], 2)
+    SortShuffleWriterExec: partitioning=Hash([c@0], 2)
       AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
         FilterExec: a@0 = 42
           DataSourceExec: partitions=1, partition_sizes=[1]
@@ -182,7 +182,7 @@ async fn should_insert_new_stage() -> datafusion::error::Result<()> {
     assert_eq!(1, stages.len());
 
     assert_plan!(stages[0].plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: Hash([big_col@0], 2)
+    SortShuffleWriterExec: partitioning=Hash([big_col@0], 2)
       StatisticsExec: col_count=1, row_count=Inexact(262144)
     ");
 

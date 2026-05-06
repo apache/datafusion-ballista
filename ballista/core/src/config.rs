@@ -79,6 +79,10 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 /// Configuration key for shuffle writer bounded-channel capacity.
 pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
     "ballista.shuffle.writer_channel_capacity";
+/// Configuration key for the per-task buffered-bytes budget at which the
+/// sort shuffle writer spills its in-memory batches to disk.
+pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
+    "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -139,7 +143,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -148,6 +152,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Bounded channel capacity for async-to-blocking I/O bridge in shuffle writer".to_string(),
                          DataType::UInt32,
                          Some(DEFAULT_SHUFFLE_CHANNEL_CAPACITY.to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES.to_string(),
+                         "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
+                         in-memory batches to disk. Counted independently of the runtime memory pool, so \
+                         spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle \
+                         memory per executor is approximately concurrent_tasks * this value.".to_string(),
+                         DataType::UInt64,
+                         Some((256 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -357,6 +368,12 @@ impl BallistaConfig {
     /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
     pub fn shuffle_writer_channel_capacity(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY)
+    }
+
+    /// Returns the per-task buffered-bytes budget at which the sort shuffle
+    /// writer spills its in-memory batches to disk.
+    pub fn shuffle_sort_based_memory_limit_per_task_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES)
     }
 
     /// Should client employ pull or push job tracking strategy

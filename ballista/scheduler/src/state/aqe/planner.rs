@@ -22,7 +22,7 @@ use crate::state::aqe::optimizer_rule::{
 };
 
 use crate::state::execution_stage::StageOutput;
-use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
@@ -311,13 +311,18 @@ impl AdaptivePlanner {
                 Ok((None, stages_to_cancel))
             }
             Some(stages) => {
+                let config = self.session_state.config().options();
                 let (stage_ids, shuffle_writers) = stages
                     .into_iter()
                     .map(|plan| {
                         // TODO: we need to find input stages for given stage
                         //       thus result should change
-                        BallistaAdapter::adapt_to_ballista(plan, self.job_name.as_str())
-                            .map(|w| (w.plan.stage_id(), w))
+                        BallistaAdapter::adapt_to_ballista(
+                            plan,
+                            self.job_name.as_str(),
+                            config,
+                        )
+                        .map(|w| (w.plan.stage_id(), w))
                     })
                     .collect::<common::Result<(HashSet<_>, Vec<_>)>>()?;
 
@@ -523,7 +528,7 @@ impl AdaptivePlanner {
 
 /// Wraps stage plan with addition of references to previous stages
 pub(crate) struct AdaptiveStageInfo {
-    pub(crate) plan: Arc<ShuffleWriterExec>,
+    pub(crate) plan: Arc<dyn ShuffleWriter>,
     #[allow(dead_code)] // TODO: still not sure if this is needed
     pub(crate) inputs: Vec<usize>,
 }

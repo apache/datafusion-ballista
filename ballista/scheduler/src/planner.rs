@@ -324,7 +324,7 @@ pub fn rollback_resolved_shuffles(
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
-fn create_shuffle_writer_with_config(
+pub(crate) fn create_shuffle_writer_with_config(
     job_id: &str,
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,
@@ -345,6 +345,9 @@ fn create_shuffle_writer_with_config(
                 true,
                 datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
                 ballista_config.shuffle_sort_based_batch_size(),
+            )
+            .with_memory_limit_per_task_bytes(
+                ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
             );
 
             return Ok(Arc::new(SortShuffleWriterExec::try_new(
@@ -373,7 +376,7 @@ mod test {
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
-    use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
+    use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::execution::TaskContext;
@@ -709,7 +712,7 @@ order by
         /*
             expected result:
             Stage 0:
-            ShuffleWriterExec: partitioning: Hash([l_shipmode@1], 2)
+            SortShuffleWriterExec: partitioning=Hash([l_shipmode@1], 2)
               DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], file_type=csv, has_header=false
 
             Stage 1:
@@ -732,8 +735,8 @@ order by
 
         // stage0
         let stage0 = stages[0].clone();
-        let shuffle_write = downcast_exec!(stage0, ShuffleWriterExec);
-        let partitioning = shuffle_write.shuffle_output_partitioning().expect("stage0");
+        let shuffle_write = downcast_exec!(stage0, SortShuffleWriterExec);
+        let partitioning = shuffle_write.shuffle_output_partitioning();
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {

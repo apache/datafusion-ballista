@@ -104,7 +104,10 @@ struct SortShuffleWriteMetrics {
     input_rows: metrics::Count,
     /// Number of output rows
     output_rows: metrics::Count,
-    /// Number of batches spilled to disk
+    /// Number of times the writer flushed buffered partitions to disk under
+    /// memory pressure. One event typically writes one batch per non-empty
+    /// output partition, so this is strictly less than or equal to the number
+    /// of batches written into spill files.
     spill_count: metrics::Count,
     /// Bytes spilled to disk
     spill_bytes: metrics::Count,
@@ -236,6 +239,12 @@ impl SortShuffleWriterExec {
                     .register(&context.runtime_env().memory_pool);
 
             let mut hash_buffer: Vec<u64> = Vec::new();
+            let mut spill_events: u64 = 0;
+            // Absolute buffered-bytes counter, independent of the runtime
+            // `MemoryPool`. Drives spill decisions so the writer bounds its
+            // RSS even when the pool is unbounded.
+            let mut buffered_bytes: usize = 0;
+            let memory_limit = config.memory_limit_per_task_bytes;
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
@@ -258,15 +267,39 @@ impl SortShuffleWriterExec {
                 let after = buffered.indices_allocated_size();
                 growth += after.saturating_sub(before);
 
-                if reservation.try_grow(growth).is_err() {
+                // Mirror the growth in the runtime pool reservation so the pool
+                // sees this writer's memory usage. Best-effort: if the pool is
+                // bounded and rejects the grow, that's fine — the absolute
+                // counter below still triggers a spill.
+                let _ = reservation.try_grow(growth);
+                buffered_bytes = buffered_bytes.saturating_add(growth);
+
+                if buffered_bytes >= memory_limit {
                     let spill_timer = metrics.spill_time.timer();
-                    spill_all_partitions(
+                    let (event_batches, event_bytes) = spill_all_partitions(
                         &mut buffered,
                         &mut spill_manager,
                         &mut reservation,
                         config.batch_size,
                     )?;
                     spill_timer.done();
+                    buffered_bytes = 0;
+
+                    if event_batches > 0 {
+                        spill_events += 1;
+                        info!(
+                            "Sort shuffle writer for input partition {} spilled \
+                             event #{}: {} batches, {} bytes \
+                             (cumulative: {} events, {} batches, {} bytes)",
+                            input_partition,
+                            spill_events,
+                            event_batches,
+                            event_bytes,
+                            spill_events,
+                            spill_manager.total_spilled_batches(),
+                            spill_manager.total_bytes_spilled(),
+                        );
+                    }
                 }
             }
 
@@ -288,7 +321,7 @@ impl SortShuffleWriterExec {
             )?;
             timer.done();
 
-            metrics.spill_count.add(spill_manager.total_spills());
+            metrics.spill_count.add(spill_events as usize);
             metrics
                 .spill_bytes
                 .add(spill_manager.total_bytes_spilled() as usize);
@@ -298,7 +331,7 @@ impl SortShuffleWriterExec {
 
             // Snapshot spill counters before cleanup (cleanup doesn't touch them
             // but we want to be explicit about ordering for the log line below).
-            let total_spills = spill_manager.total_spills();
+            let total_spilled_batches = spill_manager.total_spilled_batches();
             let total_bytes_spilled = spill_manager.total_bytes_spilled();
 
             spill_manager
@@ -310,12 +343,14 @@ impl SortShuffleWriterExec {
 
             info!(
                 "Sort shuffle write for partition {} completed in {} seconds. \
-                 Output: {:?}, Index: {:?}, Spill batches: {}, Spill bytes: {}",
+                 Output: {:?}, Index: {:?}, Spill events: {}, Spill batches: {}, \
+                 Spill bytes: {}",
                 input_partition,
                 now.elapsed().as_secs(),
                 data_path,
                 index_path,
-                total_spills,
+                spill_events,
+                total_spilled_batches,
                 total_bytes_spilled
             );
 
@@ -342,15 +377,21 @@ impl SortShuffleWriterExec {
 /// indices through `PartitionedBatchIterator` and appends each yielded batch
 /// to that partition's spill file. After this call, `buffered.is_empty()` is
 /// true and `reservation.size() == 0`.
+///
+/// Returns `(batches_written, bytes_written)` for this single spill event so
+/// the caller can log per-event diagnostics. A return of `(0, 0)` means there
+/// was nothing buffered and no event occurred.
 fn spill_all_partitions(
     buffered: &mut BufferedBatches,
     spill_manager: &mut SpillManager,
     reservation: &mut MemoryReservation,
     batch_size: usize,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     if buffered.is_empty() {
-        return Ok(());
+        return Ok((0, 0));
     }
+    let mut batches_written: u64 = 0;
+    let mut bytes_written: u64 = 0;
     let (batches, indices) = buffered.take();
     for (partition_id, partition_indices) in indices.iter().enumerate() {
         if partition_indices.is_empty() {
@@ -359,13 +400,15 @@ fn spill_all_partitions(
         let iter = PartitionedBatchIterator::new(&batches, partition_indices, batch_size);
         for result in iter {
             let batch = result?;
-            spill_manager
+            let written = spill_manager
                 .spill(partition_id, &batch)
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            batches_written += 1;
+            bytes_written += written;
         }
     }
     reservation.free();
-    Ok(())
+    Ok((batches_written, bytes_written))
 }
 
 /// Finalizes the output by writing the consolidated data file and index file.
@@ -826,8 +869,9 @@ mod tests {
     /// Shared helper for round-trip tests. Builds `num_batches` batches of
     /// `rows_per_batch` rows each with schema `(k: Int64, v: Int64)`, writes
     /// them through `SortShuffleWriterExec` into `num_partitions` output
-    /// partitions with a `memory_limit_bytes` pool, reads every partition back
-    /// via `stream_sort_shuffle_partition`, and asserts:
+    /// partitions with a per-task buffered-bytes budget of
+    /// `sort_shuffle_memory_limit_bytes`, reads every partition back via
+    /// `stream_sort_shuffle_partition`, and asserts:
     ///   - Every input key `0..total_rows` is present exactly once in the union
     ///     of partition outputs.
     ///   - `spill_count > 0` iff `expect_spills` is `true`.
@@ -836,7 +880,7 @@ mod tests {
         num_batches: usize,
         rows_per_batch: usize,
         num_partitions: usize,
-        memory_limit_bytes: usize,
+        sort_shuffle_memory_limit_bytes: usize,
         expect_spills: bool,
     ) -> Result<()> {
         use super::super::reader::stream_sort_shuffle_partition;
@@ -874,9 +918,13 @@ mod tests {
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(DataSourceExec::new(memory_data_source));
 
+        // The runtime pool is sized generously: spill decisions are now driven
+        // by `SortShuffleConfig::memory_limit_per_task_bytes`, but we keep a
+        // bounded pool so the post-test `pool.reserved() == 0` assertion still
+        // checks that the writer releases its `MemoryReservation`.
         let runtime_env = Arc::new(
             RuntimeEnvBuilder::new()
-                .with_memory_pool(Arc::new(FairSpillPool::new(memory_limit_bytes)))
+                .with_memory_pool(Arc::new(FairSpillPool::new(64 * 1024 * 1024)))
                 .build()?,
         );
         let session_ctx = SessionContext::new_with_config_rt(
@@ -893,7 +941,8 @@ mod tests {
             input,
             work_dir.path().to_str().unwrap().to_string(),
             Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
-            SortShuffleConfig::default(),
+            SortShuffleConfig::default()
+                .with_memory_limit_per_task_bytes(sort_shuffle_memory_limit_bytes),
         )?;
 
         let mut stream = writer.execute(0, task_ctx)?;
@@ -913,12 +962,12 @@ mod tests {
         if expect_spills {
             assert!(
                 spill_count > 0,
-                "expected spilling under tight memory pool, got spill_count={spill_count}"
+                "expected spilling under tight per-task buffer budget, got spill_count={spill_count}"
             );
         } else {
             assert_eq!(
                 spill_count, 0,
-                "expected no spills with generous memory pool, got spill_count={spill_count}"
+                "expected no spills with generous per-task buffer budget, got spill_count={spill_count}"
             );
         }
 
@@ -963,12 +1012,13 @@ mod tests {
 
     #[tokio::test]
     async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
-        // 10 batches of 8192 rows each. With a 512 KiB pool, this forces spilling.
+        // 10 batches of 8192 rows each. With a 512 KiB per-task buffer budget,
+        // this forces spilling.
         run_round_trip(
             /* num_batches */ 10,
             /* rows_per_batch */ 8192,
             /* num_partitions */ 4,
-            /* memory_limit_bytes */ 512 * 1024,
+            /* sort_shuffle_memory_limit_bytes */ 512 * 1024,
             /* expect_spills */ true,
         )
         .await
@@ -976,16 +1026,16 @@ mod tests {
 
     #[tokio::test]
     async fn multi_spill_round_trips() -> Result<()> {
-        // Larger total payload + tighter pool than the baseline test, so we
-        // expect multiple spill events per partition. The byte-copy finalize
-        // path should produce a partition section that is `spill_stream ||
-        // in_memory_stream` (two concatenated IPC streams), and the reader
-        // must yield every input row regardless.
+        // Larger total payload + tighter buffer budget than the baseline test,
+        // so we expect multiple spill events per partition. The byte-copy
+        // finalize path should produce a partition section that is
+        // `spill_stream || in_memory_stream` (two concatenated IPC streams),
+        // and the reader must yield every input row regardless.
         run_round_trip(
             /* num_batches */ 20,
             /* rows_per_batch */ 8192,
             /* num_partitions */ 2,
-            /* memory_limit_bytes */ 256 * 1024,
+            /* sort_shuffle_memory_limit_bytes */ 256 * 1024,
             /* expect_spills */ true,
         )
         .await
@@ -993,13 +1043,14 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_only_round_trips() -> Result<()> {
-        // Generous memory pool so no partition spills. Validates the path
-        // where each partition section is exactly one in-memory IPC stream.
+        // Generous per-task buffer budget so no partition spills. Validates
+        // the path where each partition section is exactly one in-memory IPC
+        // stream.
         run_round_trip(
             /* num_batches */ 4,
             /* rows_per_batch */ 1024,
             /* num_partitions */ 4,
-            /* memory_limit_bytes */ 64 * 1024 * 1024,
+            /* sort_shuffle_memory_limit_bytes */ 64 * 1024 * 1024,
             /* expect_spills */ false,
         )
         .await
