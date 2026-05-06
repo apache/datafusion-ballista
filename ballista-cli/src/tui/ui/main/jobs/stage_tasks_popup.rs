@@ -17,7 +17,7 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::StageTaskResponse;
-use datafusion::common::human_readable_count;
+use datafusion::common::{human_readable_count, human_readable_duration};
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
@@ -48,12 +48,12 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         "Input Rows",
         "Output Rows",
         "Partition ID",
-        // "Scheduled Time",
-        "Launch Time",
-        "Start Time",
-        "End Time",
+        "Scheduled Time",
+        "Launch latency",
+        "Start latency",
+        // "End Time",
         "Duration",
-        "Finish Time",
+        "Total Time",
     ]
     .into_iter()
     .map(|h| Cell::from(Text::from(h).centered()))
@@ -70,17 +70,16 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(5),
-            Constraint::Percentage(9),
-            Constraint::Percentage(7),
-            Constraint::Percentage(7),
-            // Constraint::Percentage(9),
-            Constraint::Percentage(8),
-            Constraint::Percentage(12),
-            Constraint::Percentage(12),
-            Constraint::Percentage(9),
-            Constraint::Percentage(9),
-            Constraint::Percentage(9),
+            Constraint::Percentage(7),  // Task ID
+            Constraint::Percentage(9),  // Status
+            Constraint::Percentage(9),  // Input Rows
+            Constraint::Percentage(9),  // Output Rows
+            Constraint::Percentage(9),  // Partition ID
+            Constraint::Percentage(18), // Scheduled Time
+            Constraint::Percentage(9),  // Launch latency
+            Constraint::Percentage(9),  // Start latency
+            Constraint::Percentage(9),  // Duration
+            Constraint::Percentage(9),  // Total Time
         ],
     )
     .block(
@@ -124,20 +123,32 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         Cell::from(Text::from(human_readable_count(task.input_rows)).centered()),
         Cell::from(Text::from(human_readable_count(task.output_rows)).centered()),
         Cell::from(Text::from(task.partition_id.to_string()).centered()),
-        // Cell::from(Text::from(format_datetime(task.scheduled_time)).centered()),
-        Cell::from(Text::from(format_datetime(task.launch_time, app)).centered()),
-        Cell::from(Text::from(format_datetime(task.start_exec_time, app)).centered()),
-        Cell::from(Text::from(format_time(task.end_exec_time, app)).centered()),
-        Cell::from(Text::from(task.exec_duration.to_string()).centered()),
-        Cell::from(Text::from(format_time(task.finish_time, app)).centered()),
+        Cell::from(Text::from(format_datetime(task.scheduled_time, app)).centered()),
+        Cell::from(
+            Text::from(format_duration(task.launch_time - task.scheduled_time))
+                .centered(),
+        ),
+        Cell::from(
+            Text::from(format_duration(task.start_exec_time - task.scheduled_time))
+                .centered(),
+        ),
+        Cell::from(
+            Text::from(format_duration(task.end_exec_time - task.start_exec_time))
+                .centered(),
+        ),
+        Cell::from(
+            Text::from(format_duration(task.finish_time - task.scheduled_time))
+                .centered(),
+        ),
     ])
     .style(Style::default().bg(bg))
 }
 
-fn format_datetime(dt: u64, app: &App) -> String {
-    app.format_datetime(dt.try_into().unwrap_or(0))
+fn format_duration(duration_ms: u64) -> String {
+    const NANOS_PER_MILLI: u64 = 1_000_000;
+    human_readable_duration(duration_ms * NANOS_PER_MILLI)
 }
 
-fn format_time(dt: u64, app: &App) -> String {
-    app.format_time(dt.try_into().unwrap_or(0))
+fn format_datetime(dt: u64, app: &App) -> String {
+    app.format_datetime(dt.try_into().unwrap_or(0))
 }

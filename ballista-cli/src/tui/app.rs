@@ -547,16 +547,6 @@ impl App {
             })
             .unwrap_or_else(|| "Invalid date".to_string())
     }
-
-    pub fn format_time(&self, timestamp: i64) -> String {
-        DateTime::from_timestamp_millis(timestamp)
-            .map(|dt| {
-                dt.with_timezone(&chrono::Local)
-                    .format("%H:%M:%S")
-                    .to_string()
-            })
-            .unwrap_or_else(|| "Invalid time".to_string())
-    }
 }
 
 #[cfg(test)]

@@ -47,12 +47,10 @@ pub struct StageTaskResponse {
     pub partition_id: u32,
     pub input_rows: usize,
     pub output_rows: usize,
-    #[expect(dead_code)]
     pub scheduled_time: u64,
     pub launch_time: u64,
     pub start_exec_time: u64,
     pub end_exec_time: u64,
-    pub exec_duration: u64,
     pub finish_time: u64,
 }
 
