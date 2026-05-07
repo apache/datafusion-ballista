@@ -28,10 +28,10 @@ Use Cargo to install:
 cargo install ballista-cli
 ```
 
-To install with the Terminal User Interface (TUI) feature enabled:
+The TUI feature is enabled by default. To install without it:
 
 ```bash
-cargo install ballista-cli --features tui
+cargo install ballista-cli --no-default-features
 ```
 
 ## Usage
@@ -154,20 +154,74 @@ ballista-cli --tui
 The TUI provides the following views:
 
 - **Executors**: Lists all registered executors with their host, port, CPU cores, memory, and current job count. Supports sorting by any column.
-- **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting and shows job details on selection.
+- **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting, job search (`/`), and shows job details on selection.
+- **Job Stages**: When viewing a job, press `Enter` to see its execution stages with input/output rows, elapsed compute, and task percentiles.
+- **Stage Tasks & Plan**: Within the Job Stages view, press `t` to see individual task details or `p` to view the stage execution plan.
+- **Job Plans**: For completed jobs, press `p` to view the Stage, Physical, or Logical query plans.
+- **Job Stages Graph**: Press `g` to visualize the job's stage execution graph.
 - **Metrics**: Fetches and displays Prometheus metrics from the scheduler, including query execution statistics.
 - **Scheduler Info**: Shows the current scheduler state and configuration.
 
 ### TUI Navigation
 
+#### Global Keybindings
+
 | Key       | Action                                           |
 | --------- | ------------------------------------------------ |
-| `Tab`     | Switch between Executors, Jobs, and Metrics tabs |
-| `↑` / `↓` | Navigate rows in the current table               |
-| `←` / `→` | Change sort column                               |
-| `Enter`   | Open details popup for the selected job          |
-| `Esc`     | Close popup or quit details view                 |
-| `q`       | Quit the TUI                                     |
-| `?`       | Show help overlay with all key bindings          |
+| `j`       | Switch to Jobs view                              |
+| `e`       | Switch to Executors view                         |
+| `m`       | Switch to Metrics view                           |
+| `i`       | Show Scheduler Info popup                        |
+| `?` / `h` | Show help overlay with all key bindings          |
+| `q` / `Esc`| Quit the TUI                                    |
+
+#### Jobs View Keybindings
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `↑` / `↓` | Navigate rows in the jobs table                  |
+| `1` / `2` / `3` | Sort by first/second/third column (press again to reverse, third press removes sorting) |
+| `/`       | Search jobs                                      |
+| `Enter`   | Open Job Stages popup for the selected job       |
+| `g`       | View job stages graph (DOT visualization)      |
+| `c`       | Cancel the selected job (if cancelable)          |
+| `p`       | View job plans (Stage / Physical / Logical) for completed jobs |
+
+#### Job Stages Popup Keybindings
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `↑` / `↓` | Navigate stages                                  |
+| `Enter`   | View tasks for the selected stage                |
+| `p`       | View execution plan for the selected stage       |
+| `Esc`     | Close popup                                      |
+
+#### Stage Tasks / Plan Popup Keybindings
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `Esc`     | Close popup                                      |
+
+#### Job Plans Popup Keybindings
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `s`       | Show Stage plan                                  |
+| `p`       | Show Physical plan                               |
+| `l`       | Show Logical plan                                |
+| `↑` / `↓` | Scroll up/down                                   |
+| `Esc`     | Close popup                                      |
+
+#### Executors View Keybindings
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `1` / `2` / `3` | Sort by first/second/third column              |
+
+#### Metrics View Keybindings
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `/`       | Search metrics                                   |
 
 The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
