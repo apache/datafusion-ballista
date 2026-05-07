@@ -28,12 +28,6 @@ Use Cargo to install:
 cargo install ballista-cli
 ```
 
-The TUI feature is enabled by default. To install without it:
-
-```bash
-cargo install ballista-cli --no-default-features
-```
-
 ## Usage
 
 ```
@@ -145,8 +139,19 @@ that provides a visual overview of the Ballista cluster.
 
 ### Launching the TUI
 
+There are two ways to start the TUI:
+
+1. Directly via command-line flag:
+
 ```bash
 ballista-cli --tui
+```
+
+2. From within the Ballista CLI interactive shell:
+
+```bash
+ballista-cli
+> \tui
 ```
 
 ### TUI Features
@@ -156,7 +161,7 @@ The TUI provides the following views:
 - **Executors**: Lists all registered executors with their host, port, CPU cores, memory, and current job count. Supports sorting by any column.
 - **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting, job search (`/`), and shows job details on selection.
 - **Job Stages**: When viewing a job, press `Enter` to see its execution stages with input/output rows, elapsed compute, and task percentiles.
-- **Stage Tasks & Plan**: Within the Job Stages view, press `t` to see individual task details or `p` to view the stage execution plan.
+- **Stage Tasks & Plan**: Within the Job Stages view, press `Enter` to see individual task details or `p` to view the stage execution plan.
 - **Job Plans**: For completed jobs, press `p` to view the Stage, Physical, or Logical query plans.
 - **Job Stages Graph**: Press `g` to visualize the job's stage execution graph.
 - **Metrics**: Fetches and displays Prometheus metrics from the scheduler, including query execution statistics.
@@ -177,15 +182,15 @@ The TUI provides the following views:
 
 #### Jobs View Keybindings
 
-| Key             | Action                                                                                  |
-| --------------- | --------------------------------------------------------------------------------------- |
-| `↑` / `↓`       | Navigate rows in the jobs table                                                         |
-| `1` / `2` / `3` | Sort by first/second/third column (press again to reverse, third press removes sorting) |
-| `/`             | Search jobs                                                                             |
-| `Enter`         | Open Job Stages popup for the selected job                                              |
-| `g`             | View job stages graph (DOT visualization)                                               |
-| `c`             | Cancel the selected job (if cancelable)                                                 |
-| `p`             | View job plans (Stage / Physical / Logical) for completed jobs                          |
+| Key                   | Action                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| `↑` / `↓`             | Navigate rows in the jobs table                                                             |
+| `1` / `2` / `3` / ... | Sort by first/second/third/... column (press again to reverse, third press removes sorting) |
+| `/`                   | Search jobs                                                                                 |
+| `Enter`               | Open Job Stages popup for the selected job                                                  |
+| `g`                   | View job stages graph (DOT visualization) for completed jobs                                |
+| `c`                   | Cancel the selected job (if cancelable)                                                     |
+| `p`                   | View job plans (Stage / Physical / Logical) for completed jobs                              |
 
 #### Job Stages Popup Keybindings
 
@@ -198,9 +203,16 @@ The TUI provides the following views:
 
 #### Stage Tasks / Plan Popup Keybindings
 
-| Key   | Action      |
-| ----- | ----------- |
-| `Esc` | Close popup |
+| Key   | Action                     |
+| ----- | -------------------------- |
+| `Esc` | Return to Job Stages popup |
+
+#### Job Stages Graph Popup Keybindings
+
+| Key       | Action         |
+| --------- | -------------- |
+| `↑` / `↓` | Scroll up/down |
+| `Esc`     | Close popup    |
 
 #### Job Plans Popup Keybindings
 
