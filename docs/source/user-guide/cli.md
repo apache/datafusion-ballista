@@ -166,62 +166,62 @@ The TUI provides the following views:
 
 #### Global Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `j`       | Switch to Jobs view                              |
-| `e`       | Switch to Executors view                         |
-| `m`       | Switch to Metrics view                           |
-| `i`       | Show Scheduler Info popup                        |
-| `?` / `h` | Show help overlay with all key bindings          |
-| `q` / `Esc`| Quit the TUI                                    |
+| Key         | Action                                  |
+| ----------- | --------------------------------------- |
+| `j`         | Switch to Jobs view                     |
+| `e`         | Switch to Executors view                |
+| `m`         | Switch to Metrics view                  |
+| `i`         | Show Scheduler Info popup               |
+| `?` / `h`   | Show help overlay with all key bindings |
+| `q` / `Esc` | Quit the TUI                            |
 
 #### Jobs View Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `↑` / `↓` | Navigate rows in the jobs table                  |
+| Key             | Action                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------- |
+| `↑` / `↓`       | Navigate rows in the jobs table                                                         |
 | `1` / `2` / `3` | Sort by first/second/third column (press again to reverse, third press removes sorting) |
-| `/`       | Search jobs                                      |
-| `Enter`   | Open Job Stages popup for the selected job       |
-| `g`       | View job stages graph (DOT visualization)      |
-| `c`       | Cancel the selected job (if cancelable)          |
-| `p`       | View job plans (Stage / Physical / Logical) for completed jobs |
+| `/`             | Search jobs                                                                             |
+| `Enter`         | Open Job Stages popup for the selected job                                              |
+| `g`             | View job stages graph (DOT visualization)                                               |
+| `c`             | Cancel the selected job (if cancelable)                                                 |
+| `p`             | View job plans (Stage / Physical / Logical) for completed jobs                          |
 
 #### Job Stages Popup Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `↑` / `↓` | Navigate stages                                  |
-| `Enter`   | View tasks for the selected stage                |
-| `p`       | View execution plan for the selected stage       |
-| `Esc`     | Close popup                                      |
+| Key       | Action                                     |
+| --------- | ------------------------------------------ |
+| `↑` / `↓` | Navigate stages                            |
+| `Enter`   | View tasks for the selected stage          |
+| `p`       | View execution plan for the selected stage |
+| `Esc`     | Close popup                                |
 
 #### Stage Tasks / Plan Popup Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `Esc`     | Close popup                                      |
+| Key   | Action      |
+| ----- | ----------- |
+| `Esc` | Close popup |
 
 #### Job Plans Popup Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `s`       | Show Stage plan                                  |
-| `p`       | Show Physical plan                               |
-| `l`       | Show Logical plan                                |
-| `↑` / `↓` | Scroll up/down                                   |
-| `Esc`     | Close popup                                      |
+| Key       | Action             |
+| --------- | ------------------ |
+| `s`       | Show Stage plan    |
+| `p`       | Show Physical plan |
+| `l`       | Show Logical plan  |
+| `↑` / `↓` | Scroll up/down     |
+| `Esc`     | Close popup        |
 
 #### Executors View Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `1` / `2` / `3` | Sort by first/second/third column              |
+| Key             | Action                            |
+| --------------- | --------------------------------- |
+| `1` / `2` / `3` | Sort by first/second/third column |
 
 #### Metrics View Keybindings
 
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `/`       | Search metrics                                   |
+| Key | Action         |
+| --- | -------------- |
+| `/` | Search metrics |
 
 The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
