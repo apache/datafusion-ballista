@@ -45,7 +45,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         "Output Rows",
         "Elapsed Compute",
         "Input percentiles\n(min/p25/med/p75/max)",
-        "Duration percentiles\n(min/p25/med/p75/max ms)",
+        "Duration percentiles\n(min/p25/med/p75/max)",
     ]
     .into_iter()
     .map(|h| Cell::from(Text::from(h).centered()))
@@ -58,18 +58,18 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         .stages
         .iter()
         .enumerate()
-        .map(|(i, stage)| build_stage_row(i, stage));
+        .map(|(i, stage)| build_stage_row(i, stage, app));
 
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(7),  // stage id
+            Constraint::Percentage(7),  // status
+            Constraint::Percentage(10), // input rows
+            Constraint::Percentage(10), // output rows
+            Constraint::Percentage(10), // elapsed compute
+            Constraint::Percentage(28), // input percentiles
+            Constraint::Percentage(28), // duration percentiles
         ],
     )
     .block(
@@ -87,7 +87,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     f.render_stateful_widget(table, area, &mut table_state);
 }
 
-fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
+fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static> {
     let bg = if i.is_multiple_of(2) {
         Color::DarkGray
     } else {
@@ -102,8 +102,14 @@ fn build_stage_row(i: usize, stage: &JobStageResponse) -> Row<'static> {
     };
 
     let p = &stage.task_duration_percentiles;
-    let duration_percentiles =
-        format!("{}/{}/{}/{}/{}", p.min, p.p25, p.median, p.p75, p.max);
+    let duration_percentiles = format!(
+        "{}/{}/{}/{}/{}",
+        app.format_duration(p.min),
+        app.format_duration(p.p25),
+        app.format_duration(p.median),
+        app.format_duration(p.p75),
+        app.format_duration(p.max)
+    );
     let p = &stage.task_input_percentiles;
     let input_percentiles = format!(
         "{}/{}/{}/{}/{}",

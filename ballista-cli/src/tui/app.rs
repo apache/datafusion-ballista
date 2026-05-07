@@ -34,6 +34,7 @@ use crate::tui::{
 };
 use chrono::DateTime;
 use crossterm::event::{KeyCode, KeyEvent};
+use datafusion::common::human_readable_duration;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -546,6 +547,11 @@ impl App {
                     .to_string()
             })
             .unwrap_or_else(|| "Invalid date".to_string())
+    }
+
+    pub fn format_duration(&self, duration_ms: u64) -> String {
+        const NANOS_PER_MILLI: u64 = 1_000_000;
+        human_readable_duration(duration_ms * NANOS_PER_MILLI)
     }
 }
 
