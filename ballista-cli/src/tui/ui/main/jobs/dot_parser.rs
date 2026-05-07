@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::domain::jobs::{GraphNode, GraphStage, StagesGraph};
+use crate::tui::domain::jobs::stages::{GraphNode, GraphStage, StagesGraph};
 use dotparser::{GraphEvent, dot};
 use std::collections::BTreeMap;
 
@@ -68,12 +68,13 @@ pub fn parse_dot(job_id: &str, content: &str) -> StagesGraph {
         job_id: job_id.to_string(),
         stages,
         edges,
+        scroll_position: 0,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::parse_dot;
 
     #[test]
     fn empty_content_produces_empty_graph() {

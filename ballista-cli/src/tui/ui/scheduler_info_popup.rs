@@ -18,7 +18,7 @@
 use crate::tui::app::App;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
     if let Some(scheduler_state) = app.executors_data.scheduler_state.as_ref() {
@@ -85,7 +85,8 @@ pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
         let block = Block::default()
             .title(" Scheduler Information (Press any key to close) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(Color::LightCyan))
+            .border_type(BorderType::Thick);
 
         let para = Paragraph::new(info_text)
             .block(block)

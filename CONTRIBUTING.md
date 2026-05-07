@@ -77,6 +77,12 @@ The integration tests can be executed by running the following command from the 
 ./dev/integration-tests.sh
 ```
 
+The script generates partitioned TPC-H Parquet via `tpchgen-cli`, builds the
+binaries on the host, builds the docker images, brings up the docker-compose
+stack, and runs all 22 queries. Defaults to SF=10, 16 partitions, 3
+iterations per query; override with `SCALE_FACTOR`, `PARTITIONS`, and
+`ITERATIONS` env vars. See `benchmarks/README.md` for details.
+
 ## How to format `.md` document
 
 We are using `prettier` to format `.md` files.

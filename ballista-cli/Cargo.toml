@@ -55,4 +55,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 tui-big-text = { version = "0.8.4", optional = true }
 
 [features]
+default = ["tui"]
 tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures", "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender", "dep:tui-big-text"]

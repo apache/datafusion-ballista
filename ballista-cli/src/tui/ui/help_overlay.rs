@@ -18,7 +18,7 @@
 use crate::tui::app::App;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
     let area = crate::tui::ui::centered_rect(45, 50, f.area());
@@ -82,7 +82,8 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
     let block = Block::default()
         .title(" Help (Press any key to close) ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::LightCyan))
+        .border_type(BorderType::Thick);
 
     let para = Paragraph::new(help_text)
         .block(block)

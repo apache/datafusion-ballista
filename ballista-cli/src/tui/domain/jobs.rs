@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod stages;
+
 use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 
@@ -65,47 +67,7 @@ impl JobsData {
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-#[derive(Deserialize, Debug)]
-pub struct CancelJobResponse {
-    pub canceled: bool,
-}
-
-pub enum CancelJobResult {
-    Success { job_id: String },
-    NotCanceled { job_id: String },
-    Failure { job_id: String, error: String },
-}
-
-#[derive(Clone, Debug)]
-pub struct JobDetails {
-    pub job_id: String,
-    pub logical_plan: Option<String>,
-    pub physical_plan: Option<String>,
-    pub stage_plan: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct GraphNode {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct GraphStage {
-    pub label: String,
-    pub nodes: Vec<GraphNode>,
-}
-
-#[derive(Clone, Debug)]
-pub struct StagesGraph {
-    pub job_id: String,
-    pub stages: Vec<GraphStage>,
-    pub edges: Vec<(String, String)>,
-}
-
-impl JobsData {
     pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
         match self.sort_column {
             SortColumn::Id => jobs.sort_by(|a, b| {
@@ -225,10 +187,63 @@ impl JobsData {
     }
 }
 
+#[derive(Deserialize, Debug)]
+pub struct CancelJobResponse {
+    pub canceled: bool,
+}
+
+pub enum CancelJobResult {
+    Success { job_id: String },
+    NotCanceled { job_id: String },
+    Failure { job_id: String, error: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct JobDetails {
+    pub job_id: String,
+    pub logical_plan: Option<String>,
+    pub physical_plan: Option<String>,
+    pub stage_plan: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PlanTab {
+    Stage,
+    Physical,
+    Logical,
+}
+
+#[derive(Clone, Debug)]
+pub struct JobPlansPopup {
+    pub details: JobDetails,
+    pub tab: PlanTab,
+    pub scroll_position: u16,
+}
+
+impl JobPlansPopup {
+    pub fn new(details: JobDetails, tab: PlanTab) -> Self {
+        Self {
+            details,
+            tab,
+            scroll_position: 0,
+        }
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_sub(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_add(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::tui::domain::SortOrder;
+    use crate::tui::domain::jobs::{
+        Job, JobDetails, JobPlansPopup, JobsData, PlanTab, SortColumn,
+    };
 
     fn make_job(
         id: &str,
@@ -590,5 +605,47 @@ mod tests {
         data.table_state.select(Some(0));
         data.scroll_up();
         assert_eq!(data.table_state.selected(), None);
+    }
+
+    // --- JobPlansPopup tests ---
+
+    fn make_job_details(id: &str) -> JobDetails {
+        JobDetails {
+            job_id: id.to_string(),
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
+        }
+    }
+
+    #[test]
+    fn job_plans_popup_new_scroll_position_is_zero() {
+        let popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        assert_eq!(popup.scroll_position, 0);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_down_increments() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_down();
+        assert_eq!(popup.scroll_position, 1);
+        popup.scroll_down();
+        assert_eq!(popup.scroll_position, 2);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_up_decrements() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_down();
+        popup.scroll_down();
+        popup.scroll_up();
+        assert_eq!(popup.scroll_position, 1);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_up_saturates_at_zero() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_up();
+        assert_eq!(popup.scroll_position, 0);
     }
 }

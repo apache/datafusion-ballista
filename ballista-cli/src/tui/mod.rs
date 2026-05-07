@@ -31,7 +31,9 @@ use std::time::Duration;
 use terminal::TuiWrapper;
 
 use crate::tui::domain::{
-    executors::ExecutorsData, jobs::JobsData, metrics::MetricsData,
+    executors::ExecutorsData,
+    jobs::{JobsData, stages::JobStagesPopup},
+    metrics::MetricsData,
 };
 use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
@@ -106,9 +108,11 @@ pub async fn tui_main() -> TuiResult<()> {
                     UiData::JobDetails(details) => {
                         app.job_details = Some(details);
                     }
-                    UiData::JobDot(graph) => {
+                    UiData::JobStagesGraph(graph) => {
                         app.job_dot_popup = Some(graph);
-                        app.job_dot_scroll = 0;
+                    }
+                    UiData::JobStagesData(job_id, stages) => {
+                        app.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
                     }
                   }
                 }
