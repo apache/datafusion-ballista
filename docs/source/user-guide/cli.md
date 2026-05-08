@@ -236,4 +236,36 @@ The TUI provides the following views:
 | --- | -------------- |
 | `/` | Search metrics |
 
+### TUI Configuration
+
+The TUI reads its configuration from a YAML file located at the platform-specific config directory:
+
+| Platform | Example Path                                      |
+| -------- | ------------------------------------------------- |
+| Linux    | `~/.config/ballista/tui.yaml`                     |
+| macOS    | `~/Library/Application Support/ballista/tui.yaml` |
+| Windows  | `%LOCALAPPDATA%\ballista\tui.yaml`                |
+
+Create the file manually if it does not exist. The following settings are available:
+
+```yaml
+tick_interval_ms: 2000
+
+scheduler:
+  url: http://localhost:50050
+
+http:
+  timeout: 2000
+```
+
+- `tick_interval_ms`: How often the TUI refreshes data from the scheduler (milliseconds).
+- `scheduler.url`: The Ballista scheduler HTTP endpoint.
+- `http.timeout`: HTTP request timeout in milliseconds.
+
+Environment variables prefixed with `BALLISTA_` also override these values. For example:
+
+```bash
+BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista-cli --tui
+```
+
 The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
