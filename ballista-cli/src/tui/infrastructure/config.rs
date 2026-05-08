@@ -33,9 +33,13 @@ pub struct HttpSettings {
 pub struct Settings {
     pub scheduler: SchedulerSettings,
     pub http: HttpSettings,
+    /// How often to refresh the UI. In millis.
+    pub tick_interval: u64,
 }
 
 const DEFAULT_CONFIG: &str = r#"
+tick_interval: 2000
+
 scheduler:
   url: http://localhost:50050
 
