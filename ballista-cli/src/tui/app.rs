@@ -421,13 +421,13 @@ impl App {
     }
 
     async fn load_executor_details_popup_data(&self) {
-        if let Some(executor) = self.executors_data.selected_executor() {
-            let executor_id = executor.id.clone();
-            if let Err(e) = load_executor_details_popup(self, &executor_id).await {
-                tracing::error!(
-                    "Failed to load executor details for '{executor_id}': {e:?}"
-                );
-            }
+        if let Some(executor) = self.executors_data.selected_executor()
+            && let Err(e) = load_executor_details_popup(self, &executor.id).await
+        {
+            tracing::error!(
+                "Failed to load executor details for '{}': {e:?}",
+                &executor.id
+            );
         }
     }
 
@@ -861,7 +861,7 @@ mod tests {
             host: "host".to_string(),
             port: 8080,
             id: id.to_string(),
-            last_seen: 0,
+            last_seen: None,
             specification: Specification { task_slots: 4 },
             metrics: vec![],
         }

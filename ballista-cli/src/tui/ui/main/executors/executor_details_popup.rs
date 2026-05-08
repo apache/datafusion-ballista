@@ -63,11 +63,19 @@ fn build_lines<'a>(
         ]),
         Line::from(vec![
             Span::styled("  ID          ", label_style),
-            Span::raw(executor.id.clone()),
+            Span::raw(&executor.id),
         ]),
         Line::from(vec![
             Span::styled("  Last Seen   ", label_style),
-            Span::raw(app.format_datetime(executor.last_seen)),
+            Span::raw(
+                executor
+                    .last_seen
+                    .map(|d| match d.try_into() {
+                        Ok(d) => app.format_datetime(d),
+                        Err(_) => "Invalid timestamp".to_string(),
+                    })
+                    .unwrap(),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Task Slots  ", label_style),
@@ -132,13 +140,13 @@ fn build_lines<'a>(
     lines
 }
 
-fn metric_name(typ: &str) -> String {
+fn metric_name(typ: &str) -> &str {
     match typ {
-        "proc_physical_memory" => "Physical Memory".to_string(),
-        "proc_virtual_memory" => "Virtual Memory".to_string(),
-        "peak_physical_memory" => "Peak Physical Memory".to_string(),
-        "peak_virtual_memory" => "Peak Virtual Memory".to_string(),
-        _ => typ.to_string(),
+        "proc_physical_memory" => "Physical Memory",
+        "proc_virtual_memory" => "Virtual Memory",
+        "peak_physical_memory" => "Peak Physical Memory",
+        "peak_virtual_memory" => "Peak Virtual Memory",
+        _ => typ,
     }
 }
 
