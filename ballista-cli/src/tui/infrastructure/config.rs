@@ -49,7 +49,7 @@ http:
 
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
-        let config_dir = dirs::config_dir()
+        let config_dir = dirs::config_local_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
             .unwrap_or_else(|| std::path::PathBuf::from(".config"))
             .join("ballista");
@@ -59,13 +59,14 @@ impl Settings {
             .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml))
             // Add in user's config file
             .add_source(
-                File::with_name(&format!("{}/config", config_dir.display()))
+                File::with_name(&format!("{}/tui", config_dir.display()))
+                    .format(FileFormat::Yaml)
                     .required(false),
             )
             // Add in settings from the environment (with a prefix of BALLISTA_)
             // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
             // would set the scheduler url key
-            .add_source(Environment::with_prefix("BALLISTA"))
+            .add_source(Environment::with_prefix("BALLISTA").separator("_"))
             .build()?;
 
         s.try_deserialize()
