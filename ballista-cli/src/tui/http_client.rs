@@ -63,7 +63,7 @@ impl HttpClient {
     }
 
     pub async fn get_executor(&self, executor_id: &str) -> TuiResult<ExecutorDetails> {
-        let url = self.url(format!("executor/{}", self.url_encode(executor_id)).as_str());
+        let url = self.url(&format!("executor/{}", self.url_encode(executor_id)));
         tracing::trace!("Going to GET details for '{}'", &url);
         self.json::<ExecutorDetails>(&url).await
     }

@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::executors::{ExecutorDetails, ExecutorDetailsPopup};
+use crate::tui::domain::executors::ExecutorDetails;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -33,10 +33,11 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     let executor = &popup.executor;
     let title = " Executor details ";
 
-    let lines = build_lines(app, popup, executor);
+    let lines = build_lines(app, executor);
 
     let block = Block::default()
         .title(title)
+        .title_style(Style::default().bold())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::LightCyan))
         .border_type(BorderType::Thick);
@@ -48,11 +49,7 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-fn build_lines<'a>(
-    app: &'a App,
-    _popup: &'a ExecutorDetailsPopup,
-    executor_details: &'a ExecutorDetails,
-) -> Vec<Line<'a>> {
+fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<Line<'a>> {
     let executor = &executor_details.executor_info;
     let label_style = Style::default().fg(Color::Yellow);
 
@@ -85,7 +82,10 @@ fn build_lines<'a>(
 
     if !executor.metrics.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled("  Metrics", label_style)]));
+        lines.push(Line::from(vec![Span::styled(
+            "  Metrics",
+            label_style.bold(),
+        )]));
         for metric in &executor.metrics {
             lines.push(Line::from(vec![
                 Span::styled(
@@ -99,7 +99,10 @@ fn build_lines<'a>(
 
     let os = &executor_details.os_info;
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled("  OS Info", label_style)]));
+    lines.push(Line::from(vec![Span::styled(
+        "  OS Info",
+        label_style.bold(),
+    )]));
     lines.push(Line::from(vec![
         Span::styled("    System Name      ", label_style),
         Span::raw(os.system_name.clone()),

@@ -48,7 +48,6 @@ pub struct Specification {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-#[serde(rename = "os_info")]
 pub struct OsInfo {
     pub kernel_ver: String,
     pub num_disks: u32,
