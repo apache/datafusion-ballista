@@ -604,6 +604,9 @@ mod tests {
     use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
     use crate::tui::domain::{
         SchedulerState, SortOrder,
+        executors::{
+            Executor, ExecutorDetails, ExecutorDetailsPopup, OsInfo, Specification,
+        },
         jobs::Job,
         jobs::stages::{JobStagesPopup, JobStagesResponse},
     };
@@ -849,6 +852,103 @@ mod tests {
         popup.set_tasks_view();
         app.job_stages_popup = Some(popup);
         assert!(!app.is_job_stage_no_details_popup_open());
+    }
+
+    // --- has_selected_executor / is_executor_details_popup_open tests ---
+
+    fn make_executor(id: &str) -> Executor {
+        Executor {
+            host: "host".to_string(),
+            port: 8080,
+            id: id.to_string(),
+            last_seen: 0,
+            specification: Specification { task_slots: 4 },
+            metrics: vec![],
+        }
+    }
+
+    fn make_executor_details(id: &str) -> ExecutorDetails {
+        ExecutorDetails {
+            executor_info: make_executor(id),
+            os_info: OsInfo {
+                kernel_ver: "5.15".to_string(),
+                num_disks: 1,
+                open_files_limit: 1024,
+                os_ver: "Ubuntu 22.04".to_string(),
+                os_ver_long: "Ubuntu 22.04.1 LTS".to_string(),
+                physical_cores: 4,
+                system_name: "Linux".to_string(),
+                total_available_disk_space: 50_000_000_000,
+                total_disk_space: 100_000_000_000,
+            },
+        }
+    }
+
+    #[test]
+    fn has_selected_executor_false_when_no_executors() {
+        let app = make_app();
+        assert!(!app.has_selected_executor());
+    }
+
+    #[test]
+    fn has_selected_executor_false_when_no_selection() {
+        let mut app = make_app();
+        app.executors_data.executors = vec![make_executor("e1")];
+        assert!(!app.has_selected_executor());
+    }
+
+    #[test]
+    fn has_selected_executor_true_when_selected() {
+        let mut app = make_app();
+        app.executors_data.executors = vec![make_executor("e1")];
+        app.executors_data.table_state.select(Some(0));
+        assert!(app.has_selected_executor());
+    }
+
+    #[test]
+    fn is_executor_details_popup_open_false_when_none() {
+        let app = make_app();
+        assert!(!app.is_executor_details_popup_open());
+    }
+
+    #[test]
+    fn is_executor_details_popup_open_true_when_some() {
+        let mut app = make_app();
+        app.executor_details_popup =
+            Some(ExecutorDetailsPopup::new(make_executor_details("e1")));
+        assert!(app.is_executor_details_popup_open());
+    }
+
+    // --- format_size tests ---
+
+    #[test]
+    fn format_size_zero_bytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(0), "0.0 B");
+    }
+
+    #[test]
+    fn format_size_bytes_below_kb_threshold() {
+        let app = make_app();
+        assert_eq!(app.format_size(1024), "1024.0 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024), "2.0 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024 * 1024), "2.0 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024 * 1024 * 1024), "2.0 GB");
     }
 
     // --- is_selected_job_cancelable tests ---

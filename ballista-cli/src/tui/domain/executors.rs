@@ -216,6 +216,23 @@ mod tests {
         }
     }
 
+    fn make_executor_details(id: &str) -> ExecutorDetails {
+        ExecutorDetails {
+            executor_info: make_executor("host", 8080, id, 0),
+            os_info: OsInfo {
+                kernel_ver: "5.15".to_string(),
+                num_disks: 1,
+                open_files_limit: 1024,
+                os_ver: "Ubuntu 22.04".to_string(),
+                os_ver_long: "Ubuntu 22.04.1 LTS".to_string(),
+                physical_cores: 4,
+                system_name: "Linux".to_string(),
+                total_available_disk_space: 50_000_000_000,
+                total_disk_space: 100_000_000_000,
+            },
+        }
+    }
+
     fn make_executors_data(
         executors: Vec<Executor>,
         sort_column: SortColumn,
@@ -472,5 +489,72 @@ mod tests {
         data.table_state.select(Some(0));
         data.scroll_up();
         assert_eq!(data.table_state.selected(), None);
+    }
+
+    // --- selected_executor tests ---
+
+    #[test]
+    fn selected_executor_none_when_no_selection() {
+        let data = make_executors_data(
+            vec![make_executor("host", 8080, "id-a", 1)],
+            SortColumn::None,
+            SortOrder::Ascending,
+        );
+        assert!(data.selected_executor().is_none());
+    }
+
+    #[test]
+    fn selected_executor_returns_correct_executor() {
+        let mut data = make_executors_data(
+            vec![
+                make_executor("host", 8080, "id-a", 1),
+                make_executor("host", 8081, "id-b", 2),
+            ],
+            SortColumn::None,
+            SortOrder::Ascending,
+        );
+        data.table_state.select(Some(1));
+        assert_eq!(data.selected_executor().unwrap().id, "id-b");
+    }
+
+    // --- ExecutorDetailsPopup tests ---
+
+    #[test]
+    fn executor_details_popup_new_scroll_position_is_zero() {
+        let popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        assert_eq!(popup.scroll_position, 0);
+    }
+
+    #[test]
+    fn executor_details_popup_scroll_down_increments() {
+        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        popup.scroll_down();
+        assert_eq!(popup.scroll_position, 1);
+    }
+
+    #[test]
+    fn executor_details_popup_scroll_down_multiple_times() {
+        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        popup.scroll_down();
+        popup.scroll_down();
+        popup.scroll_down();
+        assert_eq!(popup.scroll_position, 3);
+    }
+
+    #[test]
+    fn executor_details_popup_scroll_up_decrements() {
+        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        popup.scroll_down();
+        popup.scroll_down();
+        popup.scroll_up();
+        assert_eq!(popup.scroll_position, 1);
+    }
+
+    #[test]
+    fn executor_details_popup_scroll_up_saturates_at_zero() {
+        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        popup.scroll_up();
+        popup.scroll_up();
+        assert_eq!(popup.scroll_position, 0);
     }
 }

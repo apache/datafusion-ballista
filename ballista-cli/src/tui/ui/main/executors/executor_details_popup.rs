@@ -118,14 +118,11 @@ fn build_lines<'a>(
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Total Disk       ", label_style),
-        Span::raw(format!("{}", app.format_size(os.total_disk_space as usize))),
+        Span::raw(app.format_size(os.total_disk_space as usize)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Available Disk   ", label_style),
-        Span::raw(format!(
-            "{}",
-            app.format_size(os.total_available_disk_space as usize)
-        )),
+        Span::raw(app.format_size(os.total_available_disk_space as usize)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Open Files Limit ", label_style),
@@ -142,5 +139,40 @@ fn metric_name(typ: &str) -> String {
         "peak_physical_memory" => "Peak Physical Memory".to_string(),
         "peak_virtual_memory" => "Peak Virtual Memory".to_string(),
         _ => typ.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metric_name;
+
+    #[test]
+    fn metric_name_proc_physical_memory() {
+        assert_eq!(metric_name("proc_physical_memory"), "Physical Memory");
+    }
+
+    #[test]
+    fn metric_name_proc_virtual_memory() {
+        assert_eq!(metric_name("proc_virtual_memory"), "Virtual Memory");
+    }
+
+    #[test]
+    fn metric_name_peak_physical_memory() {
+        assert_eq!(metric_name("peak_physical_memory"), "Peak Physical Memory");
+    }
+
+    #[test]
+    fn metric_name_peak_virtual_memory() {
+        assert_eq!(metric_name("peak_virtual_memory"), "Peak Virtual Memory");
+    }
+
+    #[test]
+    fn metric_name_unknown_type_returns_as_is() {
+        assert_eq!(metric_name("cpu_usage"), "cpu_usage");
+    }
+
+    #[test]
+    fn metric_name_empty_string_returns_empty() {
+        assert_eq!(metric_name(""), "");
     }
 }
