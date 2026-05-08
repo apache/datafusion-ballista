@@ -44,9 +44,10 @@ pub async fn tui_main() -> TuiResult<()> {
     tracing::info!("Starting the Ballista TUI application");
 
     let config = Settings::new()?;
+    tracing::debug!("TUI configuration: {:?}", config);
 
     let mut tui_wrapper = TuiWrapper::new()?;
-    let mut events = EventHandler::new(Duration::from_millis(config.tick_interval));
+    let mut events = EventHandler::new(Duration::from_millis(config.tick_interval_ms));
     let mut app = App::new(config)?;
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
