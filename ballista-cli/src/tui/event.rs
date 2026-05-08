@@ -19,6 +19,7 @@ use crossterm::event::{EventStream, KeyEvent};
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
+use crate::tui::domain::executors::ExecutorDetails;
 use crate::tui::domain::{
     SchedulerState,
     executors::Executor,
@@ -37,6 +38,7 @@ pub enum UiData {
     JobDetails(JobDetails),
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
+    ExecutorDetails(ExecutorDetails),
 }
 
 #[derive(Clone, Debug)]

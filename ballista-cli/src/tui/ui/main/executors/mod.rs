@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod executor_details_popup;
 mod executors_table;
 mod jobs;
 
@@ -31,6 +32,14 @@ use crate::tui::{
     app::App,
     event::{Event, UiData},
 };
+
+pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
+    let executor = app.http_client.get_executor(executor_id).await?;
+    app.send_event(Event::DataLoaded {
+        data: UiData::ExecutorDetails(executor),
+    })
+    .await
+}
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);

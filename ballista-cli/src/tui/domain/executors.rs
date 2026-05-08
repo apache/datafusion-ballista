@@ -25,6 +25,62 @@ pub struct Executor {
     pub port: u16,
     pub id: String,
     pub last_seen: i64,
+    pub specification: Specification,
+    pub metrics: Vec<Metric>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ExecutorDetails {
+    pub executor_info: Executor,
+    pub os_info: OsInfo,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct Metric {
+    #[serde(rename = "type")]
+    pub typ: String,
+    pub value: u64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct Specification {
+    pub task_slots: u16,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename = "os_info")]
+pub struct OsInfo {
+    pub kernel_ver: String,
+    pub num_disks: u16,
+    pub open_files_limit: u32,
+    pub os_ver: String,
+    pub os_ver_long: String,
+    pub physical_cores: u16,
+    pub system_name: String,
+    pub total_available_disk_space: u64,
+    pub total_disk_space: u64,
+}
+
+pub struct ExecutorDetailsPopup {
+    pub executor: ExecutorDetails,
+    pub scroll_position: u16,
+}
+
+impl ExecutorDetailsPopup {
+    pub fn new(executor: ExecutorDetails) -> Self {
+        Self {
+            executor,
+            scroll_position: 0,
+        }
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_sub(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_position = self.scroll_position.saturating_add(1);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +147,12 @@ impl ExecutorsData {
         }
     }
 
+    pub fn selected_executor(&self) -> Option<&Executor> {
+        self.table_state
+            .selected()
+            .and_then(|i| self.executors.get(i))
+    }
+
     fn get_selected_executor_index(&self) -> Option<usize> {
         self.table_state.selected()
     }
@@ -146,6 +208,11 @@ mod tests {
             port,
             id: id.to_string(),
             last_seen,
+            specification: Specification { task_slots: 1 },
+            metrics: vec![Metric {
+                typ: "mem".to_string(),
+                value: 100,
+            }],
         }
     }
 

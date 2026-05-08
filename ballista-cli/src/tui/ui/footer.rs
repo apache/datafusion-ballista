@@ -90,8 +90,22 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                         .insert(0, Span::from("Current view key bindings: "));
                 }
             } else if app.is_executors_view() {
-                current_view_key_bindings
-                    .push(Span::from("[1,2,...] Sort by first/second/... column, "));
+                if app.is_executor_details_popup_open() {
+                    current_view_key_bindings.push(Span::from("[↑↓] Scroll up/down, "));
+                    current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
+                } else {
+                    if app.has_selected_executor() {
+                        current_view_key_bindings
+                            .push(Span::from("[Enter] View details, "));
+                    }
+                    current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
+                    current_view_key_bindings
+                        .push(Span::from("[1,2,...] Sort by first/second/... column, "));
+                }
+                if !current_view_key_bindings.is_empty() {
+                    current_view_key_bindings
+                        .insert(0, Span::from("Current view key bindings: "));
+                }
             } else if app.is_metrics_view() {
                 current_view_key_bindings.push(Span::from("Metrics key bindings: "));
                 current_view_key_bindings.push(Span::from("[/] Search metrics, "));

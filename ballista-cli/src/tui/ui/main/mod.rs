@@ -19,7 +19,10 @@ mod executors;
 mod jobs;
 mod metrics;
 
-pub use executors::{load_executors_data, render_executors};
+pub use executors::{
+    executor_details_popup, load_executor_details_popup, load_executors_data,
+    render_executors,
+};
 pub use jobs::{
     job_dot_popup, job_plan_popup, job_stages_popup, load_job_details, load_job_dot,
     load_job_stages_popup, load_jobs_data, render_jobs, stage_plan_popup,
