@@ -29,6 +29,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
+use ballista_core::utils::get_current_time;
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
@@ -45,7 +46,6 @@ use http::{StatusCode, header::CONTENT_TYPE};
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
 struct SchedulerStateResponse {
@@ -725,19 +725,20 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
 fn get_running_stage_time(task_infos: &[Option<TaskInfo>]) -> String {
     let min_start = task_infos
         .iter()
-        .map(|t| t.as_ref().map(|t| t.start_exec_time).unwrap_or_default())
+        .map(|t| {
+            t.as_ref()
+                .map(|t| t.start_exec_time)
+                .unwrap_or_else(|| get_current_time())
+        })
         .min();
+
     let max_end = task_infos
         .iter()
         .map(|t| {
-            t.as_ref().map(|t| t.end_exec_time).unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
-            })
+            t.as_ref()
+                .map(|t| t.end_exec_time)
+                .unwrap_or_else(|| get_current_time())
         })
-        .filter(|&t| t > 0)
         .max();
     let elapsed_ms = match (min_start, max_end) {
         (Some(start), Some(end)) if end > start => end - start,
@@ -749,16 +750,9 @@ fn get_running_stage_time(task_infos: &[Option<TaskInfo>]) -> String {
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
-    let min_start = task_infos
-        .iter()
-        .map(|t| t.start_exec_time)
-        .filter(|&t| t > 0)
-        .min();
-    let max_end = task_infos
-        .iter()
-        .map(|t| t.end_exec_time)
-        .filter(|&t| t > 0)
-        .max();
+    let min_start = task_infos.iter().map(|t| t.start_exec_time).min();
+
+    let max_end = task_infos.iter().map(|t| t.end_exec_time).max();
     let elapsed_ms = match (min_start, max_end) {
         (Some(start), Some(end)) if end > start => end - start,
         _ => 0,
