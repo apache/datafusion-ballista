@@ -91,46 +91,37 @@ The executor refuses to start if the per-task share would round to zero (i.e.
 When `--memory-pool-size` is not set, the executor behaves as before with no
 memory pool installed.
 
-## Join Algorithm Selection
+## Join Strategy
 
-For equi-joins, DataFusion (and therefore Ballista) defaults to
-`HashJoinExec`. Hash join is fast but builds an in-memory hash table on one
-side of the join, which can blow past the executor's memory budget on
-queries that join several large tables (TPC-H q9 is the canonical example:
-a 6-way join across `part`, `supplier`, `lineitem`, `partsupp`, `orders`,
-and `nation`).
+Ballista defaults to **sort-merge join** rather than hash join. This is the
+opposite of DataFusion's standalone default and reflects two facts:
 
-When an executor is OOM-killed mid-query, the symptoms are:
+- DataFusion's hash join implementation does not yet support spilling: the
+  full build side must fit in memory per task.
+- Ballista executors run multiple tasks in parallel per host, so per-task
+  build sides aggregate quickly under load and can OOM the executor.
 
-- one (or more) executor process exits with `Killed` in its log
-- the kernel's cgroup OOM killer fires (visible in `dmesg` /
-  `journalctl -k`)
-- the in-flight job appears to hang on the client, because the scheduler
-  had assigned tasks to the now-dead executor
+Sort-merge join spills under memory pressure (via the executor's memory
+pool, when configured), making it the safer default for distributed
+execution.
 
-Two ways to relieve memory pressure on join-heavy queries:
+If you know the build side of a particular query fits comfortably in
+memory and you want hash-join performance, opt back in at the session
+level:
 
-**Increase the executor memory budget.** Raise the executor container's
-memory limit and/or `--memory-pool-size`, keeping the pool comfortably
-below the container limit so that parquet decode buffers, shuffle reader
-buffers, and runtime overhead all fit alongside it.
+```sql
+SET datafusion.optimizer.prefer_hash_join = true;
+```
 
-**Switch to sort-merge join.** Set
-`datafusion.optimizer.prefer_hash_join = false` to make the planner pick
-`SortMergeJoinExec` for equi-joins where both inputs can be sorted on the
-join keys. Sort-merge avoids the build-side hash table at the cost of
-sorting both inputs, so peak memory is typically lower but wall-clock time
-is higher. As a rough data point, on the bundled TPC-H bench at SF10 with
-a 12 GB executor cap, q9 OOMs with hash join but completes in about 5.4 s
-with sort-merge.
+or in code:
 
 ```rust
 let session_config = SessionConfig::new_with_ballista()
-    .set_bool("datafusion.optimizer.prefer_hash_join", false);
+    .set_bool("datafusion.optimizer.prefer_hash_join", true);
 ```
 
-The same key can be passed to the `tpch` benchmark binary via
-`-c datafusion.optimizer.prefer_hash_join=false`.
+This setting applies per session and does not require restarting the
+scheduler or executors.
 
 ## Shuffle Implementation
 
