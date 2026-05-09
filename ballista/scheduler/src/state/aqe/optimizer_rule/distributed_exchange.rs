@@ -221,7 +221,7 @@ mod tests {
         let result = rule.optimize(input, &config()).unwrap();
 
         assert_plan!(result.as_ref(), @ r"
-        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
+        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
           CoalescePartitionsExec
             ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
               StatisticsExec: col_count=1, row_count=Absent

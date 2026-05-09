@@ -44,7 +44,7 @@ async fn should_add_exchanges() -> datafusion::error::Result<()> {
         AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
@@ -70,7 +70,7 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
         AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
@@ -90,7 +90,7 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
     let stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().as_ref(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1
+    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=0, stage_resolved=true
@@ -119,7 +119,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
         AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
@@ -177,7 +177,7 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
     // plan has only two exchanges after initial planning
     // other stages will be added as stages get resolved
     assert_plan!(planner.current_plan(), @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[sum(t0.c0)@1 as sum(t0.c0)]
         AggregateExec: mode=FinalPartitioned, gby=[c0@0 as c0], aggr=[sum(t0.c0)]
           RepartitionExec: partitioning=Hash([c0@0], 2), input_partitions=2
@@ -421,7 +421,7 @@ async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
     )?;
 
     assert_plan!(planner.current_plan(), @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending
+    AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
       ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
         CooperativeExec
           StatisticsExec: col_count=1, row_count=Absent
