@@ -27,6 +27,7 @@ mod supported {
 
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
@@ -950,7 +951,8 @@ mod supported {
     }
 
     // Sort Merge Join is supported since DF.v50
-    // testing if it will work in ballista
+    // Ballista defaults to sort-merge join (see issue #1648). This test
+    // verifies that default by inspecting the physical plan.
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -974,16 +976,86 @@ mod supported {
             Default::default(),
         )
         .await?;
-        ctx.sql("SET datafusion.optimizer.prefer_hash_join = false")
+
+        let join_sql =
+            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+
+        let plan = ctx
+            .sql(&format!("EXPLAIN {join_sql}"))
+            .await?
+            .collect()
+            .await?;
+        let plan_text = pretty_format_batches(&plan).unwrap().to_string();
+        assert!(
+            plan_text.contains("SortMergeJoinExec"),
+            "expected SortMergeJoinExec in plan, got:\n{plan_text}"
+        );
+        assert!(
+            !plan_text.contains("HashJoinExec"),
+            "did not expect HashJoinExec in plan, got:\n{plan_text}"
+        );
+
+        let result = ctx.sql(join_sql).await?.collect().await?;
+
+        let expected = [
+            "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",
+            "| 3  |", "+----+",
+        ];
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    // Users can opt back into hash join via the standard DataFusion knob,
+    // even though Ballista defaults `prefer_hash_join` to false. See #1648.
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_support_hash_join_when_opted_in(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "t0",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        ctx.register_parquet(
+            "t1",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
             .await?
             .show()
             .await?;
-        let result = ctx.sql(
-            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5",
-        )
-        .await?
-        .collect()
-        .await?;
+
+        let join_sql =
+            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+
+        let plan = ctx
+            .sql(&format!("EXPLAIN {join_sql}"))
+            .await?
+            .collect()
+            .await?;
+        let plan_text = pretty_format_batches(&plan).unwrap().to_string();
+        assert!(
+            plan_text.contains("HashJoinExec"),
+            "expected HashJoinExec in plan after opt-in, got:\n{plan_text}"
+        );
+        assert!(
+            !plan_text.contains("SortMergeJoinExec"),
+            "did not expect SortMergeJoinExec in plan after opt-in, got:\n{plan_text}"
+        );
+
+        let result = ctx.sql(join_sql).await?.collect().await?;
 
         let expected = [
             "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",

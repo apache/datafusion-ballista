@@ -18,6 +18,9 @@
 mod dot_parser;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
+pub mod job_stages_popup;
+pub mod stage_plan_popup;
+pub mod stage_tasks_popup;
 
 use crate::tui::{
     TuiResult,
@@ -62,7 +65,7 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
         Ok(dot_content) => {
             let graph = dot_parser::parse_dot(job_id, &dot_content);
             app.send_event(Event::DataLoaded {
-                data: UiData::JobDot(graph),
+                data: UiData::JobStagesGraph(graph),
             })
             .await
         }
@@ -71,6 +74,26 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
             Ok(())
         }
     }
+}
+
+pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
+    let mut stages = app
+        .http_client
+        .get_job_stages(job_id)
+        .await
+        .inspect(|stages| tracing::trace!("Loaded stages for job '{job_id}': {stages:?}"))
+        .inspect_err(|e| {
+            tracing::error!("Failed to load stages for job '{job_id}': {e:?}")
+        })?;
+
+    stages
+        .stages
+        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobStagesData(job_id.to_owned(), stages),
+    })
+    .await
 }
 
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
@@ -126,6 +149,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
             &mut table_state,
             &app.jobs_data.sort_column,
             &app.jobs_data.sort_order,
+            app,
         );
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else {
@@ -161,8 +185,12 @@ fn render_jobs_table(
     state: &mut TableState,
     sort_column: &SortColumn,
     sort_order: &SortOrder,
+    app: &App,
 ) {
-    let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
+    let header_style = Style::default()
+        .fg(Color::LightYellow)
+        .bg(Color::Black)
+        .bold();
 
     let id_suffix = column_suffix(sort_column, sort_order, &SortColumn::Id);
     let name_suffix = column_suffix(sort_column, sort_order, &SortColumn::Name);
@@ -178,7 +206,7 @@ fn render_jobs_table(
         format!("Id{id_suffix}"),
         format!("Name{name_suffix}"),
         format!("Status{status_suffix}"),
-        format!("Stages Completes{stages_suffix}"),
+        format!("Stages Completed{stages_suffix}"),
         format!("Percent Completed{percent_suffix}"),
         format!("Start time{start_time_suffix}"),
     ]
@@ -200,7 +228,7 @@ fn render_jobs_table(
         let status_cell = render_job_status_cell(job);
         let stage_completion_cell = render_job_stage_completion_cell(job);
         let percent_completion_cell = render_job_percent_completion_cell(job);
-        let start_time_cell = render_job_start_time_cell(job);
+        let start_time_cell = render_job_start_time_cell(job, app);
 
         let cells = vec![
             id_cell,
@@ -231,10 +259,8 @@ fn render_jobs_table(
     frame.render_stateful_widget(t, area, state);
 }
 
-fn render_job_start_time_cell(job: &Job) -> Cell<'_> {
-    let start_time = chrono::DateTime::from_timestamp_millis(job.start_time)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "Invalid Date".to_string());
+fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
+    let start_time = app.format_datetime(job.start_time);
     Cell::from(Text::from(start_time).centered())
 }
 
@@ -260,19 +286,19 @@ fn render_job_stage_completion_cell(job: &Job) -> Cell<'_> {
 fn render_job_status_cell(job: &Job) -> Cell<'_> {
     let color = match job.status.as_str() {
         "Running" => Color::LightBlue,
-        "Queued" => Color::Magenta,
-        "Failed" => Color::Red,
-        "Completed" => Color::Green,
+        "Queued" => Color::LightMagenta,
+        "Failed" => Color::LightRed,
+        "Completed" => Color::LightGreen,
         _ => Color::Gray,
     };
-    let text = Text::from(job.status.clone()).style(Style::default().fg(color));
+    let text = Text::from(job.status.clone()).style(Style::default().fg(color).bold());
     Cell::from(text.centered())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tui::domain::SortOrder;
+    use super::column_suffix;
+    use crate::tui::domain::{SortOrder, jobs::SortColumn};
 
     #[test]
     fn column_suffix_active_ascending_returns_up_arrow() {

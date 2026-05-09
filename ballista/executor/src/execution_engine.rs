@@ -22,6 +22,7 @@
 //! for creating query stage executors from physical plans.
 
 use async_trait::async_trait;
+use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
@@ -83,7 +84,23 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
 ///
 /// This implementation expects the input plan to be wrapped in a
 /// ShuffleWriterExec and creates a DefaultQueryStageExec to execute it.
-pub struct DefaultExecutionEngine {}
+#[derive(Default)]
+pub struct DefaultExecutionEngine {
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
+}
+
+impl DefaultExecutionEngine {
+    /// Creates new Default Execution Engine without client pooling
+    pub fn new() -> Self {
+        Self { client_pool: None }
+    }
+    /// Creates new Default Execution Engine with client pooling
+    pub fn with_client_pool(client_pool: Arc<dyn BallistaClientPool>) -> Self {
+        Self {
+            client_pool: Some(client_pool),
+        }
+    }
+}
 
 impl ExecutionEngine for DefaultExecutionEngine {
     fn create_query_stage_exec(
@@ -98,8 +115,16 @@ impl ExecutionEngine for DefaultExecutionEngine {
         let plan = plan
             .transform(|p| {
                 if let Some(reader) = p.as_any().downcast_ref::<ShuffleReaderExec>() {
-                    let reader = Arc::new(reader.change_work_dir(work_dir.to_string()));
-                    Ok(Transformed::yes(reader))
+                    match &self.client_pool {
+                        Some(client_pool) => Ok(Transformed::yes(Arc::new(
+                            reader
+                                .with_work_dir(work_dir.to_string())
+                                .with_client_pool(client_pool.clone()),
+                        ))),
+                        None => Ok(Transformed::yes(Arc::new(
+                            reader.with_work_dir(work_dir.to_string()),
+                        ))),
+                    }
                 } else {
                     Ok(Transformed::no(p))
                 }

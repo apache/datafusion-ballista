@@ -912,7 +912,6 @@ pub async fn test_aggregation_plan_with_job_id(
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-
     StaticExecutionGraph::new(
         "localhost:50050",
         job_id,
@@ -922,7 +921,6 @@ pub async fn test_aggregation_plan_with_job_id(
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
-        None,
         None,
     )
     .unwrap()
@@ -973,7 +971,6 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        None,
     )
     .unwrap()
 }
@@ -1014,7 +1011,6 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
-        None,
         None,
     )
     .unwrap()
@@ -1077,7 +1073,6 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        None,
     )
     .unwrap();
 
@@ -1121,7 +1116,6 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
         None,
-        None,
     )
     .unwrap();
 
@@ -1164,7 +1158,6 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
-        None,
         None,
     )
     .unwrap();

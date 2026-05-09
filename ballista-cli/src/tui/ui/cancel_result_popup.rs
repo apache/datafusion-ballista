@@ -19,7 +19,7 @@ use crate::tui::app::App;
 use crate::tui::domain::jobs::CancelJobResult;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_cancel_result_popup(f: &mut Frame, app: &App) {
     if let Some(result) = app.cancel_job_result.as_ref() {
@@ -49,7 +49,8 @@ pub(crate) fn render_cancel_result_popup(f: &mut Frame, app: &App) {
         let block = Block::default()
             .title(" Cancel Job (Press any key to close) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(Color::LightCyan))
+            .border_type(BorderType::Thick);
 
         let para = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
 

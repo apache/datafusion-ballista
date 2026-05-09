@@ -91,6 +91,38 @@ The executor refuses to start if the per-task share would round to zero (i.e.
 When `--memory-pool-size` is not set, the executor behaves as before with no
 memory pool installed.
 
+## Join Strategy
+
+Ballista defaults to **sort-merge join** rather than hash join. This is the
+opposite of DataFusion's standalone default and reflects two facts:
+
+- DataFusion's hash join implementation does not yet support spilling: the
+  full build side must fit in memory per task.
+- Ballista executors run multiple tasks in parallel per host, so per-task
+  build sides aggregate quickly under load and can OOM the executor.
+
+Sort-merge join spills under memory pressure (via the executor's memory
+pool, when configured), making it the safer default for distributed
+execution.
+
+If you know the build side of a particular query fits comfortably in
+memory and you want hash-join performance, opt back in at the session
+level:
+
+```sql
+SET datafusion.optimizer.prefer_hash_join = true;
+```
+
+or in code:
+
+```rust
+let session_config = SessionConfig::new_with_ballista()
+    .set_bool("datafusion.optimizer.prefer_hash_join", true);
+```
+
+This setting applies per session and does not require restarting the
+scheduler or executors.
+
 ## Shuffle Implementation
 
 Ballista exchanges data between query stages by writing the output of each
@@ -139,6 +171,61 @@ The following session-level keys tune its behavior:
 | ballista.shuffle.sort_based.memory_limit    | UInt64  | 268435456 | Total in-memory budget across all output-partition buffers (256 MiB default).                             |
 | ballista.shuffle.sort_based.spill_threshold | Utf8    | "0.8"     | Fraction of `memory_limit` at which the largest buffers begin spilling to disk. Must be in the range 0–1. |
 | ballista.shuffle.sort_based.batch_size      | UInt64  | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                     |
+
+## Adaptive Query Execution (Experimental)
+
+Ballista has experimental support for adaptive query execution (AQE), where the
+scheduler re-runs the DataFusion physical optimizer between query stages. This
+lets the planner make decisions using statistics collected from completed
+stages rather than relying solely on pre-execution estimates.
+
+AQE is disabled by default. To enable it, set
+`ballista.planner.adaptive.enabled` to `true` on your `SessionConfig`:
+
+```rust
+let session_config = SessionConfig::new_with_ballista()
+    .set_bool("ballista.planner.adaptive.enabled", true);
+```
+
+When AQE is enabled, the scheduler logs a warning at job submission so it is
+clear that AQE was used:
+
+```
+Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!
+```
+
+### Configuration
+
+| key                               | type    | default | description                                 |
+| --------------------------------- | ------- | ------- | ------------------------------------------- |
+| ballista.planner.adaptive.enabled | Boolean | false   | Enables the adaptive planner. Experimental. |
+
+### What AQE does today
+
+When AQE is enabled, the scheduler builds the stage DAG incrementally. As each
+shuffle stage completes, the planner re-optimizes the remaining plan and emits
+the next set of runnable stages. Two adaptive optimizations are currently
+implemented:
+
+- **Join reordering.** Uses runtime row counts from completed stages so the
+  smaller side drives the join.
+- **Empty stage elimination.** When a completed stage produces zero rows, its
+  downstream exchange is replaced with an empty execution node, and emptiness
+  is propagated up the plan so downstream stages are skipped entirely.
+
+### Current limitations
+
+The implementation covers the happy path only. The following are known to be
+missing or incomplete:
+
+- Executor failure handling on the AQE path
+- Dynamic coalescing of shuffle partitions
+- Switching from hash join to sort-merge join based on runtime statistics
+- Switching from streaming aggregation to hash aggregation based on runtime statistics
+
+Until these gaps are closed, AQE should be used for testing and experimentation
+rather than production workloads. See [issue #387](https://github.com/apache/datafusion-ballista/issues/387)
+for the tracking issue and ongoing work.
 
 ## Push-based vs Pull-based Task Scheduling
 

@@ -87,11 +87,11 @@ Before running SQL queries, register tables with the context using a `register_*
 method or a `CREATE EXTERNAL TABLE` statement:
 
 ```python
-ctx.register_parquet("trips", "/mnt/bigdata/nyctaxi")
+ctx.register_parquet("trips", "/mnt/bigdata/trips")
 ```
 
 ```python
-ctx.sql("CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION '/mnt/bigdata/nyctaxi'")
+ctx.sql("CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION '/mnt/bigdata/trips'")
 ```
 
 ### Executing Queries

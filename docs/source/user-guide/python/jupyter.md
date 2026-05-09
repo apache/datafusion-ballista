@@ -29,7 +29,7 @@ from ballista import BallistaSessionContext
 
 ctx = BallistaSessionContext("df://localhost:50050")
 
-ctx.register_parquet("trips", "/path/to/nyctaxi.parquet")
+ctx.register_parquet("trips", "/path/to/trips.parquet")
 
 # The result renders as an HTML table when this is the last expression in a cell
 ctx.sql("SELECT * FROM trips LIMIT 10")

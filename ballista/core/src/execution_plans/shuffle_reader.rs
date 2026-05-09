@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::client::BallistaClient;
+use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
 use crate::execution_plans::sort_shuffle::{
     ShuffleIndex, get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
@@ -68,20 +69,32 @@ pub struct ShuffleReaderExec {
     pub(crate) schema: SchemaRef,
     /// Each partition of a shuffle can read data from multiple locations
     pub partition: Vec<Vec<PartitionLocation>>,
+    /// When true, every call to `execute(partition)` reads `partition[0]`
+    /// (which holds the flattened concatenation of all upstream partition
+    /// locations) regardless of the partition index. Used for the
+    /// distributed broadcast hash-join lowering.
+    pub broadcast: bool,
+    /// Number of shuffle output partitions on the upstream stage. Useful for
+    /// metrics and EXPLAIN output. For non-broadcast readers this equals
+    /// `partition.len()`.
+    pub upstream_partition_count: usize,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
 }
 
 impl ShuffleReaderExec {
-    /// Create a new ShuffleReaderExec
+    /// Create a new ShuffleReaderExec for a standard one-to-one
+    /// per-partition read.
     pub fn try_new(
         stage_id: usize,
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
         partitioning: Partitioning,
     ) -> Result<Self> {
+        let upstream_partition_count = partition.len();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
@@ -92,21 +105,70 @@ impl ShuffleReaderExec {
             stage_id,
             schema,
             partition,
+            broadcast: false,
+            upstream_partition_count,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: None, // to be updated at the executor side
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
+        })
+    }
+
+    /// Create a broadcast ShuffleReaderExec. `all_locations` is the
+    /// flattened concatenation of every upstream partition's locations.
+    /// The reader has one logical output partition that fans in all of
+    /// them.
+    pub fn try_new_broadcast(
+        stage_id: usize,
+        all_locations: Vec<PartitionLocation>,
+        schema: SchemaRef,
+        upstream_partition_count: usize,
+    ) -> Result<Self> {
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            stage_id,
+            schema,
+            partition: vec![all_locations],
+            broadcast: true,
+            upstream_partition_count,
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
         })
     }
 
     /// changes work dir where shuffle files are located
-    pub fn change_work_dir(&self, work_dir: String) -> Self {
+    pub fn with_work_dir(&self, work_dir: String) -> Self {
         Self {
             stage_id: self.stage_id,
             schema: self.schema.clone(),
             partition: self.partition.clone(),
+            broadcast: self.broadcast,
+            upstream_partition_count: self.upstream_partition_count,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
+            client_pool: self.client_pool.clone(),
+        }
+    }
+    /// creates new shuffle reader with client pool
+    pub fn with_client_pool(&self, client_pool: Arc<dyn BallistaClientPool>) -> Self {
+        Self {
+            stage_id: self.stage_id,
+            schema: self.schema.clone(),
+            partition: self.partition.clone(),
+            broadcast: self.broadcast,
+            upstream_partition_count: self.upstream_partition_count,
+            metrics: self.metrics.clone(),
+            properties: self.properties.clone(),
+            work_dir: self.work_dir.clone(),
+            client_pool: Some(client_pool),
         }
     }
 }
@@ -119,11 +181,19 @@ impl DisplayAs for ShuffleReaderExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
-                    f,
-                    "ShuffleReaderExec: partitioning: {}",
-                    self.properties.partitioning,
-                )
+                if self.broadcast {
+                    write!(
+                        f,
+                        "ShuffleReaderExec: broadcast=true, upstream_partitions: {}",
+                        self.upstream_partition_count,
+                    )
+                } else {
+                    write!(
+                        f,
+                        "ShuffleReaderExec: partitioning: {}",
+                        self.properties.partitioning,
+                    )
+                }
             }
             DisplayFormatType::TreeRender => {
                 write!(f, "partitioning={}", self.properties.partitioning)
@@ -157,7 +227,17 @@ impl ExecutionPlan for ShuffleReaderExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.is_empty() {
-            Ok(self)
+            Ok(Arc::new(Self {
+                stage_id: self.stage_id,
+                schema: self.schema.clone(),
+                partition: self.partition.clone(),
+                broadcast: self.broadcast,
+                upstream_partition_count: self.upstream_partition_count,
+                metrics: ExecutionPlanMetricsSet::new(),
+                properties: self.properties.clone(),
+                work_dir: self.work_dir.clone(),
+                client_pool: self.client_pool.clone(),
+            }))
         } else {
             Err(DataFusionError::Plan(
                 "Ballista ShuffleReaderExec does not support children plans".to_owned(),
@@ -172,6 +252,10 @@ impl ExecutionPlan for ShuffleReaderExec {
     ) -> Result<SendableRecordBatchStream> {
         let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
         debug!("ShuffleReaderExec::execute({task_id})");
+        // Broadcast readers have a single logical output partition; always
+        // serve from partition[0] regardless of which physical partition the
+        // caller asked for.
+        let partition = if self.broadcast { 0 } else { partition };
 
         let config = context.session_config();
         let batch_size = config.batch_size();
@@ -212,8 +296,12 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "ShuffleReader work dir should have been set by executor".to_owned(),
             ))?;
 
-        let response_receiver =
-            send_fetch_partitions(work_dir, partition_locations, config);
+        let response_receiver = send_fetch_partitions(
+            work_dir,
+            partition_locations,
+            config,
+            self.client_pool.clone(),
+        );
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
@@ -234,6 +322,26 @@ impl ExecutionPlan for ShuffleReaderExec {
     }
 
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if self.broadcast {
+            if let Some(idx) = partition
+                && idx != 0
+            {
+                return datafusion::common::internal_err!(
+                    "Broadcast ShuffleReaderExec: invalid partition index {idx}, only partition 0 exists"
+                );
+            }
+            let all_locations: &[PartitionLocation] =
+                self.partition.first().map(|v| v.as_slice()).unwrap_or(&[]);
+            let stats = stats_for_partitions(
+                self.schema.fields().len(),
+                all_locations.iter().map(|loc| loc.partition_stats),
+            );
+            trace!(
+                "broadcast shuffle reader at stage {} returned aggregated statistics: {:?}",
+                self.stage_id, stats
+            );
+            return Ok(stats);
+        }
         if let Some(idx) = partition {
             let partition_count = self.properties().partitioning.partition_count();
             if idx >= partition_count {
@@ -415,6 +523,7 @@ fn send_fetch_partitions(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     config: &SessionConfig,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> AbortableReceiverStream {
     let max_request_num = config.ballista_shuffle_reader_maximum_concurrent_requests();
     let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
@@ -467,6 +576,7 @@ fn send_fetch_partitions(
         spawned_tasks.push(SpawnedTask::spawn({
             let customize_endpoint = customize_endpoint.clone();
             let grpc_config = grpc_config.clone();
+            let client_pool = client_pool.clone();
             async move {
                 // Block if exceeds max request number.
                 let permit = semaphore.acquire_owned().await.unwrap();
@@ -475,6 +585,7 @@ fn send_fetch_partitions(
                     grpc_config,
                     prefer_flight,
                     customize_endpoint,
+                    client_pool,
                 )
                 .await;
                 // Block if the channel buffer is full.
@@ -518,6 +629,7 @@ async fn fetch_partition_remote(
     config: Arc<GrpcClientConfig>,
     prefer_flight: bool,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
@@ -526,13 +638,11 @@ async fn fetch_partition_remote(
     let host = metadata.host.as_str();
     let port = metadata.port;
 
-    // TODO for shuffle client connections, we should avoid creating new connections again and again.
-    // And we should also avoid to keep alive too many connections for long time.
-    let mut ballista_client =
-        new_ballista_client(host, port, &config, customize_endpoint)
+    if let Some(pool) = client_pool {
+        let mut pooled = pool
+            .acquire(host, port, &config, customize_endpoint)
             .await
             .map_err(|error| match error {
-                // map grpc connection error to partition fetch error.
                 BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
                     metadata.id.clone(),
                     partition_id.stage_id,
@@ -542,15 +652,47 @@ async fn fetch_partition_remote(
                 other => other,
             })?;
 
-    ballista_client
-        .fetch_partition(
-            &metadata.id,
-            partition_id,
-            file_id,
-            is_sort_shuffle,
-            prefer_flight,
-        )
-        .await
+        let result = pooled
+            .fetch_partition(
+                &metadata.id,
+                partition_id,
+                file_id,
+                is_sort_shuffle,
+                prefer_flight,
+            )
+            .await;
+        if result.is_err() {
+            pooled.discard();
+        }
+        result
+    } else {
+        // TODO for shuffle client connections, we should avoid creating new connections again and again.
+        // And we should also avoid to keep alive too many connections for long time.
+        let mut ballista_client =
+            new_ballista_client(host, port, &config, customize_endpoint)
+                .await
+                .map_err(|error| match error {
+                    BallistaError::GrpcConnectionError(msg) => {
+                        BallistaError::FetchFailed(
+                            metadata.id.clone(),
+                            partition_id.stage_id,
+                            partition_id.partition_id,
+                            msg,
+                        )
+                    }
+                    other => other,
+                })?;
+
+        ballista_client
+            .fetch_partition(
+                &metadata.id,
+                partition_id,
+                file_id,
+                is_sort_shuffle,
+                prefer_flight,
+            )
+            .await
+    }
 }
 
 fn fetch_partition_local(
@@ -1012,7 +1154,7 @@ mod tests {
             Arc::new(schema),
             Partitioning::UnknownPartitioning(4),
         )?
-        .change_work_dir(work_dir);
+        .with_work_dir(work_dir);
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
 
@@ -1156,6 +1298,7 @@ mod tests {
             &work_dir.to_string_lossy(),
             partition_locations,
             &config,
+            None,
         );
 
         let stream = RecordBatchStreamAdapter::new(
@@ -1401,5 +1544,55 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_reader_aggregates_stats_across_upstream_partitions() {
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+
+        let locs: Vec<PartitionLocation> = (0..3)
+            .map(|partition_id| PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: "j".to_string(),
+                    stage_id: 7,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: format!("exec-{partition_id}"),
+                    host: "localhost".to_string(),
+                    port: 50051,
+                    grpc_port: 50052,
+                    specification: ExecutorSpecification::default(),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                partition_stats: PartitionStats::new(Some(100), Some(1), Some(1024)),
+                file_id: None,
+                is_sort_shuffle: false,
+            })
+            .collect();
+
+        let reader = ShuffleReaderExec::try_new_broadcast(7, locs, schema, 3).unwrap();
+
+        assert!(reader.broadcast);
+        assert_eq!(reader.upstream_partition_count, 3);
+        assert_eq!(reader.properties().partitioning.partition_count(), 1);
+        assert_eq!(reader.partition[0].len(), 3);
+
+        let stats = reader.partition_statistics(Some(0)).unwrap();
+        assert_eq!(stats.num_rows.get_value().copied(), Some(300));
+        assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
+    }
+
+    #[test]
+    fn broadcast_reader_rejects_out_of_range_partition_index() {
+        let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
+        let reader = ShuffleReaderExec::try_new_broadcast(7, vec![], schema, 3).unwrap();
+        let err = reader.partition_statistics(Some(1)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid partition index 1"),
+            "unexpected error message: {msg}"
+        );
     }
 }

@@ -23,11 +23,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
-    let mut page_key_bindings = Vec::with_capacity(10);
+    let mut current_view_key_bindings = Vec::with_capacity(10);
     let mut global_key_bindings = Vec::with_capacity(10);
 
     if app.is_edit_mode() {
-        page_key_bindings.push(Span::from("[Esc] Quit edit mode, "));
+        current_view_key_bindings.push(Span::from("[Esc] Quit edit mode, "));
     } else {
         global_key_bindings.push(Span::from("Global key bindings: "));
 
@@ -35,29 +35,66 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             global_key_bindings.push(Span::from("[j] Jobs, "));
             global_key_bindings.push(Span::from("[e] Executors, "));
             global_key_bindings.push(Span::from("[m] Metrics, "));
+
             if app.is_jobs_view() {
-                if app.has_more_than_one_job() {
-                    page_key_bindings.push(Span::from("[/] Search jobs, "));
-                    page_key_bindings.push(Span::from(
-                        "[1,2,3] Sort by first/second/third/... column, ",
-                    ));
+                if app.job_dot_popup.is_some() {
+                    current_view_key_bindings.push(Span::from("[↑↓] Scroll up/down, "));
+                    current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
+                } else if app.job_plan_popup.is_some() {
+                    current_view_key_bindings.push(Span::from("[↑↓] Scroll up/down, "));
+                    current_view_key_bindings.push(Span::from("[s] Stage plan, "));
+                    current_view_key_bindings.push(Span::from("[p] Physical plan, "));
+                    current_view_key_bindings.push(Span::from("[l] Logical plan, "));
+                    current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
+                } else {
+                    if app.has_more_than_one_job() {
+                        current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
+                        current_view_key_bindings.push(Span::from("[/] Search jobs, "));
+                        current_view_key_bindings.push(Span::from(
+                            "[1,2,3] Sort by first/second/third/... column, ",
+                        ));
+                    }
+                    if app.has_selected_job() {
+                        if !app.is_job_stages_popup_open() {
+                            current_view_key_bindings
+                                .push(Span::from("[Enter] View stages, "));
+                            current_view_key_bindings
+                                .push(Span::from("[g] View job stages graph, "));
+
+                            if app.is_selected_job_cancelable() {
+                                current_view_key_bindings
+                                    .push(Span::from("[c] Cancel job, "));
+                            }
+
+                            if app.is_selected_job_completed() {
+                                current_view_key_bindings
+                                    .push(Span::from("[p] View job plans, "));
+                            }
+                        } else if app.is_job_stage_no_details_popup_open() {
+                            current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
+                            current_view_key_bindings
+                                .push(Span::from("[Enter] View tasks, "));
+                            current_view_key_bindings.push(Span::from("[p] View plan, "));
+                            current_view_key_bindings
+                                .push(Span::from("[Esc] Close popup, "));
+                        } else if app.is_job_stage_tasks_popup_open()
+                            || app.is_job_stage_plan_popup_open()
+                        {
+                            current_view_key_bindings
+                                .push(Span::from("[Esc] Close popup, "));
+                        }
+                    }
                 }
-                if app.has_selected_job() {
-                    page_key_bindings.push(Span::from("[g] View job stages, "));
-                    page_key_bindings.push(Span::from("[c] Cancel job, "));
-                }
-                if app.has_selected_completed_job() {
-                    page_key_bindings.push(Span::from("[p] View job plans, "));
-                }
-                if !page_key_bindings.is_empty() {
-                    page_key_bindings.insert(0, Span::from("Jobs key bindings: "));
+                if !current_view_key_bindings.is_empty() {
+                    current_view_key_bindings
+                        .insert(0, Span::from("Current view key bindings: "));
                 }
             } else if app.is_executors_view() {
-                page_key_bindings
+                current_view_key_bindings
                     .push(Span::from("[1,2,...] Sort by first/second/... column, "));
             } else if app.is_metrics_view() {
-                page_key_bindings.push(Span::from("Metrics key bindings: "));
-                page_key_bindings.push(Span::from("[/] Search metrics, "));
+                current_view_key_bindings.push(Span::from("Metrics key bindings: "));
+                current_view_key_bindings.push(Span::from("[/] Search metrics, "));
             }
             global_key_bindings.push(Span::from("[i] Scheduler info, "));
         }
@@ -66,7 +103,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         global_key_bindings.push(Span::from("[q/Esc] Quit"));
     }
 
-    let global_area = if !page_key_bindings.is_empty() {
+    let global_area = if !current_view_key_bindings.is_empty() {
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -75,7 +112,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             ])
             .split(area);
 
-        let line = Line::from(page_key_bindings);
+        let line = Line::from(current_view_key_bindings);
 
         let block = Block::default();
         let paragraph = Paragraph::new(line)
