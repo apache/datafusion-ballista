@@ -107,19 +107,8 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
         info!("planning query stages for job {job_id}");
-        let broadcast_threshold = config
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.broadcast_join_threshold_bytes())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().broadcast_join_threshold_bytes()
-            });
-        let (new_plan, mut stages) = self.plan_query_stages_internal(
-            job_id,
-            execution_plan,
-            config,
-            broadcast_threshold,
-        )?;
+        let (new_plan, mut stages) =
+            self.plan_query_stages_internal(job_id, execution_plan, config)?;
         stages.push(create_shuffle_writer_with_config(
             job_id,
             self.next_stage_id(),
@@ -140,11 +129,9 @@ impl DefaultDistributedPlanner {
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
-        broadcast_threshold_bytes: usize,
     ) -> Result<PartialQueryStageResult> {
         // Apply broadcast-join promotion before recursing.
-        let execution_plan =
-            Self::maybe_promote_to_broadcast(execution_plan, broadcast_threshold_bytes)?;
+        let execution_plan = Self::maybe_promote_to_broadcast(execution_plan, config)?;
 
         // recurse down and replace children
         if execution_plan.children().is_empty() {
@@ -164,12 +151,8 @@ impl DefaultDistributedPlanner {
             {
                 build = coalesce.children()[0].clone();
             }
-            let (build, mut stages) = self.plan_query_stages_internal(
-                job_id,
-                build,
-                config,
-                broadcast_threshold_bytes,
-            )?;
+            let (build, mut stages) =
+                self.plan_query_stages_internal(job_id, build, config)?;
             let build_partitions =
                 build.properties().output_partitioning().partition_count();
 
@@ -192,7 +175,6 @@ impl DefaultDistributedPlanner {
                 job_id,
                 hash_join.right().clone(),
                 config,
-                broadcast_threshold_bytes,
             )?;
             stages.append(&mut probe_stages);
 
@@ -204,12 +186,8 @@ impl DefaultDistributedPlanner {
         let mut stages = vec![];
         let mut children = vec![];
         for child in execution_plan.children() {
-            let (new_child, mut child_stages) = self.plan_query_stages_internal(
-                job_id,
-                child.clone(),
-                config,
-                broadcast_threshold_bytes,
-            )?;
+            let (new_child, mut child_stages) =
+                self.plan_query_stages_internal(job_id, child.clone(), config)?;
             children.push(new_child);
             stages.append(&mut child_stages);
         }
@@ -298,8 +276,15 @@ impl DefaultDistributedPlanner {
     /// Otherwise returns the input unchanged.
     fn maybe_promote_to_broadcast(
         plan: Arc<dyn ExecutionPlan>,
-        threshold_bytes: usize,
+        config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let threshold_bytes = config
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.broadcast_join_threshold_bytes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().broadcast_join_threshold_bytes()
+            });
         if threshold_bytes == 0 {
             info!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
