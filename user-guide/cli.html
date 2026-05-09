@@ -312,6 +312,75 @@
    Cli commands
   </a>
  </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#terminal-user-interface-tui">
+   Terminal User Interface (TUI)
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#launching-the-tui">
+     Launching the TUI
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#tui-features">
+     TUI Features
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#tui-navigation">
+     TUI Navigation
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#global-keybindings">
+       Global Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#jobs-view-keybindings">
+       Jobs View Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#job-stages-popup-keybindings">
+       Job Stages Popup Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#stage-tasks-plan-popup-keybindings">
+       Stage Tasks / Plan Popup Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#job-stages-graph-popup-keybindings">
+       Job Stages Graph Popup Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#job-plans-popup-keybindings">
+       Job Plans Popup Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#executors-view-keybindings">
+       Executors View Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#metrics-view-keybindings">
+       Metrics View Keybindings
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#tui-configuration">
+     TUI Configuration
+    </a>
+   </li>
+  </ul>
+ </li>
 </ul>
 
 </nav>
@@ -368,21 +437,22 @@ process.</p>
 </div>
 <section id="usage">
 <h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">¶</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">USAGE</span><span class="p">:</span>
-    <span class="n">ballista</span><span class="o">-</span><span class="n">cli</span> <span class="p">[</span><span class="n">OPTIONS</span><span class="p">]</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>USAGE:
+    ballista-cli [OPTIONS]
 
-<span class="n">OPTIONS</span><span class="p">:</span>
-    <span class="o">-</span><span class="n">c</span><span class="p">,</span> <span class="o">--</span><span class="n">batch</span><span class="o">-</span><span class="n">size</span> <span class="o">&lt;</span><span class="n">BATCH_SIZE</span><span class="o">&gt;</span>    <span class="n">The</span> <span class="n">batch</span> <span class="n">size</span> <span class="n">of</span> <span class="n">each</span> <span class="n">query</span><span class="p">,</span> <span class="ow">or</span> <span class="n">use</span> <span class="n">Ballista</span> <span class="n">default</span>
-    <span class="o">-</span><span class="n">f</span><span class="p">,</span> <span class="o">--</span><span class="n">file</span> <span class="o">&lt;</span><span class="n">FILE</span><span class="o">&gt;...</span>             <span class="n">Execute</span> <span class="n">commands</span> <span class="kn">from</span><span class="w"> </span><span class="nn">file</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="n">then</span> <span class="n">exit</span>
-        <span class="o">--</span><span class="nb">format</span> <span class="o">&lt;</span><span class="n">FORMAT</span><span class="o">&gt;</span>            <span class="p">[</span><span class="n">default</span><span class="p">:</span> <span class="n">table</span><span class="p">]</span> <span class="p">[</span><span class="n">possible</span> <span class="n">values</span><span class="p">:</span> <span class="n">csv</span><span class="p">,</span> <span class="n">tsv</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">json</span><span class="p">,</span>
-                                     <span class="n">nd</span><span class="o">-</span><span class="n">json</span><span class="p">]</span>
-    <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>                       <span class="n">Print</span> <span class="n">help</span> <span class="n">information</span>
-        <span class="o">--</span><span class="n">host</span> <span class="o">&lt;</span><span class="n">HOST</span><span class="o">&gt;</span>                <span class="n">Ballista</span> <span class="n">scheduler</span> <span class="n">host</span>
-    <span class="o">-</span><span class="n">p</span><span class="p">,</span> <span class="o">--</span><span class="n">data</span><span class="o">-</span><span class="n">path</span> <span class="o">&lt;</span><span class="n">DATA_PATH</span><span class="o">&gt;</span>      <span class="n">Path</span> <span class="n">to</span> <span class="n">your</span> <span class="n">data</span><span class="p">,</span> <span class="n">default</span> <span class="n">to</span> <span class="n">current</span> <span class="n">directory</span>
-        <span class="o">--</span><span class="n">port</span> <span class="o">&lt;</span><span class="n">PORT</span><span class="o">&gt;</span>                <span class="n">Ballista</span> <span class="n">scheduler</span> <span class="n">port</span>
-    <span class="o">-</span><span class="n">q</span><span class="p">,</span> <span class="o">--</span><span class="n">quiet</span>                      <span class="n">Reduce</span> <span class="n">printing</span> <span class="n">other</span> <span class="n">than</span> <span class="n">the</span> <span class="n">results</span> <span class="ow">and</span> <span class="n">work</span> <span class="n">quietly</span>
-    <span class="o">-</span><span class="n">r</span><span class="p">,</span> <span class="o">--</span><span class="n">rc</span> <span class="o">&lt;</span><span class="n">RC</span><span class="o">&gt;...</span>                 <span class="n">Run</span> <span class="n">the</span> <span class="n">provided</span> <span class="n">files</span> <span class="n">on</span> <span class="n">startup</span> <span class="n">instead</span> <span class="n">of</span> <span class="o">~/.</span><span class="n">ballistarc</span>
-    <span class="o">-</span><span class="n">V</span><span class="p">,</span> <span class="o">--</span><span class="n">version</span>                    <span class="n">Print</span> <span class="n">version</span> <span class="n">information</span>
+OPTIONS:
+    -c, --batch-size &lt;BATCH_SIZE&gt;    The batch size of each query, or use Ballista default
+    -f, --file &lt;FILE&gt;...             Execute commands from file(s), then exit
+        --format &lt;FORMAT&gt;            [default: table] [possible values: csv, tsv, table, json,
+                                     nd-json]
+    -h, --help                       Print help information
+        --host &lt;HOST&gt;                Ballista scheduler host
+    -p, --data-path &lt;DATA_PATH&gt;      Path to your data, default to current directory
+        --port &lt;PORT&gt;                Ballista scheduler port
+    -q, --quiet                      Reduce printing other than the results and work quietly
+    -r, --rc &lt;RC&gt;...                 Run the provided files on startup instead of ~/.ballistarc
+        --tui                        Enables terminal user interface (requires `tui` feature)
+    -V, --version                    Print version information
 </pre></div>
 </div>
 </section>
@@ -465,6 +535,264 @@ Ballista<span class="w"> </span>CLI<span class="w"> </span>v52.0.0
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\h</span><span class="w"> </span>function_table
 </pre></div>
 </div>
+</section>
+<section id="terminal-user-interface-tui">
+<h2>Terminal User Interface (TUI)<a class="headerlink" href="#terminal-user-interface-tui" title="Link to this heading">¶</a></h2>
+<p>When Ballista CLI is built with the <code class="docutils literal notranslate"><span class="pre">tui</span></code> feature, you can launch an interactive terminal user interface
+that provides a visual overview of the Ballista cluster.</p>
+<section id="launching-the-tui">
+<h3>Launching the TUI<a class="headerlink" href="#launching-the-tui" title="Link to this heading">¶</a></h3>
+<p>There are two ways to start the TUI:</p>
+<ol class="arabic simple">
+<li><p>Directly via command-line flag:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-cli<span class="w"> </span>--tui
+</pre></div>
+</div>
+<ol class="arabic simple" start="2">
+<li><p>From within the Ballista CLI interactive shell:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-cli
+&gt;<span class="w"> </span><span class="se">\t</span>ui
+</pre></div>
+</div>
+</section>
+<section id="tui-features">
+<h3>TUI Features<a class="headerlink" href="#tui-features" title="Link to this heading">¶</a></h3>
+<p>The TUI provides the following views:</p>
+<ul class="simple">
+<li><p><strong>Executors</strong>: Lists all registered executors with their host, port, CPU cores, memory, and current job count. Supports sorting by any column.</p></li>
+<li><p><strong>Jobs</strong>: Displays active and completed jobs with their status, start time, and duration. Supports sorting, job search (<code class="docutils literal notranslate"><span class="pre">/</span></code>), and shows job details on selection.</p></li>
+<li><p><strong>Job Stages</strong>: When viewing a job, press <code class="docutils literal notranslate"><span class="pre">Enter</span></code> to see its execution stages with input/output rows, elapsed compute, and task percentiles.</p></li>
+<li><p><strong>Stage Tasks &amp; Plan</strong>: Within the Job Stages view, press <code class="docutils literal notranslate"><span class="pre">Enter</span></code> to see individual task details or <code class="docutils literal notranslate"><span class="pre">p</span></code> to view the stage execution plan.</p></li>
+<li><p><strong>Job Plans</strong>: For completed jobs, press <code class="docutils literal notranslate"><span class="pre">p</span></code> to view the Stage, Physical, or Logical query plans.</p></li>
+<li><p><strong>Job Stages Graph</strong>: Press <code class="docutils literal notranslate"><span class="pre">g</span></code> to visualize the job’s stage execution graph.</p></li>
+<li><p><strong>Metrics</strong>: Fetches and displays Prometheus metrics from the scheduler, including query execution statistics.</p></li>
+<li><p><strong>Scheduler Info</strong>: Shows the current scheduler state and configuration.</p></li>
+</ul>
+</section>
+<section id="tui-navigation">
+<h3>TUI Navigation<a class="headerlink" href="#tui-navigation" title="Link to this heading">¶</a></h3>
+<section id="global-keybindings">
+<h4>Global Keybindings<a class="headerlink" href="#global-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">j</span></code></p></td>
+<td><p>Switch to Jobs view</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">e</span></code></p></td>
+<td><p>Switch to Executors view</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">m</span></code></p></td>
+<td><p>Switch to Metrics view</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">i</span></code></p></td>
+<td><p>Show Scheduler Info popup</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">?</span></code> / <code class="docutils literal notranslate"><span class="pre">h</span></code></p></td>
+<td><p>Show help overlay with all key bindings</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">q</span></code> / <code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<td><p>Quit the TUI</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="jobs-view-keybindings">
+<h4>Jobs View Keybindings<a class="headerlink" href="#jobs-view-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">↑</span></code> / <code class="docutils literal notranslate"><span class="pre">↓</span></code></p></td>
+<td><p>Navigate rows in the jobs table</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code> / <code class="docutils literal notranslate"><span class="pre">2</span></code> / <code class="docutils literal notranslate"><span class="pre">3</span></code> / …</p></td>
+<td><p>Sort by first/second/third/… column (press again to reverse, third press removes sorting)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
+<td><p>Search jobs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Enter</span></code></p></td>
+<td><p>Open Job Stages popup for the selected job</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">g</span></code></p></td>
+<td><p>View job stages graph (DOT visualization) for completed jobs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">c</span></code></p></td>
+<td><p>Cancel the selected job (if cancelable)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">p</span></code></p></td>
+<td><p>View job plans (Stage / Physical / Logical) for completed jobs</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="job-stages-popup-keybindings">
+<h4>Job Stages Popup Keybindings<a class="headerlink" href="#job-stages-popup-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">↑</span></code> / <code class="docutils literal notranslate"><span class="pre">↓</span></code></p></td>
+<td><p>Navigate stages</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Enter</span></code></p></td>
+<td><p>View tasks for the selected stage</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">p</span></code></p></td>
+<td><p>View execution plan for the selected stage</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<td><p>Close popup</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="stage-tasks-plan-popup-keybindings">
+<h4>Stage Tasks / Plan Popup Keybindings<a class="headerlink" href="#stage-tasks-plan-popup-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<td><p>Return to Job Stages popup</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="job-stages-graph-popup-keybindings">
+<h4>Job Stages Graph Popup Keybindings<a class="headerlink" href="#job-stages-graph-popup-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">↑</span></code> / <code class="docutils literal notranslate"><span class="pre">↓</span></code></p></td>
+<td><p>Scroll up/down</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<td><p>Close popup</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="job-plans-popup-keybindings">
+<h4>Job Plans Popup Keybindings<a class="headerlink" href="#job-plans-popup-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">s</span></code></p></td>
+<td><p>Show Stage plan</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">p</span></code></p></td>
+<td><p>Show Physical plan</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">l</span></code></p></td>
+<td><p>Show Logical plan</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">↑</span></code> / <code class="docutils literal notranslate"><span class="pre">↓</span></code></p></td>
+<td><p>Scroll up/down</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<td><p>Close popup</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="executors-view-keybindings">
+<h4>Executors View Keybindings<a class="headerlink" href="#executors-view-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code> / <code class="docutils literal notranslate"><span class="pre">2</span></code> / <code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
+<td><p>Sort by first/second/third column</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="metrics-view-keybindings">
+<h4>Metrics View Keybindings<a class="headerlink" href="#metrics-view-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
+<td><p>Search metrics</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="tui-configuration">
+<h3>TUI Configuration<a class="headerlink" href="#tui-configuration" title="Link to this heading">¶</a></h3>
+<p>The TUI reads its configuration from a YAML file located at the platform-specific config directory:</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Platform</p></th>
+<th class="head"><p>Example Path</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Linux</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.config/ballista/tui.yaml</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>macOS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/Library/Application</span> <span class="pre">Support/ballista/tui.yaml</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Windows</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%LOCALAPPDATA%\ballista\tui.yaml</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Create the file manually if it does not exist. The following settings are available:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">tick_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
+
+<span class="nt">scheduler</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:50050</span>
+
+<span class="nt">http</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">tick_interval_ms</span></code>: How often the TUI refreshes data from the scheduler (milliseconds).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scheduler.url</span></code>: The Ballista scheduler HTTP endpoint.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">http.timeout</span></code>: HTTP request timeout in milliseconds.</p></li>
+</ul>
+<p>Environment variables prefixed with <code class="docutils literal notranslate"><span class="pre">BALLISTA_</span></code> also override these values. For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">BALLISTA_SCHEDULER_URL</span><span class="o">=</span>http://localhost:50051<span class="w"> </span>ballista-cli<span class="w"> </span>--tui
+</pre></div>
+</div>
+<p>The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.</p>
+</section>
 </section>
 </section>
 
