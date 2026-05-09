@@ -31,7 +31,9 @@ use std::time::Duration;
 use terminal::TuiWrapper;
 
 use crate::tui::domain::{
-    executors::ExecutorsData, jobs::JobsData, metrics::MetricsData,
+    executors::ExecutorsData,
+    jobs::{JobsData, stages::JobStagesPopup},
+    metrics::MetricsData,
 };
 use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
@@ -42,10 +44,11 @@ pub async fn tui_main() -> TuiResult<()> {
     tracing::info!("Starting the Ballista TUI application");
 
     let config = Settings::new()?;
+    tracing::debug!("TUI configuration: {:?}", config);
 
     let mut tui_wrapper = TuiWrapper::new()?;
+    let mut events = EventHandler::new(Duration::from_millis(config.tick_interval_ms));
     let mut app = App::new(config)?;
-    let mut events = EventHandler::new(Duration::from_millis(2000));
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
     app.set_event_tx(app_tx);
@@ -106,9 +109,11 @@ pub async fn tui_main() -> TuiResult<()> {
                     UiData::JobDetails(details) => {
                         app.job_details = Some(details);
                     }
-                    UiData::JobDot(graph) => {
+                    UiData::JobStagesGraph(graph) => {
                         app.job_dot_popup = Some(graph);
-                        app.job_dot_scroll = 0;
+                    }
+                    UiData::JobStagesData(job_id, stages) => {
+                        app.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
                     }
                   }
                 }

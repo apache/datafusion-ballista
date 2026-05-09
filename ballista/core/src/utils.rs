@@ -54,7 +54,7 @@ use tonic::transport::{Channel, Endpoint, Error, Server};
 /// let ballista_config = BallistaConfig::default();
 /// let grpc_config = GrpcClientConfig::from(&ballista_config);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GrpcClientConfig {
     /// Connection timeout in seconds
     pub connect_timeout_seconds: u64,

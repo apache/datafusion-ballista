@@ -163,7 +163,7 @@ async fn connect_to_scheduler(
     }
 }
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     // Enable RUST_LOG logging configuration for test
     let _ = env_logger::builder()

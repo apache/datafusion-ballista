@@ -14,6 +14,7 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
 use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
+use axum::extract::Query;
 use axum::{
     Json,
     extract::{Path, State},
@@ -28,6 +29,7 @@ use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
 use datafusion::DATAFUSION_VERSION;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -203,6 +205,12 @@ pub struct QueryStageSummary {
     pub tasks: Vec<Option<TaskSummary>>,
 }
 
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct JobQueryParams {
+    /// Flag to tree-style render for physical plan
+    pub render_tree: Option<bool>,
+}
+
 pub async fn get_scheduler_state<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -353,6 +361,7 @@ pub async fn get_job<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
+    query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let graph = data_server
         .state
@@ -374,6 +383,18 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
+    let render_tree = query.render_tree.unwrap_or(false);
+
+    let physical_plan = if render_tree {
+        displayable(job.physical_plan().as_ref())
+            .tree_render()
+            .to_string()
+    } else {
+        DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+            .indent(false)
+            .to_string()
+    };
+
     Ok(Json(JobResponse {
         job_id: job.job_id().to_string(),
         job_name: job.job_name().to_string(),
@@ -385,7 +406,7 @@ pub async fn get_job<
         completed_stages,
         percent_complete,
         logical_plan: job.logical_plan().map(str::to_owned),
-        physical_plan: job.physical_plan().map(str::to_owned),
+        physical_plan: Some(physical_plan),
         stage_plan: Some(stage_plan),
     }))
 }
@@ -468,7 +489,10 @@ pub async fn get_query_stages<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
+    query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
+    let render_tree = query.render_tree.unwrap_or(false);
+
     if let Some(graph) = data_server
         .state
         .task_manager
@@ -500,7 +524,11 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = Some(displayable(running_stage.plan.as_ref()).indent(false).to_string());
+                        summary.stage_plan = if render_tree {
+                            Some(displayable(running_stage.plan.as_ref()).tree_render().to_string())
+                        } else {
+                            Some(displayable(running_stage.plan.as_ref()).indent(false).to_string())
+                        };
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -522,23 +550,13 @@ pub async fn get_query_stages<
                             .enumerate()
                             .map(|(partition_id, task_info)| {
                                 task_info.as_ref().map(|info| {
-                                    let partition_metrics = running_stage
+                                    let (input_rows, output_rows) = running_stage
                                         .stage_metrics
                                         .as_deref()
-                                        .and_then(|m| m.get(partition_id));
-                                    let (input_rows, output_rows) = partition_metrics
-                                    .map(|m| {
-                                        let input = get_combined_count(
-                                            std::slice::from_ref(m),
-                                            "input_rows",
-                                        );
-                                        let output = get_combined_count(
-                                            std::slice::from_ref(m),
-                                            "output_rows",
-                                        );
-                                        (input,output)
-                                    })
-                                    .unwrap_or((0,0));
+                                        .map(|metrics| {
+                                            get_partition_counts(metrics, partition_id)
+                                        })
+                                        .unwrap_or((0, 0));
 
                                     let start_exec_time = info.start_exec_time as u64;
                                     let end_exec_time = info.end_exec_time as u64;
@@ -563,7 +581,11 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string());
+                        summary.stage_plan = if render_tree {
+                            Some(displayable(completed_stage.plan.as_ref()).tree_render().to_string())
+                        } else {
+                            Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string())
+                        };
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -580,21 +602,10 @@ pub async fn get_query_stages<
                             .iter()
                             .enumerate()
                             .map(|(partition_id, task_info)| {
-                                let partition_metrics =
-                                    completed_stage.stage_metrics.get(partition_id);
-                                let (input_rows, output_rows) = partition_metrics
-                                    .map(|m| {
-                                        let input = get_combined_count(
-                                            std::slice::from_ref(m),
-                                            "input_rows",
-                                        );
-                                        let output = get_combined_count(
-                                            std::slice::from_ref(m),
-                                            "output_rows",
-                                        );
-                                        (input,output)
-                                    })
-                                    .unwrap_or((0,0));
+                                let (input_rows, output_rows) = get_partition_counts(
+                                    &completed_stage.stage_metrics,
+                                    partition_id,
+                                );
 
                                 let start_exec_time = task_info.start_exec_time as u64;
                                 let end_exec_time = task_info.end_exec_time as u64;
@@ -724,6 +735,29 @@ fn get_elapsed_compute_nanos(metrics: &[MetricsSet]) -> String {
     let t = Time::new();
     t.add_duration(Duration::from_nanos(nanos as u64));
     t.to_string()
+}
+
+fn get_partition_counts(metrics: &[MetricsSet], partition_id: usize) -> (usize, usize) {
+    let input_rows = get_partition_count(metrics, partition_id, "input_rows");
+    let output_rows = get_partition_count(metrics, partition_id, "output_rows");
+    (input_rows, output_rows)
+}
+
+fn get_partition_count(metrics: &[MetricsSet], partition_id: usize, name: &str) -> usize {
+    metrics
+        .iter()
+        .flat_map(|vec| {
+            vec.iter().map(|metric| {
+                let metric_value = metric.value();
+                if metric.partition() == Some(partition_id) && metric_value.name() == name
+                {
+                    metric_value.as_usize()
+                } else {
+                    0
+                }
+            })
+        })
+        .sum()
 }
 
 fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {

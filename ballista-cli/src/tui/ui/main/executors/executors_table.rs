@@ -92,7 +92,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
                 Text::from(format!("{}:{}", executor.host, executor.port)).centered(),
             );
             let id_cell = Cell::from(Text::from(executor.id.clone()).centered());
-            let last_seen_cell = render_last_seen_cell(executor);
+            let last_seen_cell = render_last_seen_cell(executor, app);
 
             let cells = vec![host_cell, id_cell, last_seen_cell];
             Row::new(cells).style(Style::default().bg(color))
@@ -114,10 +114,8 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(t, area, &mut table_state);
 }
 
-fn render_last_seen_cell(executor: &Executor) -> Cell<'_> {
-    let last_seen = chrono::DateTime::from_timestamp_millis(executor.last_seen)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "Invalid Date".to_string());
+fn render_last_seen_cell<'a>(executor: &'a Executor, app: &App) -> Cell<'a> {
+    let last_seen = app.format_datetime(executor.last_seen);
     Cell::from(Text::from(last_seen).centered())
 }
 

@@ -14,57 +14,67 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-version: '3.3'
 services:
   ballista-scheduler:
-    image: ballista-scheduler
+    image: apache/datafusion-ballista-scheduler:latest
     build:
       dockerfile: dev/docker/ballista-scheduler.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0"
+    command: "--bind-host 0.0.0.0 --external-host ballista-scheduler"
     ports:
       - "50050:50050"
     environment:
       - RUST_LOG=ballista=info
     volumes:
-      - ./benchmarks/data:/data
+      - ./benchmarks/data:/data:ro
     healthcheck:
-      test: ["CMD", "nc", "-z", "ballista-scheduler", "50050"]
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/50050"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: "no"
+
   ballista-executor:
-    image: ballista-executor
+    image: apache/datafusion-ballista-executor:latest
     build:
       dockerfile: dev/docker/ballista-executor.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --scheduler-connect-timeout-seconds 15"
+    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --concurrent-tasks 4 --memory-pool-size 8GB --work-dir /work"
     deploy:
       replicas: 2
-    restart: always
+      resources:
+        limits:
+          cpus: '8'
+          memory: 12G
     environment:
       - RUST_LOG=ballista=info
     volumes:
-      - ./benchmarks/data:/data
+      - ./benchmarks/data:/data:ro
     depends_on:
-      - ballista-scheduler
+      ballista-scheduler:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "nc", "-z", "ballista-executor", "50051"]
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/50051"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: "no"
+
   ballista-client:
-    image: ballista-benchmarks
+    image: apache/datafusion-ballista-benchmarks:latest
     build:
       dockerfile: dev/docker/ballista-benchmarks.Dockerfile
       context: .
     command: ["/bin/bash", "-c", "sleep infinity"]
-    ports:
-      - "50051:50051"
     environment:
       - RUST_LOG=info
     volumes:
-      - ./benchmarks/data:/data
+      - ./benchmarks/data:/data:ro
+      - ./benchmarks/queries:/root/benchmarks/queries:ro
+      - ./benchmarks/run.sh:/root/run.sh:ro
     depends_on:
-      - ballista-scheduler
-      - ballista-executor
+      ballista-scheduler:
+        condition: service_healthy
+      ballista-executor:
+        condition: service_healthy
+    restart: "no"

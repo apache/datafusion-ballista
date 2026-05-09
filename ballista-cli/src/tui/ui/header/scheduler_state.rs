@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::tui::app::App;
-use chrono::DateTime;
 use ratatui::style::Style;
 use ratatui::{
     Frame,
@@ -28,9 +27,7 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
     let (started, ballista_version, df_version, is_up) =
         match &app.executors_data.scheduler_state {
             Some(state) => {
-                let started = DateTime::from_timestamp_millis(state.started)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                    .unwrap_or_else(|| "Invalid Date".to_string());
+                let started = app.format_datetime(state.started);
                 (
                     started,
                     state.version.clone(),

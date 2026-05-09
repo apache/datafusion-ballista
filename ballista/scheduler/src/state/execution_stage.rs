@@ -687,7 +687,7 @@ impl RunningStage {
         true
     }
 
-    /// update and combine the task metrics to the stage metrics
+    /// update and upsert the task metrics to the stage metrics
     pub fn update_task_metrics(
         &mut self,
         partition: usize,
@@ -711,25 +711,24 @@ impl RunningStage {
             }
             let metrics_values_array = metrics
                 .into_iter()
-                .map(|ms| {
-                    ms.metrics
-                        .into_iter()
-                        .map(|m| m.try_into())
-                        .collect::<Result<Vec<_>>>()
-                })
+                .map(|ms| Self::metrics_set_from_task_metrics(ms, partition))
                 .collect::<Result<Vec<_>>>()?;
 
             combined_metrics
                 .iter_mut()
                 .zip(metrics_values_array)
-                .map(|(first, second)| {
-                    Self::combine_metrics_set(first, second, partition)
+                .map(|(existing_metrics, new_partition_metrics)| {
+                    Self::upsert_metrics_set_for_partition(
+                        existing_metrics,
+                        new_partition_metrics,
+                        partition,
+                    )
                 })
                 .collect()
         } else {
             metrics
                 .into_iter()
-                .map(|ms| ms.try_into())
+                .map(|ms| Self::metrics_set_from_task_metrics(ms, partition))
                 .collect::<Result<Vec<_>>>()?
         };
         self.stage_metrics = Some(new_metrics_set);
@@ -737,18 +736,36 @@ impl RunningStage {
         Ok(())
     }
 
-    /// Combines metrics from a completed task into the stage's aggregate metrics.
-    pub fn combine_metrics_set(
-        first: &mut MetricsSet,
-        second: Vec<MetricValue>,
+    /// Converts task metrics into a metrics set for a specific partition
+    fn metrics_set_from_task_metrics(
+        metrics: OperatorMetricsSet,
+        partition: usize,
+    ) -> Result<MetricsSet> {
+        let mut metrics_set = MetricsSet::new();
+        for metric in metrics.metrics {
+            let metric_value: MetricValue = metric.try_into()?;
+            metrics_set.push(Arc::new(Metric::new(metric_value, Some(partition))));
+        }
+        Ok(metrics_set)
+    }
+
+    /// Upserts raw metrics from a completed task into the stage metrics
+    pub fn upsert_metrics_set_for_partition(
+        existing_metrics: &mut MetricsSet,
+        new_partition_metrics: MetricsSet,
         partition: usize,
     ) -> MetricsSet {
-        for metric_value in second {
-            // TODO recheck the lable logic
-            let new_metric = Arc::new(Metric::new(metric_value, Some(partition)));
-            first.push(new_metric);
+        let mut updated_metrics = MetricsSet::new();
+        // Task metrics are snapshots, so replace any prior metrics for this partition.
+        for metric in existing_metrics.iter() {
+            if metric.partition() != Some(partition) {
+                updated_metrics.push(metric.clone());
+            }
         }
-        first.aggregate_by_name()
+        for metric in new_partition_metrics.iter() {
+            updated_metrics.push(metric.clone());
+        }
+        updated_metrics
     }
 
     /// Returns the number of times the task for the given partition has failed.
@@ -1058,7 +1075,9 @@ impl StageOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ballista_core::serde::protobuf::{SuccessfulTask, TaskStatus, task_status};
+    use ballista_core::serde::protobuf::{
+        OperatorMetric, SuccessfulTask, TaskStatus, operator_metric, task_status,
+    };
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionConfig;
     use std::collections::HashMap;
@@ -1092,6 +1111,24 @@ mod tests {
                 partitions: vec![],
             })),
             metrics: vec![],
+        }
+    }
+
+    fn make_operator_metrics_set(
+        output_rows: u64,
+        elapsed_compute_nanos: u64,
+    ) -> OperatorMetricsSet {
+        OperatorMetricsSet {
+            metrics: vec![
+                OperatorMetric {
+                    metric: Some(operator_metric::Metric::OutputRows(output_rows)),
+                },
+                OperatorMetric {
+                    metric: Some(operator_metric::Metric::ElapseTime(
+                        elapsed_compute_nanos,
+                    )),
+                },
+            ],
         }
     }
 
@@ -1171,5 +1208,78 @@ mod tests {
 
         // Should gracefully reject the update, not panic.
         assert!(!result);
+    }
+
+    #[test]
+    fn test_update_task_metrics_keeps_raw_partition_snapshots() {
+        let mut stage = make_running_stage(3);
+
+        stage
+            .update_task_metrics(0, vec![make_operator_metrics_set(100, 10)])
+            .unwrap();
+
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        assert_eq!(metrics.len(), 1);
+
+        let operator_metrics = &metrics[0];
+        assert_eq!(operator_metrics.iter().count(), 2);
+        assert!(
+            operator_metrics
+                .iter()
+                .all(|metric| metric.partition() == Some(0))
+        );
+
+        let aggregated = operator_metrics.aggregate_by_name();
+        assert_eq!(aggregated.output_rows(), Some(100));
+        assert_eq!(aggregated.elapsed_compute().unwrap(), 10);
+
+        stage
+            .update_task_metrics(1, vec![make_operator_metrics_set(200, 20)])
+            .unwrap();
+        stage
+            .update_task_metrics(2, vec![make_operator_metrics_set(300, 30)])
+            .unwrap();
+
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        let operator_metrics = &metrics[0];
+        assert_eq!(operator_metrics.iter().count(), 6);
+
+        let partitions = operator_metrics
+            .iter()
+            .filter(|metric| matches!(metric.value(), MetricValue::OutputRows(_)))
+            .map(|metric| metric.partition())
+            .collect::<Vec<_>>();
+        assert_eq!(partitions, vec![Some(0), Some(1), Some(2)]);
+
+        let aggregated = operator_metrics.aggregate_by_name();
+        assert_eq!(aggregated.output_rows(), Some(600));
+        assert_eq!(aggregated.elapsed_compute().unwrap(), 60);
+
+        stage
+            .update_task_metrics(1, vec![make_operator_metrics_set(250, 25)])
+            .unwrap();
+
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        let operator_metrics = &metrics[0];
+        assert_eq!(operator_metrics.iter().count(), 6);
+
+        let mut output_rows = operator_metrics
+            .iter()
+            .filter_map(|metric| match metric.value() {
+                MetricValue::OutputRows(value) => {
+                    Some((metric.partition(), value.value()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        output_rows.sort_by_key(|(partition, _)| *partition);
+        assert_eq!(
+            output_rows,
+            vec![(Some(0), 100), (Some(1), 250), (Some(2), 300)]
+        );
+
+        let aggregated = operator_metrics.aggregate_by_name();
+        assert_eq!(aggregated.output_rows(), Some(650));
+        assert_eq!(aggregated.elapsed_compute().unwrap(), 65);
     }
 }

@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::client::BallistaClient;
+use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
 use crate::execution_plans::sort_shuffle::{
     get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
@@ -81,6 +82,7 @@ pub struct ShuffleReaderExec {
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
 }
 
 impl ShuffleReaderExec {
@@ -107,7 +109,8 @@ impl ShuffleReaderExec {
             upstream_partition_count,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: None,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
         })
     }
 
@@ -135,12 +138,13 @@ impl ShuffleReaderExec {
             upstream_partition_count,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: None,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
         })
     }
 
     /// changes work dir where shuffle files are located
-    pub fn change_work_dir(&self, work_dir: String) -> Self {
+    pub fn with_work_dir(&self, work_dir: String) -> Self {
         Self {
             stage_id: self.stage_id,
             schema: self.schema.clone(),
@@ -150,6 +154,21 @@ impl ShuffleReaderExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
+            client_pool: self.client_pool.clone(),
+        }
+    }
+    /// creates new shuffle reader with client pool
+    pub fn with_client_pool(&self, client_pool: Arc<dyn BallistaClientPool>) -> Self {
+        Self {
+            stage_id: self.stage_id,
+            schema: self.schema.clone(),
+            partition: self.partition.clone(),
+            broadcast: self.broadcast,
+            upstream_partition_count: self.upstream_partition_count,
+            metrics: self.metrics.clone(),
+            properties: self.properties.clone(),
+            work_dir: self.work_dir.clone(),
+            client_pool: Some(client_pool),
         }
     }
 }
@@ -208,7 +227,17 @@ impl ExecutionPlan for ShuffleReaderExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.is_empty() {
-            Ok(self)
+            Ok(Arc::new(Self {
+                stage_id: self.stage_id,
+                schema: self.schema.clone(),
+                partition: self.partition.clone(),
+                broadcast: self.broadcast,
+                upstream_partition_count: self.upstream_partition_count,
+                metrics: ExecutionPlanMetricsSet::new(),
+                properties: self.properties.clone(),
+                work_dir: self.work_dir.clone(),
+                client_pool: self.client_pool.clone(),
+            }))
         } else {
             Err(DataFusionError::Plan(
                 "Ballista ShuffleReaderExec does not support children plans".to_owned(),
@@ -267,8 +296,12 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "ShuffleReader work dir should have been set by executor".to_owned(),
             ))?;
 
-        let response_receiver =
-            send_fetch_partitions(work_dir, partition_locations, config);
+        let response_receiver = send_fetch_partitions(
+            work_dir,
+            partition_locations,
+            config,
+            self.client_pool.clone(),
+        );
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
@@ -490,6 +523,7 @@ fn send_fetch_partitions(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     config: &SessionConfig,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> AbortableReceiverStream {
     let max_request_num = config.ballista_shuffle_reader_maximum_concurrent_requests();
     let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
@@ -542,6 +576,7 @@ fn send_fetch_partitions(
         spawned_tasks.push(SpawnedTask::spawn({
             let customize_endpoint = customize_endpoint.clone();
             let grpc_config = grpc_config.clone();
+            let client_pool = client_pool.clone();
             async move {
                 // Block if exceeds max request number.
                 let permit = semaphore.acquire_owned().await.unwrap();
@@ -550,6 +585,7 @@ fn send_fetch_partitions(
                     grpc_config,
                     prefer_flight,
                     customize_endpoint,
+                    client_pool,
                 )
                 .await;
                 // Block if the channel buffer is full.
@@ -593,6 +629,7 @@ async fn fetch_partition_remote(
     config: Arc<GrpcClientConfig>,
     prefer_flight: bool,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
@@ -601,13 +638,11 @@ async fn fetch_partition_remote(
     let host = metadata.host.as_str();
     let port = metadata.port;
 
-    // TODO for shuffle client connections, we should avoid creating new connections again and again.
-    // And we should also avoid to keep alive too many connections for long time.
-    let mut ballista_client =
-        new_ballista_client(host, port, &config, customize_endpoint)
+    if let Some(pool) = client_pool {
+        let mut pooled = pool
+            .acquire(host, port, &config, customize_endpoint)
             .await
             .map_err(|error| match error {
-                // map grpc connection error to partition fetch error.
                 BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
                     metadata.id.clone(),
                     partition_id.stage_id,
@@ -617,15 +652,47 @@ async fn fetch_partition_remote(
                 other => other,
             })?;
 
-    ballista_client
-        .fetch_partition(
-            &metadata.id,
-            partition_id,
-            file_id,
-            is_sort_shuffle,
-            prefer_flight,
-        )
-        .await
+        let result = pooled
+            .fetch_partition(
+                &metadata.id,
+                partition_id,
+                file_id,
+                is_sort_shuffle,
+                prefer_flight,
+            )
+            .await;
+        if result.is_err() {
+            pooled.discard();
+        }
+        result
+    } else {
+        // TODO for shuffle client connections, we should avoid creating new connections again and again.
+        // And we should also avoid to keep alive too many connections for long time.
+        let mut ballista_client =
+            new_ballista_client(host, port, &config, customize_endpoint)
+                .await
+                .map_err(|error| match error {
+                    BallistaError::GrpcConnectionError(msg) => {
+                        BallistaError::FetchFailed(
+                            metadata.id.clone(),
+                            partition_id.stage_id,
+                            partition_id.partition_id,
+                            msg,
+                        )
+                    }
+                    other => other,
+                })?;
+
+        ballista_client
+            .fetch_partition(
+                &metadata.id,
+                partition_id,
+                file_id,
+                is_sort_shuffle,
+                prefer_flight,
+            )
+            .await
+    }
 }
 
 fn fetch_partition_local(
@@ -1074,7 +1141,7 @@ mod tests {
             Arc::new(schema),
             Partitioning::UnknownPartitioning(4),
         )?
-        .change_work_dir(work_dir);
+        .with_work_dir(work_dir);
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
 
@@ -1218,6 +1285,7 @@ mod tests {
             &work_dir.to_string_lossy(),
             partition_locations,
             &config,
+            None,
         );
 
         let stream = RecordBatchStreamAdapter::new(

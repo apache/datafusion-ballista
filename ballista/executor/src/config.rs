@@ -171,6 +171,13 @@ pub struct Config {
         help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share."
     )]
     pub memory_pool_size: Option<u64>,
+    /// Number of seconds established client connection should be cached if not used (0 means no cache)
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Number of seconds established client connection should be cached if not used (0 means no cache, connection will be disposed)."
+    )]
+    pub client_ttl: u64,
 }
 
 impl TryFrom<Config> for ExecutorProcessConfig {
@@ -208,6 +215,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_physical_codec: None,
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
+            client_ttl: opt.client_ttl,
         })
     }
 }
