@@ -13,6 +13,7 @@
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
+use crate::state::execution_stage::TaskInfo;
 use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
 use axum::extract::Query;
 use axum::{
@@ -31,7 +32,7 @@ use ballista_core::serde::scheduler::{
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
-use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
+use datafusion::physical_plan::metrics::{MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 #[cfg(feature = "graphviz-support")]
@@ -44,6 +45,7 @@ use http::{StatusCode, header::CONTENT_TYPE};
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
 struct SchedulerStateResponse {
@@ -539,11 +541,9 @@ pub async fn get_query_stages<
                             .as_ref()
                             .map(|m| get_combined_count(m.as_slice(), "output_rows"))
                             .unwrap_or(0);
-                        summary.elapsed_compute = running_stage
-                            .stage_metrics
-                            .as_ref()
-                            .map(|m| get_elapsed_compute_nanos(m.as_slice()))
-                            .unwrap_or_default();
+                        summary.elapsed_compute = get_running_stage_time(&running_stage
+                            .task_infos)
+                            ;
                         summary.tasks = running_stage
                             .task_infos
                             .iter()
@@ -595,7 +595,7 @@ pub async fn get_query_stages<
                             "output_rows",
                         );
                         summary.elapsed_compute =
-                            get_elapsed_compute_nanos(&completed_stage.stage_metrics);
+                            get_finished_stage_time(&completed_stage.task_infos);
 
                         summary.tasks = completed_stage
                             .task_infos
@@ -722,18 +722,49 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_elapsed_compute_nanos(metrics: &[MetricsSet]) -> String {
-    let nanos: usize = metrics
+fn get_running_stage_time(task_infos: &[Option<TaskInfo>]) -> String {
+    let min_start = task_infos
         .iter()
-        .flat_map(|vec| {
-            vec.iter().map(|metric| match metric.as_ref().value() {
-                MetricValue::ElapsedCompute(time) => time.value(),
-                _ => 0,
+        .map(|t| t.as_ref().map(|t| t.start_exec_time).unwrap_or_default())
+        .min();
+    let max_end = task_infos
+        .iter()
+        .map(|t| {
+            t.as_ref().map(|t| t.end_exec_time).unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
             })
         })
-        .sum();
+        .filter(|&t| t > 0)
+        .max();
+    let elapsed_ms = match (min_start, max_end) {
+        (Some(start), Some(end)) if end > start => end - start,
+        _ => 0,
+    };
     let t = Time::new();
-    t.add_duration(Duration::from_nanos(nanos as u64));
+    t.add_duration(Duration::from_millis(elapsed_ms as u64));
+    t.to_string()
+}
+
+fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
+    let min_start = task_infos
+        .iter()
+        .map(|t| t.start_exec_time)
+        .filter(|&t| t > 0)
+        .min();
+    let max_end = task_infos
+        .iter()
+        .map(|t| t.end_exec_time)
+        .filter(|&t| t > 0)
+        .max();
+    let elapsed_ms = match (min_start, max_end) {
+        (Some(start), Some(end)) if end > start => end - start,
+        _ => 0,
+    };
+    let t = Time::new();
+    t.add_duration(Duration::from_millis(elapsed_ms as u64));
     t.to_string()
 }
 
