@@ -27,6 +27,7 @@ mod supported {
 
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
@@ -37,28 +38,6 @@ mod supported {
     #[rstest::fixture]
     fn test_data() -> String {
         crate::common::example_test_data()
-    }
-
-    /// Concatenate the `plan` column of an EXPLAIN result into a single
-    /// string for substring assertions.
-    fn plan_text(batches: &[RecordBatch]) -> String {
-        let mut out = String::new();
-        for batch in batches {
-            let idx = batch
-                .schema()
-                .index_of("plan")
-                .expect("EXPLAIN output should have a 'plan' column");
-            let col = batch
-                .column(idx)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("plan column should be Utf8");
-            for val in col.iter().flatten() {
-                out.push_str(val);
-                out.push('\n');
-            }
-        }
-        out
     }
 
     #[rstest]
@@ -1006,7 +985,7 @@ mod supported {
             .await?
             .collect()
             .await?;
-        let plan_text = plan_text(&plan);
+        let plan_text = pretty_format_batches(&plan).unwrap().to_string();
         assert!(
             plan_text.contains("SortMergeJoinExec"),
             "expected SortMergeJoinExec in plan, got:\n{plan_text}"
@@ -1066,7 +1045,7 @@ mod supported {
             .await?
             .collect()
             .await?;
-        let plan_text = plan_text(&plan);
+        let plan_text = pretty_format_batches(&plan).unwrap().to_string();
         assert!(
             plan_text.contains("HashJoinExec"),
             "expected HashJoinExec in plan after opt-in, got:\n{plan_text}"
