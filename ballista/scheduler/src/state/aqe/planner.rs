@@ -421,7 +421,6 @@ impl AdaptivePlanner {
     /// A vector of default physical optimizer rules.
     fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers = PhysicalOptimizer::new().rules;
-        //physical_optimizers.push(Arc::new(EliminateEmptyExchangeRule::default()));
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));

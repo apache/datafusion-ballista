@@ -94,9 +94,7 @@ impl PropagateEmptyExecRule {
         } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
             let stats = exchange.partition_statistics(None)?;
             match stats.num_rows {
-                Precision::Exact(0) => Ok(Transformed::yes(Arc::new(EmptyExec::new(
-                    plan.schema().clone(),
-                )))),
+                Precision::Exact(0) => empty_exec!(plan),
                 _ => Ok(Transformed::no(plan)),
             }
         }

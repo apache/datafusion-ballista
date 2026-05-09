@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 enum ExchangeStatus {
-    None,
+    Absent,
     Resolved,
     Unresolved,
 }
@@ -47,7 +47,7 @@ impl DistributedExchangeRule {
         {
             let input = coalesce.input();
             if input.as_any().downcast_ref::<ExchangeExec>().is_none()
-                && !matches!(find_exchange_status(input), ExchangeStatus::Unresolved)
+                && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
             {
                 let exchange_exec = ExchangeExec::new(
                     input.clone(),
@@ -65,7 +65,7 @@ impl DistributedExchangeRule {
         ) {
             let input = sort_preserving_merge.input();
             if input.as_any().downcast_ref::<ExchangeExec>().is_none()
-                && !matches!(find_exchange_status(input), ExchangeStatus::Unresolved)
+                && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
             {
                 let exchange_exec = ExchangeExec::new(
                     input.clone(),
@@ -82,7 +82,7 @@ impl DistributedExchangeRule {
             && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
         {
             let input = repartition.input();
-            if !matches!(find_exchange_status(input), ExchangeStatus::Unresolved) {
+            if !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved) {
                 let exchange_exec = ExchangeExec::new(
                     input.clone(),
                     Some(repartition.partitioning().clone()),
@@ -138,9 +138,9 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
 /// Returns `Unresolved` as soon as any branch contains an unresolved exchange
 /// (short-circuits), `Resolved` if every branch that has an exchange has a resolved
 /// one, and `None` if no exchange is found anywhere.
-fn find_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
+fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
     if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
-        if exchange.shuffle_created() {
+        if exchange.shuffle_created() && !exchange.inactive_stage {
             ExchangeStatus::Resolved
         } else {
             ExchangeStatus::Unresolved
@@ -148,16 +148,16 @@ fn find_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
     } else {
         let mut found_resolved = false;
         for child in plan.children() {
-            match find_exchange_status(child) {
+            match nearest_exchange_status(child) {
                 ExchangeStatus::Unresolved => return ExchangeStatus::Unresolved,
                 ExchangeStatus::Resolved => found_resolved = true,
-                ExchangeStatus::None => {}
+                ExchangeStatus::Absent => {}
             }
         }
         if found_resolved {
             ExchangeStatus::Resolved
         } else {
-            ExchangeStatus::None
+            ExchangeStatus::Absent
         }
     }
 }
@@ -524,14 +524,17 @@ mod tests {
     #[test]
     fn exchange_status_none_for_plan_with_no_exchanges() {
         let plan = leaf_exec();
-        assert!(matches!(find_exchange_status(&plan), ExchangeStatus::None));
+        assert!(matches!(
+            nearest_exchange_status(&plan),
+            ExchangeStatus::Absent
+        ));
     }
 
     #[test]
     fn exchange_status_unresolved_for_unresolved_exchange() {
         let plan = unresolved_exchange(leaf_exec());
         assert!(matches!(
-            find_exchange_status(&plan),
+            nearest_exchange_status(&plan),
             ExchangeStatus::Unresolved
         ));
     }
@@ -540,7 +543,7 @@ mod tests {
     fn exchange_status_resolved_for_resolved_exchange() {
         let plan = resolved_exchange(leaf_exec());
         assert!(matches!(
-            find_exchange_status(&plan),
+            nearest_exchange_status(&plan),
             ExchangeStatus::Resolved
         ));
     }
@@ -551,7 +554,7 @@ mod tests {
             Arc::new(CoalescePartitionsExec::new(resolved_exchange(leaf_exec())))
                 as Arc<dyn ExecutionPlan>;
         assert!(matches!(
-            find_exchange_status(&coalesce_resolved),
+            nearest_exchange_status(&coalesce_resolved),
             ExchangeStatus::Resolved
         ));
 
@@ -559,7 +562,7 @@ mod tests {
             unresolved_exchange(leaf_exec()),
         )) as Arc<dyn ExecutionPlan>;
         assert!(matches!(
-            find_exchange_status(&coalesce_unresolved),
+            nearest_exchange_status(&coalesce_unresolved),
             ExchangeStatus::Unresolved
         ));
     }
@@ -571,7 +574,7 @@ mod tests {
         let inner_resolved = resolved_exchange(leaf_exec());
         let outer_unresolved = unresolved_exchange(inner_resolved);
         assert!(matches!(
-            find_exchange_status(&outer_unresolved),
+            nearest_exchange_status(&outer_unresolved),
             ExchangeStatus::Unresolved
         ));
 
@@ -580,7 +583,7 @@ mod tests {
         let inner_unresolved = unresolved_exchange(leaf_exec());
         let outer_resolved = resolved_exchange(inner_unresolved);
         assert!(matches!(
-            find_exchange_status(&outer_resolved),
+            nearest_exchange_status(&outer_resolved),
             ExchangeStatus::Resolved
         ));
     }
