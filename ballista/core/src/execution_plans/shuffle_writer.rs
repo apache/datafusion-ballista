@@ -211,8 +211,6 @@ impl ShuffleWriterExec {
 
             match output_partitioning {
                 None => {
-                    let timer = write_metrics.write_time.timer();
-
                     let path = create_shuffle_path(
                         &self.work_dir,
                         &self.job_id,
@@ -229,6 +227,8 @@ impl ShuffleWriterExec {
                     debug!("Writing results to {path:?}");
 
                     // stream results to disk
+                    // write_stream_to_disk measures write_time internally per batch,
+                    // so no outer timer is needed here
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
                         path.as_path(),
@@ -243,7 +243,6 @@ impl ShuffleWriterExec {
                     write_metrics
                         .output_rows
                         .add(stats.num_rows.unwrap_or(0) as usize);
-                    timer.done();
 
                     info!(
                         "Executed partition {} in {} seconds. Statistics: {}",
