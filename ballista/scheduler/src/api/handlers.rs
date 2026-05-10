@@ -726,6 +726,7 @@ fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -
     let min_start = task_infos
         .iter()
         .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
+        .filter(|t| *t > 0)
         .min();
 
     match (min_start, current_time) {
