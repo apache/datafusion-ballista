@@ -542,7 +542,7 @@ pub async fn get_query_stages<
                             .map(|m| get_combined_count(m.as_slice(), "output_rows"))
                             .unwrap_or(0);
                         summary.elapsed_compute = get_running_stage_time(&running_stage
-                            .task_infos)
+                            .task_infos, get_current_time())
                             ;
                         summary.tasks = running_stage
                             .task_infos
@@ -722,13 +722,13 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_running_stage_time(task_infos: &[Option<TaskInfo>]) -> String {
+fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -> String {
     let min_start = task_infos
         .iter()
         .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
         .min();
 
-    let elapsed_ms = match (min_start, get_current_time()) {
+    let elapsed_ms = match (min_start, current_time) {
         (Some(start), end) if end > start => end - start,
         _ => 0,
     };
@@ -750,10 +750,12 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
         .map(|t| t.end_exec_time)
         .filter(|t| *t > 0)
         .max();
+
     let elapsed_ms = match (min_start, max_end) {
         (Some(start), Some(end)) if end > start => end - start,
         _ => 0,
     };
+
     let t = Time::new();
     t.add_duration(Duration::from_millis(elapsed_ms as u64));
     t.to_string()
@@ -898,5 +900,104 @@ pub async fn get_scheduler_metrics<
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(axum::body::Body::empty())
             .unwrap(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::execution_stage::TaskInfo;
+    use ballista_core::serde::protobuf::task_status;
+
+    fn make_task_info(start: u128, end: u128) -> TaskInfo {
+        TaskInfo {
+            task_id: 0,
+            scheduled_time: 0,
+            launch_time: 0,
+            start_exec_time: start,
+            end_exec_time: end,
+            finish_time: 0,
+            task_status: task_status::Status::Running(Default::default()),
+        }
+    }
+
+    // --- get_finished_stage_time ---
+
+    #[test]
+    fn test_finished_empty_slice_returns_zero() {
+        assert_eq!(get_finished_stage_time(&[]), "1ns");
+    }
+
+    #[test]
+    fn test_finished_all_zero_timestamps_returns_zero() {
+        let tasks = vec![make_task_info(0, 0), make_task_info(0, 0)];
+        assert_eq!(get_finished_stage_time(&tasks), "1ns");
+    }
+
+    #[test]
+    fn test_finished_single_task_elapsed() {
+        // 600 - 100 = 500 ms → "500.00ms"
+        let tasks = vec![make_task_info(100, 600)];
+        assert_eq!(get_finished_stage_time(&tasks), "500.00ms");
+    }
+
+    #[test]
+    fn test_finished_picks_earliest_start_and_latest_end() {
+        // min start = 100, max end = 900 → 800 ms
+        let tasks = vec![
+            make_task_info(100, 500),
+            make_task_info(200, 900),
+            make_task_info(300, 700),
+        ];
+        assert_eq!(get_finished_stage_time(&tasks), "800.00ms");
+    }
+
+    #[test]
+    fn test_finished_end_before_start_returns_zero() {
+        let tasks = vec![make_task_info(900, 100)];
+        assert_eq!(get_finished_stage_time(&tasks), "1ns");
+    }
+
+    // --- get_running_stage_time ---
+
+    #[test]
+    fn test_running_empty_slice_returns_zero() {
+        assert_eq!(get_running_stage_time(&[], 1000), "1ns");
+    }
+
+    #[test]
+    fn test_running_all_none_returns_zero() {
+        let tasks: Vec<Option<TaskInfo>> = vec![None, None];
+        assert_eq!(get_running_stage_time(&tasks, 1000), "1ns");
+    }
+
+    #[test]
+    fn test_running_future_start_returns_zero() {
+        // start_exec_time beyond current time → elapsed clamped to 0
+        let tasks = vec![Some(make_task_info(u128::MAX, 0))];
+        assert_eq!(get_running_stage_time(&tasks, 1000), "1ns");
+    }
+
+    #[test]
+    fn test_running_past_start_returns_nonzero() {
+        let now = 4_000;
+        let start = 1_000;
+        let tasks = vec![Some(make_task_info(start, 0))];
+        assert_eq!(get_running_stage_time(&tasks, now), "3.00s");
+    }
+
+    #[test]
+    fn test_running_mixed_some_none_uses_earliest_some() {
+        let now = 3_000;
+        let earlier = 1_000;
+        let later = 2_000;
+        let tasks = vec![
+            None,
+            Some(make_task_info(later, 0)),
+            Some(make_task_info(earlier, 0)),
+            None,
+        ];
+        let result = get_running_stage_time(&tasks, now);
+        assert_eq!(result, "2.00s");
     }
 }
