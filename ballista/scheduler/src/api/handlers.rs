@@ -728,14 +728,14 @@ fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -
         .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
         .min();
 
-    let elapsed_ms = match (min_start, current_time) {
-        (Some(start), end) if end > start => end - start,
-        _ => 0,
-    };
-
-    let t = Time::new();
-    t.add_duration(Duration::from_millis(elapsed_ms as u64));
-    t.to_string()
+    match (min_start, current_time) {
+        (Some(start), end) if end > start => {
+            let t = Time::new();
+            t.add_duration(Duration::from_millis((end - start) as u64));
+            t.to_string()
+        }
+        _ => "0".to_string(),
+    }
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
@@ -751,14 +751,14 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
         .filter(|t| *t > 0)
         .max();
 
-    let elapsed_ms = match (min_start, max_end) {
-        (Some(start), Some(end)) if end > start => end - start,
-        _ => 0,
-    };
-
-    let t = Time::new();
-    t.add_duration(Duration::from_millis(elapsed_ms as u64));
-    t.to_string()
+    match (min_start, max_end) {
+        (Some(start), Some(end)) if end > start => {
+            let t = Time::new();
+            t.add_duration(Duration::from_millis((end - start) as u64));
+            t.to_string()
+        }
+        _ => "0".to_string(),
+    }
 }
 
 fn get_partition_counts(metrics: &[MetricsSet], partition_id: usize) -> (usize, usize) {
@@ -925,13 +925,13 @@ mod tests {
 
     #[test]
     fn test_finished_empty_slice_returns_zero() {
-        assert_eq!(get_finished_stage_time(&[]), "1ns");
+        assert_eq!(get_finished_stage_time(&[]), "0");
     }
 
     #[test]
     fn test_finished_all_zero_timestamps_returns_zero() {
         let tasks = vec![make_task_info(0, 0), make_task_info(0, 0)];
-        assert_eq!(get_finished_stage_time(&tasks), "1ns");
+        assert_eq!(get_finished_stage_time(&tasks), "0");
     }
 
     #[test]
@@ -955,27 +955,27 @@ mod tests {
     #[test]
     fn test_finished_end_before_start_returns_zero() {
         let tasks = vec![make_task_info(900, 100)];
-        assert_eq!(get_finished_stage_time(&tasks), "1ns");
+        assert_eq!(get_finished_stage_time(&tasks), "0");
     }
 
     // --- get_running_stage_time ---
 
     #[test]
     fn test_running_empty_slice_returns_zero() {
-        assert_eq!(get_running_stage_time(&[], 1000), "1ns");
+        assert_eq!(get_running_stage_time(&[], 1000), "0");
     }
 
     #[test]
     fn test_running_all_none_returns_zero() {
         let tasks: Vec<Option<TaskInfo>> = vec![None, None];
-        assert_eq!(get_running_stage_time(&tasks, 1000), "1ns");
+        assert_eq!(get_running_stage_time(&tasks, 1000), "0");
     }
 
     #[test]
     fn test_running_future_start_returns_zero() {
         // start_exec_time beyond current time → elapsed clamped to 0
         let tasks = vec![Some(make_task_info(u128::MAX, 0))];
-        assert_eq!(get_running_stage_time(&tasks, 1000), "1ns");
+        assert_eq!(get_running_stage_time(&tasks, 1000), "0");
     }
 
     #[test]
