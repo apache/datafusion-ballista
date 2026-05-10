@@ -725,34 +725,31 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
 fn get_running_stage_time(task_infos: &[Option<TaskInfo>]) -> String {
     let min_start = task_infos
         .iter()
-        .map(|t| {
-            t.as_ref()
-                .map(|t| t.start_exec_time)
-                .unwrap_or_else(|| get_current_time())
-        })
+        .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
         .min();
 
-    let max_end = task_infos
-        .iter()
-        .map(|t| {
-            t.as_ref()
-                .map(|t| t.end_exec_time)
-                .unwrap_or_else(|| get_current_time())
-        })
-        .max();
-    let elapsed_ms = match (min_start, max_end) {
-        (Some(start), Some(end)) if end > start => end - start,
+    let elapsed_ms = match (min_start, get_current_time()) {
+        (Some(start), end) if end > start => end - start,
         _ => 0,
     };
+
     let t = Time::new();
     t.add_duration(Duration::from_millis(elapsed_ms as u64));
     t.to_string()
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
-    let min_start = task_infos.iter().map(|t| t.start_exec_time).min();
+    let min_start = task_infos
+        .iter()
+        .map(|t| t.start_exec_time)
+        .filter(|t| *t > 0)
+        .min();
 
-    let max_end = task_infos.iter().map(|t| t.end_exec_time).max();
+    let max_end = task_infos
+        .iter()
+        .map(|t| t.end_exec_time)
+        .filter(|t| *t > 0)
+        .max();
     let elapsed_ms = match (min_start, max_end) {
         (Some(start), Some(end)) if end > start => end - start,
         _ => 0,
