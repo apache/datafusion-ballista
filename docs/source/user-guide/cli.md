@@ -231,10 +231,10 @@ The TUI provides the following views:
 
 #### Executors View Keybindings
 
-| Key             | Action                                       |
-| --------------- | -------------------------------------------- |
-| `Enter`         | Show extra details for the selected executor |
-| `1` / `2` / `3` | Sort by first/second/third column            |
+| Key                   | Action                                       |
+| --------------------- | -------------------------------------------- |
+| `Enter`               | Show extra details for the selected executor |
+| `1` / `2` / `3` / ... | Sort by first/second/third/... column        |
 
 #### Executor Details Popup Keybindings
 
