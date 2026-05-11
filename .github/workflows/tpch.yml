@@ -1,0 +1,155 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: TPC-H SF10
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+  workflow_dispatch:
+
+jobs:
+  tpch-sf10:
+    name: TPC-H SF10 (all queries)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler netcat-openbsd
+
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+
+      - name: Build Ballista binaries
+        run: |
+          cargo build --profile release-nonlto --locked \
+            -p ballista-scheduler \
+            -p ballista-executor \
+            -p ballista-benchmarks
+
+      - name: Install tpchgen-cli
+        run: cargo install --locked tpchgen-cli
+
+      - name: Generate TPC-H SF10 data
+        run: |
+          mkdir -p "$RUNNER_TEMP/tpch-data"
+          tpchgen-cli \
+            --scale-factor 10 \
+            --parts 16 \
+            --format=parquet \
+            --output-dir "$RUNNER_TEMP/tpch-data"
+
+      - name: Run TPC-H queries against Ballista cluster
+        env:
+          DATA_DIR: ${{ runner.temp }}/tpch-data
+          WORK_DIR: ${{ runner.temp }}/work
+          SCHEDULER_LOG: ${{ runner.temp }}/scheduler.log
+          EXECUTOR_LOG: ${{ runner.temp }}/executor.log
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORK_DIR"
+
+          ./target/release-nonlto/ballista-scheduler \
+            --bind-host 127.0.0.1 \
+            > "$SCHEDULER_LOG" 2>&1 &
+          SCHEDULER_PID=$!
+
+          ./target/release-nonlto/ballista-executor \
+            --bind-host 127.0.0.1 \
+            --scheduler-host 127.0.0.1 \
+            --concurrent-tasks 4 \
+            --memory-pool-size 2GB \
+            --work-dir "$WORK_DIR" \
+            > "$EXECUTOR_LOG" 2>&1 &
+          EXECUTOR_PID=$!
+
+          cleanup() {
+            echo "::group::scheduler log (tail)"
+            tail -n 200 "$SCHEDULER_LOG" || true
+            echo "::endgroup::"
+            echo "::group::executor log (tail)"
+            tail -n 200 "$EXECUTOR_LOG" || true
+            echo "::endgroup::"
+            kill "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+            wait "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for scheduler on 127.0.0.1:50050..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50050; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
+
+          echo "Waiting for executor on 127.0.0.1:50051..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50051; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
+
+          # q16 omitted: still unsupported (matches benchmarks/run.sh).
+          for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
+            echo "::group::Query $q"
+            ./target/release-nonlto/tpch benchmark ballista \
+              --host 127.0.0.1 --port 50050 \
+              --query "$q" \
+              --path "$DATA_DIR" \
+              --format parquet \
+              --partitions 16 \
+              --iterations 1 \
+              -c datafusion.optimizer.prefer_hash_join=false
+            echo "::endgroup::"
+          done
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpch-sf10-cluster-logs
+          path: |
+            ${{ runner.temp }}/scheduler.log
+            ${{ runner.temp }}/executor.log
+          if-no-files-found: ignore
