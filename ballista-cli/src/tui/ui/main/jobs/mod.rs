@@ -201,6 +201,7 @@ fn render_jobs_table(
         column_suffix(sort_column, sort_order, &SortColumn::PercentComplete);
     let start_time_suffix =
         column_suffix(sort_column, sort_order, &SortColumn::StartTime);
+    let duration_suffix = column_suffix(sort_column, sort_order, &SortColumn::Duration);
 
     let header = [
         format!("Id{id_suffix}"),
@@ -209,6 +210,7 @@ fn render_jobs_table(
         format!("Stages Completed{stages_suffix}"),
         format!("Percent Completed{percent_suffix}"),
         format!("Start time{start_time_suffix}"),
+        format!("Duration{duration_suffix}"),
     ]
     .into_iter()
     .map(|item| Text::from(item).centered())
@@ -229,6 +231,7 @@ fn render_jobs_table(
         let stage_completion_cell = render_job_stage_completion_cell(job);
         let percent_completion_cell = render_job_percent_completion_cell(job);
         let start_time_cell = render_job_start_time_cell(job, app);
+        let duration_cell = render_job_duration_cell(job, app);
 
         let cells = vec![
             id_cell,
@@ -237,6 +240,7 @@ fn render_jobs_table(
             stage_completion_cell,
             percent_completion_cell,
             start_time_cell,
+            duration_cell,
         ];
         Row::new(cells).style(Style::default().bg(color))
     });
@@ -245,11 +249,12 @@ fn render_jobs_table(
         rows,
         [
             Constraint::Percentage(10), // Id
-            Constraint::Percentage(20), // Name
+            Constraint::Percentage(15), // Name
             Constraint::Percentage(10), // Status
-            Constraint::Percentage(20), // Stages Completed
-            Constraint::Percentage(20), // Percent Completed
-            Constraint::Percentage(20), // Start time
+            Constraint::Percentage(15), // Stages Completed
+            Constraint::Percentage(15), // Percent Completed
+            Constraint::Percentage(15), // Start time
+            Constraint::Percentage(15), // Duration
         ],
     )
     .block(Block::default().borders(Borders::all()))
@@ -262,6 +267,12 @@ fn render_jobs_table(
 fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
     let start_time = app.format_datetime(job.start_time);
     Cell::from(Text::from(start_time).centered())
+}
+
+fn render_job_duration_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
+    let duration = (job.end_time - job.start_time) as u64;
+    let duration = app.format_duration(duration);
+    Cell::from(Text::from(duration).centered())
 }
 
 fn render_job_percent_completion_cell(job: &Job) -> Cell<'_> {

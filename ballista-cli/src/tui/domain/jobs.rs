@@ -26,6 +26,7 @@ pub struct Job {
     pub job_name: String,
     pub status: String, // Running, Completed, Failed, Canceled
     pub start_time: i64,
+    pub end_time: i64,
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
@@ -40,6 +41,7 @@ pub enum SortColumn {
     StagesCompleted,
     PercentComplete,
     StartTime,
+    Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +116,16 @@ impl JobsData {
             }),
             SortColumn::StartTime => jobs.sort_by(|a, b| {
                 let cmp = a.start_time.cmp(&b.start_time);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::Duration => jobs.sort_by(|a, b| {
+                let duration_a = a.end_time - a.start_time;
+                let duration_b = b.end_time - b.start_time;
+                let cmp = duration_a.cmp(&duration_b);
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
@@ -245,11 +257,13 @@ mod tests {
         Job, JobDetails, JobPlansPopup, JobsData, PlanTab, SortColumn,
     };
 
+    #[expect(clippy::too_many_arguments)]
     fn make_job(
         id: &str,
         name: &str,
         status: &str,
         start_time: i64,
+        end_time: i64,
         num_stages: usize,
         completed_stages: usize,
         percent_complete: u8,
@@ -259,6 +273,7 @@ mod tests {
             job_name: name.to_string(),
             status: status.to_string(),
             start_time,
+            end_time,
             num_stages,
             completed_stages,
             percent_complete,
@@ -283,9 +298,9 @@ mod tests {
     #[test]
     fn sort_by_none_preserves_order() {
         let jobs = vec![
-            make_job("c", "Charlie", "Running", 3, 1, 0, 0),
-            make_job("a", "Alpha", "Running", 1, 1, 0, 0),
-            make_job("b", "Beta", "Running", 2, 1, 0, 0),
+            make_job("c", "Charlie", "Running", 3, 4, 1, 0, 0),
+            make_job("a", "Alpha", "Running", 1, 3, 1, 0, 0),
+            make_job("b", "Beta", "Running", 2, 3, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -298,9 +313,9 @@ mod tests {
     #[test]
     fn sort_by_id_ascending() {
         let jobs = vec![
-            make_job("c", "C", "Running", 3, 1, 0, 0),
-            make_job("a", "A", "Running", 1, 1, 0, 0),
-            make_job("b", "B", "Running", 2, 1, 0, 0),
+            make_job("c", "C", "Running", 3, 4, 1, 0, 0),
+            make_job("a", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("b", "B", "Running", 2, 4, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::Id, SortOrder::Ascending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -313,9 +328,9 @@ mod tests {
     #[test]
     fn sort_by_id_descending() {
         let jobs = vec![
-            make_job("a", "A", "Running", 1, 1, 0, 0),
-            make_job("c", "C", "Running", 3, 1, 0, 0),
-            make_job("b", "B", "Running", 2, 1, 0, 0),
+            make_job("a", "A", "Running", 1, 3, 1, 0, 0),
+            make_job("c", "C", "Running", 3, 4, 1, 0, 0),
+            make_job("b", "B", "Running", 2, 5, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::Id, SortOrder::Descending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -328,9 +343,9 @@ mod tests {
     #[test]
     fn sort_by_name_ascending() {
         let jobs = vec![
-            make_job("1", "Zeta", "Running", 1, 1, 0, 0),
-            make_job("2", "Alpha", "Running", 2, 1, 0, 0),
-            make_job("3", "Mu", "Running", 3, 1, 0, 0),
+            make_job("1", "Zeta", "Running", 1, 2, 1, 0, 0),
+            make_job("2", "Alpha", "Running", 2, 3, 1, 0, 0),
+            make_job("3", "Mu", "Running", 3, 4, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::Name, SortOrder::Ascending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -343,9 +358,9 @@ mod tests {
     #[test]
     fn sort_by_name_descending() {
         let jobs = vec![
-            make_job("1", "Alpha", "Running", 1, 1, 0, 0),
-            make_job("2", "Zeta", "Running", 2, 1, 0, 0),
-            make_job("3", "Mu", "Running", 3, 1, 0, 0),
+            make_job("1", "Alpha", "Running", 1, 2, 1, 0, 0),
+            make_job("2", "Zeta", "Running", 2, 3, 1, 0, 0),
+            make_job("3", "Mu", "Running", 3, 4, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::Name, SortOrder::Descending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -358,9 +373,9 @@ mod tests {
     #[test]
     fn sort_by_status_ascending() {
         let jobs = vec![
-            make_job("1", "A", "Running", 1, 1, 0, 0),
-            make_job("2", "B", "Completed", 2, 1, 0, 0),
-            make_job("3", "C", "Failed", 3, 1, 0, 0),
+            make_job("1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("2", "B", "Completed", 2, 3, 1, 0, 0),
+            make_job("3", "C", "Failed", 3, 4, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::Status, SortOrder::Ascending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -373,9 +388,9 @@ mod tests {
     #[test]
     fn sort_by_status_descending() {
         let jobs = vec![
-            make_job("1", "A", "Completed", 1, 1, 0, 0),
-            make_job("2", "B", "Running", 2, 1, 0, 0),
-            make_job("3", "C", "Failed", 3, 1, 0, 0),
+            make_job("1", "A", "Completed", 1, 2, 1, 0, 0),
+            make_job("2", "B", "Running", 2, 3, 1, 0, 0),
+            make_job("3", "C", "Failed", 3, 4, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::Status, SortOrder::Descending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -388,9 +403,9 @@ mod tests {
     #[test]
     fn sort_by_percent_complete_ascending() {
         let jobs = vec![
-            make_job("1", "A", "Running", 1, 1, 0, 75),
-            make_job("2", "B", "Running", 2, 1, 0, 25),
-            make_job("3", "C", "Running", 3, 1, 0, 50),
+            make_job("1", "A", "Running", 1, 2, 1, 0, 75),
+            make_job("2", "B", "Running", 2, 3, 1, 0, 25),
+            make_job("3", "C", "Running", 3, 4, 1, 0, 50),
         ];
         let data =
             make_jobs_data(jobs, SortColumn::PercentComplete, SortOrder::Ascending);
@@ -404,9 +419,9 @@ mod tests {
     #[test]
     fn sort_by_percent_complete_descending() {
         let jobs = vec![
-            make_job("1", "A", "Running", 1, 1, 0, 25),
-            make_job("2", "B", "Running", 2, 1, 0, 75),
-            make_job("3", "C", "Running", 3, 1, 0, 50),
+            make_job("1", "A", "Running", 1, 2, 1, 0, 25),
+            make_job("2", "B", "Running", 2, 3, 1, 0, 75),
+            make_job("3", "C", "Running", 3, 4, 1, 0, 50),
         ];
         let data =
             make_jobs_data(jobs, SortColumn::PercentComplete, SortOrder::Descending);
@@ -420,9 +435,9 @@ mod tests {
     #[test]
     fn sort_by_start_time_ascending() {
         let jobs = vec![
-            make_job("1", "A", "Running", 300, 1, 0, 0),
-            make_job("2", "B", "Running", 100, 1, 0, 0),
-            make_job("3", "C", "Running", 200, 1, 0, 0),
+            make_job("1", "A", "Running", 300, 301, 1, 0, 0),
+            make_job("2", "B", "Running", 100, 101, 1, 0, 0),
+            make_job("3", "C", "Running", 200, 201, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::StartTime, SortOrder::Ascending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -435,9 +450,9 @@ mod tests {
     #[test]
     fn sort_by_start_time_descending() {
         let jobs = vec![
-            make_job("1", "A", "Running", 100, 1, 0, 0),
-            make_job("2", "B", "Running", 300, 1, 0, 0),
-            make_job("3", "C", "Running", 200, 1, 0, 0),
+            make_job("1", "A", "Running", 100, 101, 1, 0, 0),
+            make_job("2", "B", "Running", 300, 301, 1, 0, 0),
+            make_job("3", "C", "Running", 200, 201, 1, 0, 0),
         ];
         let data = make_jobs_data(jobs, SortColumn::StartTime, SortOrder::Descending);
         let mut refs: Vec<&Job> = data.jobs.iter().collect();
@@ -447,11 +462,41 @@ mod tests {
         assert_eq!(refs[2].start_time, 100);
     }
 
+    #[test]
+    fn sort_by_duration_ascending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 300, 301, 1, 0, 0),
+            make_job("2", "B", "Running", 100, 102, 1, 0, 0),
+            make_job("3", "C", "Running", 200, 203, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Duration, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].start_time, 300);
+        assert_eq!(refs[1].start_time, 100);
+        assert_eq!(refs[2].start_time, 200);
+    }
+
+    #[test]
+    fn sort_by_duration_descending() {
+        let jobs = vec![
+            make_job("1", "A", "Running", 100, 102, 1, 0, 0),
+            make_job("2", "B", "Running", 300, 301, 1, 0, 0),
+            make_job("3", "C", "Running", 200, 203, 1, 0, 0),
+        ];
+        let data = make_jobs_data(jobs, SortColumn::Duration, SortOrder::Descending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].start_time, 200);
+        assert_eq!(refs[1].start_time, 100);
+        assert_eq!(refs[2].start_time, 300);
+    }
+
     // --- selected_job tests ---
 
     #[test]
     fn selected_job_no_selection_returns_none() {
-        let jobs = vec![make_job("j1", "Job One", "Running", 1, 1, 0, 0)];
+        let jobs = vec![make_job("j1", "Job One", "Running", 1, 2, 1, 0, 0)];
         let data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         assert!(data.selected_job("").is_none());
     }
@@ -459,8 +504,8 @@ mod tests {
     #[test]
     fn selected_job_returns_correct_job() {
         let jobs = vec![
-            make_job("j1", "Job One", "Running", 1, 1, 0, 0),
-            make_job("j2", "Job Two", "Running", 2, 1, 0, 0),
+            make_job("j1", "Job One", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "Job Two", "Running", 2, 3, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(1));
@@ -471,8 +516,8 @@ mod tests {
     #[test]
     fn selected_job_filters_by_search_term_on_id() {
         let jobs = vec![
-            make_job("abc-123", "Job One", "Running", 1, 1, 0, 0),
-            make_job("xyz-456", "Job Two", "Running", 2, 1, 0, 0),
+            make_job("abc-123", "Job One", "Running", 1, 2, 1, 0, 0),
+            make_job("xyz-456", "Job Two", "Running", 2, 3, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(0));
@@ -484,9 +529,9 @@ mod tests {
     #[test]
     fn selected_job_filters_by_search_term_on_name() {
         let jobs = vec![
-            make_job("j1", "Query Alpha", "Running", 1, 1, 0, 0),
-            make_job("j2", "Query Beta", "Running", 2, 1, 0, 0),
-            make_job("j3", "Other Job", "Running", 3, 1, 0, 0),
+            make_job("j1", "Query Alpha", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "Query Beta", "Running", 2, 3, 1, 0, 0),
+            make_job("j3", "Other Job", "Running", 3, 4, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(1));
@@ -501,7 +546,7 @@ mod tests {
 
     #[test]
     fn selected_job_search_is_case_insensitive() {
-        let jobs = vec![make_job("j1", "My QUERY", "Running", 1, 1, 0, 0)];
+        let jobs = vec![make_job("j1", "My QUERY", "Running", 1, 2, 1, 0, 0)];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(0));
         assert!(data.selected_job("query").is_some());
@@ -511,7 +556,7 @@ mod tests {
 
     #[test]
     fn selected_job_no_match_returns_none() {
-        let jobs = vec![make_job("j1", "Job One", "Running", 1, 1, 0, 0)];
+        let jobs = vec![make_job("j1", "Job One", "Running", 1, 2, 1, 0, 0)];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(0));
         assert!(data.selected_job("nonexistent").is_none());
@@ -529,8 +574,8 @@ mod tests {
     #[test]
     fn scroll_down_with_no_selection_selects_first() {
         let jobs = vec![
-            make_job("j1", "A", "Running", 1, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 0, 0),
+            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.scroll_down();
@@ -540,9 +585,9 @@ mod tests {
     #[test]
     fn scroll_down_advances_selection() {
         let jobs = vec![
-            make_job("j1", "A", "Running", 1, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 0, 0),
-            make_job("j3", "C", "Running", 3, 1, 0, 0),
+            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 1, 2, 0, 0),
+            make_job("j3", "C", "Running", 3, 1, 2, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(0));
@@ -553,8 +598,8 @@ mod tests {
     #[test]
     fn scroll_down_at_last_item_deselects() {
         let jobs = vec![
-            make_job("j1", "A", "Running", 1, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 0, 0),
+            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(1));
@@ -574,9 +619,9 @@ mod tests {
     #[test]
     fn scroll_up_with_no_selection_selects_last() {
         let jobs = vec![
-            make_job("j1", "A", "Running", 1, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 0, 0),
-            make_job("j3", "C", "Running", 3, 1, 0, 0),
+            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
+            make_job("j3", "C", "Running", 3, 4, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.scroll_up();
@@ -586,8 +631,8 @@ mod tests {
     #[test]
     fn scroll_up_moves_selection_back() {
         let jobs = vec![
-            make_job("j1", "A", "Running", 1, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 0, 0),
+            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 2, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(1));
@@ -598,8 +643,8 @@ mod tests {
     #[test]
     fn scroll_up_at_first_item_deselects() {
         let jobs = vec![
-            make_job("j1", "A", "Running", 1, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 0, 0),
+            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
+            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
         ];
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(0));

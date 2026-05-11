@@ -351,6 +351,9 @@ impl App {
             KeyCode::Char('6') if self.is_jobs_view() => {
                 self.sort_jobs_by(JobsSortColumn::StartTime);
             }
+            KeyCode::Char('7') if self.is_jobs_view() => {
+                self.sort_jobs_by(JobsSortColumn::Duration);
+            }
             KeyCode::Char('c')
                 if self.is_jobs_view() && self.input_mode == InputMode::View =>
             {
@@ -689,6 +692,7 @@ mod tests {
             job_name: format!("Job {id}"),
             status: status.to_string(),
             start_time: 0,
+            end_time: 1,
             num_stages: 1,
             completed_stages: 0,
             percent_complete: 0,
@@ -990,31 +994,31 @@ mod tests {
     #[test]
     fn format_size_zero_bytes() {
         let app = make_app();
-        assert_eq!(app.format_size(0), "0.0 B");
+        assert_eq!(app.format_size(0), "0.0B");
     }
 
     #[test]
     fn format_size_bytes_below_kb_threshold() {
         let app = make_app();
-        assert_eq!(app.format_size(1024), "1024.0 B");
+        assert_eq!(app.format_size(1024), "1024.0B");
     }
 
     #[test]
     fn format_size_kilobytes() {
         let app = make_app();
-        assert_eq!(app.format_size(2 * 1024), "2.0 KB");
+        assert_eq!(app.format_size(2 * 1024), "2.0KB");
     }
 
     #[test]
     fn format_size_megabytes() {
         let app = make_app();
-        assert_eq!(app.format_size(2 * 1024 * 1024), "2.0 MB");
+        assert_eq!(app.format_size(2 * 1024 * 1024), "2.0MB");
     }
 
     #[test]
     fn format_size_gigabytes() {
         let app = make_app();
-        assert_eq!(app.format_size(2 * 1024 * 1024 * 1024), "2.0 GB");
+        assert_eq!(app.format_size(2 * 1024 * 1024 * 1024), "2.0GB");
     }
 
     // --- is_selected_job_cancelable tests ---
