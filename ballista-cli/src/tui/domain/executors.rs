@@ -30,6 +30,10 @@ pub struct Executor {
 }
 
 impl Executor {
+    pub fn task_slots(&self) -> u32 {
+        self.specification.task_slots
+    }
+
     pub fn proc_physical_memory_usage(&self) -> u64 {
         self.metrics
             .iter()
@@ -105,6 +109,7 @@ pub enum SortColumn {
     None,
     Host,
     Id,
+    TaskSlots,
     ProcPhysicalMemoryUsage,
     PeakPhysicalMemoryUsage,
     LastSeen,
@@ -148,6 +153,14 @@ impl ExecutorsData {
             }),
             SortColumn::Id => self.executors.sort_by(|a, b| {
                 let cmp = a.id.cmp(&b.id);
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::TaskSlots => self.executors.sort_by(|a, b| {
+                let cmp = a.task_slots().cmp(&b.task_slots());
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
@@ -245,6 +258,7 @@ mod tests {
         host: &str,
         port: u16,
         id: &str,
+        task_slots: u32,
         proc_physical_memory_usage: u64,
         peak_physical_memory_usage: u64,
         last_seen: Option<u64>,
@@ -254,7 +268,7 @@ mod tests {
             port,
             id: id.to_string(),
             last_seen,
-            specification: Specification { task_slots: 1 },
+            specification: Specification { task_slots },
             metrics: vec![
                 Metric {
                     typ: "proc_physical_memory".to_string(),
@@ -270,7 +284,7 @@ mod tests {
 
     fn make_executor_details(id: &str) -> ExecutorDetails {
         ExecutorDetails {
-            executor_info: make_executor("host", 8080, id, 0, 0, Some(0)),
+            executor_info: make_executor("host", 8080, id, 1, 0, 0, Some(0)),
             os_info: OsInfo {
                 kernel_ver: "5.15".to_string(),
                 num_disks: 1,
@@ -304,9 +318,9 @@ mod tests {
     fn sort_by_none_preserves_order() {
         let mut data = make_executors_data(
             vec![
-                make_executor("z-host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("a-host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("m-host", 8080, "id-b", 0, 0, Some(200)),
+                make_executor("z-host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("a-host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("m-host", 8080, "id-b", 1, 0, 0, Some(200)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -321,9 +335,9 @@ mod tests {
     fn sort_by_host_ascending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("z-host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("a-host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("m-host", 8080, "id-b", 0, 0, Some(200)),
+                make_executor("z-host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("a-host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("m-host", 8080, "id-b", 1, 0, 0, Some(200)),
             ],
             SortColumn::Host,
             SortOrder::Ascending,
@@ -338,9 +352,9 @@ mod tests {
     fn sort_by_host_descending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("a-host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("z-host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("m-host", 8080, "id-b", 0, 0, Some(200)),
+                make_executor("a-host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("z-host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("m-host", 8080, "id-b", 1, 0, 0, Some(200)),
             ],
             SortColumn::Host,
             SortOrder::Descending,
@@ -356,8 +370,8 @@ mod tests {
         // Two executors with same host but different ports — sorted as "host:port"
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 9000, "id-b", 0, 0, Some(200)),
-                make_executor("host", 8080, "id-a", 0, 0, Some(100)),
+                make_executor("host", 9000, "id-b", 1, 0, 0, Some(200)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
             ],
             SortColumn::Host,
             SortOrder::Ascending,
@@ -371,9 +385,9 @@ mod tests {
     fn sort_by_id_ascending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("host", 8080, "id-b", 0, 0, Some(200)),
+                make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-b", 1, 0, 0, Some(200)),
             ],
             SortColumn::Id,
             SortOrder::Ascending,
@@ -388,9 +402,9 @@ mod tests {
     fn sort_by_id_descending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("host", 8080, "id-b", 0, 0, Some(200)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("host", 8080, "id-b", 1, 0, 0, Some(200)),
             ],
             SortColumn::Id,
             SortOrder::Descending,
@@ -402,13 +416,53 @@ mod tests {
     }
 
     #[test]
+    fn sort_by_task_slots_ascending() {
+        let mut data = make_executors_data(
+            vec![
+                make_executor("host", 8080, "id-a", 2, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-b", 3, 0, 0, Some(200)),
+                make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
+            ],
+            SortColumn::TaskSlots,
+            SortOrder::Ascending,
+        );
+        data.sort();
+        assert_eq!(data.executors[0].id, "id-c");
+        assert_eq!(data.executors[0].task_slots(), 1);
+        assert_eq!(data.executors[1].id, "id-a");
+        assert_eq!(data.executors[1].task_slots(), 2);
+        assert_eq!(data.executors[2].id, "id-b");
+        assert_eq!(data.executors[2].task_slots(), 3);
+    }
+
+    #[test]
+    fn sort_by_task_slots_descending() {
+        let mut data = make_executors_data(
+            vec![
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-c", 2, 0, 0, Some(300)),
+                make_executor("host", 8080, "id-b", 3, 0, 0, Some(200)),
+            ],
+            SortColumn::TaskSlots,
+            SortOrder::Descending,
+        );
+        data.sort();
+        assert_eq!(data.executors[0].id, "id-b");
+        assert_eq!(data.executors[0].task_slots(), 3);
+        assert_eq!(data.executors[1].id, "id-c");
+        assert_eq!(data.executors[1].task_slots(), 2);
+        assert_eq!(data.executors[2].id, "id-a");
+        assert_eq!(data.executors[2].task_slots(), 1);
+    }
+
+    #[test]
     fn sort_by_proc_physical_memory_ascending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-c", 3, 0, Some(300)),
-                make_executor("host", 8080, "id-a", 1, 0, Some(100)),
-                make_executor("host", 8080, "id-b", 2, 0, Some(200)),
-                make_executor("host", 8080, "id-d", 0, 0, None),
+                make_executor("host", 8080, "id-c", 1, 3, 0, Some(300)),
+                make_executor("host", 8080, "id-a", 1, 1, 0, Some(100)),
+                make_executor("host", 8080, "id-b", 1, 2, 0, Some(200)),
+                make_executor("host", 8080, "id-d", 1, 0, 0, None),
             ],
             SortColumn::ProcPhysicalMemoryUsage,
             SortOrder::Ascending,
@@ -424,10 +478,10 @@ mod tests {
     fn sort_by_proc_physical_memory_descending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 1, 0, Some(100)),
-                make_executor("host", 8080, "id-c", 3, 0, Some(300)),
-                make_executor("host", 8080, "id-b", 2, 0, Some(200)),
-                make_executor("host", 8080, "id-d", 0, 0, None),
+                make_executor("host", 8080, "id-a", 1, 1, 0, Some(100)),
+                make_executor("host", 8080, "id-c", 1, 3, 0, Some(300)),
+                make_executor("host", 8080, "id-b", 1, 2, 0, Some(200)),
+                make_executor("host", 8080, "id-d", 1, 0, 0, None),
             ],
             SortColumn::ProcPhysicalMemoryUsage,
             SortOrder::Descending,
@@ -443,10 +497,10 @@ mod tests {
     fn sort_by_peak_physical_memory_ascending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-c", 0, 3, Some(300)),
-                make_executor("host", 8080, "id-a", 0, 1, Some(100)),
-                make_executor("host", 8080, "id-b", 0, 2, Some(200)),
-                make_executor("host", 8080, "id-d", 0, 0, None),
+                make_executor("host", 8080, "id-c", 1, 0, 3, Some(300)),
+                make_executor("host", 8080, "id-a", 1, 0, 1, Some(100)),
+                make_executor("host", 8080, "id-b", 1, 0, 2, Some(200)),
+                make_executor("host", 8080, "id-d", 1, 0, 0, None),
             ],
             SortColumn::PeakPhysicalMemoryUsage,
             SortOrder::Ascending,
@@ -462,10 +516,10 @@ mod tests {
     fn sort_by_peak_physical_memory_descending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 1, Some(100)),
-                make_executor("host", 8080, "id-c", 0, 3, Some(300)),
-                make_executor("host", 8080, "id-b", 0, 2, Some(200)),
-                make_executor("host", 8080, "id-d", 0, 0, None),
+                make_executor("host", 8080, "id-a", 1, 0, 1, Some(100)),
+                make_executor("host", 8080, "id-c", 1, 0, 3, Some(300)),
+                make_executor("host", 8080, "id-b", 1, 0, 2, Some(200)),
+                make_executor("host", 8080, "id-d", 1, 0, 0, None),
             ],
             SortColumn::PeakPhysicalMemoryUsage,
             SortOrder::Descending,
@@ -481,10 +535,10 @@ mod tests {
     fn sort_by_last_seen_ascending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("host", 8080, "id-b", 0, 0, Some(200)),
-                make_executor("host", 8080, "id-d", 0, 0, None),
+                make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-b", 1, 0, 0, Some(200)),
+                make_executor("host", 8080, "id-d", 1, 0, 0, None),
             ],
             SortColumn::LastSeen,
             SortOrder::Ascending,
@@ -500,10 +554,10 @@ mod tests {
     fn sort_by_last_seen_descending() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(100)),
-                make_executor("host", 8080, "id-c", 0, 0, Some(300)),
-                make_executor("host", 8080, "id-b", 0, 0, Some(200)),
-                make_executor("host", 8080, "id-d", 0, 0, None),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
+                make_executor("host", 8080, "id-b", 1, 0, 0, Some(200)),
+                make_executor("host", 8080, "id-d", 1, 0, 0, None),
             ],
             SortColumn::LastSeen,
             SortOrder::Descending,
@@ -528,8 +582,8 @@ mod tests {
     fn scroll_down_with_no_selection_selects_first() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -542,9 +596,9 @@ mod tests {
     fn scroll_down_advances_selection() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
-                make_executor("host", 8082, "id-c", 0, 0, Some(3)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
+                make_executor("host", 8082, "id-c", 1, 0, 0, Some(3)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -558,8 +612,8 @@ mod tests {
     fn scroll_down_at_last_item_deselects() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -582,9 +636,9 @@ mod tests {
     fn scroll_up_with_no_selection_selects_last() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
-                make_executor("host", 8082, "id-c", 0, 0, Some(3)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
+                make_executor("host", 8082, "id-c", 1, 0, 0, Some(3)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -597,8 +651,8 @@ mod tests {
     fn scroll_up_moves_selection_back() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -612,8 +666,8 @@ mod tests {
     fn scroll_up_at_first_item_deselects() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
             ],
             SortColumn::None,
             SortOrder::Ascending,
@@ -628,7 +682,7 @@ mod tests {
     #[test]
     fn selected_executor_none_when_no_selection() {
         let data = make_executors_data(
-            vec![make_executor("host", 8080, "id-a", 0, 0, Some(1))],
+            vec![make_executor("host", 8080, "id-a", 1, 0, 0, Some(1))],
             SortColumn::None,
             SortOrder::Ascending,
         );
@@ -639,8 +693,8 @@ mod tests {
     fn selected_executor_returns_correct_executor() {
         let mut data = make_executors_data(
             vec![
-                make_executor("host", 8080, "id-a", 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 0, 0, Some(2)),
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
+                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
             ],
             SortColumn::None,
             SortOrder::Ascending,

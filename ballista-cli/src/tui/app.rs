@@ -339,25 +339,29 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::Status);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::ProcPhysicalMemoryUsage);
+                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
                 }
             }
             KeyCode::Char('4') => {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StagesCompleted);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::PeakPhysicalMemoryUsage);
+                    self.sort_executors_by(ExecutorsSortColumn::ProcPhysicalMemoryUsage);
                 }
             }
             KeyCode::Char('5') => {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::PercentComplete);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::LastSeen);
+                    self.sort_executors_by(ExecutorsSortColumn::PeakPhysicalMemoryUsage);
                 }
             }
-            KeyCode::Char('6') if self.is_jobs_view() => {
-                self.sort_jobs_by(JobsSortColumn::StartTime);
+            KeyCode::Char('6') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StartTime);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::LastSeen);
+                }
             }
             KeyCode::Char('7') if self.is_jobs_view() => {
                 self.sort_jobs_by(JobsSortColumn::Duration);

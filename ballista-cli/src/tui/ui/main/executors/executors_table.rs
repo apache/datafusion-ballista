@@ -61,6 +61,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
 
     let host_suffix = sort_suffix!(SortColumn::Host, sort_column, sort_order);
     let id_suffix = sort_suffix!(SortColumn::Id, sort_column, sort_order);
+    let task_slots_suffix = sort_suffix!(SortColumn::TaskSlots, sort_column, sort_order);
     let proc_physical_memory_suffix =
         sort_suffix!(SortColumn::ProcPhysicalMemoryUsage, sort_column, sort_order);
     let peak_physical_memory_suffix =
@@ -70,6 +71,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
     let header = [
         format!("Host{host_suffix}"),
         format!("Id{id_suffix}"),
+        format!("Task Slots{task_slots_suffix}"),
         format!("Physical Memory{proc_physical_memory_suffix}"),
         format!("Peak Physical Memory{peak_physical_memory_suffix}"),
         format!("Last seen{last_seen_suffix}"),
@@ -96,6 +98,10 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
                 Text::from(format!("{}:{}", executor.host, executor.port)).centered(),
             );
             let id_cell = Cell::from(Text::from(executor.id.clone()).centered());
+            let task_slots_cell = Cell::from(
+                Text::from(app.format_count(executor.specification.task_slots as usize))
+                    .centered(),
+            );
             let proc_physical_memory_cell = Cell::from(
                 Text::from(
                     app.format_size(executor.proc_physical_memory_usage() as usize),
@@ -113,6 +119,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
             let cells = vec![
                 host_cell,
                 id_cell,
+                task_slots_cell,
                 proc_physical_memory_cell,
                 peak_physical_memory_cell,
                 last_seen_cell,
@@ -123,8 +130,9 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
     let t = Table::new(
         rows,
         [
-            Constraint::Percentage(20), // Host
-            Constraint::Percentage(20), // Id
+            Constraint::Percentage(10), // Host
+            Constraint::Percentage(15), // Id
+            Constraint::Percentage(15), // Task slots
             Constraint::Percentage(20), // Proc physical memory
             Constraint::Percentage(20), // Peak physical memory
             Constraint::Percentage(20), // Last seen

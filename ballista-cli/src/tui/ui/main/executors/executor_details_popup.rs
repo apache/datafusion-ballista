@@ -74,10 +74,6 @@ fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<L
                     .unwrap(),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("  Task Slots  ", label_style),
-            Span::raw(executor.specification.task_slots.to_string()),
-        ]),
     ];
 
     let os = &executor_details.os_info;
