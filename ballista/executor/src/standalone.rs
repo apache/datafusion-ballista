@@ -20,9 +20,13 @@
 //! This module provides functions for creating executors that run in the same
 //! process as the client, useful for testing and development purposes.
 
+use crate::executor_process::ExecutorProcessConfig;
+use crate::executor_server;
 use crate::metrics::LoggingMetricsCollector;
+use crate::shutdown::ShutdownNotifier;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::utils::{GrpcServerConfig, default_config_producer};
@@ -36,10 +40,11 @@ use ballista_core::{
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use log::info;
+use log::{error, info};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tonic::transport::Channel;
 use uuid::Uuid;
 
@@ -52,6 +57,22 @@ pub async fn new_standalone_executor_from_state(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
     session_state: &SessionState,
+) -> Result<()> {
+    new_standalone_executor_from_state_with_scheduling_policy(
+        scheduler,
+        concurrent_tasks,
+        session_state,
+        TaskSchedulingPolicy::PullStaged,
+    )
+    .await
+}
+
+/// Same as [`new_standalone_executor_from_state`], with an explicit scheduler policy.
+pub async fn new_standalone_executor_from_state_with_scheduling_policy(
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    session_state: &SessionState,
+    scheduling_policy: TaskSchedulingPolicy,
 ) -> Result<()> {
     let logical = session_state.config().ballista_logical_extension_codec();
     let physical = session_state.config().ballista_physical_extension_codec();
@@ -67,13 +88,14 @@ pub async fn new_standalone_executor_from_state(
     let config_producer: ConfigProducer = Arc::new(move || config.clone());
     let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
 
-    new_standalone_executor_from_builder(
+    new_standalone_executor_from_builder_with_scheduling_policy(
         scheduler,
         concurrent_tasks,
         config_producer,
         runtime_producer,
         codec,
         session_state.into(),
+        scheduling_policy,
     )
     .await
 }
@@ -93,16 +115,72 @@ pub async fn new_standalone_executor_from_builder(
     codec: BallistaCodec,
     function_registry: BallistaFunctionRegistry,
 ) -> Result<()> {
-    // Let the OS assign a random, free port
+    new_standalone_executor_from_builder_with_scheduling_policy(
+        scheduler,
+        concurrent_tasks,
+        config_producer,
+        runtime_producer,
+        codec,
+        function_registry,
+        TaskSchedulingPolicy::PullStaged,
+    )
+    .await
+}
+
+/// Same as [`new_standalone_executor_from_builder`] with selectable [`TaskSchedulingPolicy`].
+///
+/// Push mode starts the executor gRPC server required for staged task push from the scheduler.
+pub async fn new_standalone_executor_from_builder_with_scheduling_policy(
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    config_producer: ConfigProducer,
+    runtime_producer: RuntimeProducer,
+    codec: BallistaCodec,
+    function_registry: BallistaFunctionRegistry,
+    scheduling_policy: TaskSchedulingPolicy,
+) -> Result<()> {
+    match scheduling_policy {
+        TaskSchedulingPolicy::PullStaged => {
+            pull_staged_standalone_executor(
+                scheduler,
+                concurrent_tasks,
+                config_producer,
+                runtime_producer,
+                codec,
+                function_registry,
+            )
+            .await
+        }
+        TaskSchedulingPolicy::PushStaged => {
+            push_staged_standalone_executor(
+                scheduler,
+                concurrent_tasks,
+                config_producer,
+                runtime_producer,
+                codec,
+                function_registry,
+            )
+            .await
+        }
+    }
+}
+
+async fn pull_staged_standalone_executor(
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    config_producer: ConfigProducer,
+    runtime_producer: RuntimeProducer,
+    codec: BallistaCodec,
+    function_registry: BallistaFunctionRegistry,
+) -> Result<()> {
     let listener = TcpListener::bind("localhost:0").await?;
     let address = listener.local_addr()?;
     info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
     let executor_meta = ExecutorRegistration {
-        id: Uuid::new_v4().to_string(), // assign this executor a unique ID
+        id: Uuid::new_v4().to_string(),
         host: Some("localhost".to_string()),
         port: address.port() as u32,
-        // TODO Make it configurable
         grpc_port: 50020,
         specification: Some(
             ExecutorSpecification::default()
@@ -112,11 +190,46 @@ pub async fn new_standalone_executor_from_builder(
         os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
     };
 
+    spawn_executor_services_pull(PullStandaloneServices {
+        scheduler,
+        concurrent_tasks,
+        config_producer,
+        runtime_producer,
+        codec,
+        function_registry,
+        executor_meta,
+        listener,
+    })
+    .await
+}
+
+struct PullStandaloneServices {
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    config_producer: ConfigProducer,
+    runtime_producer: RuntimeProducer,
+    codec: BallistaCodec,
+    function_registry: BallistaFunctionRegistry,
+    executor_meta: ExecutorRegistration,
+    listener: TcpListener,
+}
+
+async fn spawn_executor_services_pull(services: PullStandaloneServices) -> Result<()> {
+    let PullStandaloneServices {
+        scheduler,
+        concurrent_tasks,
+        config_producer,
+        runtime_producer,
+        codec,
+        function_registry,
+        executor_meta,
+        listener,
+    } = services;
+
     let config = config_producer();
     let max_message_size = config.ballista_grpc_client_max_message_size();
 
     let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
-
     info!("work_dir: {work_dir}");
 
     let executor = Arc::new(Executor::with_default_execution_engine(
@@ -146,8 +259,108 @@ pub async fn new_standalone_executor_from_builder(
     Ok(())
 }
 
-/// Creates standalone executor with most values
-/// set as default.
+async fn push_staged_standalone_executor(
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    config_producer: ConfigProducer,
+    runtime_producer: RuntimeProducer,
+    codec: BallistaCodec,
+    function_registry: BallistaFunctionRegistry,
+) -> Result<()> {
+    let flight_listener = TcpListener::bind("localhost:0").await?;
+    let flight_addr = flight_listener.local_addr()?;
+    info!(
+        "Ballista v{BALLISTA_VERSION} Rust Executor (push) listening on {flight_addr:?}"
+    );
+
+    let grpc_probe = TcpListener::bind("127.0.0.1:0").await?;
+    let grpc_port = grpc_probe.local_addr()?.port();
+    drop(grpc_probe);
+
+    let executor_meta = ExecutorRegistration {
+        id: Uuid::new_v4().to_string(),
+        host: Some("localhost".to_string()),
+        port: flight_addr.port() as u32,
+        grpc_port: grpc_port as u32,
+        specification: Some(
+            ExecutorSpecification::default()
+                .with_task_slots(concurrent_tasks as u32)
+                .into(),
+        ),
+        os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+    };
+
+    let config_snap = config_producer();
+    let max_message_sz = config_snap.ballista_grpc_client_max_message_size() as u32;
+
+    let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
+    info!("work_dir: {work_dir}");
+
+    let executor = Arc::new(Executor::with_default_execution_engine(
+        executor_meta,
+        &work_dir,
+        runtime_producer,
+        config_producer.clone(),
+        Arc::new(function_registry),
+        Arc::new(LoggingMetricsCollector::default()),
+        concurrent_tasks,
+    ));
+
+    let service = BallistaFlightService::new(work_dir);
+    let server = FlightServiceServer::new(service)
+        .max_decoding_message_size(max_message_sz as usize)
+        .max_encoding_message_size(max_message_sz as usize);
+
+    tokio::spawn(
+        create_grpc_server(&GrpcServerConfig::default())
+            .add_service(server)
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                flight_listener,
+            )),
+    );
+
+    let exec_cfg = ExecutorProcessConfig {
+        bind_host: "127.0.0.1".into(),
+        port: flight_addr.port(),
+        grpc_port,
+        concurrent_tasks,
+        task_scheduling_policy: TaskSchedulingPolicy::PushStaged,
+        grpc_max_decoding_message_size: max_message_sz,
+        grpc_max_encoding_message_size: max_message_sz,
+        ..ExecutorProcessConfig::default()
+    };
+
+    let shutdown_notifier: &'static ShutdownNotifier =
+        Box::leak(Box::new(ShutdownNotifier::new()));
+    let (stop_send, _stop_recv) = mpsc::channel::<bool>(10);
+
+    let server_handle = executor_server::startup(
+        scheduler,
+        Arc::new(exec_cfg),
+        executor,
+        codec,
+        stop_send,
+        shutdown_notifier,
+    )
+    .await
+    .map_err(|e| {
+        error!("Standalone push executor failed to start gRPC server: {e}");
+        e
+    })?;
+
+    tokio::spawn(async move {
+        match server_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!("Standalone push executor gRPC server exited: {e:?}"),
+            Err(join_err) => {
+                error!("Standalone push executor gRPC join error: {join_err:?}")
+            }
+        }
+    });
+
+    Ok(())
+}
+/// Creates standalone executor with most values set as default (pull scheduling).
 pub async fn new_standalone_executor(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
@@ -175,6 +388,40 @@ pub async fn new_standalone_executor(
         runtime_producer,
         codec,
         (&session_state).into(),
+    )
+    .await
+}
+
+/// Like [`new_standalone_executor`] with selectable [`TaskSchedulingPolicy`].
+pub async fn new_standalone_executor_with_scheduling_policy(
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    codec: BallistaCodec,
+    scheduling_policy: TaskSchedulingPolicy,
+) -> Result<()> {
+    use ballista_core::extension::{
+        ballista_aggregate_functions, ballista_scalar_functions,
+        ballista_window_functions,
+    };
+
+    let session_state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_scalar_functions(ballista_scalar_functions())
+        .with_aggregate_functions(ballista_aggregate_functions())
+        .with_window_functions(ballista_window_functions())
+        .build();
+
+    let runtime = session_state.runtime_env().clone();
+    let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
+
+    new_standalone_executor_from_builder_with_scheduling_policy(
+        scheduler,
+        concurrent_tasks,
+        Arc::new(default_config_producer),
+        runtime_producer,
+        codec,
+        (&session_state).into(),
+        scheduling_policy,
     )
     .await
 }

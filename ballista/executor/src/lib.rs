@@ -52,7 +52,10 @@ use std::net::SocketAddr;
 
 pub use standalone::new_standalone_executor;
 pub use standalone::new_standalone_executor_from_builder;
+pub use standalone::new_standalone_executor_from_builder_with_scheduling_policy;
 pub use standalone::new_standalone_executor_from_state;
+pub use standalone::new_standalone_executor_from_state_with_scheduling_policy;
+pub use standalone::new_standalone_executor_with_scheduling_policy;
 
 use log::info;
 

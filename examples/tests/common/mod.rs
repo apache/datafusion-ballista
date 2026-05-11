@@ -83,7 +83,7 @@ pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (Stri
     .await
     .expect("scheduler to be created");
 
-    let host = "localhost".to_string();
+    let host = "127.0.0.1".to_string();
 
     let scheduler =
         connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
@@ -121,7 +121,7 @@ pub async fn setup_test_cluster_with_builders(
     .await
     .expect("scheduler to be created");
 
-    let host = "localhost".to_string();
+    let host = "127.0.0.1".to_string();
 
     let scheduler =
         connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;

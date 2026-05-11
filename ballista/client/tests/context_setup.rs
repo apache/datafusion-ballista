@@ -20,16 +20,26 @@ mod common;
 #[cfg(test)]
 mod remote {
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
+    use ballista_core::config::TaskSchedulingPolicy;
     use datafusion::{
         assert_batches_eq,
         execution::SessionStateBuilder,
         prelude::{SessionConfig, SessionContext},
     };
+    use rstest::rstest;
 
+    #[rstest]
+    #[case(TaskSchedulingPolicy::PullStaged)]
+    #[case(TaskSchedulingPolicy::PushStaged)]
     #[tokio::test]
-    async fn should_execute_sql_show_with_custom_state() -> datafusion::error::Result<()>
-    {
-        let (host, port) = crate::common::setup_test_cluster().await;
+    async fn should_execute_sql_show_with_custom_state(
+        #[case] scheduling_policy: TaskSchedulingPolicy,
+    ) -> datafusion::error::Result<()> {
+        let (host, port) = crate::common::setup_test_cluster_with_state_and_scheduling(
+            SessionStateBuilder::new().with_default_features().build(),
+            scheduling_policy,
+        )
+        .await;
         let url = format!("df://{host}:{port}");
         let state = SessionStateBuilder::new().with_default_features().build();
 
@@ -63,9 +73,18 @@ mod remote {
         Ok(())
     }
 
+    #[rstest]
+    #[case(TaskSchedulingPolicy::PullStaged)]
+    #[case(TaskSchedulingPolicy::PushStaged)]
     #[tokio::test]
-    async fn should_execute_sql_set_configs() -> datafusion::error::Result<()> {
-        let (host, port) = crate::common::setup_test_cluster().await;
+    async fn should_execute_sql_set_configs(
+        #[case] scheduling_policy: TaskSchedulingPolicy,
+    ) -> datafusion::error::Result<()> {
+        let (host, port) = crate::common::setup_test_cluster_with_state_and_scheduling(
+            SessionStateBuilder::new().with_default_features().build(),
+            scheduling_policy,
+        )
+        .await;
         let url = format!("df://{host}:{port}");
 
         let session_config = SessionConfig::new_with_ballista()

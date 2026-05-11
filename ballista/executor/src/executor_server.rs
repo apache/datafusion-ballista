@@ -71,6 +71,27 @@ use crate::{TaskExecutionTimes, as_task_status};
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
+/// Wait until something is listening on `[host]:port` so the scheduler does not connect
+/// before the executor gRPC server task has bound ([`startup`] spawns the listener
+/// asynchronously — see in-file TODO).
+async fn wait_executor_grpc_listen(host: &str, port: u16) -> Result<(), BallistaError> {
+    let addr = format!("{host}:{port}");
+    for attempt in 0..500 {
+        match tokio::net::TcpStream::connect(&addr).await {
+            Ok(_) => return Ok(()),
+            Err(_) => {
+                if attempt == 499 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+    Err(BallistaError::General(format!(
+        "timed out waiting for executor gRPC listener on {addr}"
+    )))
+}
+
 /// Wrap TaskDefinition with its curator scheduler id for task update to its specific curator scheduler later
 #[derive(Debug)]
 struct CuratorTaskDefinition {
@@ -147,6 +168,8 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             })
         })
     };
+
+    wait_executor_grpc_listen(&config.bind_host, config.grpc_port).await?;
 
     // 2. Do executor registration
     // TODO the executor registration should happen only after the executor grpc server started.
