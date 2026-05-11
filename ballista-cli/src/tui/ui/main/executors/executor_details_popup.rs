@@ -87,6 +87,12 @@ fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<L
             label_style.bold(),
         )]));
         for metric in &executor.metrics {
+            if metric.typ.contains("virtual") {
+                // do not show virtual memory metrics
+                // https://github.com/apache/datafusion-ballista/pull/1670#discussion_r3209063373
+                continue;
+            }
+
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("    {:<20} ", metric_name(&metric.typ)),
