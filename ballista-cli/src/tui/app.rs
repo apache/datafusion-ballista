@@ -36,7 +36,6 @@ use crate::tui::{
 };
 use chrono::DateTime;
 use crossterm::event::{KeyCode, KeyEvent};
-use datafusion::common::{human_readable_duration, human_readable_size};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -587,13 +586,80 @@ impl App {
             .unwrap_or_else(|| "Invalid date".to_string())
     }
 
+    // copied from DataFusion Commons to avoid depending on it
     pub fn format_duration(&self, duration_ms: u64) -> String {
-        const NANOS_PER_MILLI: u64 = 1_000_000;
-        human_readable_duration(duration_ms * NANOS_PER_MILLI)
+        const NANOS_PER_SEC: f64 = 1_000_000_000.0;
+        const NANOS_PER_MILLI: f64 = 1_000_000.0;
+        const NANOS_PER_MICRO: f64 = 1_000.0;
+
+        let nanos = duration_ms as f64 * NANOS_PER_MILLI;
+
+        if nanos >= NANOS_PER_SEC {
+            // >= 1 second: show in seconds
+            format!("{:.2}s", nanos / NANOS_PER_SEC)
+        } else if nanos >= NANOS_PER_MILLI {
+            // >= 1 millisecond: show in milliseconds
+            format!("{:.2}ms", nanos / NANOS_PER_MILLI)
+        } else if nanos >= NANOS_PER_MICRO {
+            // >= 1 microsecond: show in microseconds
+            format!("{:.2}µs", nanos / NANOS_PER_MICRO)
+        } else {
+            // < 1 microsecond: show in nanoseconds
+            format!("{nanos}ns")
+        }
     }
 
-    pub fn format_size(&self, value: usize) -> String {
-        human_readable_size(value)
+    // copied from DataFusion Commons to avoid depending on it
+    // and to remove a space between the number and the unit
+    pub fn format_size(&self, size: usize) -> String {
+        const TB: u64 = 1 << 40;
+        const GB: u64 = 1 << 30;
+        const MB: u64 = 1 << 20;
+        const KB: u64 = 1 << 10;
+
+        let size = size as u64;
+        let (value, unit) = {
+            if size >= 2 * TB {
+                (size as f64 / TB as f64, "TB")
+            } else if size >= 2 * GB {
+                (size as f64 / GB as f64, "GB")
+            } else if size >= 2 * MB {
+                (size as f64 / MB as f64, "MB")
+            } else if size >= 2 * KB {
+                (size as f64 / KB as f64, "KB")
+            } else {
+                (size as f64, "B")
+            }
+        };
+        format!("{value:.1}{unit}")
+    }
+
+    // copied from DataFusion Commons to avoid depending on it
+    // and to remove a space between the number and the unit
+    pub fn format_count(&self, count: usize) -> String {
+        let count = count as u64;
+        let (value, unit) = {
+            if count >= 1_000_000_000_000 {
+                (count as f64 / 1_000_000_000_000.0, "T")
+            } else if count >= 1_000_000_000 {
+                (count as f64 / 1_000_000_000.0, "B")
+            } else if count >= 1_000_000 {
+                (count as f64 / 1_000_000.0, "M")
+            } else if count >= 1_000 {
+                (count as f64 / 1_000.0, "K")
+            } else {
+                return count.to_string();
+            }
+        };
+
+        // Format with appropriate precision
+        // For values >= 100, show 1 decimal place (e.g., 123.4 K)
+        // For values < 100, show 2 decimal places (e.g., 10.12 K)
+        if value >= 100.0 {
+            format!("{value:.1}{unit}")
+        } else {
+            format!("{value:.2}{unit}")
+        }
     }
 }
 

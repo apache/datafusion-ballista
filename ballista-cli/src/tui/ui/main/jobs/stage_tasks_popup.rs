@@ -17,7 +17,6 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::StageTaskResponse;
-use datafusion::common::human_readable_count;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
@@ -120,8 +119,8 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
                 .style(Style::default().fg(status_color).bold())
                 .centered(),
         ),
-        Cell::from(Text::from(human_readable_count(task.input_rows)).centered()),
-        Cell::from(Text::from(human_readable_count(task.output_rows)).centered()),
+        Cell::from(Text::from(app.format_count(task.input_rows)).centered()),
+        Cell::from(Text::from(app.format_count(task.output_rows)).centered()),
         Cell::from(Text::from(task.partition_id.to_string()).centered()),
         Cell::from(Text::from(format_datetime(task.scheduled_time, app)).centered()),
         Cell::from(

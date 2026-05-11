@@ -17,7 +17,6 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::JobStageResponse;
-use datafusion::common::human_readable_count;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
@@ -113,11 +112,11 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
     let p = &stage.task_input_percentiles;
     let input_percentiles = format!(
         "{}/{}/{}/{}/{}",
-        human_readable_count(p.min.try_into().unwrap()),
-        human_readable_count(p.p25.try_into().unwrap()),
-        human_readable_count(p.median.try_into().unwrap()),
-        human_readable_count(p.p75.try_into().unwrap()),
-        human_readable_count(p.max.try_into().unwrap())
+        app.format_count(p.min.try_into().unwrap()),
+        app.format_count(p.p25.try_into().unwrap()),
+        app.format_count(p.median.try_into().unwrap()),
+        app.format_count(p.p75.try_into().unwrap()),
+        app.format_count(p.max.try_into().unwrap())
     );
 
     Row::new(vec![
@@ -127,8 +126,8 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
                 .style(Style::default().fg(status_color).bold())
                 .centered(),
         ),
-        Cell::from(Text::from(human_readable_count(stage.input_rows)).centered()),
-        Cell::from(Text::from(human_readable_count(stage.output_rows)).centered()),
+        Cell::from(Text::from(app.format_count(stage.input_rows)).centered()),
+        Cell::from(Text::from(app.format_count(stage.output_rows)).centered()),
         Cell::from(Text::from(stage.elapsed_compute.clone()).centered()),
         Cell::from(Text::from(input_percentiles).centered()),
         Cell::from(Text::from(duration_percentiles).centered()),
