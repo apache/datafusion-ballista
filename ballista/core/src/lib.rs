@@ -50,6 +50,8 @@ pub mod extension;
 #[cfg(feature = "build-binary")]
 /// Object store configuration and utilities for distributed file access.
 pub mod object_store;
+/// Hash-partition (bucketing) metadata for distributed query optimization.
+pub mod partitioning;
 /// Query planning utilities for distributed execution.
 pub mod planner;
 /// Runtime registry for codec and function registration.

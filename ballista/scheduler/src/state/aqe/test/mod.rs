@@ -17,6 +17,8 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// End-to-end verification of the Pinot-style colocated-join optimizer.
+mod colocated_join_e2e;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 

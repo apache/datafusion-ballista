@@ -14,6 +14,8 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+use crate::physical_optimizer::broadcast_small_side::BroadcastSmallSideRule;
+use crate::physical_optimizer::colocated_join::ColocatedJoinRule;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
@@ -122,7 +124,7 @@ impl AdaptivePlanner {
         Self::try_new_with_optimizers(
             plan,
             session_config,
-            Self::default_optimizers(),
+            Self::default_optimizers(session_config),
             job_name,
         )
     }
@@ -419,8 +421,11 @@ impl AdaptivePlanner {
     ///
     /// # Returns
     /// A vector of default physical optimizer rules.
-    fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
+    fn default_optimizers(
+        session_config: &SessionConfig,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers = PhysicalOptimizer::new().rules;
+        physical_optimizers.extend(Self::join_optimization_rules(session_config));
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
@@ -447,6 +452,21 @@ impl AdaptivePlanner {
             .with_physical_optimizer_rules(physical_optimizers)
             .with_config(session_config.clone())
             .build()
+    }
+    /// Returns the colocated/broadcast optimizer rules that should run before
+    /// `DistributedExchangeRule`.
+    fn join_optimization_rules(
+        session_config: &SessionConfig,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
+        vec![
+            // Strip redundant RepartitionExec above colocated joins or fold
+            // bucket-count divisor mismatches into local sub-partitioning.
+            Arc::new(ColocatedJoinRule::new()),
+            // Convert Partitioned joins to broadcast when one side is small
+            // enough — runs after ColocatedJoinRule so colocation wins when
+            // both apply.
+            Arc::new(BroadcastSmallSideRule::from_session_config(session_config)),
+        ]
     }
     /// Recursively finds runnable exchanges in the execution plan.
     ///
