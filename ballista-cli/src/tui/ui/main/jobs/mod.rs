@@ -270,8 +270,12 @@ fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
 }
 
 fn render_job_duration_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
-    let duration = (job.end_time - job.start_time) as u64;
-    let duration = app.format_duration(duration);
+    let duration = if job.end_time > 0 {
+        let duration = job.end_time - job.start_time;
+        app.format_duration(duration as u64)
+    } else {
+        "N/A".to_string()
+    };
     Cell::from(Text::from(duration).centered())
 }
 

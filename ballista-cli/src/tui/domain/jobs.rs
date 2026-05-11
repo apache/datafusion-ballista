@@ -123,8 +123,16 @@ impl JobsData {
                 }
             }),
             SortColumn::Duration => jobs.sort_by(|a, b| {
-                let duration_a = a.end_time - a.start_time;
-                let duration_b = b.end_time - b.start_time;
+                let duration_a = if a.end_time > 0 {
+                    a.end_time - a.start_time
+                } else {
+                    0
+                };
+                let duration_b = if b.end_time > 0 {
+                    b.end_time - b.start_time
+                } else {
+                    0
+                };
                 let cmp = duration_a.cmp(&duration_b);
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()

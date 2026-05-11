@@ -100,7 +100,11 @@ impl ExecutorDetailsPopup {
     }
 
     pub fn scroll_down(&mut self) {
-        self.scroll_position = self.scroll_position.saturating_add(1).min(15);
+        const MAX_SCROLL_POSITION: u16 = 10;
+        self.scroll_position = self
+            .scroll_position
+            .saturating_add(1)
+            .min(MAX_SCROLL_POSITION);
     }
 }
 

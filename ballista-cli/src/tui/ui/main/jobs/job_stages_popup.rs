@@ -112,11 +112,11 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
     let p = &stage.task_input_percentiles;
     let input_percentiles = format!(
         "{}/{}/{}/{}/{}",
-        app.format_count(p.min.try_into().unwrap()),
-        app.format_count(p.p25.try_into().unwrap()),
-        app.format_count(p.median.try_into().unwrap()),
-        app.format_count(p.p75.try_into().unwrap()),
-        app.format_count(p.max.try_into().unwrap())
+        app.format_count(p.min.try_into().unwrap_or(0)),
+        app.format_count(p.p25.try_into().unwrap_or(0)),
+        app.format_count(p.median.try_into().unwrap_or(0)),
+        app.format_count(p.p75.try_into().unwrap_or(0)),
+        app.format_count(p.max.try_into().unwrap_or(0))
     );
 
     Row::new(vec![

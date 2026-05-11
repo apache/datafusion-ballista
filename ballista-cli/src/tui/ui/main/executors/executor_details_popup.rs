@@ -64,15 +64,7 @@ fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<L
         ]),
         Line::from(vec![
             Span::styled("  Last Seen   ", label_style),
-            Span::raw(
-                executor
-                    .last_seen
-                    .map(|d| match d.try_into() {
-                        Ok(d) => app.format_datetime(d),
-                        Err(_) => "Invalid timestamp".to_string(),
-                    })
-                    .unwrap(),
-            ),
+            Span::raw(super::format_last_seen(executor, app)),
         ]),
     ];
 
@@ -84,27 +76,27 @@ fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<L
     )]));
     lines.push(Line::from(vec![
         Span::styled("    System Name      ", label_style),
-        Span::raw(os.system_name.clone()),
+        Span::raw(&os.system_name),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    OS Version       ", label_style),
-        Span::raw(os.os_ver.clone()),
+        Span::raw(&os.os_ver),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    OS Version Long  ", label_style),
-        Span::raw(os.os_ver_long.clone()),
+        Span::raw(&os.os_ver_long),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Kernel Version   ", label_style),
-        Span::raw(os.kernel_ver.clone()),
+        Span::raw(&os.kernel_ver),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Physical Cores   ", label_style),
-        Span::raw(os.physical_cores.to_string()),
+        Span::raw(app.format_count(os.physical_cores as usize)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Num Disks        ", label_style),
-        Span::raw(os.num_disks.to_string()),
+        Span::raw(app.format_count(os.num_disks as usize)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("    Total Disk       ", label_style),

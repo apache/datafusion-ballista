@@ -147,13 +147,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_last_seen_cell<'a>(executor: &'a Executor, app: &App) -> Cell<'a> {
-    let last_seen = executor
-        .last_seen
-        .map(|d| match d.try_into() {
-            Ok(d) => app.format_datetime(d),
-            Err(_) => "Invalid timestamp".to_string(),
-        })
-        .unwrap();
+    let last_seen = super::format_last_seen(executor, app);
     Cell::from(Text::from(last_seen).centered())
 }
 
