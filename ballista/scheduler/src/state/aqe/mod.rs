@@ -42,6 +42,14 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
+// TODO: the AQE planner runs DataFusion's DefaultPhysicalPlanner with a
+// list of PhysicalOptimizerRules and never goes through
+// DefaultDistributedPlanner::plan_query_stages_internal, so neither
+// maybe_promote_to_broadcast nor the HashJoinExec(CollectLeft) shuffle
+// lowering fire here. Joins that would broadcast under the default
+// planner stay on the Partitioned shuffle path. Move the lowering into
+// an AQE optimizer rule in a follow-up PR.
+
 mod adapter;
 mod execution_plan;
 pub mod optimizer_rule;

@@ -76,6 +76,8 @@ message UnresolvedShuffleExecNode {
   uint32 stage_id = 1;
   datafusion_common.Schema schema = 2;
   datafusion.Partitioning partitioning = 5;
+  bool broadcast = 6;
+  uint32 upstream_partition_count = 7;
 }
 
 message ShuffleReaderExecNode {
@@ -84,6 +86,8 @@ message ShuffleReaderExecNode {
   // The stage to read from
   uint32 stage_id = 3;
   datafusion.Partitioning partitioning = 4;
+  bool broadcast = 5;
+  uint32 upstream_partition_count = 6;
 }
 
 message ShuffleReaderPartition {

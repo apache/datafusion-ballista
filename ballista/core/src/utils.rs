@@ -168,46 +168,80 @@ pub fn default_config_producer() -> SessionConfig {
     SessionConfig::new_with_ballista()
 }
 
-/// Stream data to disk in Arrow IPC format
+/// Stream data to disk in Arrow IPC format.
+///
+/// Batches are read from the async stream and forwarded through a bounded
+/// channel to a `spawn_blocking` task that performs all synchronous file I/O,
+/// keeping the tokio worker thread unblocked.
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &Path,
     disk_write_metric: &metrics::Time,
+    channel_capacity: usize,
 ) -> Result<PartitionStats> {
-    let file = BufWriter::new(File::create(path).map_err(|e| {
-        error!("Failed to create partition file at {path:?}: {e:?}");
-        BallistaError::IoError(e)
-    })?);
+    let schema = stream.schema();
+    let path_owned = path.to_owned();
+    let write_metric = disk_write_metric.clone();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
+
+    let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
+        let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
+            error!("Failed to create partition file at {:?}: {e:?}", path_owned);
+            BallistaError::IoError(e)
+        })?);
+
+        let options = IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+
+        let mut writer =
+            StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
+
+        while let Some(batch) = rx.blocking_recv() {
+            let timer = write_metric.timer();
+            writer.write(&batch)?;
+            timer.done();
+        }
+        let timer = write_metric.timer();
+        writer.finish()?;
+        timer.done();
+        Ok(std::fs::metadata(&path_owned).map(|m| m.len()).unwrap_or(0))
+    });
 
     let mut num_rows = 0;
     let mut num_batches = 0;
-    let mut num_bytes = 0;
 
-    let options = IpcWriteOptions::default()
-        .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+    let stream_err = loop {
+        match stream.next().await {
+            Some(Ok(batch)) => {
+                num_batches += 1;
+                num_rows += batch.num_rows();
+                if tx.send(batch).await.is_err() {
+                    break None;
+                }
+            }
+            Some(Err(e)) => break Some(e),
+            None => break None,
+        }
+    };
+    drop(tx);
 
-    let mut writer =
-        StreamWriter::try_new_with_options(file, stream.schema().as_ref(), options)?;
+    let write_result = handle
+        .await
+        .map_err(|e| BallistaError::General(format!("Disk writer task failed: {e}")))?;
 
-    while let Some(result) = stream.next().await {
-        let batch = result?;
-
-        let batch_size_bytes: usize = batch.get_array_memory_size();
-        num_batches += 1;
-        num_rows += batch.num_rows();
-        num_bytes += batch_size_bytes;
-
-        let timer = disk_write_metric.timer();
-        writer.write(&batch)?;
-        timer.done();
+    if let Some(e) = stream_err {
+        if let Err(write_err) = &write_result {
+            error!("Disk writer also failed: {write_err}");
+        }
+        return Err(e.into());
     }
-    let timer = disk_write_metric.timer();
-    writer.finish()?;
-    timer.done();
+    let num_bytes = write_result?;
+
     Ok(PartitionStats::new(
         Some(num_rows as u64),
         Some(num_batches),
-        Some(num_bytes as u64),
+        Some(num_bytes),
     ))
 }
 
