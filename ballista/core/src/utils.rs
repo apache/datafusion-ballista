@@ -349,11 +349,11 @@ pub fn get_time_before(interval_seconds: u64) -> u64 {
         .as_secs()
 }
 
-/// current time since UNIX EPOCH
+/// Current time since UNIX EPOCH. In milliseconds.
 pub fn get_current_time() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock is before UNIX epoch")
         .as_millis()
 }
 
