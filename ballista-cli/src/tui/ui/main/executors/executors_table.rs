@@ -49,25 +49,29 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
     let sort_column = &app.executors_data.sort_column;
     let sort_order = &app.executors_data.sort_order;
 
-    let host_suffix = match (sort_column, sort_order) {
-        (SortColumn::Host, crate::tui::domain::SortOrder::Ascending) => " ▲",
-        (SortColumn::Host, crate::tui::domain::SortOrder::Descending) => " ▼",
-        _ => "",
-    };
-    let id_suffix = match (sort_column, sort_order) {
-        (SortColumn::Id, crate::tui::domain::SortOrder::Ascending) => " ▲",
-        (SortColumn::Id, crate::tui::domain::SortOrder::Descending) => " ▼",
-        _ => "",
-    };
-    let last_seen_suffix = match (sort_column, sort_order) {
-        (SortColumn::LastSeen, crate::tui::domain::SortOrder::Ascending) => " ▲",
-        (SortColumn::LastSeen, crate::tui::domain::SortOrder::Descending) => " ▼",
-        _ => "",
-    };
+    macro_rules! sort_suffix {
+        ($column:path, $sort_column:expr, $sort_order:expr) => {
+            match ($sort_column, $sort_order) {
+                ($column, crate::tui::domain::SortOrder::Ascending) => " ▲",
+                ($column, crate::tui::domain::SortOrder::Descending) => " ▼",
+                _ => "",
+            }
+        };
+    }
+
+    let host_suffix = sort_suffix!(SortColumn::Host, sort_column, sort_order);
+    let id_suffix = sort_suffix!(SortColumn::Id, sort_column, sort_order);
+    let proc_physical_memory_suffix =
+        sort_suffix!(SortColumn::ProcPhysicalMemoryUsage, sort_column, sort_order);
+    let peak_physical_memory_suffix =
+        sort_suffix!(SortColumn::PeakPhysicalMemoryUsage, sort_column, sort_order);
+    let last_seen_suffix = sort_suffix!(SortColumn::LastSeen, sort_column, sort_order);
 
     let header = [
         format!("Host{host_suffix}"),
         format!("Id{id_suffix}"),
+        format!("Physical Memory{proc_physical_memory_suffix}"),
+        format!("Peak Physical Memory{peak_physical_memory_suffix}"),
         format!("Last seen{last_seen_suffix}"),
     ]
     .into_iter()
@@ -92,18 +96,38 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
                 Text::from(format!("{}:{}", executor.host, executor.port)).centered(),
             );
             let id_cell = Cell::from(Text::from(executor.id.clone()).centered());
+            let proc_physical_memory_cell = Cell::from(
+                Text::from(
+                    app.format_size(executor.proc_physical_memory_usage() as usize),
+                )
+                .centered(),
+            );
+            let peak_physical_memory_cell = Cell::from(
+                Text::from(
+                    app.format_size(executor.peak_physical_memory_usage() as usize),
+                )
+                .centered(),
+            );
             let last_seen_cell = render_last_seen_cell(executor, app);
 
-            let cells = vec![host_cell, id_cell, last_seen_cell];
+            let cells = vec![
+                host_cell,
+                id_cell,
+                proc_physical_memory_cell,
+                peak_physical_memory_cell,
+                last_seen_cell,
+            ];
             Row::new(cells).style(Style::default().bg(color))
         });
 
     let t = Table::new(
         rows,
         [
-            Constraint::Percentage(33), // Host
-            Constraint::Percentage(33), // Id
-            Constraint::Percentage(33), // Last seen
+            Constraint::Percentage(20), // Host
+            Constraint::Percentage(20), // Id
+            Constraint::Percentage(20), // Proc physical memory
+            Constraint::Percentage(20), // Peak physical memory
+            Constraint::Percentage(20), // Last seen
         ],
     )
     .block(Block::default().borders(Borders::all()))
