@@ -15,4 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod broadcast_small_side;
+pub mod colocated_join;
 pub mod join_selection;
