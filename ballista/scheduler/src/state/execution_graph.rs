@@ -1348,6 +1348,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     /// fail job with error message
     fn fail_job(&mut self, error: String) {
+        // Match `succeed_job`: record wall-clock end time so job metadata and REST consumers
+        // see a consistent `ended_at` (previously left at 0 while `started_at` was set).
+        self.end_time = timestamp_millis();
+
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
