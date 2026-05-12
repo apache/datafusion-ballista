@@ -1348,8 +1348,6 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     /// fail job with error message
     fn fail_job(&mut self, error: String) {
-        // Match `succeed_job`: record wall-clock end time so job metadata and REST consumers
-        // see a consistent `ended_at` (previously left at 0 while `started_at` was set).
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
@@ -1775,6 +1773,38 @@ mod test {
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
+
+    #[tokio::test]
+    async fn test_fail_job_sets_end_time_and_failed_metadata() -> Result<()> {
+        let mut graph = test_aggregation_plan(4).await;
+        let start = graph.start_time();
+        assert_eq!(graph.end_time(), 0);
+
+        ExecutionGraph::fail_job(&mut graph, "test failure".to_string());
+
+        assert!(
+            matches!(
+                graph.status().status.as_ref(),
+                Some(job_status::Status::Failed(f)) if f.error == "test failure"
+            ),
+            "expected FailedJob status after fail_job"
+        );
+        assert!(
+            graph.end_time() >= start,
+            "end_time {} should be set and >= start_time {}",
+            graph.end_time(),
+            start
+        );
+
+        if let Some(job_status::Status::Failed(failed)) = &graph.status().status {
+            assert_eq!(failed.started_at, start);
+            assert_eq!(failed.ended_at, graph.end_time());
+        } else {
+            panic!("missing FailedJob");
+        }
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_drain_tasks() -> Result<()> {

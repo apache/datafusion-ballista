@@ -1167,7 +1167,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     /// fail job with error message
     fn fail_job(&mut self, error: String) {
-        // Same as non-AQE graph: persist end time when the job fails.
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
