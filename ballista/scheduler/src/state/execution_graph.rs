@@ -1377,10 +1377,7 @@ impl ExecutionGraph for StaticExecutionGraph {
             .map(|l| l.try_into())
             .collect::<Result<Vec<_>>>()?;
 
-        self.end_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        self.end_time = timestamp_millis();
 
         self.status = JobStatus {
             job_id: self.job_id.clone(),
@@ -1791,7 +1788,7 @@ mod test {
         );
         assert!(
             graph.end_time() >= start,
-            "end_time {} should be set and >= start_time {}",
+            "end_time ({}) should be set and >= start_time ({})",
             graph.end_time(),
             start
         );
