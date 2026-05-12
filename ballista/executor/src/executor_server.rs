@@ -25,6 +25,7 @@ use ballista_core::BALLISTA_VERSION;
 use memory_stats::memory_stats;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -60,24 +61,32 @@ use datafusion::execution::TaskContext;
 use datafusion_proto::{logical_plan::AsLogicalPlan, physical_plan::AsExecutionPlan};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::TcpListenerStream;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::{ExecutorProcessConfig, remove_job_dir};
 use crate::metrics::ExecutorMetricCollectionPolicy;
-use crate::shutdown::ShutdownNotifier;
+use crate::shutdown::{Shutdown, ShutdownNotifier};
 use crate::{TaskExecutionTimes, as_task_status};
 
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
-/// Wait until something is listening on `[host]:port` so the scheduler does not connect
-/// before the executor gRPC server task has bound ([`startup`] spawns the listener
-/// asynchronously — see in-file TODO).
-async fn wait_executor_grpc_listen(host: &str, port: u16) -> Result<(), BallistaError> {
-    let addr = format!("{host}:{port}");
+/// How the executor gRPC server acquires its listen socket for [`startup`].
+pub(crate) enum ExecutorGrpcListen {
+    /// Tonic binds the socket inside `serve_with_shutdown` (normal executor process).
+    Dynamic(SocketAddr),
+    /// Caller already bound `TcpListener` on the desired port (standalone push); avoids a
+    /// reserve-port probe/drop race.
+    Bound(tokio::net::TcpListener),
+}
+
+/// Wait until something is accepting TCP connections on `addr` so registration does not run
+/// before the executor gRPC server task has bound ([`startup`] — see TODO below).
+async fn wait_executor_grpc_listen(addr: SocketAddr) -> Result<(), BallistaError> {
     for attempt in 0..500 {
-        match tokio::net::TcpStream::connect(&addr).await {
+        match tokio::net::TcpStream::connect(addr).await {
             Ok(_) => return Ok(()),
             Err(_) => {
                 if attempt == 499 {
@@ -115,14 +124,20 @@ struct CuratorTaskStatus {
 /// - Starts the task runner pool
 ///
 /// Returns a handle to the server task that can be awaited for completion.
-pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+pub(crate) async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     config: Arc<ExecutorProcessConfig>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
+    grpc_listen: ExecutorGrpcListen,
     shutdown_noti: &ShutdownNotifier,
 ) -> Result<ServerHandle, BallistaError> {
+    debug_assert_eq!(
+        executor.metadata.grpc_port as u16, config.grpc_port,
+        "executor registration metadata.grpc_port must match ExecutorProcessConfig.grpc_port"
+    );
+
     let channel_buf_size = executor.concurrent_tasks * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
     let (tx_task_status, rx_task_status) =
@@ -143,33 +158,75 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         config.metric_collection_policy,
     );
 
-    // 1. Start executor grpc service
-    let server = {
-        let executor_meta = executor.metadata.clone();
-        let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
-        let addr = addr.parse().unwrap();
-        let grpc_server_config = config.grpc_server_config.clone();
+    let grpc_server_config = config.grpc_server_config.clone();
+    let enc = config.grpc_max_encoding_message_size as usize;
+    let dec = config.grpc_max_decoding_message_size as usize;
 
-        info!(
-            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
-        );
-        let server = ExecutorGrpcServer::new(executor_server.clone())
-            .max_encoding_message_size(config.grpc_max_encoding_message_size as usize)
-            .max_decoding_message_size(config.grpc_max_decoding_message_size as usize);
-        let mut grpc_shutdown = shutdown_noti.subscribe_for_shutdown();
-        tokio::spawn(async move {
-            let shutdown_signal = grpc_shutdown.recv();
-            let grpc_server_future = create_grpc_server(&grpc_server_config)
-                .add_service(server)
-                .serve_with_shutdown(addr, shutdown_signal);
-            grpc_server_future.await.map_err(|e| {
-                error!("Tonic error, Could not start Executor Grpc Server.");
-                BallistaError::TonicError(e)
-            })
-        })
+    // 1. Start executor grpc service
+    let listen_addr_for_wait = match &grpc_listen {
+        ExecutorGrpcListen::Dynamic(addr) => Some(*addr),
+        ExecutorGrpcListen::Bound(listener) => {
+            debug_assert_eq!(
+                listener.local_addr()?.port(),
+                config.grpc_port,
+                "bound listener port must match config.grpc_port / registration metadata"
+            );
+            None
+        }
     };
 
-    wait_executor_grpc_listen(&config.bind_host, config.grpc_port).await?;
+    let shutdown_grpc_notify = shutdown_noti.notify_shutdown.clone();
+    let server = match grpc_listen {
+        ExecutorGrpcListen::Dynamic(addr) => {
+            info!(
+                "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
+            );
+            let server_svc = ExecutorGrpcServer::new(executor_server.clone())
+                .max_encoding_message_size(enc)
+                .max_decoding_message_size(dec);
+            tokio::spawn(async move {
+                let mut grpc_shutdown = Shutdown::new(shutdown_grpc_notify.subscribe());
+                let shutdown_signal = grpc_shutdown.recv();
+                create_grpc_server(&grpc_server_config)
+                    .add_service(server_svc)
+                    .serve_with_shutdown(addr, shutdown_signal)
+                    .await
+                    .map_err(|e| {
+                        error!("Tonic error, Could not start Executor Grpc Server.");
+                        BallistaError::TonicError(e)
+                    })
+            })
+        }
+        ExecutorGrpcListen::Bound(listener) => {
+            let addr = listener.local_addr()?;
+            info!(
+                "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
+            );
+            let server_svc = ExecutorGrpcServer::new(executor_server.clone())
+                .max_encoding_message_size(enc)
+                .max_decoding_message_size(dec);
+            tokio::spawn(async move {
+                let mut grpc_shutdown = Shutdown::new(shutdown_grpc_notify.subscribe());
+                let shutdown_signal = grpc_shutdown.recv();
+                let incoming = TcpListenerStream::new(listener);
+                create_grpc_server(&grpc_server_config)
+                    .add_service(server_svc)
+                    .serve_with_incoming_shutdown(incoming, shutdown_signal)
+                    .await
+                    .map_err(|e| {
+                        error!("Tonic error, Could not start Executor Grpc Server.");
+                        BallistaError::TonicError(e)
+                    })
+            })
+        }
+    };
+
+    if let Some(addr) = listen_addr_for_wait {
+        wait_executor_grpc_listen(addr).await?;
+    } else {
+        // Listener is already bound; yield once so the server task can start polling.
+        tokio::task::yield_now().await;
+    }
 
     // 2. Do executor registration
     // TODO the executor registration should happen only after the executor grpc server started.

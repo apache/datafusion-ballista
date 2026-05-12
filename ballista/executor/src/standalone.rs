@@ -21,7 +21,7 @@
 //! process as the client, useful for testing and development purposes.
 
 use crate::executor_process::ExecutorProcessConfig;
-use crate::executor_server;
+use crate::executor_server::{self, ExecutorGrpcListen};
 use crate::metrics::LoggingMetricsCollector;
 use crate::shutdown::ShutdownNotifier;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
@@ -106,7 +106,7 @@ pub async fn new_standalone_executor_from_state_with_scheduling_policy(
 /// by accepting custom producers for session config, runtime environment,
 /// codec, and function registry.
 ///
-/// The executor binds to a random available port on localhost.
+/// The executor binds to a random available port on IPv4 loopback (`127.0.0.1`).
 pub async fn new_standalone_executor_from_builder(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
@@ -173,14 +173,15 @@ async fn pull_staged_standalone_executor(
     codec: BallistaCodec,
     function_registry: BallistaFunctionRegistry,
 ) -> Result<()> {
-    let listener = TcpListener::bind("localhost:0").await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(),
-        host: Some("localhost".to_string()),
+        host: Some("127.0.0.1".to_string()),
         port: address.port() as u32,
+        // TODO: allow configuring advertised gRPC port for standalone pull (currently fixed default).
         grpc_port: 50020,
         specification: Some(
             ExecutorSpecification::default()
@@ -267,19 +268,18 @@ async fn push_staged_standalone_executor(
     codec: BallistaCodec,
     function_registry: BallistaFunctionRegistry,
 ) -> Result<()> {
-    let flight_listener = TcpListener::bind("localhost:0").await?;
+    let flight_listener = TcpListener::bind("127.0.0.1:0").await?;
     let flight_addr = flight_listener.local_addr()?;
     info!(
         "Ballista v{BALLISTA_VERSION} Rust Executor (push) listening on {flight_addr:?}"
     );
 
-    let grpc_probe = TcpListener::bind("127.0.0.1:0").await?;
-    let grpc_port = grpc_probe.local_addr()?.port();
-    drop(grpc_probe);
+    let grpc_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let grpc_port = grpc_listener.local_addr()?.port();
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(),
-        host: Some("localhost".to_string()),
+        host: Some("127.0.0.1".to_string()),
         port: flight_addr.port() as u32,
         grpc_port: grpc_port as u32,
         specification: Some(
@@ -291,7 +291,9 @@ async fn push_staged_standalone_executor(
     };
 
     let config_snap = config_producer();
-    let max_message_sz = config_snap.ballista_grpc_client_max_message_size() as u32;
+    let max_message_size = config_snap.ballista_grpc_client_max_message_size();
+    // ExecutorProcessConfig stores tonic limits as u32; SessionConfig exposes usize.
+    let grpc_max_message_size = max_message_size.min(u32::MAX as usize) as u32;
 
     let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
     info!("work_dir: {work_dir}");
@@ -308,8 +310,8 @@ async fn push_staged_standalone_executor(
 
     let service = BallistaFlightService::new(work_dir);
     let server = FlightServiceServer::new(service)
-        .max_decoding_message_size(max_message_sz as usize)
-        .max_encoding_message_size(max_message_sz as usize);
+        .max_decoding_message_size(max_message_size)
+        .max_encoding_message_size(max_message_size);
 
     tokio::spawn(
         create_grpc_server(&GrpcServerConfig::default())
@@ -325,14 +327,15 @@ async fn push_staged_standalone_executor(
         grpc_port,
         concurrent_tasks,
         task_scheduling_policy: TaskSchedulingPolicy::PushStaged,
-        grpc_max_decoding_message_size: max_message_sz,
-        grpc_max_encoding_message_size: max_message_sz,
+        grpc_max_decoding_message_size: grpc_max_message_size,
+        grpc_max_encoding_message_size: grpc_max_message_size,
         ..ExecutorProcessConfig::default()
     };
 
-    let shutdown_notifier: &'static ShutdownNotifier =
-        Box::leak(Box::new(ShutdownNotifier::new()));
-    let (stop_send, _stop_recv) = mpsc::channel::<bool>(10);
+    let shutdown_notifier = Arc::new(ShutdownNotifier::new());
+    let shutdown_keepalive_for_join = shutdown_notifier.clone();
+    let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
+    tokio::spawn(async move { while stop_recv.recv().await.is_some() {} });
 
     let server_handle = executor_server::startup(
         scheduler,
@@ -340,7 +343,8 @@ async fn push_staged_standalone_executor(
         executor,
         codec,
         stop_send,
-        shutdown_notifier,
+        ExecutorGrpcListen::Bound(grpc_listener),
+        shutdown_notifier.as_ref(),
     )
     .await
     .map_err(|e| {
@@ -349,6 +353,7 @@ async fn push_staged_standalone_executor(
     })?;
 
     tokio::spawn(async move {
+        let _shutdown_keepalive = shutdown_keepalive_for_join;
         match server_handle.await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => error!("Standalone push executor gRPC server exited: {e:?}"),
