@@ -43,21 +43,18 @@ jobs:
   tpch-sf10:
     name: TPC-H SF10 (all queries)
     runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
     steps:
       - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler netcat-openbsd
-
       - name: Setup Rust toolchain
-        run: |
-          rustup toolchain install stable
-          rustup default stable
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: stable
 
       - name: Build Ballista binaries
         run: |
@@ -67,7 +64,9 @@ jobs:
             -p ballista-benchmarks
 
       - name: Install tpchgen-cli
-        run: cargo install --locked tpchgen-cli
+        uses: taiki-e/install-action@de6bbd1333b8f331563d54a051e542c7dfef81c3  # v2.68.34
+        with:
+          tool: tpchgen-cli@2.0.2
 
       - name: Generate TPC-H SF10 data
         run: |
@@ -96,7 +95,9 @@ jobs:
 
           ./target/release-nonlto/ballista-executor \
             --bind-host 127.0.0.1 \
+            --bind-port 50051 \
             --scheduler-host 127.0.0.1 \
+            --scheduler-connect-timeout-seconds 10 \
             --concurrent-tasks 4 \
             --memory-pool-size 2GB \
             --work-dir "$WORK_DIR" \
@@ -115,23 +116,23 @@ jobs:
           }
           trap cleanup EXIT
 
-          echo "Waiting for scheduler on 127.0.0.1:50050..."
-          for _ in $(seq 1 30); do
-            if nc -z 127.0.0.1 50050; then
-              break
-            fi
-            sleep 1
-          done
-          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
-
-          echo "Waiting for executor on 127.0.0.1:50051..."
-          for _ in $(seq 1 30); do
-            if nc -z 127.0.0.1 50051; then
-              break
-            fi
-            sleep 1
-          done
-          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
+          # Probe TCP readiness with bash's /dev/tcp so we don't need netcat
+          # in the container image.
+          wait_for_port() {
+            local host="$1" port="$2" name="$3"
+            echo "Waiting for $name on $host:$port..."
+            for _ in $(seq 1 30); do
+              if (exec 3<>/dev/tcp/"$host"/"$port") 2>/dev/null; then
+                exec 3<&- 3>&-
+                return 0
+              fi
+              sleep 1
+            done
+            echo "$name did not start"
+            return 1
+          }
+          wait_for_port 127.0.0.1 50050 scheduler
+          wait_for_port 127.0.0.1 50051 executor
 
           # q16 omitted: still unsupported (matches benchmarks/run.sh).
           for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
