@@ -96,7 +96,7 @@ pub fn init_logging(
     #[allow(unused_variables)] tui_mode: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env_filter =
-        EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?;
+        EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("warn"))?;
 
     #[cfg(feature = "tui")]
     let writer = {
