@@ -76,19 +76,20 @@ impl Debug for AdaptivePlanner {
 impl AdaptivePlanner {
     /// Creates a new `AdaptivePlanner` with the specified physical optimizer rules.
     ///
-    /// # Arguments
-    /// * `plan` - The physical execution plan for the job.
+    /// # Arguments:
+    ///
     /// * `session_config` - The session configuration for the job.
-    /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
+    /// * `plan` - The physical execution plan for the job.
     /// * `job_name` - The name of the job.
+    /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
     pub fn try_new_with_optimizers(
-        plan: Arc<dyn ExecutionPlan>,
         session_config: &SessionConfig,
-        physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
+        plan: Arc<dyn ExecutionPlan>,
         job_name: String,
+        physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
         let session_state =
             Self::create_session_state(session_config, physical_optimizer_rules);
@@ -108,6 +109,7 @@ impl AdaptivePlanner {
     /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
     ///
     /// # Arguments
+    ///
     /// * `session_config` - The session configuration for the job.
     /// * `plan` - The physical execution plan for the job.
     /// * `job_name` - The name of the job.
@@ -120,10 +122,10 @@ impl AdaptivePlanner {
         job_name: String,
     ) -> common::Result<Self> {
         Self::try_new_with_optimizers(
-            plan,
             session_config,
-            Self::default_optimizers(),
+            plan,
             job_name,
+            Self::default_optimizers(),
         )
     }
     /// Cancels a stage by its ID.

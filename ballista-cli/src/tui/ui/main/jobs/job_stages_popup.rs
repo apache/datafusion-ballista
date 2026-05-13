@@ -17,7 +17,6 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::JobStageResponse;
-use datafusion::common::human_readable_count;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
@@ -38,18 +37,15 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
         .fg(Color::LightYellow)
         .bg(Color::Black)
         .bold();
-    let header = [
-        "Stage ID",
-        "Status",
-        "Input Rows",
-        "Output Rows",
-        "Elapsed Compute",
-        "Input percentiles\n(min/p25/med/p75/max)",
-        "Duration percentiles\n(min/p25/med/p75/max)",
-    ]
-    .into_iter()
-    .map(|h| Cell::from(Text::from(h).centered()))
-    .collect::<Row>()
+    let header_row = Row::new(vec![
+        Cell::from(Text::from("Stage ID").right_aligned()),
+        Cell::from(Text::from("Status").centered()),
+        Cell::from(Text::from("Input Rows").right_aligned()),
+        Cell::from(Text::from("Output Rows").right_aligned()),
+        Cell::from(Text::from("Compute Time").right_aligned()),
+        Cell::from(Text::from("Input percentiles\n(min/p25/med/p75/max)").centered()),
+        Cell::from(Text::from("Duration percentiles\n(min/p25/med/p75/max)").centered()),
+    ])
     .style(header_style)
     .height(2);
 
@@ -79,7 +75,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::LightBlue).bold())
             .border_type(BorderType::Thick),
     )
-    .header(header)
+    .header(header_row)
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
 
@@ -113,23 +109,23 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
     let p = &stage.task_input_percentiles;
     let input_percentiles = format!(
         "{}/{}/{}/{}/{}",
-        human_readable_count(p.min.try_into().unwrap()),
-        human_readable_count(p.p25.try_into().unwrap()),
-        human_readable_count(p.median.try_into().unwrap()),
-        human_readable_count(p.p75.try_into().unwrap()),
-        human_readable_count(p.max.try_into().unwrap())
+        app.format_count(p.min.try_into().unwrap_or(0)),
+        app.format_count(p.p25.try_into().unwrap_or(0)),
+        app.format_count(p.median.try_into().unwrap_or(0)),
+        app.format_count(p.p75.try_into().unwrap_or(0)),
+        app.format_count(p.max.try_into().unwrap_or(0))
     );
 
     Row::new(vec![
-        Cell::from(Text::from(stage.id.clone()).centered()),
+        Cell::from(Text::from(stage.id.clone()).right_aligned()),
         Cell::from(
             Text::from(stage.status.clone())
                 .style(Style::default().fg(status_color).bold())
                 .centered(),
         ),
-        Cell::from(Text::from(human_readable_count(stage.input_rows)).centered()),
-        Cell::from(Text::from(human_readable_count(stage.output_rows)).centered()),
-        Cell::from(Text::from(stage.elapsed_compute.clone()).centered()),
+        Cell::from(Text::from(app.format_count(stage.input_rows)).right_aligned()),
+        Cell::from(Text::from(app.format_count(stage.output_rows)).right_aligned()),
+        Cell::from(Text::from(stage.elapsed_compute.clone()).right_aligned()),
         Cell::from(Text::from(input_percentiles).centered()),
         Cell::from(Text::from(duration_percentiles).centered()),
     ])

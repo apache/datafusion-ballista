@@ -201,19 +201,17 @@ fn render_jobs_table(
         column_suffix(sort_column, sort_order, &SortColumn::PercentComplete);
     let start_time_suffix =
         column_suffix(sort_column, sort_order, &SortColumn::StartTime);
+    let duration_suffix = column_suffix(sort_column, sort_order, &SortColumn::Duration);
 
-    let header = [
-        format!("Id{id_suffix}"),
-        format!("Name{name_suffix}"),
-        format!("Status{status_suffix}"),
-        format!("Stages Completed{stages_suffix}"),
-        format!("Percent Completed{percent_suffix}"),
-        format!("Start time{start_time_suffix}"),
-    ]
-    .into_iter()
-    .map(|item| Text::from(item).centered())
-    .map(Cell::from)
-    .collect::<Row>()
+    let header_row = Row::new(vec![
+        Cell::from(Text::from(format!("Id{id_suffix}")).right_aligned()),
+        Cell::from(Text::from(format!("Name{name_suffix}")).centered()),
+        Cell::from(Text::from(format!("Status{status_suffix}")).centered()),
+        Cell::from(Text::from(format!("Stages Completed{stages_suffix}")).centered()),
+        Cell::from(Text::from(format!("Percent Completed{percent_suffix}")).centered()),
+        Cell::from(Text::from(format!("Start Time{start_time_suffix}")).centered()),
+        Cell::from(Text::from(format!("Duration{duration_suffix}")).right_aligned()),
+    ])
     .style(header_style)
     .height(1);
 
@@ -223,12 +221,13 @@ fn render_jobs_table(
             _ => Color::Black,
         };
 
-        let id_cell = Cell::from(Text::from(job.job_id.clone()).centered());
+        let id_cell = Cell::from(Text::from(job.job_id.clone()).right_aligned());
         let name_cell = Cell::from(Text::from(job.job_name.clone()).centered());
         let status_cell = render_job_status_cell(job);
         let stage_completion_cell = render_job_stage_completion_cell(job);
         let percent_completion_cell = render_job_percent_completion_cell(job);
         let start_time_cell = render_job_start_time_cell(job, app);
+        let duration_cell = render_job_duration_cell(job, app);
 
         let cells = vec![
             id_cell,
@@ -237,6 +236,7 @@ fn render_jobs_table(
             stage_completion_cell,
             percent_completion_cell,
             start_time_cell,
+            duration_cell,
         ];
         Row::new(cells).style(Style::default().bg(color))
     });
@@ -245,15 +245,16 @@ fn render_jobs_table(
         rows,
         [
             Constraint::Percentage(10), // Id
-            Constraint::Percentage(20), // Name
+            Constraint::Percentage(15), // Name
             Constraint::Percentage(10), // Status
-            Constraint::Percentage(20), // Stages Completed
-            Constraint::Percentage(20), // Percent Completed
-            Constraint::Percentage(20), // Start time
+            Constraint::Percentage(15), // Stages Completed
+            Constraint::Percentage(15), // Percent Completed
+            Constraint::Percentage(15), // Start time
+            Constraint::Percentage(15), // Duration
         ],
     )
     .block(Block::default().borders(Borders::all()))
-    .header(header)
+    .header(header_row)
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
@@ -262,6 +263,16 @@ fn render_jobs_table(
 fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
     let start_time = app.format_datetime(job.start_time);
     Cell::from(Text::from(start_time).centered())
+}
+
+fn render_job_duration_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
+    let duration = if job.end_time > 0 {
+        let duration = job.end_time - job.start_time;
+        app.format_duration(duration as u64)
+    } else {
+        "N/A".to_string()
+    };
+    Cell::from(Text::from(duration).right_aligned())
 }
 
 fn render_job_percent_completion_cell(job: &Job) -> Cell<'_> {

@@ -330,8 +330,10 @@ pub async fn get_jobs<
     let jobs: Vec<JobResponse> = jobs
         .iter()
         .map(|job| {
-            let (plain_status, job_status) =
-                format_job_status(&job.status.status, job.end_time - job.start_time);
+            let (plain_status, job_status) = format_job_status(
+                &job.status.status,
+                job_elapsed_ms(job.start_time, job.end_time),
+            );
 
             // calculate progress based on completed stages for now, but we could use completed
             // tasks in the future to make this more accurate
@@ -377,8 +379,10 @@ pub async fn get_job<
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
     let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
-    let (plain_status, job_status) =
-        format_job_status(&job.status().status, job.end_time() - job.start_time());
+    let (plain_status, job_status) = format_job_status(
+        &job.status().status,
+        job_elapsed_ms(job.start_time(), job.end_time()),
+    );
 
     let num_stages = job.stage_count();
     let completed_stages = job.completed_stages();
@@ -683,6 +687,14 @@ fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentile
         p75: percentile_duration(&durations, 75.0),
         max: *durations.last().unwrap(),
     })
+}
+
+/// Returns elapsed wall time in milliseconds for API formatting.
+///
+/// Uses saturating subtraction so inconsistent timestamps (e.g. failed jobs, or
+/// `end_time` still zero while `start_time` is set) do not panic on subtract.
+fn job_elapsed_ms(start_time: u64, end_time: u64) -> u64 {
+    end_time.saturating_sub(start_time)
 }
 
 fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, String) {
@@ -999,5 +1011,15 @@ mod tests {
         ];
         let result = get_running_stage_time(&tasks, now);
         assert_eq!(result, "2.00s");
+    }
+
+    #[test]
+    fn test_job_elapsed_ms_normal() {
+        assert_eq!(super::job_elapsed_ms(100, 500), 400);
+    }
+
+    #[test]
+    fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
+        assert_eq!(super::job_elapsed_ms(500, 100), 0);
     }
 }

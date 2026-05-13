@@ -20,6 +20,7 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
+use crate::tui::domain::executors::ExecutorDetails;
 use crate::tui::{
     TuiResult,
     domain::{
@@ -59,6 +60,12 @@ impl HttpClient {
     pub async fn get_executors(&self) -> TuiResult<Vec<Executor>> {
         let url = self.url("executors");
         self.json::<Vec<Executor>>(&url).await
+    }
+
+    pub async fn get_executor(&self, executor_id: &str) -> TuiResult<ExecutorDetails> {
+        let url = self.url(&format!("executor/{}", self.url_encode(executor_id)));
+        tracing::trace!("Going to GET details for '{}'", &url);
+        self.json::<ExecutorDetails>(&url).await
     }
 
     pub async fn get_jobs(&self) -> TuiResult<Vec<Job>> {

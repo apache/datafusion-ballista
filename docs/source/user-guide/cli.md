@@ -158,10 +158,15 @@ ballista-cli
 
 The TUI provides the following views:
 
-- **Executors**: Lists all registered executors with their host, port, CPU cores, memory, and current job count. Supports sorting by any column.
-- **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting, job search (`/`), and shows job details on selection.
-- **Job Stages**: When viewing a job, press `Enter` to see its execution stages with input/output rows, elapsed compute, and task percentiles.
-- **Stage Tasks & Plan**: Within the Job Stages view, press `Enter` to see individual task details or `p` to view the stage execution plan.
+- **Executors**: Lists all registered executors with their host, port, task slots, memory usage, and last seen time.
+  Supports sorting by any column.
+- **Executor details**: Select an executor and press `Enter` to show extra details about it.
+- **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting, job
+  search (`/`), and shows job details on selection.
+- **Job Stages**: When viewing a job, press `Enter` to see its execution stages with input/output rows, elapsed compute,
+  and task percentiles.
+- **Stage Tasks & Plan**: Within the Job Stages view, press `Enter` to see individual task details or `p` to view the
+  stage execution plan.
 - **Job Plans**: For completed jobs, press `p` to view the Stage, Physical, or Logical query plans.
 - **Job Stages Graph**: Press `g` to visualize the job's stage execution graph.
 - **Metrics**: Fetches and displays Prometheus metrics from the scheduler, including query execution statistics.
@@ -226,9 +231,17 @@ The TUI provides the following views:
 
 #### Executors View Keybindings
 
-| Key             | Action                            |
-| --------------- | --------------------------------- |
-| `1` / `2` / `3` | Sort by first/second/third column |
+| Key                   | Action                                       |
+| --------------------- | -------------------------------------------- |
+| `Enter`               | Show extra details for the selected executor |
+| `1` / `2` / `3` / ... | Sort by first/second/third/... column        |
+
+#### Executor Details Popup Keybindings
+
+| Key       | Action         |
+| --------- | -------------- |
+| `↑` / `↓` | Scroll up/down |
+| `Esc`     | Close popup    |
 
 #### Metrics View Keybindings
 

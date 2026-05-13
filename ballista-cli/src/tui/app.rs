@@ -20,7 +20,9 @@ use crate::tui::{
     TuiError,
     domain::{
         SortOrder,
-        executors::{ExecutorsData, SortColumn as ExecutorsSortColumn},
+        executors::{
+            ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
+        },
         jobs::{
             CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
             SortColumn as JobsSortColumn,
@@ -34,14 +36,13 @@ use crate::tui::{
 };
 use chrono::DateTime;
 use crossterm::event::{KeyCode, KeyEvent};
-use datafusion::common::human_readable_duration;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
 use crate::tui::ui::{
-    load_executors_data, load_job_details, load_job_dot, load_job_stages_popup,
-    load_jobs_data, load_metrics_data,
+    load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
+    load_job_stages_popup, load_jobs_data, load_metrics_data,
 };
 
 #[derive(Debug, PartialEq)]
@@ -81,6 +82,7 @@ pub(crate) struct App {
     pub job_dot_popup: Option<StagesGraph>,
     pub job_plan_popup: Option<JobPlansPopup>,
     pub job_stages_popup: Option<JobStagesPopup>,
+    pub executor_details_popup: Option<ExecutorDetailsPopup>,
 
     pub http_client: Arc<HttpClient>,
 }
@@ -100,6 +102,7 @@ impl App {
             job_dot_popup: None,
             job_plan_popup: None,
             job_stages_popup: None,
+            executor_details_popup: None,
             executors_data: ExecutorsData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
@@ -261,6 +264,18 @@ impl App {
             return Ok(());
         }
 
+        if let Some(ref mut executor_popup) = self.executor_details_popup {
+            match key.code {
+                KeyCode::Up => executor_popup.scroll_up(),
+                KeyCode::Down => executor_popup.scroll_down(),
+                KeyCode::Esc => {
+                    self.executor_details_popup = None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if self.show_help || self.show_scheduler_info {
             self.show_help = false;
             self.show_scheduler_info = false;
@@ -279,6 +294,9 @@ impl App {
             }
             KeyCode::Enter if self.is_jobs_view() => {
                 self.load_job_stages_popup_data().await;
+            }
+            KeyCode::Enter if self.is_executors_view() => {
+                self.load_executor_details_popup_data().await;
             }
             KeyCode::Char('g') if self.is_jobs_view() => {
                 self.load_job_dot_data().await;
@@ -321,17 +339,32 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::Status);
                 } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                }
+            }
+            KeyCode::Char('4') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StagesCompleted);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::ProcPhysicalMemoryUsage);
+                }
+            }
+            KeyCode::Char('5') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::PercentComplete);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::PeakPhysicalMemoryUsage);
+                }
+            }
+            KeyCode::Char('6') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StartTime);
+                } else if self.is_executors_view() {
                     self.sort_executors_by(ExecutorsSortColumn::LastSeen);
                 }
             }
-            KeyCode::Char('4') if self.is_jobs_view() => {
-                self.sort_jobs_by(JobsSortColumn::StagesCompleted);
-            }
-            KeyCode::Char('5') if self.is_jobs_view() => {
-                self.sort_jobs_by(JobsSortColumn::PercentComplete);
-            }
-            KeyCode::Char('6') if self.is_jobs_view() => {
-                self.sort_jobs_by(JobsSortColumn::StartTime);
+            KeyCode::Char('7') if self.is_jobs_view() => {
+                self.sort_jobs_by(JobsSortColumn::Duration);
             }
             KeyCode::Char('c')
                 if self.is_jobs_view() && self.input_mode == InputMode::View =>
@@ -398,6 +431,17 @@ impl App {
             if let Err(e) = load_job_stages_popup(self, &job_id).await {
                 tracing::error!("Failed to load job stages popup for '{job_id}': {e:?}");
             }
+        }
+    }
+
+    async fn load_executor_details_popup_data(&self) {
+        if let Some(executor) = self.executors_data.selected_executor()
+            && let Err(e) = load_executor_details_popup(self, &executor.id).await
+        {
+            tracing::error!(
+                "Failed to load executor details for '{}': {e:?}",
+                &executor.id
+            );
         }
     }
 
@@ -506,6 +550,14 @@ impl App {
         self.jobs_data.jobs.len() > 1
     }
 
+    pub fn has_selected_executor(&self) -> bool {
+        self.executors_data.table_state.selected().is_some()
+    }
+
+    pub fn is_executor_details_popup_open(&self) -> bool {
+        self.executor_details_popup.is_some()
+    }
+
     pub fn is_job_stages_popup_open(&self) -> bool {
         self.job_stages_popup.is_some()
     }
@@ -549,9 +601,80 @@ impl App {
             .unwrap_or_else(|| "Invalid date".to_string())
     }
 
+    // copied from DataFusion Commons to avoid depending on it
     pub fn format_duration(&self, duration_ms: u64) -> String {
-        const NANOS_PER_MILLI: u64 = 1_000_000;
-        human_readable_duration(duration_ms * NANOS_PER_MILLI)
+        const NANOS_PER_SEC: f64 = 1_000_000_000.0;
+        const NANOS_PER_MILLI: f64 = 1_000_000.0;
+        const NANOS_PER_MICRO: f64 = 1_000.0;
+
+        let nanos = duration_ms as f64 * NANOS_PER_MILLI;
+
+        if nanos >= NANOS_PER_SEC {
+            // >= 1 second: show in seconds
+            format!("{:.2}s", nanos / NANOS_PER_SEC)
+        } else if nanos >= NANOS_PER_MILLI {
+            // >= 1 millisecond: show in milliseconds
+            format!("{:.2}ms", nanos / NANOS_PER_MILLI)
+        } else if nanos >= NANOS_PER_MICRO {
+            // >= 1 microsecond: show in microseconds
+            format!("{:.2}µs", nanos / NANOS_PER_MICRO)
+        } else {
+            // < 1 microsecond: show in nanoseconds
+            format!("{nanos}ns")
+        }
+    }
+
+    // copied from DataFusion Commons to avoid depending on it
+    // and to remove a space between the number and the unit
+    pub fn format_size(&self, size: usize) -> String {
+        const TB: u64 = 1 << 40;
+        const GB: u64 = 1 << 30;
+        const MB: u64 = 1 << 20;
+        const KB: u64 = 1 << 10;
+
+        let size = size as u64;
+        let (value, unit) = {
+            if size >= 2 * TB {
+                (size as f64 / TB as f64, "TB")
+            } else if size >= 2 * GB {
+                (size as f64 / GB as f64, "GB")
+            } else if size >= 2 * MB {
+                (size as f64 / MB as f64, "MB")
+            } else if size >= 2 * KB {
+                (size as f64 / KB as f64, "KB")
+            } else {
+                (size as f64, "B")
+            }
+        };
+        format!("{value:.1}{unit}")
+    }
+
+    // copied from DataFusion Commons to avoid depending on it
+    // and to remove a space between the number and the unit
+    pub fn format_count(&self, count: usize) -> String {
+        let count = count as u64;
+        let (value, unit) = {
+            if count >= 1_000_000_000_000 {
+                (count as f64 / 1_000_000_000_000.0, "T")
+            } else if count >= 1_000_000_000 {
+                (count as f64 / 1_000_000_000.0, "B")
+            } else if count >= 1_000_000 {
+                (count as f64 / 1_000_000.0, "M")
+            } else if count >= 1_000 {
+                (count as f64 / 1_000.0, "K")
+            } else {
+                return count.to_string();
+            }
+        };
+
+        // Format with appropriate precision
+        // For values >= 100, show 1 decimal place (e.g., 123.4 K)
+        // For values < 100, show 2 decimal places (e.g., 10.12 K)
+        if value >= 100.0 {
+            format!("{value:.1}{unit}")
+        } else {
+            format!("{value:.2}{unit}")
+        }
     }
 }
 
@@ -562,6 +685,9 @@ mod tests {
     use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
     use crate::tui::domain::{
         SchedulerState, SortOrder,
+        executors::{
+            Executor, ExecutorDetails, ExecutorDetailsPopup, OsInfo, Specification,
+        },
         jobs::Job,
         jobs::stages::{JobStagesPopup, JobStagesResponse},
     };
@@ -578,6 +704,7 @@ mod tests {
             job_name: format!("Job {id}"),
             status: status.to_string(),
             start_time: 0,
+            end_time: 1,
             num_stages: 1,
             completed_stages: 0,
             percent_complete: 0,
@@ -807,6 +934,103 @@ mod tests {
         popup.set_tasks_view();
         app.job_stages_popup = Some(popup);
         assert!(!app.is_job_stage_no_details_popup_open());
+    }
+
+    // --- has_selected_executor / is_executor_details_popup_open tests ---
+
+    fn make_executor(id: &str) -> Executor {
+        Executor {
+            host: "host".to_string(),
+            port: 8080,
+            id: id.to_string(),
+            last_seen: None,
+            specification: Specification { task_slots: 4 },
+            metrics: vec![],
+        }
+    }
+
+    fn make_executor_details(id: &str) -> ExecutorDetails {
+        ExecutorDetails {
+            executor_info: make_executor(id),
+            os_info: OsInfo {
+                kernel_ver: "5.15".to_string(),
+                num_disks: 1,
+                open_files_limit: 1024,
+                os_ver: "Ubuntu 22.04".to_string(),
+                os_ver_long: "Ubuntu 22.04.1 LTS".to_string(),
+                physical_cores: 4,
+                system_name: "Linux".to_string(),
+                total_available_disk_space: 50_000_000_000,
+                total_disk_space: 100_000_000_000,
+            },
+        }
+    }
+
+    #[test]
+    fn has_selected_executor_false_when_no_executors() {
+        let app = make_app();
+        assert!(!app.has_selected_executor());
+    }
+
+    #[test]
+    fn has_selected_executor_false_when_no_selection() {
+        let mut app = make_app();
+        app.executors_data.executors = vec![make_executor("e1")];
+        assert!(!app.has_selected_executor());
+    }
+
+    #[test]
+    fn has_selected_executor_true_when_selected() {
+        let mut app = make_app();
+        app.executors_data.executors = vec![make_executor("e1")];
+        app.executors_data.table_state.select(Some(0));
+        assert!(app.has_selected_executor());
+    }
+
+    #[test]
+    fn is_executor_details_popup_open_false_when_none() {
+        let app = make_app();
+        assert!(!app.is_executor_details_popup_open());
+    }
+
+    #[test]
+    fn is_executor_details_popup_open_true_when_some() {
+        let mut app = make_app();
+        app.executor_details_popup =
+            Some(ExecutorDetailsPopup::new(make_executor_details("e1")));
+        assert!(app.is_executor_details_popup_open());
+    }
+
+    // --- format_size tests ---
+
+    #[test]
+    fn format_size_zero_bytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(0), "0.0B");
+    }
+
+    #[test]
+    fn format_size_bytes_below_kb_threshold() {
+        let app = make_app();
+        assert_eq!(app.format_size(1024), "1024.0B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024), "2.0KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024 * 1024), "2.0MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024 * 1024 * 1024), "2.0GB");
     }
 
     // --- is_selected_job_cancelable tests ---

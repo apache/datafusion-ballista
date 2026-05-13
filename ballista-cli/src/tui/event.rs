@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::tui::domain::{
     SchedulerState,
-    executors::Executor,
+    executors::{Executor, ExecutorDetails},
     jobs::{
         Job, JobDetails,
         stages::{JobStagesResponse, StagesGraph},
@@ -37,9 +37,11 @@ pub enum UiData {
     JobDetails(JobDetails),
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
+    ExecutorDetails(ExecutorDetails),
 }
 
 #[derive(Clone, Debug)]
+#[expect(clippy::large_enum_variant)]
 pub enum Event {
     Key(KeyEvent),
     Tick,
