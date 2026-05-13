@@ -752,9 +752,6 @@ mod test {
             optimizer_options.hash_join_single_partition_threshold,
         )
     }
-
-    /// Create join filter for NLJoinExec with expression `big_col > small_col`
-    /// where both columns are 0-indexed and come from left and right inputs respectively
     // Regression for https://github.com/apache/datafusion-ballista/issues/1681
     //
     // `JoinSelection` must not swap a `HashJoinExec(CollectLeft)` join's
@@ -855,8 +852,17 @@ mod test {
              with a multi-partition reader on the build side, which violates \
              CollectLeft's invariant",
         );
+        assert_eq!(
+            hj.right().output_partitioning().partition_count(),
+            2,
+            "JoinSelection swapped a CollectLeft join's inputs and ended up \
+             with a multi-partition reader on the build side, which violates \
+             CollectLeft's invariant",
+        );
     }
 
+    /// Create join filter for NLJoinExec with expression `big_col > small_col`
+    /// where both columns are 0-indexed and come from left and right inputs respectively
     fn nl_join_filter() -> Option<JoinFilter> {
         let column_indices = vec![
             ColumnIndex {
