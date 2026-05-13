@@ -88,7 +88,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
         render_no_metrics(
             f,
             rects[1],
-            "The scheduler is built with 'prometheus_metric' feature disabled.",
+            "The scheduler is built with 'prometheus-metrics' feature disabled.",
         );
     }
 }
