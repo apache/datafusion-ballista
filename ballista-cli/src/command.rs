@@ -135,12 +135,18 @@ impl Command {
             )),
             #[cfg(feature = "tui")]
             Self::OpenTui => {
+                /// RAII guard to set tui mode to true when entering the TUI mode,
+                /// and set it to false when exiting the TUI mode.
+                struct TuiModeGuard(Arc<AtomicBool>);
+                impl Drop for TuiModeGuard {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::Release);
+                    }
+                }
+                let _tui_mode_guard = TuiModeGuard(tui_mode.clone());
                 tui_mode.store(true, Ordering::Release);
-                match crate::tui::tui_main()
-                    .await
-                    .inspect(|_| tui_mode.store(false, Ordering::Release))
-                    .inspect_err(|_| tui_mode.store(false, Ordering::Release))
-                {
+
+                match crate::tui::tui_main().await {
                     Ok(()) => Ok(()),
                     Err(e) => Err(DataFusionError::Internal(format!(
                         "Error opening TUI: {e}",
