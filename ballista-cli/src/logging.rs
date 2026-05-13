@@ -87,11 +87,8 @@ mod tui {
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if logging setup succeeds.
-///
-/// # Panics
-///
-/// Panics if there is another logger already setup.
+/// Returns `Ok(())` if file setup succeeds. Subscriber init failures are logged
+/// to stderr but do not cause an error return (a global subscriber may already exist).
 pub fn init_logging(
     #[allow(unused_variables)] tui_mode: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -109,11 +106,15 @@ pub fn init_logging(
     #[cfg(not(feature = "tui"))]
     let writer = std::io::stderr;
 
-    tracing_subscriber::fmt()
+    match tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_writer(writer)
         .with_ansi(true)
-        .init();
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => eprintln!("Failed to initialize the logger: {:?}", e),
+    }
 
     Ok(())
 }
