@@ -121,8 +121,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tui_mode.store(true, Ordering::Release);
         return tui::tui_main()
             .await
-            .inspect(|_| tui_mode.store(false, Ordering::Release))
-            .inspect_err(|_| tui_mode.store(false, Ordering::Release))
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
     }
 
