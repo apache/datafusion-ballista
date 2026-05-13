@@ -197,7 +197,7 @@ pub struct QueryStageSummary {
     pub stage_status: String,
     pub input_rows: usize,
     pub output_rows: usize,
-    pub elapsed_compute: String,
+    pub elapsed_compute: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -522,7 +522,7 @@ pub async fn get_query_stages<
                     stage_status: stage.variant_name().to_string(),
                     input_rows: 0,
                     output_rows: 0,
-                    elapsed_compute: "".to_string(),
+                    elapsed_compute: None,
                     tasks: vec![],
                     task_duration_percentiles: None,
                     task_input_percentiles: None,
@@ -733,24 +733,27 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -> String {
+fn get_running_stage_time(
+    task_infos: &[Option<TaskInfo>],
+    current_time: u128,
+) -> Option<String> {
     let min_start = task_infos
         .iter()
         .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
         .filter(|t| *t > 0)
         .min();
 
-    let time = Time::new();
     match (min_start, current_time) {
-        (Some(start), end) if end > start => {
+        (Some(start), end) if end >= start => {
+            let time = Time::new();
             time.add_duration(Duration::from_millis((end - start) as u64));
+            Some(time.to_string())
         }
-        _ => {}
+        _ => None,
     }
-    time.to_string()
 }
 
-fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
+fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
     let min_start = task_infos
         .iter()
         .map(|t| t.start_exec_time)
@@ -763,14 +766,14 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
         .filter(|t| *t > 0)
         .max();
 
-    let time = Time::new();
     match (min_start, max_end) {
-        (Some(start), Some(end)) if end > start => {
+        (Some(start), Some(end)) if end >= start => {
+            let time = Time::new();
             time.add_duration(Duration::from_millis((end - start) as u64));
+            Some(time.to_string())
         }
-        _ => {}
+        _ => None,
     }
-    time.to_string()
 }
 
 fn get_partition_counts(metrics: &[MetricsSet], partition_id: usize) -> (usize, usize) {
@@ -936,21 +939,24 @@ mod tests {
     // --- get_finished_stage_time ---
 
     #[test]
-    fn test_finished_empty_slice_returns_zero() {
-        assert_eq!(get_finished_stage_time(&[]), "0ns");
+    fn test_finished_empty_slice_returns_none() {
+        assert_eq!(get_finished_stage_time(&[]), None);
     }
 
     #[test]
-    fn test_finished_all_zero_timestamps_returns_zero() {
+    fn test_finished_all_zero_timestamps_returns_none() {
         let tasks = vec![make_task_info(0, 0), make_task_info(0, 0)];
-        assert_eq!(get_finished_stage_time(&tasks), "0ns");
+        assert_eq!(get_finished_stage_time(&tasks), None);
     }
 
     #[test]
     fn test_finished_single_task_elapsed() {
         // 600 - 100 = 500 ms → "500.00ms"
         let tasks = vec![make_task_info(100, 600)];
-        assert_eq!(get_finished_stage_time(&tasks), "500.00ms");
+        assert_eq!(
+            get_finished_stage_time(&tasks),
+            Some("500.00ms".to_string())
+        );
     }
 
     #[test]
@@ -961,41 +967,47 @@ mod tests {
             make_task_info(200, 900),
             make_task_info(300, 700),
         ];
-        assert_eq!(get_finished_stage_time(&tasks), "800.00ms");
+        assert_eq!(
+            get_finished_stage_time(&tasks),
+            Some("800.00ms".to_string())
+        );
     }
 
     #[test]
-    fn test_finished_end_before_start_returns_zero() {
+    fn test_finished_end_before_start_returns_none() {
         let tasks = vec![make_task_info(900, 100)];
-        assert_eq!(get_finished_stage_time(&tasks), "0ns");
+        assert_eq!(get_finished_stage_time(&tasks), None);
     }
 
     // --- get_running_stage_time ---
 
     #[test]
-    fn test_running_empty_slice_returns_zero() {
-        assert_eq!(get_running_stage_time(&[], 1000), "0ns");
+    fn test_running_empty_slice_returns_none() {
+        assert_eq!(get_running_stage_time(&[], 1000), None);
     }
 
     #[test]
-    fn test_running_all_none_returns_zero() {
+    fn test_running_all_none_returns_none() {
         let tasks: Vec<Option<TaskInfo>> = vec![None, None];
-        assert_eq!(get_running_stage_time(&tasks, 1000), "0ns");
+        assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
     #[test]
-    fn test_running_future_start_returns_zero() {
+    fn test_running_future_start_returns_none() {
         // start_exec_time beyond current time → elapsed clamped to 0
         let tasks = vec![Some(make_task_info(u128::MAX, 0))];
-        assert_eq!(get_running_stage_time(&tasks, 1000), "0ns");
+        assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
     #[test]
-    fn test_running_past_start_returns_nonzero() {
+    fn test_running_past_start_returns_some() {
         let now = 4_000;
         let start = 1_000;
         let tasks = vec![Some(make_task_info(start, 0))];
-        assert_eq!(get_running_stage_time(&tasks, now), "3.00s");
+        assert_eq!(
+            get_running_stage_time(&tasks, now),
+            Some("3.00s".to_string())
+        );
     }
 
     #[test]
@@ -1010,7 +1022,7 @@ mod tests {
             None,
         ];
         let result = get_running_stage_time(&tasks, now);
-        assert_eq!(result, "2.00s");
+        assert_eq!(result, Some("2.00s".to_string()));
     }
 
     #[test]
