@@ -137,8 +137,7 @@ impl Command {
             )),
             #[cfg(feature = "tui")]
             Self::OpenTui => {
-                /// RAII guard to set tui mode to true when entering the TUI mode,
-                /// and set it to false when exiting the TUI mode.
+                /// RAII guard to reset tui mode back to false when exiting the TUI mode.
                 struct TuiModeGuard(Arc<AtomicBool>);
                 impl Drop for TuiModeGuard {
                     fn drop(&mut self) {

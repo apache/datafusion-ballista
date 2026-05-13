@@ -87,8 +87,11 @@ mod tui {
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if file setup succeeds. Subscriber init failures are logged
-/// to stderr but do not cause an error return (a global subscriber may already exist).
+/// Returns `Ok(())` if logging setup succeeds.
+///
+/// # Panics
+///
+/// Panics if there is another logger already setup.
 pub fn init_logging(
     #[allow(unused_variables)] tui_mode: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
