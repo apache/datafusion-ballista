@@ -88,6 +88,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             time_recorder = Some((Instant::now(), event.clone()));
         };
         let event_sender = EventSender::new(tx_event.clone());
+        self.metrics_collector.set_pending_tasks_queue_size(
+            self.state.task_manager.pending_task_number().await as u64,
+        );
+
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
