@@ -40,7 +40,6 @@ use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
 pub async fn tui_main() -> TuiResult<()> {
-    infrastructure::init_file_logger("ballista", "info")?;
     tracing::info!("Starting the Ballista TUI application");
 
     let config = Settings::new()?;

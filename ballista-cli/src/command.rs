@@ -19,6 +19,7 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use datafusion::arrow::array::{ArrayRef, StringArray};
@@ -56,6 +57,7 @@ impl Command {
         &self,
         ctx: &SessionContext,
         print_options: &mut PrintOptions,
+        tui_mode: Arc<AtomicBool>,
     ) -> Result<()> {
         let now = Instant::now();
         let max_rows = match print_options.maxrows {
@@ -132,12 +134,19 @@ impl Command {
                     .to_string(),
             )),
             #[cfg(feature = "tui")]
-            Self::OpenTui => match crate::tui::tui_main().await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(DataFusionError::Internal(format!(
-                    "Error opening TUI: {e}",
-                ))),
-            },
+            Self::OpenTui => {
+                tui_mode.store(true, Ordering::Relaxed);
+                match crate::tui::tui_main()
+                    .await
+                    .inspect(|_| tui_mode.store(false, Ordering::Relaxed))
+                    .inspect_err(|_| tui_mode.store(false, Ordering::Relaxed))
+                {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(DataFusionError::Internal(format!(
+                        "Error opening TUI: {e}",
+                    ))),
+                }
+            }
         }
     }
 

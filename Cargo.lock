@@ -1015,7 +1015,6 @@ dependencies = [
  "datafusion-cli",
  "dirs",
  "dotparser",
- "env_logger",
  "futures",
  "mimalloc",
  "percent-encoding",
