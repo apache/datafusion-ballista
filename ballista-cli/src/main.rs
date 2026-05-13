@@ -33,7 +33,7 @@ use datafusion_cli::{
 };
 use mimalloc::MiMalloc;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::{env, sync::Arc};
 
 #[global_allocator]
@@ -112,14 +112,13 @@ struct Args {
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tui_mode = Arc::new(AtomicBool::new(false));
 
-    logging::init_logging("ballista-tui", tui_mode.clone())?;
+    logging::init_logging(tui_mode.clone())?;
 
     let args = Args::parse();
 
     #[cfg(feature = "tui")]
     if args.tui {
-        tui_mode.store(true, Ordering::Release);
-        return tui::tui_main()
+        return tui::tui_main(tui_mode.clone())
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
     }
