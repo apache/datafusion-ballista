@@ -27,6 +27,8 @@ mod ui;
 use app::App;
 use event::{Event, EventHandler};
 use ratatui::widgets::ScrollbarState;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use terminal::TuiWrapper;
 
@@ -39,8 +41,8 @@ use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
-pub async fn tui_main() -> TuiResult<()> {
-    infrastructure::init_file_logger("ballista", "info")?;
+pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
+    tui_mode.store(true, Ordering::Release);
     tracing::info!("Starting the Ballista TUI application");
 
     let config = Settings::new()?;
