@@ -27,7 +27,7 @@ mod tui {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tracing_subscriber::fmt::MakeWriter;
 
-    /// A logger that writes to stdout or a file depending on the current TUI mode.
+    /// A logger that writes to stderr or a file depending on the current TUI mode.
     #[derive(Clone, Debug)]
     pub(super) struct DynamicLogger {
         file: Arc<File>,
@@ -61,7 +61,7 @@ mod tui {
             if self.tui_mode.load(Ordering::Acquire) {
                 self.file.write_all(buf)?
             } else {
-                io::stdout().write_all(buf)?
+                io::stderr().write_all(buf)?
             }
 
             Ok(buf.len())
@@ -71,13 +71,13 @@ mod tui {
             if self.tui_mode.load(Ordering::Acquire) {
                 self.file.flush()
             } else {
-                io::stdout().flush()
+                io::stderr().flush()
             }
         }
     }
 }
 
-/// Initializes a tracing subscriber that logs to stdout or a file depending
+/// Initializes a tracing subscriber that logs to stderr or a file depending
 /// on whether the application is used as a CLI or TUI.
 ///
 /// # Arguments
@@ -107,7 +107,7 @@ pub fn init_logging(
         tui::DynamicLogger::try_new(file_name, tui_mode)?
     };
     #[cfg(not(feature = "tui"))]
-    let writer = std::io::stdout;
+    let writer = std::io::stderr;
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
