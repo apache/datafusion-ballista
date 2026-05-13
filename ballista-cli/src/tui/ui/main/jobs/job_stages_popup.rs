@@ -125,7 +125,10 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
         ),
         Cell::from(Text::from(app.format_count(stage.input_rows)).right_aligned()),
         Cell::from(Text::from(app.format_count(stage.output_rows)).right_aligned()),
-        Cell::from(Text::from(stage.elapsed_compute.clone()).right_aligned()),
+        Cell::from(
+            Text::from(stage.elapsed_compute.clone().unwrap_or("N/A".to_string()))
+                .right_aligned(),
+        ),
         Cell::from(Text::from(input_percentiles).centered()),
         Cell::from(Text::from(duration_percentiles).centered()),
     ])
