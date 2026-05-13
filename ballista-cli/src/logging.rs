@@ -53,7 +53,7 @@ impl<'a> MakeWriter<'a> for DynamicLogger {
 }
 impl io::Write for DynamicLogger {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.tui_mode.load(Ordering::Relaxed) {
+        if self.tui_mode.load(Ordering::Acquire) {
             self.file.write_all(buf)?
         } else {
             io::stdout().write_all(buf)?
@@ -63,7 +63,7 @@ impl io::Write for DynamicLogger {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.tui_mode.load(Ordering::Relaxed) {
+        if self.tui_mode.load(Ordering::Acquire) {
             self.file.flush()
         } else {
             io::stdout().flush()

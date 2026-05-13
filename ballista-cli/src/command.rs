@@ -135,11 +135,11 @@ impl Command {
             )),
             #[cfg(feature = "tui")]
             Self::OpenTui => {
-                tui_mode.store(true, Ordering::Relaxed);
+                tui_mode.store(true, Ordering::Release);
                 match crate::tui::tui_main()
                     .await
-                    .inspect(|_| tui_mode.store(false, Ordering::Relaxed))
-                    .inspect_err(|_| tui_mode.store(false, Ordering::Relaxed))
+                    .inspect(|_| tui_mode.store(false, Ordering::Release))
+                    .inspect_err(|_| tui_mode.store(false, Ordering::Release))
                 {
                     Ok(()) => Ok(()),
                     Err(e) => Err(DataFusionError::Internal(format!(
