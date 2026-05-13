@@ -114,7 +114,7 @@ impl ExecutorManager {
         }
         let alive_executors = self.get_alive_executors();
         if alive_executors.is_empty() {
-            debug!("There's no alive executors for binding tasks");
+            warn!("There's no alive executors for binding tasks");
             return Ok(vec![]);
         }
         self.cluster_state
