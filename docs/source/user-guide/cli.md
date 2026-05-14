@@ -210,7 +210,7 @@ The TUI provides the following views:
 
 | Key       | Action                     |
 | --------- | -------------------------- |
-| `↑` / `↓` | Navigate stages            |
+| `↑` / `↓` | Scroll up/down             |
 | `Esc`     | Return to Job Stages popup |
 
 #### Stage Tasks Popup Keybindings
