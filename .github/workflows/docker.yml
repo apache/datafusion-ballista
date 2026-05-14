@@ -29,6 +29,10 @@ jobs:
     container:
       image: amd64/rust
     steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y nodejs
       - name: Checkout
         uses: actions/checkout@v6.0.2
         with:
@@ -36,10 +40,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: |
-          apt-get update
-          apt-get install -y docker-ce
       - name: Run script
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
