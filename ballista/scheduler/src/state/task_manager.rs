@@ -366,6 +366,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(jobs)
     }
 
+    /// Get all job ids including running, queued, and completed jobs
+    pub async fn get_all_jobs(&self) -> Result<Vec<JobOverview>> {
+        let job_ids = self.state.get_all_jobs().await?;
+
+        let mut jobs = vec![];
+        for job_id in &job_ids {
+            if let Some(cached) = self.get_active_execution_graph(job_id) {
+                let graph = cached.read().await;
+                jobs.push(graph.deref().into());
+            } else if let Some(graph) = self.state.get_execution_graph(job_id).await? {
+                jobs.push((&graph).into());
+            } else if let Some(status) = self.state.get_job_status(job_id).await? {
+                jobs.push(JobOverview {
+                    job_id: status.job_id.clone(),
+                    job_name: status.job_name.clone(),
+                    status,
+                    start_time: 0,
+                    end_time: 0,
+                    num_stages: 0,
+                    completed_stages: 0,
+                });
+            }
+        }
+        Ok(jobs)
+    }
+
     /// Get the status of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs, and then in Failed jobs
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {

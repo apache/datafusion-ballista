@@ -322,7 +322,7 @@ pub async fn get_jobs<
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
 
-    let jobs = state.task_manager.get_jobs().await.map_err(|e| {
+    let jobs = state.task_manager.get_all_jobs().await.map_err(|e| {
         tracing::error!("Error occurred while getting jobs, reason: {e:?}");
         SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
     })?;
@@ -337,8 +337,11 @@ pub async fn get_jobs<
 
             // calculate progress based on completed stages for now, but we could use completed
             // tasks in the future to make this more accurate
-            let percent_complete =
-                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8;
+            let percent_complete = if job.num_stages == 0 {
+                0
+            } else {
+                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8
+            };
             JobResponse {
                 job_id: job.job_id.to_string(),
                 job_name: job.job_name.to_string(),
