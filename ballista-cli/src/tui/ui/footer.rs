@@ -77,11 +77,12 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                             current_view_key_bindings.push(Span::from("[p] View plan, "));
                             current_view_key_bindings
                                 .push(Span::from("[Esc] Close popup, "));
-                        } else if app.is_job_stage_tasks_popup_open()
-                            || app.is_job_stage_plan_popup_open()
-                        {
+                        } else if app.is_job_stage_plan_popup_open() {
                             current_view_key_bindings
                                 .push(Span::from("[↑↓] Scroll up/down, "));
+                            current_view_key_bindings
+                                .push(Span::from("[Esc] Close popup, "));
+                        } else if app.is_job_stage_tasks_popup_open() {
                             current_view_key_bindings
                                 .push(Span::from("[Esc] Close popup, "));
                         }
