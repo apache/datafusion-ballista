@@ -42,10 +42,9 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
+use log::{debug, info};
 
 use crate::physical_optimizer::join_selection::should_swap_join_order;
-
-use log::info;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -286,13 +285,13 @@ impl DefaultDistributedPlanner {
                 BallistaConfig::default().broadcast_join_threshold_bytes()
             });
         if threshold_bytes == 0 {
-            info!("broadcast check: threshold is 0, broadcast disabled");
+            debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
         let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() else {
             return Ok(plan);
         };
-        info!(
+        debug!(
             "broadcast check: evaluating HashJoinExec mode={:?} join_type={:?} threshold={threshold_bytes}",
             hash_join.partition_mode(),
             hash_join.join_type(),
@@ -309,13 +308,13 @@ impl DefaultDistributedPlanner {
 
         fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
             let Ok(stats) = plan.partition_statistics(None) else {
-                info!(
+                debug!(
                     "broadcast check: partition_statistics returned error for {}",
                     plan.name()
                 );
                 return false;
             };
-            info!(
+            debug!(
                 "broadcast check: {} total_byte_size={:?} num_rows={:?} threshold={}",
                 plan.name(),
                 stats.total_byte_size,
@@ -345,7 +344,7 @@ impl DefaultDistributedPlanner {
                     })
                     .sum();
                 let estimated_bytes = *rows * bytes_per_row.max(8);
-                info!(
+                debug!(
                     "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
                     schema.fields().len(),
                 );
@@ -358,7 +357,7 @@ impl DefaultDistributedPlanner {
         let left_under = under(&**left, threshold_bytes);
         let right_under = under(&**right, threshold_bytes);
         if !left_under && !right_under {
-            info!("broadcast check: neither side under threshold, skipping promotion");
+            debug!("broadcast check: neither side under threshold, skipping promotion");
             return Ok(plan);
         }
 
@@ -369,13 +368,13 @@ impl DefaultDistributedPlanner {
             right_under
         };
 
-        info!(
+        debug!(
             "broadcast check: promoting to CollectLeft (left_under={left_under}, right_under={right_under}, swap={swap})"
         );
 
         let promoted: Arc<dyn ExecutionPlan> = if swap {
             if !hash_join.join_type().supports_swap() {
-                info!(
+                debug!(
                     "broadcast check: join type {:?} does not support swap, skipping",
                     hash_join.join_type()
                 );
