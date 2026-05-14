@@ -135,7 +135,6 @@ impl HttpClient {
                 ""
             }
         ));
-        tracing::info!("Going to GET stages for '{}'", &url);
         self.json::<JobStagesResponse>(&url).await
     }
 
