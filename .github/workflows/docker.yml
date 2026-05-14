@@ -26,6 +26,8 @@ jobs:
   build_docker:
     name: Run Build Docker Script
     runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
