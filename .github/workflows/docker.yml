@@ -38,10 +38,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+        #          sudo apt-get update
+      #          sudo apt-get install -y protobuf-compiler
       - name: Run script
         run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
 
           ./dev/build-ballista-docker.sh
 
