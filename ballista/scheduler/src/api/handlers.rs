@@ -322,7 +322,7 @@ pub async fn get_jobs<
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
 
-    let jobs = state.task_manager.get_all_jobs().await.map_err(|e| {
+    let jobs = state.task_manager.get_all_jobs_with_status(None).await.map_err(|e| {
         tracing::error!("Error occurred while getting jobs, reason: {e:?}");
         SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
     })?;

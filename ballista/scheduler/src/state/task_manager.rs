@@ -368,6 +368,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get all job ids including running, queued, and completed jobs
     pub async fn get_all_jobs(&self) -> Result<Vec<JobOverview>> {
+        self.get_all_jobs_with_status(None).await
+    }
+
+    /// Get all jobs optionally filtered by status.
+    /// When `status` is None, returns all jobs regardless of status.
+    pub async fn get_all_jobs_with_status(
+        &self,
+        status: Option<job_status::Status>,
+    ) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_all_jobs().await?;
 
         let mut jobs = vec![];
@@ -377,11 +386,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 jobs.push(graph.deref().into());
             } else if let Some(graph) = self.state.get_execution_graph(job_id).await? {
                 jobs.push((&graph).into());
-            } else if let Some(status) = self.state.get_job_status(job_id).await? {
+            } else if let Some(job_status) = self.state.get_job_status(job_id).await? {
+                if let Some(ref filter) = status {
+                    if let Some(ref s) = job_status.status {
+                        if s != filter {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
                 jobs.push(JobOverview {
-                    job_id: status.job_id.clone(),
-                    job_name: status.job_name.clone(),
-                    status,
+                    job_id: job_status.job_id.clone(),
+                    job_name: job_status.job_name.clone(),
+                    status: job_status,
                     start_time: 0,
                     end_time: 0,
                     num_stages: 0,
