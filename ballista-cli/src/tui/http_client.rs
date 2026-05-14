@@ -77,7 +77,7 @@ impl HttpClient {
     }
 
     pub async fn cancel_job(&self, job_id: &str) -> TuiResult<CancelJobResponse> {
-        let url = self.url(&format!("job/{job_id}"));
+        let url = self.url(&format!("job/{}", self.url_encode(job_id)));
         tracing::trace!("Going to PATCH {}", &url);
         let response = self
             .client
