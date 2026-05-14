@@ -30,11 +30,31 @@ pub struct HttpSettings {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct JobSettings {
+    /// The job stages' settings
+    pub stage: JobStageSettings,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JobStageSettings {
+    /// The job plan's settings
+    pub plan: JobPlanSettings,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JobPlanSettings {
+    /// Whether to render the plan as a tree.
+    pub tree: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Settings {
     pub scheduler: SchedulerSettings,
     pub http: HttpSettings,
     /// How often to refresh the UI. In millis.
     pub tick_interval_ms: u64,
+
+    pub job: JobSettings,
 }
 
 const DEFAULT_CONFIG: &str = r#"
@@ -45,6 +65,11 @@ scheduler:
 
 http:
   timeout: 2000
+
+job:
+  stage:
+    plan:
+      tree: false
 "#;
 
 impl Settings {

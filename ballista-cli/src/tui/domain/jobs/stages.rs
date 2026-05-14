@@ -77,6 +77,7 @@ pub struct JobStagesPopup {
     pub stages: JobStagesResponse,
     pub table_state: TableState,
     details_view: StageDetailsView,
+    pub scroll_position: u16,
 }
 
 impl JobStagesPopup {
@@ -86,6 +87,7 @@ impl JobStagesPopup {
             stages,
             table_state: TableState::default(),
             details_view: StageDetailsView::None,
+            scroll_position: 0,
         }
     }
 
@@ -114,36 +116,44 @@ impl JobStagesPopup {
     }
 
     pub fn scroll_down(&mut self) {
-        let len = self.stages.stages.len();
-        if len == 0 {
-            self.table_state.select(None);
-            return;
-        }
-        if let Some(selected) = self.table_state.selected() {
-            if selected < len - 1 {
-                self.table_state.select(Some(selected + 1));
-            } else {
+        if self.is_no_details_view() {
+            let len = self.stages.stages.len();
+            if len == 0 {
                 self.table_state.select(None);
+                return;
             }
-        } else {
-            self.table_state.select(Some(0));
+            if let Some(selected) = self.table_state.selected() {
+                if selected < len - 1 {
+                    self.table_state.select(Some(selected + 1));
+                } else {
+                    self.table_state.select(None);
+                }
+            } else {
+                self.table_state.select(Some(0));
+            }
+        } else if self.is_plan_view() {
+            self.scroll_position = self.scroll_position.saturating_add(1);
         }
     }
 
     pub fn scroll_up(&mut self) {
-        let len = self.stages.stages.len();
-        if len == 0 {
-            self.table_state.select(None);
-            return;
-        }
-        if let Some(selected) = self.table_state.selected() {
-            if selected == 0 {
+        if self.is_no_details_view() {
+            let len = self.stages.stages.len();
+            if len == 0 {
                 self.table_state.select(None);
-            } else {
-                self.table_state.select(Some(selected - 1));
+                return;
             }
-        } else {
-            self.table_state.select(Some(len - 1));
+            if let Some(selected) = self.table_state.selected() {
+                if selected == 0 {
+                    self.table_state.select(None);
+                } else {
+                    self.table_state.select(Some(selected - 1));
+                }
+            } else {
+                self.table_state.select(Some(len - 1));
+            }
+        } else if self.is_plan_view() {
+            self.scroll_position = self.scroll_position.saturating_sub(1);
         }
     }
 

@@ -206,7 +206,14 @@ The TUI provides the following views:
 | `p`       | View execution plan for the selected stage |
 | `Esc`     | Close popup                                |
 
-#### Stage Tasks / Plan Popup Keybindings
+#### Stage Plan Popup Keybindings
+
+| Key       | Action                     |
+| --------- | -------------------------- |
+| `↑` / `↓` | Navigate stages            |
+| `Esc`     | Return to Job Stages popup |
+
+#### Stage Tasks Popup Keybindings
 
 | Key   | Action                     |
 | ----- | -------------------------- |
@@ -264,6 +271,11 @@ Create the file manually if it does not exist. The following settings are availa
 ```yaml
 tick_interval_ms: 2000
 
+job:
+  stage:
+    plan:
+      tree: false
+
 scheduler:
   url: http://localhost:50050
 
@@ -272,6 +284,7 @@ http:
 ```
 
 - `tick_interval_ms`: How often the TUI refreshes data from the scheduler (milliseconds).
+- `job.stage.plan.tree`: Whether to show the stage execution plan as a tree.
 - `scheduler.url`: The Ballista scheduler HTTP endpoint.
 - `http.timeout`: HTTP request timeout in milliseconds.
 
