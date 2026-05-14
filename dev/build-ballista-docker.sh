@@ -17,7 +17,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+set -euo pipefail
 
 RELEASE_FLAG=${RELEASE_FLAG:=release}
 

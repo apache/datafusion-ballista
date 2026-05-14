@@ -16,7 +16,7 @@
 # under the License.
 
 name: Docker
-on: [pull_request, push]
+on: [ pull_request, push ]
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -29,8 +29,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
-      - name: Installs Rust and Cargo
-        run: curl -y --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+        with:
+          fetch-depth: 1
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         run: |
           sudo apt-get update
@@ -48,7 +51,7 @@ jobs:
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
           then
-            
+          
             docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
 
             echo "publishing docker tag $DOCKER_TAG"
@@ -56,7 +59,7 @@ jobs:
             docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
             docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
             docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG
-            
+          
             docker push ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
             docker push ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
             docker push ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG

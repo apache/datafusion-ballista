@@ -48,10 +48,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Prepare cargo build
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
@@ -71,6 +71,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -94,6 +95,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: stable
+      - uses: Swatinem/rust-cache@v2
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
 
@@ -109,6 +111,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -131,6 +134,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -153,6 +157,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-windows-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         shell: bash
         run: |
@@ -173,6 +178,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         shell: bash
         run: |
@@ -190,10 +196,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@v2
       - name: Verify that benchmark queries return expected results
         run: |
           cargo test --package ballista-benchmarks --profile release-nonlto --features=ci --locked -- --test-threads=1
@@ -210,6 +216,7 @@ jobs:
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
+      - uses: Swatinem/rust-cache@v2
       - name: Run
         run: ci/scripts/rust_fmt.sh
         env:
@@ -221,8 +228,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64]
-        rust: [stable]
+        arch: [ amd64 ]
+        rust: [ stable ]
     container:
       image: ${{ matrix.arch }}/rust
       env:
@@ -238,6 +245,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
       - name: Install Clippy
         run: |
           rustup component add clippy
@@ -252,8 +260,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64]
-        rust: [stable]
+        arch: [ amd64 ]
+        rust: [ stable ]
     container:
       image: ${{ matrix.arch }}/rust
       env:
@@ -269,6 +277,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-tomlfmt
         run: |
           which cargo-tomlfmt || cargo install cargo-tomlfmt
