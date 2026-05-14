@@ -97,6 +97,7 @@ impl JobStagesPopup {
 
     pub fn set_plan_view(&mut self) {
         self.details_view = StageDetailsView::Plan;
+        self.scroll_position = 0;
     }
 
     pub fn set_no_details_view(&mut self) {
