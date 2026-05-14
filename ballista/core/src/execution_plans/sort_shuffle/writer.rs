@@ -62,7 +62,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, Statistics, displayable,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
-use log::{debug, info};
+use log::debug;
 
 use crate::serde::scheduler::PartitionStats;
 
@@ -287,7 +287,7 @@ impl SortShuffleWriterExec {
 
                     if event_batches > 0 {
                         spill_events += 1;
-                        info!(
+                        debug!(
                             "Sort shuffle writer for input partition {} spilled \
                              event #{}: {} batches, {} bytes \
                              (cumulative: {} events, {} batches, {} bytes)",
@@ -341,7 +341,7 @@ impl SortShuffleWriterExec {
             // Reservation drops naturally; nothing left to free.
             drop(reservation);
 
-            info!(
+            debug!(
                 "Sort shuffle write for partition {} completed in {} seconds. \
                  Output: {:?}, Index: {:?}, Spill events: {}, Spill batches: {}, \
                  Spill bytes: {}",
