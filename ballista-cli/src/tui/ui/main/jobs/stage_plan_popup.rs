@@ -50,9 +50,9 @@ fn render_plans(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(Color::LightCyan))
         .border_type(BorderType::Thick);
 
-    let paragraph = Paragraph::new(&stage.plan)
+    let paragraph = Paragraph::new(&*stage.plan)
         .block(block)
-        .scroll((popup.scroll_position, 0));
+        .scroll((popup.plan_scroll_position(), 0));
 
     f.render_widget(paragraph, area);
 }

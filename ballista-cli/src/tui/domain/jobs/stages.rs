@@ -77,7 +77,7 @@ pub struct JobStagesPopup {
     pub stages: JobStagesResponse,
     pub table_state: TableState,
     details_view: StageDetailsView,
-    pub scroll_position: u16,
+    scroll_position: u16,
 }
 
 impl JobStagesPopup {
@@ -89,6 +89,10 @@ impl JobStagesPopup {
             details_view: StageDetailsView::None,
             scroll_position: 0,
         }
+    }
+
+    pub fn plan_scroll_position(&self) -> u16 {
+        self.scroll_position
     }
 
     pub fn set_tasks_view(&mut self) {
