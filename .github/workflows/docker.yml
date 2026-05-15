@@ -46,12 +46,6 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
           
-          export RELEASE_FLAG="release-nonlto"
-          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
-          if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]; then
-            export RELEASE_FLAG="release"
-          fi
-          
           ./dev/build-ballista-docker.sh
 
           docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
