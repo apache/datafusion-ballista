@@ -290,10 +290,10 @@ impl JobPlansPopup {
 
 #[cfg(test)]
 mod tests {
+    use crate::tui::domain::SortOrder;
     use crate::tui::domain::jobs::{
         Job, JobDetails, JobPlansPopup, JobsData, PlanTab, SortColumn,
     };
-    use crate::tui::domain::SortOrder;
 
     #[expect(clippy::too_many_arguments)]
     fn make_job(
