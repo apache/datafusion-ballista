@@ -38,6 +38,9 @@ RELEASE_FLAG="${RELEASE_FLAG:=release}"
 cargo build --profile "$RELEASE_FLAG" -p ballista-scheduler  --bin ballista-scheduler
 cargo build --profile "$RELEASE_FLAG" -p ballista-executor   --bin ballista-executor
 
+echo "=== DEBUG === "
+ls -la target/release*/
+
 if test -z "${CI}"; then
   cargo build --profile "$RELEASE_FLAG" -p ballista-cli        --bin ballista-cli
   cargo build --profile "$RELEASE_FLAG" -p ballista-benchmarks --bin tpch
