@@ -348,8 +348,13 @@
       </a>
      </li>
      <li class="toc-h4 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#stage-tasks-plan-popup-keybindings">
-       Stage Tasks / Plan Popup Keybindings
+      <a class="reference internal nav-link" href="#stage-plan-popup-keybindings">
+       Stage Plan Popup Keybindings
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#stage-tasks-popup-keybindings">
+       Stage Tasks Popup Keybindings
       </a>
      </li>
      <li class="toc-h4 nav-item toc-entry">
@@ -670,8 +675,26 @@ stage execution plan.</p></li>
 </tbody>
 </table>
 </section>
-<section id="stage-tasks-plan-popup-keybindings">
-<h4>Stage Tasks / Plan Popup Keybindings<a class="headerlink" href="#stage-tasks-plan-popup-keybindings" title="Link to this heading">¶</a></h4>
+<section id="stage-plan-popup-keybindings">
+<h4>Stage Plan Popup Keybindings<a class="headerlink" href="#stage-plan-popup-keybindings" title="Link to this heading">¶</a></h4>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Action</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">↑</span></code> / <code class="docutils literal notranslate"><span class="pre">↓</span></code></p></td>
+<td><p>Scroll up/down</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<td><p>Return to Job Stages popup</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="stage-tasks-popup-keybindings">
+<h4>Stage Tasks Popup Keybindings<a class="headerlink" href="#stage-tasks-popup-keybindings" title="Link to this heading">¶</a></h4>
 <table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Key</p></th>
@@ -806,6 +829,11 @@ stage execution plan.</p></li>
 <p>Create the file manually if it does not exist. The following settings are available:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">tick_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
 
+<span class="nt">job</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">stage</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">plan</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">tree</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+
 <span class="nt">scheduler</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:50050</span>
 
@@ -815,6 +843,7 @@ stage execution plan.</p></li>
 </div>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">tick_interval_ms</span></code>: How often the TUI refreshes data from the scheduler (milliseconds).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">job.stage.plan.tree</span></code>: Whether to show the stage execution plan as a tree.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">scheduler.url</span></code>: The Ballista scheduler HTTP endpoint.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">http.timeout</span></code>: HTTP request timeout in milliseconds.</p></li>
 </ul>
