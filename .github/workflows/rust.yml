@@ -78,9 +78,6 @@ jobs:
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo test --profile ci --features=testcontainers
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   # Run `cargo doc` to ensure the rustdoc is clean
   linux-rustdoc:
@@ -118,9 +115,6 @@ jobs:
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo check --profile ci -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features --locked
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   ballista-test:
     name: test linux balista
@@ -143,9 +137,6 @@ jobs:
           cd ballista
           # Ensure also compiles in standalone mode
           cargo test --profile ci --no-default-features --features standalone --locked
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   windows-test:
     name: windows test
@@ -219,9 +210,6 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run
         run: ci/scripts/rust_fmt.sh
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   clippy:
     name: Clippy
@@ -251,9 +239,6 @@ jobs:
           rustup component add clippy
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   cargo-toml-formatting-checks:
     name: Check Cargo.toml formatting
@@ -281,9 +266,6 @@ jobs:
       - name: Install cargo-tomlfmt
         run: |
           which cargo-tomlfmt || cargo install cargo-tomlfmt
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
       - name: Check Cargo.toml formatting
         run: |
           # if you encounter error, try rerun the command below, finally run 'git diff' to
@@ -295,9 +277,7 @@ jobs:
               echo "cargo tomlfmt found format violations"
               exit 1
           fi
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
+
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:
