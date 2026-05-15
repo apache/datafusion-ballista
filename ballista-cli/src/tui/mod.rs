@@ -54,7 +54,7 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
     app.set_event_tx(app_tx);
-    let _ = crate::tui::ui::load_executors_data(&app).await;
+    let _ = ui::load_executors_data(&app).await;
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;

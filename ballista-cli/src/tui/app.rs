@@ -201,10 +201,13 @@ impl App {
                 && let KeyCode::Esc = key.code
             {
                 popup.set_no_details_view();
-            } else if popup.is_plan_view()
-                && let KeyCode::Esc = key.code
-            {
-                popup.set_no_details_view();
+            } else if popup.is_plan_view() {
+                match key.code {
+                    KeyCode::Esc => popup.set_no_details_view(),
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    _ => {}
+                }
             } else if popup.is_no_details_view() {
                 match key.code {
                     KeyCode::Up => popup.scroll_up(),

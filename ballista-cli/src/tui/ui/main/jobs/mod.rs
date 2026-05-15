@@ -46,13 +46,10 @@ use ratatui::{
 };
 
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
-    let jobs = match app.http_client.get_jobs().await {
-        Ok(jobs) => jobs,
-        Err(e) => {
-            tracing::error!("Failed to load the jobs: {e:?}");
-            Vec::new()
-        }
-    };
+    let jobs = app.http_client.get_jobs().await.unwrap_or_else(|e| {
+        tracing::error!("Failed to load the jobs: {e:?}");
+        Vec::new()
+    });
 
     app.send_event(Event::DataLoaded {
         data: UiData::Jobs(jobs),
