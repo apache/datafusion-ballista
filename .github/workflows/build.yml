@@ -54,7 +54,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - name: Install Protoc
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
@@ -130,6 +130,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -179,7 +180,7 @@ jobs:
       - uses: actions/checkout@v6.0.2
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -220,6 +221,7 @@ jobs:
       - uses: actions/checkout@v6.0.2
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -260,7 +262,7 @@ jobs:
       - uses: actions/checkout@v6.0.2
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
