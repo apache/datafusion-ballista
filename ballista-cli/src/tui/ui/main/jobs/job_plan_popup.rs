@@ -17,10 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::{JobPlansPopup, PlanTab};
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::Frame;
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     let Some(job_plans) = &app.job_plan_popup else {
@@ -40,7 +40,7 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
 
 fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
     let details = &job_plans.details;
-    let tab = &job_plans.tab;
+    let tab = job_plans.get_tab();
 
     let plan = match tab {
         PlanTab::Stage => details.stage_plan.as_deref().unwrap_or("N/A"),

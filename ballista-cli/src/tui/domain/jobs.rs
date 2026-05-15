@@ -236,7 +236,7 @@ pub(crate) enum PlanTab {
 #[derive(Clone, Debug)]
 pub struct JobPlansPopup {
     pub details: JobDetails,
-    pub tab: PlanTab,
+    tab: PlanTab,
     vertical_scroll_position: u16,
     horizontal_scroll_position: u16,
 }
@@ -249,6 +249,10 @@ impl JobPlansPopup {
             vertical_scroll_position: 0,
             horizontal_scroll_position: 0,
         }
+    }
+
+    pub fn get_tab(&self) -> &PlanTab {
+        &self.tab
     }
 
     pub fn set_tab(&mut self, tab: PlanTab) {
@@ -286,10 +290,10 @@ impl JobPlansPopup {
 
 #[cfg(test)]
 mod tests {
-    use crate::tui::domain::SortOrder;
     use crate::tui::domain::jobs::{
         Job, JobDetails, JobPlansPopup, JobsData, PlanTab, SortColumn,
     };
+    use crate::tui::domain::SortOrder;
 
     #[expect(clippy::too_many_arguments)]
     fn make_job(
@@ -726,5 +730,29 @@ mod tests {
         let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
         popup.scroll_up();
         assert_eq!(popup.vertical_scroll_position, 0);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_right_increments() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_right();
+        assert_eq!(popup.horizontal_scroll_position, 1);
+    }
+
+    #[test]
+    fn job_plans_popup_scroll_left_saturates_at_zero() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_left();
+        assert_eq!(popup.horizontal_scroll_position, 0);
+    }
+
+    #[test]
+    fn job_plans_popup_set_tab_resets_scroll_positions() {
+        let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
+        popup.scroll_down();
+        popup.scroll_right();
+        popup.set_tab(PlanTab::Physical);
+        assert_eq!(popup.vertical_scroll_position, 0);
+        assert_eq!(popup.horizontal_scroll_position, 0);
     }
 }
