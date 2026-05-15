@@ -237,7 +237,8 @@ pub(crate) enum PlanTab {
 pub struct JobPlansPopup {
     pub details: JobDetails,
     pub tab: PlanTab,
-    pub scroll_position: u16,
+    vertical_scroll_position: u16,
+    horizontal_scroll_position: u16,
 }
 
 impl JobPlansPopup {
@@ -245,16 +246,41 @@ impl JobPlansPopup {
         Self {
             details,
             tab,
-            scroll_position: 0,
+            vertical_scroll_position: 0,
+            horizontal_scroll_position: 0,
         }
     }
 
+    pub fn set_tab(&mut self, tab: PlanTab) {
+        self.tab = tab;
+        self.vertical_scroll_position = 0;
+        self.horizontal_scroll_position = 0;
+    }
+
+    pub fn vertical_scroll_position(&self) -> u16 {
+        self.vertical_scroll_position
+    }
+
+    pub fn horizontal_scroll_position(&self) -> u16 {
+        self.horizontal_scroll_position
+    }
+
     pub fn scroll_up(&mut self) {
-        self.scroll_position = self.scroll_position.saturating_sub(1);
+        self.vertical_scroll_position = self.vertical_scroll_position.saturating_sub(1);
     }
 
     pub fn scroll_down(&mut self) {
-        self.scroll_position = self.scroll_position.saturating_add(1);
+        self.vertical_scroll_position = self.vertical_scroll_position.saturating_add(1);
+    }
+
+    pub fn scroll_left(&mut self) {
+        self.horizontal_scroll_position =
+            self.horizontal_scroll_position.saturating_sub(1);
+    }
+
+    pub fn scroll_right(&mut self) {
+        self.horizontal_scroll_position =
+            self.horizontal_scroll_position.saturating_add(1);
     }
 }
 
@@ -674,16 +700,16 @@ mod tests {
     #[test]
     fn job_plans_popup_new_scroll_position_is_zero() {
         let popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
-        assert_eq!(popup.scroll_position, 0);
+        assert_eq!(popup.vertical_scroll_position, 0);
     }
 
     #[test]
     fn job_plans_popup_scroll_down_increments() {
         let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
         popup.scroll_down();
-        assert_eq!(popup.scroll_position, 1);
+        assert_eq!(popup.vertical_scroll_position, 1);
         popup.scroll_down();
-        assert_eq!(popup.scroll_position, 2);
+        assert_eq!(popup.vertical_scroll_position, 2);
     }
 
     #[test]
@@ -692,13 +718,13 @@ mod tests {
         popup.scroll_down();
         popup.scroll_down();
         popup.scroll_up();
-        assert_eq!(popup.scroll_position, 1);
+        assert_eq!(popup.vertical_scroll_position, 1);
     }
 
     #[test]
     fn job_plans_popup_scroll_up_saturates_at_zero() {
         let mut popup = JobPlansPopup::new(make_job_details("j1"), PlanTab::Stage);
         popup.scroll_up();
-        assert_eq!(popup.scroll_position, 0);
+        assert_eq!(popup.vertical_scroll_position, 0);
     }
 }

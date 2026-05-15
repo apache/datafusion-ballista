@@ -206,6 +206,8 @@ impl App {
                     KeyCode::Esc => popup.set_no_details_view(),
                     KeyCode::Up => popup.scroll_up(),
                     KeyCode::Down => popup.scroll_down(),
+                    KeyCode::Left => popup.scroll_left(),
+                    KeyCode::Right => popup.scroll_right(),
                     _ => {}
                 }
             } else if popup.is_no_details_view() {
@@ -247,17 +249,16 @@ impl App {
             match key.code {
                 KeyCode::Up => plans_popup.scroll_up(),
                 KeyCode::Down => plans_popup.scroll_down(),
+                KeyCode::Left => plans_popup.scroll_left(),
+                KeyCode::Right => plans_popup.scroll_right(),
                 KeyCode::Char('s') => {
-                    plans_popup.tab = PlanTab::Stage;
-                    plans_popup.scroll_position = 0;
+                    plans_popup.set_tab(PlanTab::Stage);
                 }
                 KeyCode::Char('p') => {
-                    plans_popup.tab = PlanTab::Physical;
-                    plans_popup.scroll_position = 0;
+                    plans_popup.set_tab(PlanTab::Physical);
                 }
                 KeyCode::Char('l') => {
-                    plans_popup.tab = PlanTab::Logical;
-                    plans_popup.scroll_position = 0;
+                    plans_popup.set_tab(PlanTab::Logical);
                 }
                 KeyCode::Esc => {
                     self.job_plan_popup = None;

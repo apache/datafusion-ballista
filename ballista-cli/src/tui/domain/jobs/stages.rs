@@ -77,7 +77,8 @@ pub struct JobStagesPopup {
     pub stages: JobStagesResponse,
     pub table_state: TableState,
     details_view: StageDetailsView,
-    scroll_position: u16,
+    plan_vertical_scroll_position: u16,
+    plan_horizontal_scroll_position: u16,
 }
 
 impl JobStagesPopup {
@@ -87,12 +88,17 @@ impl JobStagesPopup {
             stages,
             table_state: TableState::default(),
             details_view: StageDetailsView::None,
-            scroll_position: 0,
+            plan_vertical_scroll_position: 0,
+            plan_horizontal_scroll_position: 0,
         }
     }
 
-    pub fn plan_scroll_position(&self) -> u16 {
-        self.scroll_position
+    pub fn plan_vertical_scroll_position(&self) -> u16 {
+        self.plan_vertical_scroll_position
+    }
+
+    pub fn plan_horizontal_scroll_position(&self) -> u16 {
+        self.plan_horizontal_scroll_position
     }
 
     pub fn set_tasks_view(&mut self) {
@@ -101,7 +107,8 @@ impl JobStagesPopup {
 
     pub fn set_plan_view(&mut self) {
         self.details_view = StageDetailsView::Plan;
-        self.scroll_position = 0;
+        self.plan_vertical_scroll_position = 0;
+        self.plan_horizontal_scroll_position = 0;
     }
 
     pub fn set_no_details_view(&mut self) {
@@ -137,7 +144,8 @@ impl JobStagesPopup {
                 self.table_state.select(Some(0));
             }
         } else if self.is_plan_view() {
-            self.scroll_position = self.scroll_position.saturating_add(1);
+            self.plan_vertical_scroll_position =
+                self.plan_vertical_scroll_position.saturating_add(1);
         }
     }
 
@@ -158,7 +166,22 @@ impl JobStagesPopup {
                 self.table_state.select(Some(len - 1));
             }
         } else if self.is_plan_view() {
-            self.scroll_position = self.scroll_position.saturating_sub(1);
+            self.plan_vertical_scroll_position =
+                self.plan_vertical_scroll_position.saturating_sub(1);
+        }
+    }
+
+    pub fn scroll_left(&mut self) {
+        if self.is_plan_view() {
+            self.plan_horizontal_scroll_position =
+                self.plan_horizontal_scroll_position.saturating_sub(1);
+        }
+    }
+
+    pub fn scroll_right(&mut self) {
+        if self.is_plan_view() {
+            self.plan_horizontal_scroll_position =
+                self.plan_horizontal_scroll_position.saturating_add(1);
         }
     }
 

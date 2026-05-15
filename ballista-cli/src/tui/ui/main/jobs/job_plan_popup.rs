@@ -56,9 +56,10 @@ fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
         .border_style(Style::default().fg(Color::LightCyan))
         .border_type(BorderType::Thick);
 
-    let paragraph = Paragraph::new(plan)
-        .block(block)
-        .scroll((job_plans.scroll_position, 0));
+    let paragraph = Paragraph::new(plan).block(block).scroll((
+        job_plans.vertical_scroll_position(),
+        job_plans.horizontal_scroll_position(),
+    ));
 
     f.render_widget(paragraph, area);
 }
