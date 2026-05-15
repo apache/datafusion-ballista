@@ -330,8 +330,10 @@ pub async fn get_jobs<
     let jobs: Vec<JobResponse> = jobs
         .iter()
         .map(|job| {
-            let (plain_status, job_status) =
-                format_job_status(&job.status.status, job.end_time - job.start_time);
+            let (plain_status, job_status) = format_job_status(
+                &job.status.status,
+                job_elapsed_ms(job.start_time, job.end_time),
+            );
 
             // calculate progress based on completed stages for now, but we could use completed
             // tasks in the future to make this more accurate
@@ -377,8 +379,10 @@ pub async fn get_job<
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
     let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
-    let (plain_status, job_status) =
-        format_job_status(&job.status().status, job.end_time() - job.start_time());
+    let (plain_status, job_status) = format_job_status(
+        &job.status().status,
+        job_elapsed_ms(job.start_time(), job.end_time()),
+    );
 
     let num_stages = job.stage_count();
     let completed_stages = job.completed_stages();
@@ -722,6 +726,10 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
+fn job_elapsed_ms(start_time: u64, end_time: u64) -> u64 {
+    end_time.saturating_sub(start_time)
+}
+
 fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -> String {
     let min_start = task_infos
         .iter()
@@ -920,6 +928,11 @@ mod tests {
             finish_time: 0,
             task_status: task_status::Status::Running(Default::default()),
         }
+    }
+
+    #[test]
+    fn test_job_elapsed_saturates_when_end_precedes_start() {
+        assert_eq!(job_elapsed_ms(900, 100), 0);
     }
 
     // --- get_finished_stage_time ---
