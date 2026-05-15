@@ -172,6 +172,22 @@ The TUI provides the following views:
 - **Metrics**: Fetches and displays Prometheus metrics from the scheduler, including query execution statistics.
 - **Scheduler Info**: Shows the current scheduler state and configuration.
 
+### TUI Screenshots
+
+![TUI Jobs table](./screenshots/tui-jobs-table.png)
+![TUI Jobs Stages popup](./screenshots/tui-job-stages-popup.png)
+![TUI Jobs Stage Tasks popup](./screenshots/tui-job-stage-tasks-popup.png)
+![TUI Jobs Stage Plan popup](./screenshots/tui-job-plans-stage-popup.png)
+![TUI Jobs Plan Graph popup](./screenshots/tui-job-plan-graph-popup.png)
+
+![TUI Executors table](./screenshots/tui-executors-table.png)
+![TUI Executor Details popup](./screenshots/tui-executor-details.png)
+
+![TUI Metrics table](./screenshots/tui-metrics-table.png)
+
+![TUI Scheduler Info popup](./screenshots/tui-scheduler-info-popup.png)
+![TUI Help popup](./screenshots/tui-help-popup.png)
+
 ### TUI Navigation
 
 #### Global Keybindings
