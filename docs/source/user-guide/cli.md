@@ -211,6 +211,7 @@ The TUI provides the following views:
 | Key       | Action                     |
 | --------- | -------------------------- |
 | `↑` / `↓` | Scroll up/down             |
+| `←` / `→` | Scroll left/right          |
 | `Esc`     | Return to Job Stages popup |
 
 #### Stage Tasks Popup Keybindings
@@ -234,6 +235,7 @@ The TUI provides the following views:
 | `p`       | Show Physical plan |
 | `l`       | Show Logical plan  |
 | `↑` / `↓` | Scroll up/down     |
+| `←` / `→` | Scroll left/right  |
 | `Esc`     | Close popup        |
 
 #### Executors View Keybindings
