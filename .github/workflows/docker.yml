@@ -46,7 +46,6 @@ jobs:
           cache-on-failure: "true" # TODO: revert once CI is stable
       - name: Run script
         run: |
-          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
 
           ./dev/build-ballista-docker.sh
@@ -82,3 +81,4 @@ jobs:
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_FLAG: "release-nonlto"
