@@ -132,6 +132,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
         with:
+          # FIXME: temporary workaround, see: https://github.com/Swatinem/rust-cache/issues/341
+          cache-bin: ${{ matrix.os != 'macos-latest' }}
           workspaces: |
             python -> target
 
