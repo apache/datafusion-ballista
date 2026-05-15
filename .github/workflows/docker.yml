@@ -42,12 +42,16 @@ jobs:
           rustup toolchain install stable
           rustup default stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-        with:
-          cache-on-failure: "true" # TODO: revert once CI is stable
       - name: Run script
         run: |
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
-
+          
+          export RELEASE_FLAG="release-nonlto"
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]; then
+            export RELEASE_FLAG="release"
+          fi
+          
           ./dev/build-ballista-docker.sh
 
           docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
@@ -55,7 +59,6 @@ jobs:
           docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:latest
 
           # release dockers only when there is a release tag
-          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
           then
 
@@ -81,4 +84,4 @@ jobs:
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_FLAG: "release-nonlto"
+
