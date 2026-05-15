@@ -70,7 +70,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
 
     let header_row = Row::new(vec![
         Cell::from(Text::from(format!("Host{host_suffix}")).centered()),
-        Cell::from(Text::from(format!("Id{id_suffix}")).right_aligned()),
+        Cell::from(Text::from(format!("Id{id_suffix}")).centered()),
         Cell::from(Text::from(format!("Task Slots{task_slots_suffix}")).right_aligned()),
         Cell::from(
             Text::from(format!("Physical Memory{proc_physical_memory_suffix}"))
@@ -99,7 +99,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
             let host_cell = Cell::from(
                 Text::from(format!("{}:{}", executor.host, executor.port)).centered(),
             );
-            let id_cell = Cell::from(Text::from(executor.id.clone()).right_aligned());
+            let id_cell = Cell::from(Text::from(executor.id.clone()).centered());
             let task_slots_cell = Cell::from(
                 Text::from(app.format_count(executor.specification.task_slots as usize))
                     .right_aligned(),
@@ -133,8 +133,8 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
         rows,
         [
             Constraint::Percentage(10), // Host
-            Constraint::Percentage(15), // Id
-            Constraint::Percentage(15), // Task slots
+            Constraint::Percentage(20), // Id
+            Constraint::Percentage(10), // Task slots
             Constraint::Percentage(20), // Proc physical memory
             Constraint::Percentage(20), // Peak physical memory
             Constraint::Percentage(20), // Last seen
