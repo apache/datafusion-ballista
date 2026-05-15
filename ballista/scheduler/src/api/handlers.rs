@@ -936,6 +936,11 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_job_elapsed_saturates_when_end_precedes_start() {
+        assert_eq!(job_elapsed_ms(900, 100), 0);
+    }
+
     // --- get_finished_stage_time ---
 
     #[test]
