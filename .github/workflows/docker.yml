@@ -16,7 +16,7 @@
 # under the License.
 
 name: Docker
-on: [pull_request, push]
+on: [ pull_request, push ]
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -26,43 +26,27 @@ jobs:
   build_docker:
     name: Run Build Docker Script
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
-      - name: Install dependencies
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          apt update
-          apt install -y ca-certificates curl nodejs
-          install -m 0755 -d /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-          chmod a+r /etc/apt/keyrings/docker.asc
-
-          # Add the repository to Apt sources:
-          tee /etc/apt/sources.list.d/docker.sources <<EOF
-          Types: deb
-          URIs: https://download.docker.com/linux/debian
-          Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
-          Components: stable
-          Architectures: $(dpkg --print-architecture)
-          Signed-By: /etc/apt/keyrings/docker.asc
-          EOF
-
-          apt update
-          apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       - name: Checkout
         uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 1
+          fetch-tags: true
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@v2
+        run: |
+          rustup update stable
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
         with:
-          cache-on-failure: "true"
+          cache-on-failure: "true" # TODO: revert once CI is stable
       - name: Run script
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
-          git config --global --add safe.directory $PWD
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
 
           ./dev/build-ballista-docker.sh
