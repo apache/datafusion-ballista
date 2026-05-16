@@ -432,15 +432,15 @@ mod tests {
             SortColumn::CpuCores,
             SortOrder::Ascending,
         );
-        data.executors[0].os_info.physical_cores = 2;
-        data.executors[1].os_info.physical_cores = 20;
-        data.executors[2].os_info.physical_cores = 200;
+        data.executors[0].os_info.physical_cores = 20;
+        data.executors[1].os_info.physical_cores = 200;
+        data.executors[2].os_info.physical_cores = 2;
         data.sort();
-        assert_eq!(data.executors[0].id, "id-a");
+        assert_eq!(data.executors[0].id, "id-c");
         assert_eq!(data.executors[0].cpu_cores(), 2);
-        assert_eq!(data.executors[1].id, "id-b");
+        assert_eq!(data.executors[1].id, "id-a");
         assert_eq!(data.executors[1].cpu_cores(), 20);
-        assert_eq!(data.executors[2].id, "id-c");
+        assert_eq!(data.executors[2].id, "id-b");
         assert_eq!(data.executors[2].cpu_cores(), 200);
     }
 

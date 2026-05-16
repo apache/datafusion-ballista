@@ -103,7 +103,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
             );
             let id_cell = Cell::from(Text::from(executor.id.clone()).centered());
             let cpu_cores_cell = Cell::from(
-                Text::from(app.format_count(executor.os_info.physical_cores as usize))
+                Text::from(app.format_count(executor.cpu_cores() as usize))
                     .right_aligned(),
             );
             let task_slots_cell = Cell::from(
@@ -141,7 +141,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
         [
             Constraint::Percentage(10), // Host
             Constraint::Percentage(20), // Id
-            Constraint::Percentage(8),  // Physical CPUs
+            Constraint::Percentage(8),  // CPU cores
             Constraint::Percentage(8),  // Task slots
             Constraint::Percentage(18), // Proc physical memory
             Constraint::Percentage(18), // Peak physical memory
