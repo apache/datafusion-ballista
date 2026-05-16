@@ -27,9 +27,14 @@ pub struct Executor {
     pub last_seen: Option<u64>,
     pub specification: Specification,
     pub metrics: Vec<Metric>,
+    pub os_info: OsInfo,
 }
 
 impl Executor {
+    pub fn cpu_cores(&self) -> u32 {
+        self.os_info.physical_cores
+    }
+
     pub fn task_slots(&self) -> u32 {
         self.specification.task_slots
     }
@@ -49,12 +54,6 @@ impl Executor {
             .map(|m| m.value)
             .unwrap_or(0)
     }
-}
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct ExecutorDetails {
-    pub executor_info: Executor,
-    pub os_info: OsInfo,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -83,12 +82,12 @@ pub struct OsInfo {
 }
 
 pub struct ExecutorDetailsPopup {
-    pub executor: ExecutorDetails,
+    pub executor: Executor,
     pub scroll_position: u16,
 }
 
 impl ExecutorDetailsPopup {
-    pub fn new(executor: ExecutorDetails) -> Self {
+    pub fn new(executor: Executor) -> Self {
         Self {
             executor,
             scroll_position: 0,
@@ -113,6 +112,7 @@ pub enum SortColumn {
     None,
     Host,
     Id,
+    CpuCores,
     TaskSlots,
     ProcPhysicalMemoryUsage,
     PeakPhysicalMemoryUsage,
@@ -149,7 +149,7 @@ impl ExecutorsData {
                 let a_host = format!("{}:{}", a.host, a.port);
                 let b_host = format!("{}:{}", b.host, b.port);
                 let cmp = a_host.cmp(&b_host);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -157,7 +157,15 @@ impl ExecutorsData {
             }),
             SortColumn::Id => self.executors.sort_by(|a, b| {
                 let cmp = a.id.cmp(&b.id);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                if self.sort_order == SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::CpuCores => self.executors.sort_by(|a, b| {
+                let cmp = a.cpu_cores().cmp(&b.cpu_cores());
+                if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -165,7 +173,7 @@ impl ExecutorsData {
             }),
             SortColumn::TaskSlots => self.executors.sort_by(|a, b| {
                 let cmp = a.task_slots().cmp(&b.task_slots());
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -175,7 +183,7 @@ impl ExecutorsData {
                 let cmp = a
                     .proc_physical_memory_usage()
                     .cmp(&b.proc_physical_memory_usage());
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -185,7 +193,7 @@ impl ExecutorsData {
                 let cmp = a
                     .peak_physical_memory_usage()
                     .cmp(&b.peak_physical_memory_usage());
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -193,7 +201,7 @@ impl ExecutorsData {
             }),
             SortColumn::LastSeen => self.executors.sort_by(|a, b| {
                 let cmp = a.last_seen.cmp(&b.last_seen);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -283,12 +291,6 @@ mod tests {
                     value: peak_physical_memory_usage,
                 },
             ],
-        }
-    }
-
-    fn make_executor_details(id: &str) -> ExecutorDetails {
-        ExecutorDetails {
-            executor_info: make_executor("host", 8080, id, 1, 0, 0, Some(0)),
             os_info: OsInfo {
                 kernel_ver: "5.15".to_string(),
                 num_disks: 1,
@@ -417,6 +419,52 @@ mod tests {
         assert_eq!(data.executors[0].id, "id-c");
         assert_eq!(data.executors[1].id, "id-b");
         assert_eq!(data.executors[2].id, "id-a");
+    }
+
+    #[test]
+    fn sort_by_cpu_cores_ascending() {
+        let mut data = make_executors_data(
+            vec![
+                make_executor("host", 8080, "id-a", 2, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-b", 3, 0, 0, Some(200)),
+                make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
+            ],
+            SortColumn::CpuCores,
+            SortOrder::Ascending,
+        );
+        data.executors[0].os_info.physical_cores = 2;
+        data.executors[1].os_info.physical_cores = 20;
+        data.executors[2].os_info.physical_cores = 200;
+        data.sort();
+        assert_eq!(data.executors[0].id, "id-a");
+        assert_eq!(data.executors[0].cpu_cores(), 2);
+        assert_eq!(data.executors[1].id, "id-b");
+        assert_eq!(data.executors[1].cpu_cores(), 20);
+        assert_eq!(data.executors[2].id, "id-c");
+        assert_eq!(data.executors[2].cpu_cores(), 200);
+    }
+
+    #[test]
+    fn sort_by_cpu_cores_descending() {
+        let mut data = make_executors_data(
+            vec![
+                make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
+                make_executor("host", 8080, "id-b", 3, 0, 0, Some(200)),
+                make_executor("host", 8080, "id-c", 2, 0, 0, Some(300)),
+            ],
+            SortColumn::CpuCores,
+            SortOrder::Descending,
+        );
+        data.executors[0].os_info.physical_cores = 2;
+        data.executors[1].os_info.physical_cores = 20;
+        data.executors[2].os_info.physical_cores = 200;
+        data.sort();
+        assert_eq!(data.executors[0].id, "id-c");
+        assert_eq!(data.executors[0].cpu_cores(), 200);
+        assert_eq!(data.executors[1].id, "id-b");
+        assert_eq!(data.executors[1].cpu_cores(), 20);
+        assert_eq!(data.executors[2].id, "id-a");
+        assert_eq!(data.executors[2].cpu_cores(), 2);
     }
 
     #[test]
@@ -711,20 +759,44 @@ mod tests {
 
     #[test]
     fn executor_details_popup_new_scroll_position_is_zero() {
-        let popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        let popup = ExecutorDetailsPopup::new(make_executor(
+            "host",
+            8080,
+            "id-1",
+            1,
+            0,
+            0,
+            Some(0),
+        ));
         assert_eq!(popup.scroll_position, 0);
     }
 
     #[test]
     fn executor_details_popup_scroll_down_increments() {
-        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        let mut popup = ExecutorDetailsPopup::new(make_executor(
+            "host",
+            8080,
+            "id-1",
+            1,
+            0,
+            0,
+            Some(0),
+        ));
         popup.scroll_down();
         assert_eq!(popup.scroll_position, 1);
     }
 
     #[test]
     fn executor_details_popup_scroll_down_multiple_times() {
-        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        let mut popup = ExecutorDetailsPopup::new(make_executor(
+            "host",
+            8080,
+            "id-1",
+            1,
+            0,
+            0,
+            Some(0),
+        ));
         popup.scroll_down();
         popup.scroll_down();
         popup.scroll_down();
@@ -733,7 +805,15 @@ mod tests {
 
     #[test]
     fn executor_details_popup_scroll_up_decrements() {
-        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        let mut popup = ExecutorDetailsPopup::new(make_executor(
+            "host",
+            8080,
+            "id-1",
+            1,
+            0,
+            0,
+            Some(0),
+        ));
         popup.scroll_down();
         popup.scroll_down();
         popup.scroll_up();
@@ -742,7 +822,15 @@ mod tests {
 
     #[test]
     fn executor_details_popup_scroll_up_saturates_at_zero() {
-        let mut popup = ExecutorDetailsPopup::new(make_executor_details("id-1"));
+        let mut popup = ExecutorDetailsPopup::new(make_executor(
+            "host",
+            8080,
+            "id-1",
+            1,
+            0,
+            0,
+            Some(0),
+        ));
         popup.scroll_up();
         popup.scroll_up();
         assert_eq!(popup.scroll_position, 0);
