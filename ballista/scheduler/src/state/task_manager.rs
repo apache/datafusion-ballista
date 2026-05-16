@@ -366,7 +366,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(jobs)
     }
 
-    /// Get all job ids including running, queued, and completed jobs
+    /// Get all job ids including running, queued, and completed/failed jobs
     pub async fn get_all_jobs(&self) -> Result<Vec<JobOverview>> {
         self.get_all_jobs_with_status(None).await
     }
