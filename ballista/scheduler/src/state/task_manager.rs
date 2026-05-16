@@ -346,7 +346,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Arc::new(ret)
     }
 
-    /// Get a list of active job ids
+    /// Get a list of jobs from the active cache only (running and queued jobs).
+    ///
+    /// Unlike [`Self::get_all_jobs`], this does not include completed or failed jobs
+    /// that have been evicted from the cache. Prefer [`Self::get_all_jobs`] for a
+    /// complete view.
+    #[deprecated(note = "Use get_all_jobs or get_all_jobs_with_status instead")]
     pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_jobs().await?;
 
@@ -375,7 +380,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// When `status` is None, returns all jobs regardless of status.
     pub async fn get_all_jobs_with_status(
         &self,
-        status: Option<job_status::Status>,
+        _status: Option<job_status::Status>,
     ) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_all_jobs().await?;
 
@@ -387,24 +392,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             } else if let Some(graph) = self.state.get_execution_graph(job_id).await? {
                 jobs.push((&graph).into());
             } else if let Some(job_status) = self.state.get_job_status(job_id).await? {
-                if let Some(ref filter) = status {
-                    if let Some(ref s) = job_status.status {
-                        if s != filter {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                }
+                let (start_time, end_time) = match &job_status.status {
+                    Some(job_status::Status::Running(r)) => (r.started_at, 0),
+                    Some(job_status::Status::Successful(s)) => (s.started_at, s.ended_at),
+                    Some(job_status::Status::Failed(f)) => (f.started_at, f.ended_at),
+                    // Queued jobs have no start or end time yet
+                    _ => (0, 0),
+                };
                 jobs.push(JobOverview {
                     job_id: job_status.job_id.clone(),
                     job_name: job_status.job_name.clone(),
                     status: job_status,
-                    start_time: 0,
-                    end_time: 0,
+                    start_time,
+                    end_time,
                     num_stages: 0,
                     completed_stages: 0,
                 });
+            } else {
+                warn!("Job {job_id} not found in active cache, execution graph, or job status");
             }
         }
         Ok(jobs)
