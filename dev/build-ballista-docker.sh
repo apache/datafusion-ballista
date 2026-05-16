@@ -17,7 +17,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+set -euo pipefail
 
 RELEASE_FLAG=${RELEASE_FLAG:=release}
 
@@ -25,8 +25,11 @@ RELEASE_FLAG=${RELEASE_FLAG:=release}
 
 . ./dev/build-set-env.sh
 
-docker build -t "apache/datafusion-ballista-standalone:latest" -f dev/docker/ballista-standalone.Dockerfile .
-docker build -t "apache/datafusion-ballista-scheduler:latest" -f dev/docker/ballista-scheduler.Dockerfile .
-docker build -t "apache/datafusion-ballista-executor:latest" -f dev/docker/ballista-executor.Dockerfile .
-docker build -t "apache/datafusion-ballista-cli:latest" -f dev/docker/ballista-cli.Dockerfile .
-docker build -t "apache/datafusion-ballista-benchmarks:latest" -f dev/docker/ballista-benchmarks.Dockerfile .
+docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-standalone:latest" -f dev/docker/ballista-standalone.Dockerfile .
+docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-scheduler:latest" -f dev/docker/ballista-scheduler.Dockerfile .
+docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-executor:latest" -f dev/docker/ballista-executor.Dockerfile .
+
+if test -z "${CI}"; then
+  docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-cli:latest" -f dev/docker/ballista-cli.Dockerfile .
+  docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-benchmarks:latest" -f dev/docker/ballista-benchmarks.Dockerfile .
+fi

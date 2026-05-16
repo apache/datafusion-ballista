@@ -17,13 +17,17 @@
 
 FROM ubuntu:24.04
 
+LABEL org.opencontainers.image.source="https://github.com/apache/datafusion-ballista"
+LABEL org.opencontainers.image.description="Apache DataFusion Ballista Distributed SQL Query Engine"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
 ARG RELEASE_FLAG=release
 
 ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 
-COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
+COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
 
 # Expose Ballista Executor gRPC port
 EXPOSE 50051
