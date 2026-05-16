@@ -343,32 +343,36 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::Status);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                    self.sort_executors_by(ExecutorsSortColumn::CpuCores);
                 }
             }
             KeyCode::Char('4') => {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StagesCompleted);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::ProcPhysicalMemoryUsage);
+                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
                 }
             }
             KeyCode::Char('5') => {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::PercentComplete);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::PeakPhysicalMemoryUsage);
+                    self.sort_executors_by(ExecutorsSortColumn::ProcPhysicalMemoryUsage);
                 }
             }
             KeyCode::Char('6') => {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StartTime);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::LastSeen);
+                    self.sort_executors_by(ExecutorsSortColumn::PeakPhysicalMemoryUsage);
                 }
             }
-            KeyCode::Char('7') if self.is_jobs_view() => {
-                self.sort_jobs_by(JobsSortColumn::Duration);
+            KeyCode::Char('7') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Duration);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::LastSeen);
+                }
             }
             KeyCode::Char('c')
                 if self.is_jobs_view() && self.input_mode == InputMode::View =>
@@ -689,9 +693,7 @@ mod tests {
     use crate::tui::app::{ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn};
     use crate::tui::domain::{
         SchedulerState, SortOrder,
-        executors::{
-            Executor, ExecutorDetails, ExecutorDetailsPopup, OsInfo, Specification,
-        },
+        executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification},
         jobs::Job,
         jobs::stages::{JobStagesPopup, JobStagesResponse},
     };
@@ -950,12 +952,6 @@ mod tests {
             last_seen: None,
             specification: Specification { task_slots: 4 },
             metrics: vec![],
-        }
-    }
-
-    fn make_executor_details(id: &str) -> ExecutorDetails {
-        ExecutorDetails {
-            executor_info: make_executor(id),
             os_info: OsInfo {
                 kernel_ver: "5.15".to_string(),
                 num_disks: 1,
@@ -1000,8 +996,7 @@ mod tests {
     #[test]
     fn is_executor_details_popup_open_true_when_some() {
         let mut app = make_app();
-        app.executor_details_popup =
-            Some(ExecutorDetailsPopup::new(make_executor_details("e1")));
+        app.executor_details_popup = Some(ExecutorDetailsPopup::new(make_executor("e1")));
         assert!(app.is_executor_details_popup_open());
     }
 

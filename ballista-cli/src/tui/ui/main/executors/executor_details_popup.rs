@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::executors::ExecutorDetails;
+use crate::tui::domain::executors::Executor;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -49,8 +49,7 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<Line<'a>> {
-    let executor = &executor_details.executor_info;
+fn build_lines<'a>(app: &'a App, executor: &'a Executor) -> Vec<Line<'a>> {
     let label_style = Style::default().fg(Color::Yellow);
 
     let mut lines = vec![
@@ -68,7 +67,7 @@ fn build_lines<'a>(app: &'a App, executor_details: &'a ExecutorDetails) -> Vec<L
         ]),
     ];
 
-    let os = &executor_details.os_info;
+    let os = &executor.os_info;
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         "  OS Info",
