@@ -66,6 +66,7 @@ Table of content
 
    contributors-guide/architecture
    contributors-guide/code-organization
+   contributors-guide/python-client
    contributors-guide/development
    Source code <https://github.com/apache/datafusion-ballista/>
 
