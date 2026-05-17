@@ -243,7 +243,10 @@ fn run_sort_shuffle(
         1,
         input,
         work_dir.to_string(),
-        Partitioning::Hash(vec![Arc::new(Column::new("c0", 0))], NUM_OUTPUT_PARTITIONS),
+        Some(Partitioning::Hash(
+            vec![Arc::new(Column::new("c0", 0))],
+            NUM_OUTPUT_PARTITIONS,
+        )),
         config,
     )
     .unwrap();
