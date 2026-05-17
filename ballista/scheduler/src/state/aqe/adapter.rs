@@ -98,14 +98,6 @@ impl BallistaAdapter {
             };
 
             Ok(Transformed::yes(Arc::new(reader)))
-        } else if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
-            // CoalescePartitionsRule already rewrote an ExchangeExec into this
-            // coalesced reader; the rule sets stage_id at construction via
-            // try_new_coalesced. The adapter's only remaining job is to record
-            // the stage dependency so the scheduler doesn't treat the reader as
-            // a leaf — leave the node itself intact.
-            self.inputs.push(reader.stage_id);
-            Ok(Transformed::no(plan))
         } else {
             Ok(Transformed::no(plan))
         }

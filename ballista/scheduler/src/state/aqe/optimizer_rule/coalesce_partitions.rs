@@ -258,7 +258,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             for (i, locs) in parts.iter().enumerate() {
                 summed[i] += locs
                     .iter()
-                    .filter_map(|l| l.partition_stats.num_bytes)
+                    .filter_map(|l| l.partition_stats.num_bytes())
                     .sum::<u64>();
             }
         }

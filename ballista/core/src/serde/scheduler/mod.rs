@@ -273,7 +273,7 @@ pub struct PartitionStats {
     /// Per-partition byte size reported by the shuffle writer. Read by the
     /// AQE coalesce rule (in `ballista-scheduler`) to bin-pack alignment
     /// groups, so this field is `pub` rather than `pub(crate)`.
-    pub num_bytes: Option<u64>,
+    pub(crate) num_bytes: Option<u64>,
 }
 
 impl fmt::Display for PartitionStats {
