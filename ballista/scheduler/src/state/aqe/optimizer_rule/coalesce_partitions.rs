@@ -231,6 +231,13 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             .partitioning
             .partition_count();
 
+        // TODO: per-M subgrouping; for now bail on heterogeneous M (Q22 panic guard).
+        if leaves.iter().any(|arc| {
+            as_exchange(arc).properties().partitioning.partition_count() != m
+        }) {
+            return Ok(plan);
+        }
+
         // Sum byte sizes element-wise across the alignment group. Upstream
         // partition `i` is the same logical hash bucket on every leaf, so
         // `summed[i]` is the total downstream work for that bucket. If any
