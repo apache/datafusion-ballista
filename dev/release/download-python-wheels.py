@@ -53,7 +53,19 @@ def main():
         "Accept": "application/vnd.github.v3+json",
         "Authorization": f"token {ghp_token}",
     }
-    url = f"https://api.github.com/repos/apache/datafusion-ballista/actions/runs?branch={tag}"
+
+    # Resolve the tag to a commit SHA. Filtering runs by branch name does not
+    # work reliably: when the RC tag points at a commit that is also the head
+    # of a release branch (e.g. branch-51), GitHub associates the successful
+    # workflow run with the branch rather than the tag, and the branch query
+    # only returns the (possibly cancelled) tag-triggered run.
+    commit_url = f"https://api.github.com/repos/apache/datafusion-ballista/commits/{tag}"
+    resp = requests.get(commit_url, headers=headers)
+    resp.raise_for_status()
+    sha = resp.json()["sha"]
+    print(f"Tag {tag} resolves to commit {sha}")
+
+    url = f"https://api.github.com/repos/apache/datafusion-ballista/actions/runs?head_sha={sha}"
     resp = requests.get(url, headers=headers)
     resp.raise_for_status()
 
@@ -61,10 +73,15 @@ def main():
     for run in resp.json()["workflow_runs"]:
         if run["name"] != "Python Release Build":
             continue
+        if run.get("conclusion") != "success":
+            continue
         artifacts_url = run["artifacts_url"]
+        break
 
     if artifacts_url is None:
-        print("ERROR: Could not find python wheel binaries from Github Action run")
+        print(
+            f"ERROR: Could not find a successful 'Python Release Build' run for "
+            f"commit {sha}. Re-run the workflow or cut a new RC.")
         sys.exit(1)
     print(f"Found artifacts url: {artifacts_url}")
 
