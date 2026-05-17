@@ -29,14 +29,16 @@ pub struct JobStageResponse {
     pub id: String,
     #[serde(rename = "stage_status")]
     pub status: String,
-    #[serde(rename = "stage_plan")]
+    #[serde(rename = "stage_plan", default)]
     pub plan: String,
     pub input_rows: usize,
     pub output_rows: usize,
     pub elapsed_compute: Option<String>,
-    pub task_duration_percentiles: TaskPercentiles,
-    pub task_input_percentiles: TaskPercentiles,
-    pub tasks: Vec<StageTaskResponse>,
+    #[serde(default)]
+    pub task_duration_percentiles: Option<TaskPercentiles>,
+    #[serde(default)]
+    pub task_input_percentiles: Option<TaskPercentiles>,
+    pub tasks: Vec<Option<StageTaskResponse>>,
 }
 
 // TaskSummary
@@ -246,8 +248,8 @@ mod tests {
             input_rows: 0,
             output_rows: 0,
             elapsed_compute: Some("1ns".to_string()),
-            task_duration_percentiles: make_percentiles(),
-            task_input_percentiles: make_percentiles(),
+            task_duration_percentiles: Some(make_percentiles()),
+            task_input_percentiles: Some(make_percentiles()),
             tasks: Vec::new(),
         }
     }

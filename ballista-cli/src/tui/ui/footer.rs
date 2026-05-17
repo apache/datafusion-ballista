@@ -66,7 +66,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                                     .push(Span::from("[c] Cancel job, "));
                             }
 
-                            if app.is_selected_job_completed() {
+                            if app.is_selected_job_completed_or_running() {
                                 current_view_key_bindings
                                     .push(Span::from("[p] View job plans, "));
                             }

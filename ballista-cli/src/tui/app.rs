@@ -542,10 +542,10 @@ impl App {
         self.jobs_data.selected_job(&self.search_term).is_some()
     }
 
-    pub fn is_selected_job_completed(&self) -> bool {
+    pub fn is_selected_job_completed_or_running(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Completed")
+            .is_some_and(|j| j.status == "Completed" || j.status == "Running")
     }
 
     pub fn is_selected_job_cancelable(&self) -> bool {
@@ -589,11 +589,11 @@ impl App {
     }
 
     fn open_job_plan_popup(&mut self) {
-        let is_completed = self
+        let in_status_for_popup = self
             .jobs_data
             .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Completed");
-        if is_completed && let Some(details) = &self.job_details {
+            .is_some_and(|j| j.status == "Completed" || j.status == "Running");
+        if in_status_for_popup && let Some(details) = &self.job_details {
             self.job_plan_popup =
                 Some(JobPlansPopup::new(details.clone(), PlanTab::Stage));
         }
@@ -789,20 +789,45 @@ mod tests {
         assert!(app.has_more_than_one_job());
     }
 
-    #[test]
-    fn is_selected_job_completed_true_when_completed_job_selected() {
-        let mut app = make_app();
-        app.jobs_data.jobs = vec![make_job("j1", "Completed")];
-        app.jobs_data.table_state.select(Some(0));
-        assert!(app.is_selected_job_completed());
+    // --- open_job_plan_popup tests ---
+
+    fn make_job_details(job_id: &str) -> crate::tui::domain::jobs::JobDetails {
+        crate::tui::domain::jobs::JobDetails {
+            job_id: job_id.to_string(),
+            logical_plan: Some("logical".to_string()),
+            physical_plan: Some("physical".to_string()),
+            stage_plan: Some("stage".to_string()),
+        }
     }
 
     #[test]
-    fn is_selected_job_completed_false_for_running_job() {
+    fn open_job_plan_popup_opens_for_running_job_with_details() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Running")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.is_selected_job_completed());
+        app.job_details = Some(make_job_details("j1"));
+        app.open_job_plan_popup();
+        assert!(app.job_plan_popup.is_some());
+    }
+
+    #[test]
+    fn open_job_plan_popup_opens_for_completed_job_with_details() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Completed")];
+        app.jobs_data.table_state.select(Some(0));
+        app.job_details = Some(make_job_details("j1"));
+        app.open_job_plan_popup();
+        assert!(app.job_plan_popup.is_some());
+    }
+
+    #[test]
+    fn open_job_plan_popup_does_not_open_without_details() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running")];
+        app.jobs_data.table_state.select(Some(0));
+        app.job_details = None;
+        app.open_job_plan_popup();
+        assert!(app.job_plan_popup.is_none());
     }
 
     // --- sort_jobs_by toggle tests ---
