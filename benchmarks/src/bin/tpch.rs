@@ -164,6 +164,13 @@ struct DataFusionBenchmarkOpt {
     /// Path to output directory where JSON summary file should be written to
     #[structopt(parse(from_os_str), short = "o", long = "output")]
     output_path: Option<PathBuf>,
+
+    /// Configuration overrides in key=value format.
+    /// Can be specified multiple times, e.g.
+    /// -c datafusion.execution.target_partitions=16
+    /// -c datafusion.execution.batch_size=8192
+    #[structopt(short = "c", long = "config", number_of_values = 1)]
+    config_overrides: Vec<String>,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -290,9 +297,24 @@ async fn main() -> Result<()> {
 #[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
     println!("Running benchmarks with the following options: {opt:?}");
-    let config = SessionConfig::new()
+    let mut config = SessionConfig::new()
         .with_target_partitions(opt.partitions)
         .with_batch_size(opt.batch_size);
+
+    for kv in &opt.config_overrides {
+        if let Some((key, value)) = kv.split_once('=') {
+            if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
+                println!("Warning: could not set config '{}': {}", kv, e);
+            }
+        } else {
+            println!(
+                "Warning: ignoring invalid config override '{}'. \
+                 Expected format: key=value",
+                kv
+            );
+        }
+    }
+
     let ctx = SessionContext::new_with_config(config);
 
     // register tables
@@ -1752,6 +1774,7 @@ mod tests {
                 file_format: "tbl".to_string(),
                 mem_table: false,
                 output_path: None,
+                config_overrides: vec![],
             };
             let actual = benchmark_datafusion(opt).await?;
             let expected_schema = get_answer_schema(n);
