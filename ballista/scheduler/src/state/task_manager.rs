@@ -270,6 +270,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         self.active_job_cache.len()
     }
 
+    /// Get the total number of pending tasks across all active jobs.
+    pub async fn pending_task_number(&self) -> usize {
+        let mut count = 0;
+        for pair in self.active_job_cache.iter() {
+            let graph = pair.value().execution_graph.read().await;
+            count += graph.available_tasks();
+        }
+        count
+    }
+
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
