@@ -23,7 +23,9 @@ mod common;
 /// gets support for them
 #[cfg(test)]
 mod unsupported {
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{
+        remote_context, remote_context_push_scheduling, standalone_context,
+    };
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use rstest::*;
@@ -36,6 +38,7 @@ mod unsupported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     #[should_panic]
     async fn should_support_sql_create_table(
@@ -63,6 +66,7 @@ mod unsupported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     #[should_panic]
     async fn should_support_caching_data_frame(
@@ -107,6 +111,7 @@ mod unsupported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_support_on_cache_collect(
         #[future(awt)]

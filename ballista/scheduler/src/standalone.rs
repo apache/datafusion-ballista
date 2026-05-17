@@ -20,6 +20,7 @@ use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
 use ballista_core::ConfigProducer;
+use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
@@ -45,11 +46,23 @@ use tokio::net::TcpListener;
 /// Returns the socket address the scheduler is listening on.
 /// Useful for testing and single-node deployments.
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
+    new_standalone_scheduler_with_scheduling(TaskSchedulingPolicy::PullStaged).await
+}
+
+/// Creates a standalone scheduler using the specified task-scheduling policy.
+///
+/// Prefer [`PullStaged`](TaskSchedulingPolicy::PullStaged) for parity with legacy
+/// in-process integration tests when you explicitly need pull-based scheduling,
+/// or [`PushStaged`](TaskSchedulingPolicy::PushStaged) to match the executor default policy.
+pub async fn new_standalone_scheduler_with_scheduling(
+    scheduling_policy: TaskSchedulingPolicy,
+) -> Result<SocketAddr> {
     let codec = BallistaCodec::default();
-    new_standalone_scheduler_with_builder(
+    new_standalone_scheduler_with_builder_and_policy(
         Arc::new(default_session_builder),
         Arc::new(default_config_producer),
         codec,
+        scheduling_policy,
     )
     .await
 }
@@ -68,10 +81,18 @@ pub async fn new_standalone_scheduler_from_state(
     let session_builder = Arc::new(move |_: SessionConfig| Ok(session_state.clone()));
     let config_producer = Arc::new(move || session_config.clone());
 
-    new_standalone_scheduler_with_builder(session_builder, config_producer, codec).await
+    new_standalone_scheduler_with_builder_and_policy(
+        session_builder,
+        config_producer,
+        codec,
+        TaskSchedulingPolicy::PullStaged,
+    )
+    .await
 }
 
 /// Creates a standalone scheduler with custom session builder, config producer, and codec.
+///
+/// Uses [`TaskSchedulingPolicy::PullStaged`], matching legacy integration-test defaults.
 ///
 /// Returns the socket address the scheduler is listening on.
 pub async fn new_standalone_scheduler_with_builder(
@@ -79,21 +100,49 @@ pub async fn new_standalone_scheduler_with_builder(
     config_producer: ConfigProducer,
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
+    new_standalone_scheduler_with_builder_and_policy(
+        session_builder,
+        config_producer,
+        codec,
+        TaskSchedulingPolicy::PullStaged,
+    )
+    .await
+}
+
+/// Creates a standalone scheduler with custom session dependencies and a selectable
+/// task-scheduling policy.
+///
+/// Returns the socket address the scheduler is listening on.
+pub async fn new_standalone_scheduler_with_builder_and_policy(
+    session_builder: crate::scheduler_server::SessionBuilder,
+    config_producer: ConfigProducer,
+    codec: BallistaCodec,
+    scheduling_policy: TaskSchedulingPolicy,
+) -> Result<SocketAddr> {
     let config = config_producer();
 
-    let cluster =
-        BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
+    // Resolve the scheduler gRPC endpoint before constructing the cluster / server state so
+    // task metadata (scheduler_id / curator) matches the listener we expose to clients.
+    // A fixed placeholder host:port breaks push-mode executors which open new clients to
+    // `http://{scheduler_id}` when reporting task status.
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let scheduler_endpoint = addr.to_string();
+
+    let cluster = BallistaCluster::new_memory(
+        scheduler_endpoint.clone(),
+        session_builder,
+        config_producer,
+    );
 
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
-            "localhost:50050".to_owned(),
+            scheduler_endpoint,
             cluster,
             codec,
-            Arc::new(SchedulerConfig::default().with_scheduler_policy(
-                ballista_core::config::TaskSchedulingPolicy::PullStaged,
-            )),
+            Arc::new(SchedulerConfig::default().with_scheduler_policy(scheduling_policy)),
             metrics_collector,
         );
 
@@ -102,9 +151,6 @@ pub async fn new_standalone_scheduler_with_builder(
         .max_decoding_message_size(config.ballista_grpc_client_max_message_size())
         .max_encoding_message_size(config.ballista_grpc_client_max_message_size());
 
-    // Let the OS assign a random, free port
-    let listener = TcpListener::bind("localhost:0").await?;
-    let addr = listener.local_addr()?;
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {addr:?}"
     );
@@ -117,4 +163,26 @@ pub async fn new_standalone_scheduler_with_builder(
     );
 
     Ok(addr)
+}
+
+/// Like [`new_standalone_scheduler_from_state`], but uses `scheduling_policy` for task placement.
+pub async fn new_standalone_scheduler_from_state_with_scheduling_policy(
+    session_state: &SessionState,
+    scheduling_policy: TaskSchedulingPolicy,
+) -> Result<SocketAddr> {
+    let logical = session_state.config().ballista_logical_extension_codec();
+    let physical = session_state.config().ballista_physical_extension_codec();
+    let codec = BallistaCodec::new(logical, physical);
+    let session_config = session_state.config().clone();
+    let session_state = session_state.clone();
+    let session_builder = Arc::new(move |_: SessionConfig| Ok(session_state.clone()));
+    let config_producer = Arc::new(move || session_config.clone());
+
+    new_standalone_scheduler_with_builder_and_policy(
+        session_builder,
+        config_producer,
+        codec,
+        scheduling_policy,
+    )
+    .await
 }
