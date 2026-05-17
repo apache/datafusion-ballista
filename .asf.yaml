@@ -16,8 +16,8 @@
 # under the License.
 
 notifications:
-  commits:      commits@datafusion.apache.org
-  issues:       github@datafusion.apache.org
+  commits: commits@datafusion.apache.org
+  issues: github@datafusion.apache.org
   pullrequests: github@datafusion.apache.org
   jira_options: link label worklog
 github:
@@ -36,11 +36,24 @@ github:
   enabled_merge_buttons:
     squash: true
     merge: false
-    rebase: false    
+    rebase: false
   features:
-    issues: true        
+    issues: true
 # publishes the content of the `asf-site` branch to
 # https://datafusion.apache.org/ballista/
+  rulesets:
+    - name: "Default Branch Protection"
+      type: branch
+      branches:
+        includes:
+          - "~DEFAULT_BRANCH"
+          - "release/*"
+          - "rel/*"
+        excludes: []
+      bypass_teams:
+        - root
+      restrict_deletion: true
+      restrict_force_push: true
 publish:
   whoami: asf-site
   subdir: ballista
