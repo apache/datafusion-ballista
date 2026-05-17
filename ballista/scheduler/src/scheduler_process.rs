@@ -40,7 +40,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::StatusCode;
-use log::info;
+use log::{info, warn};
 use std::{net::SocketAddr, sync::Arc};
 use tonic::service::RoutesBuilder;
 /// Creates as initialized scheduler service
@@ -57,6 +57,17 @@ pub async fn create_scheduler<
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
         config.scheduling_policy
     );
+
+    if config.bind_host != "127.0.0.1" && config.external_host == "localhost" {
+        warn!(
+            "Scheduler is bound to {} but --external-host is still the default 'localhost'. \
+             Executors will be told to call back to 'localhost:{}' for task status and \
+             heartbeats, which is unlikely to be reachable from other hosts or pods. \
+             Set --external-host to a hostname or IP that executors can resolve to this \
+             scheduler.",
+            config.bind_host, config.bind_port
+        );
+    }
 
     let codec_logical = config
         .override_logical_codec

@@ -48,6 +48,12 @@ ballista-executor_1   | INFO ballista_executor: Ballista v52.0.0 Rust Executor l
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
 
+Note that the scheduler is started with `--external-host ballista-scheduler` so
+that it advertises the Compose service name to executors. Executors call back to
+that address to report task status; if it is left at the default of `localhost`,
+status updates fail because executors try to dial `localhost:50050` inside their
+own container.
+
 ## Connect from the Ballista CLI
 
 ```shell
