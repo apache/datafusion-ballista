@@ -232,9 +232,10 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             .partition_count();
 
         // TODO: per-M subgrouping; for now bail on heterogeneous M (Q22 panic guard).
-        if leaves.iter().any(|arc| {
-            as_exchange(arc).properties().partitioning.partition_count() != m
-        }) {
+        if leaves
+            .iter()
+            .any(|arc| as_exchange(arc).properties().partitioning.partition_count() != m)
+        {
             return Ok(plan);
         }
 
