@@ -33,7 +33,9 @@
 //!   adaptive and to carry mutable state such as `is_final` and resolved
 //!   shuffle metadata.
 
-use ballista_core::execution_plans::{stats_for_partition, stats_for_partitions};
+use ballista_core::execution_plans::{
+    CoalescePlan, stats_for_partition, stats_for_partitions,
+};
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::Statistics;
@@ -64,7 +66,7 @@ use std::sync::{Arc, atomic::AtomicI64};
 /// Note: this type implements DataFusion's `ExecutionPlan` trait but returns
 /// an error from `execute` because it is not directly runnable.
 #[derive(Debug)]
-pub(crate) struct ExchangeExec {
+pub struct ExchangeExec {
     input: Arc<dyn ExecutionPlan>,
     properties: Arc<PlanProperties>,
     pub(crate) partitioning: Option<Partitioning>,
@@ -81,6 +83,19 @@ pub(crate) struct ExchangeExec {
     /// can not be assumed.
     shuffle_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
 
+    /// Per-stage coalesce decision attached to this Exchange by
+    /// `CoalescePartitionsRule` before adapter conversion.
+    ///
+    /// `None` means: build the SR with `try_new` (M-partition, no coalesce).
+    /// `Some(cp)` means: build the SR with `try_new_coalesced(cp)` so the
+    /// reader exposes K = `cp.groups.len()` partitions, each backed by the
+    /// upstream-index range described by the corresponding `PartitionGroup`.
+    ///
+    /// Wrapped in `Arc<Mutex<…>>` so `with_new_children` can clone the slot
+    /// alongside the Exchange, keeping rule decisions in sync across
+    /// transform-rebuilt parent chains. Same pattern as `shuffle_partitions`.
+    coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
+
     /// this disables stage from running even it would be suitable to run.
     ///
     /// the main reason for this property this is to allow rules to override
@@ -90,6 +105,9 @@ pub(crate) struct ExchangeExec {
 }
 
 impl ExchangeExec {
+    /// Creates a new `ExchangeExec` with default stage ID (-1) and empty
+    /// partition set. The stage ID and partitions should be resolved
+    /// before the exchange participates in AQE rules.
     pub fn new(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Option<Partitioning>,
@@ -104,6 +122,9 @@ impl ExchangeExec {
         )
     }
 
+    /// Creates a new `ExchangeExec` with explicitly-provided stage ID and
+    /// partition storage. Used by the AQE rule infrastructure to construct
+    /// exchanges that share atomic state with the enclosing `AdaptivePlanner`.
     pub fn new_with_details(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Option<Partitioning>,
@@ -130,6 +151,7 @@ impl ExchangeExec {
             stage_id,
             shuffle_partitions: stage_partitions,
             partitioning,
+            coalesce: Arc::new(Mutex::new(None)),
             inactive_stage: false,
         }
     }
@@ -176,6 +198,8 @@ impl ExchangeExec {
             .store(id as i64, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Returns the stage ID assigned to this exchange, or `None` if the
+    /// stage has not yet been resolved (initial value -1).
     pub fn stage_id(&self) -> Option<usize> {
         let stage_id = self.stage_id.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -186,8 +210,22 @@ impl ExchangeExec {
         }
     }
 
+    /// Returns a reference to the input (child) execution plan.
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
+    }
+
+    /// Attaches a `CoalescePlan` to this Exchange. The adapter consumes the
+    /// plan when converting Exchange → ShuffleReader: a Some value triggers
+    /// `try_new_coalesced` (K-partition reader); None uses `try_new`
+    /// (M-partition reader). Idempotent overwrite.
+    pub fn set_coalesce(&self, cp: Arc<CoalescePlan>) {
+        self.coalesce.lock().replace(cp);
+    }
+
+    /// Returns the attached `CoalescePlan`, if `set_coalesce` was called.
+    pub fn coalesce(&self) -> Option<Arc<CoalescePlan>> {
+        self.coalesce.lock().clone()
     }
 }
 
@@ -210,8 +248,17 @@ impl DisplayAs for ExchangeExec {
                     self.stage_id()
                         .map(|stage_id| format!("{}", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
-                    self.shuffle_created()
-                )
+                    self.shuffle_created(),
+                )?;
+                if let Some(cp) = self.coalesce.lock().as_ref() {
+                    write!(
+                        f,
+                        ", coalesce={} of {}",
+                        cp.groups.len(),
+                        cp.upstream_partition_count,
+                    )?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => {
                 writeln!(
@@ -273,6 +320,9 @@ impl ExecutionPlan for ExchangeExec {
                 self.shuffle_partitions.clone(),
             );
             new_exec.inactive_stage = self.inactive_stage;
+            // Carry the coalesce slot so a transform-rebuilt parent chain
+            // doesn't lose the rule's decision.
+            new_exec.coalesce = self.coalesce.clone();
 
             Ok(Arc::new(new_exec))
         } else {

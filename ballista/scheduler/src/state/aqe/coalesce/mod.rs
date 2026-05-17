@@ -15,12 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod coalesce_partitions;
-pub mod datafusion_patch;
-pub mod distributed_exchange;
-pub mod propagate_empty;
+//! AQE coalesce-shuffle-partitions helpers.
+//!
+//! This submodule packages the pure-CPU helpers `CoalescePartitionsRule`
+//! consumes:
+//!
+//! - [`split_size_list_by_target_size`] — bin-packs per-partition byte sizes
+//!   into bucket boundaries near a target size.
+//! - [`start_indices_to_partition_groups`] — expands those boundaries into
+//!   `PartitionGroup`s attached to a `CoalescePlan`.
 
-pub use coalesce_partitions::*;
-pub use datafusion_patch::*;
-pub use distributed_exchange::*;
-pub use propagate_empty::*;
+pub(crate) mod algorithm;
+pub(crate) use algorithm::*;

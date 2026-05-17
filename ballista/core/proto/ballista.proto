@@ -78,6 +78,8 @@ message UnresolvedShuffleExecNode {
   datafusion.Partitioning partitioning = 5;
   bool broadcast = 6;
   uint32 upstream_partition_count = 7;
+  // Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
+  optional CoalescePlan coalesce = 8;
 }
 
 message ShuffleReaderExecNode {
@@ -88,11 +90,28 @@ message ShuffleReaderExecNode {
   datafusion.Partitioning partitioning = 4;
   bool broadcast = 5;
   uint32 upstream_partition_count = 6;
+  // Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
+  optional CoalescePlan coalesce = 7;
 }
 
 message ShuffleReaderPartition {
   // each partition of a shuffle read can read data from multiple locations
   repeated PartitionLocation location = 1;
+}
+
+// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
+// Empty when no coalesce is applied (the optional field on the parent message is absent).
+message CoalescePlan {
+  // Original number of upstream partitions (M) before coalescing. Required for EXPLAIN's "K of M" rendering.
+  uint32 upstream_partition_count = 1;
+  // Coalesced output groups. Length is K (the post-coalesce partition count).
+  repeated PartitionGroup groups = 2;
+}
+
+// One coalesced output partition's source list: a set of upstream partition indices in [0, upstream_partition_count).
+// Default algorithm produces only contiguous indices, but proto allows arbitrary index sets for future strategies.
+message PartitionGroup {
+  repeated uint32 upstream_indices = 1;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
