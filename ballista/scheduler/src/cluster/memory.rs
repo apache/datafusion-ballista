@@ -473,16 +473,8 @@ impl JobState for InMemoryJobState {
             .iter()
             .map(|pair| pair.key().clone())
             .collect();
-        all_jobs.extend(
-            self.running_jobs
-                .iter()
-                .map(|pair| pair.key().clone()),
-        );
-        all_jobs.extend(
-            self.completed_jobs
-                .iter()
-                .map(|pair| pair.key().clone()),
-        );
+        all_jobs.extend(self.running_jobs.iter().map(|pair| pair.key().clone()));
+        all_jobs.extend(self.completed_jobs.iter().map(|pair| pair.key().clone()));
         Ok(all_jobs)
     }
 

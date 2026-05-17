@@ -351,8 +351,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Unlike [`Self::get_all_jobs`], this does not include completed or failed jobs
     /// that have been evicted from the cache. Prefer [`Self::get_all_jobs`] for a
     /// complete view.
-    #[deprecated(note = "Use get_all_jobs or get_all_jobs_with_status instead")]
-    pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
+    pub async fn get_running_jobs(&self) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_jobs().await?;
 
         let mut jobs = vec![];
@@ -371,17 +370,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(jobs)
     }
 
-    /// Get all job ids including running, queued, and completed/failed jobs
-    pub async fn get_all_jobs(&self) -> Result<Vec<JobOverview>> {
-        self.get_all_jobs_with_status(None).await
-    }
-
     /// Get all jobs optionally filtered by status.
     /// When `status` is None, returns all jobs regardless of status.
-    pub async fn get_all_jobs_with_status(
-        &self,
-        _status: Option<job_status::Status>,
-    ) -> Result<Vec<JobOverview>> {
+    pub async fn get_all_jobs(&self) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_all_jobs().await?;
 
         let mut jobs = vec![];
@@ -409,7 +400,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     completed_stages: 0,
                 });
             } else {
-                warn!("Job {job_id} not found in active cache, execution graph, or job status");
+                warn!(
+                    "Job {job_id} not found in active cache, execution graph, or job status"
+                );
             }
         }
         Ok(jobs)
