@@ -95,6 +95,9 @@ pub struct UnresolvedShuffleExecNode {
     pub broadcast: bool,
     #[prost(uint32, tag = "7")]
     pub upstream_partition_count: u32,
+    /// Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
+    #[prost(message, optional, tag = "8")]
+    pub coalesce: ::core::option::Option<CoalescePlan>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
@@ -111,12 +114,33 @@ pub struct ShuffleReaderExecNode {
     pub broadcast: bool,
     #[prost(uint32, tag = "6")]
     pub upstream_partition_count: u32,
+    /// Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
+    #[prost(message, optional, tag = "7")]
+    pub coalesce: ::core::option::Option<CoalescePlan>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
     pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+}
+/// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
+/// Empty when no coalesce is applied (the optional field on the parent message is absent).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CoalescePlan {
+    /// Original number of upstream partitions (M) before coalescing. Required for EXPLAIN's "K of M" rendering.
+    #[prost(uint32, tag = "1")]
+    pub upstream_partition_count: u32,
+    /// Coalesced output groups. Length is K (the post-coalesce partition count).
+    #[prost(message, repeated, tag = "2")]
+    pub groups: ::prost::alloc::vec::Vec<PartitionGroup>,
+}
+/// One coalesced output partition's source list: a set of upstream partition indices in \[0, upstream_partition_count).
+/// Default algorithm produces only contiguous indices, but proto allows arbitrary index sets for future strategies.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionGroup {
+    #[prost(uint32, repeated, tag = "1")]
+    pub upstream_indices: ::prost::alloc::vec::Vec<u32>,
 }
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Scheduling

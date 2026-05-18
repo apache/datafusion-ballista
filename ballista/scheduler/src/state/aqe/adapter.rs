@@ -19,9 +19,11 @@ use crate::planner::create_shuffle_writer_with_config;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptiveStageInfo;
 use ballista_core::execution_plans::ShuffleReaderExec;
+use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::Partitioning;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     physical_plan::ExecutionPlan,
@@ -57,10 +59,92 @@ impl BallistaAdapter {
             })?;
             self.inputs.push(stage_id);
             let partitioning = exchange.properties().partitioning.clone();
-            let shuffle_read =
-                ShuffleReaderExec::try_new(stage_id, partitions, schema, partitioning)?;
 
-            Ok(Transformed::yes(Arc::new(shuffle_read)))
+            let reader = match (exchange.coalesce(), exchange.split()) {
+                (Some(_), Some(_)) => {
+                    // Mutually exclusive by construction — SplitPartitionsRule
+                    // bails when coalesce is already set, and vice-versa. If
+                    // we ever see both, that's a rule bug; surface it loudly.
+                    return exec_err!(
+                        "ExchangeExec has both coalesce and split decisions set; \
+                         these are mutually exclusive"
+                    );
+                }
+                (Some(cp), None) => {
+                    // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
+                    let k_shape: Vec<Vec<_>> = cp
+                        .groups
+                        .iter()
+                        .map(|pg| {
+                            let mut concat = Vec::new();
+                            for &idx in &pg.upstream_indices {
+                                if let Some(inner) = partitions.get(idx as usize) {
+                                    concat.extend_from_slice(inner);
+                                }
+                            }
+                            concat
+                        })
+                        .collect();
+                    let new_partitioning = match &partitioning {
+                        Partitioning::Hash(keys, _m) => {
+                            Partitioning::Hash(keys.clone(), cp.groups.len())
+                        }
+                        _ => Partitioning::UnknownPartitioning(cp.groups.len()),
+                    };
+                    ShuffleReaderExec::try_new_coalesced(
+                        stage_id,
+                        k_shape,
+                        (*cp).clone(),
+                        schema,
+                        new_partitioning,
+                    )?
+                }
+                (None, Some(sp)) => {
+                    // One entry per shard; passthrough shards take the full
+                    // inner Vec, split shards take their round-robin slice
+                    // via `SplitShard::owns_file` (single source of truth
+                    // for the formula, shared with the algorithm module).
+                    let mut k_shape: Vec<Vec<PartitionLocation>> =
+                        Vec::with_capacity(sp.shards.len());
+                    for shard in &sp.shards {
+                        let inner = partitions
+                            .get(shard.upstream_idx as usize)
+                            .ok_or_else(|| {
+                                DataFusionError::Execution(format!(
+                                    "SplitPlan references upstream_idx {} but only {} \
+                                 upstream partitions exist",
+                                    shard.upstream_idx,
+                                    partitions.len(),
+                                ))
+                            })?;
+                        let assigned: Vec<_> = inner
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| shard.owns_file(*i))
+                            .map(|(_, l)| l.clone())
+                            .collect();
+                        k_shape.push(assigned);
+                    }
+                    // Splitting breaks hash co-partitioning by design.
+                    let new_partitioning =
+                        Partitioning::UnknownPartitioning(k_shape.len());
+                    ShuffleReaderExec::try_new_split(
+                        stage_id,
+                        k_shape,
+                        (*sp).clone(),
+                        schema,
+                        new_partitioning,
+                    )?
+                }
+                (None, None) => ShuffleReaderExec::try_new(
+                    stage_id,
+                    partitions,
+                    schema,
+                    partitioning,
+                )?,
+            };
+
+            Ok(Transformed::yes(Arc::new(reader)))
         } else {
             Ok(Transformed::no(plan))
         }

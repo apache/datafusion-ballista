@@ -86,6 +86,38 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
+/// Configuration key to enable AQE coalesce-shuffle-partitions rule.
+/// Disabled by default — opt in when the workload benefits from larger
+/// downstream tasks more than from preserved parallelism.
+pub const BALLISTA_COALESCE_ENABLED: &str = "ballista.planner.coalesce.enabled";
+/// Configuration key for the target post-coalesce partition byte size (bytes).
+/// Mirrors Spark's `spark.sql.adaptive.advisoryPartitionSizeInBytes`.
+pub const BALLISTA_COALESCE_TARGET_PARTITION_BYTES: &str =
+    "ballista.planner.coalesce.target_partition_bytes";
+/// Configuration key for the small-partition merge factor (Spark legacy semantics).
+pub const BALLISTA_COALESCE_SMALL_PARTITION_FACTOR: &str =
+    "ballista.planner.coalesce.small_partition_factor";
+/// Configuration key for the merged-partition early-flush factor (Spark legacy semantics).
+pub const BALLISTA_COALESCE_MERGED_PARTITION_FACTOR: &str =
+    "ballista.planner.coalesce.merged_partition_factor";
+
+/// Configuration key to enable AQE split-skewed-partitions rule.
+/// Disabled by default — opt in for workloads with severe partition skew
+/// downstream of distribution-agnostic operators (Filter/Projection/LocalLimit).
+/// v1 bails on joins and FinalPartitioned aggregates because file-list sharding
+/// breaks hash colocation.
+pub const BALLISTA_SPLIT_ENABLED: &str = "ballista.planner.split.enabled";
+/// Multiplier over the median per-partition byte size at which a partition is
+/// considered skewed enough to split. Mirrors Spark's `skewedPartitionFactor`.
+pub const BALLISTA_SPLIT_SKEW_FACTOR: &str = "ballista.planner.split.skew_factor";
+/// Minimum partition byte size below which the split rule never fires, even
+/// when the skew ratio would otherwise qualify. Prevents pointless splitting
+/// of tiny outliers.
+pub const BALLISTA_SPLIT_MIN_BYTES: &str = "ballista.planner.split.min_split_bytes";
+/// Upper bound on the per-partition split factor. Caps task fan-out to avoid
+/// overwhelming the executor when a single partition is many medians larger.
+pub const BALLISTA_SPLIT_MAX_FACTOR: &str = "ballista.planner.split.max_split_factor";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -178,7 +210,67 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS.to_string(),
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
-                         Some(3000.to_string()))
+                         Some(3000.to_string())),
+        ConfigEntry::new(BALLISTA_COALESCE_ENABLED.to_string(),
+                         "Enables the AQE coalesce-shuffle-partitions rule. \
+                          Disabled by default — opt in when fewer/larger \
+                          downstream tasks matter more than parallelism.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
+            "Target post-coalesce partition byte size in bytes. Mirrors Spark's \
+             advisoryPartitionSizeInBytes."
+                .to_string(),
+            DataType::UInt64,
+            Some((64 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_SMALL_PARTITION_FACTOR.to_string(),
+            "Small-partition merge factor (Spark legacy).".to_string(),
+            DataType::Float64,
+            Some("0.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_MERGED_PARTITION_FACTOR.to_string(),
+            "Merged-partition early-flush factor (Spark legacy).".to_string(),
+            DataType::Float64,
+            Some("1.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SPLIT_ENABLED.to_string(),
+            "Enables the AQE split-skewed-partitions rule. Disabled by default — \
+             opt in for severe per-partition skew downstream of distribution-agnostic \
+             operators (Filter/Projection/LocalLimit). v1 bails on joins and \
+             FinalPartitioned aggregates."
+                .to_string(),
+            DataType::Boolean,
+            Some(false.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SPLIT_SKEW_FACTOR.to_string(),
+            "Multiplier over the median per-partition byte size at which a partition \
+             is considered skewed enough to split. Mirrors Spark's skewedPartitionFactor."
+                .to_string(),
+            DataType::Float64,
+            Some("5.0".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SPLIT_MIN_BYTES.to_string(),
+            "Minimum partition byte size below which the split rule never fires, \
+             even when the skew ratio would otherwise qualify."
+                .to_string(),
+            DataType::UInt64,
+            Some((64 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SPLIT_MAX_FACTOR.to_string(),
+            "Upper bound on the per-partition split factor. Caps task fan-out \
+             for very-large outliers."
+                .to_string(),
+            DataType::UInt32,
+            Some(8.to_string()),
+        ),
     ];
     entries
         .into_iter()
@@ -271,6 +363,11 @@ impl BallistaConfig {
             }
             DataType::Utf8 => {
                 val.to_string();
+            }
+            DataType::Float64 => {
+                val.to_string()
+                    .parse::<f64>()
+                    .map_err(|e| format!("{e:?}"))?;
             }
             _ => {
                 return Err(format!("not support data type: {data_type}"));
@@ -383,6 +480,49 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
+    /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
+    pub fn coalesce_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_COALESCE_ENABLED)
+    }
+
+    /// Returns the target post-coalesce partition byte size in bytes
+    /// (Spark's `advisoryPartitionSizeInBytes`).
+    pub fn coalesce_target_partition_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES) as u64
+    }
+
+    /// Returns the small-partition merge factor (Spark legacy).
+    pub fn coalesce_small_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR)
+    }
+
+    /// Returns the merged-partition early-flush factor (Spark legacy).
+    pub fn coalesce_merged_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR)
+    }
+
+    /// Returns whether the AQE split-skewed-partitions rule is enabled.
+    pub fn split_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SPLIT_ENABLED)
+    }
+
+    /// Returns the multiplier over the per-partition byte median at which a
+    /// partition qualifies as skewed (Spark's `skewedPartitionFactor`).
+    pub fn split_skew_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_SPLIT_SKEW_FACTOR)
+    }
+
+    /// Returns the minimum partition byte size below which the split rule
+    /// never fires.
+    pub fn split_min_split_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SPLIT_MIN_BYTES) as u64
+    }
+
+    /// Returns the upper bound on per-partition split factor.
+    pub fn split_max_split_factor(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_SPLIT_MAX_FACTOR) as u32
+    }
+
     /// Should client employ pull or push job tracking strategy
     pub fn client_pull(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_PULL)
@@ -437,6 +577,19 @@ impl BallistaConfig {
             // infallible because we validate all configs in the constructor
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.to_string()
+        }
+    }
+
+    #[allow(dead_code)]
+    fn get_float_setting(&self, key: &str) -> f64 {
+        if let Some(v) = self.settings.get(key) {
+            // infallible because we validate all configs in the constructor
+            v.parse::<f64>().unwrap()
+        } else {
+            let entries = Self::valid_entries();
+            // infallible because we validate all configs in the constructor
+            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
+            v.parse::<f64>().unwrap()
         }
     }
 }

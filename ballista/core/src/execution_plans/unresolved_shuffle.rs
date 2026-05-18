@@ -26,6 +26,8 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 
+use crate::execution_plans::CoalescePlan;
+
 /// UnresolvedShuffleExec represents a dependency on the results of a ShuffleWriterExec node which hasn't computed yet.
 ///
 /// An ExecutionPlan that contains an UnresolvedShuffleExec isn't ready for execution. The presence of this ExecutionPlan
@@ -42,14 +44,21 @@ pub struct UnresolvedShuffleExec {
     pub output_partition_count: usize,
 
     /// The number of shuffle output partitions on the upstream stage. For
-    /// non-broadcast readers this equals `output_partition_count`. For
-    /// broadcast readers this is M (one logical output partition fans in
-    /// all M upstream partition files).
+    /// non-broadcast, non-coalesced readers this equals `output_partition_count`.
+    /// For broadcast readers this is M (one logical output partition fans in
+    /// all M upstream partition files). For coalesced readers this is M
+    /// (= `coalesce.upstream_partition_count`).
     pub upstream_partition_count: usize,
 
     /// When true, the resolved `ShuffleReaderExec` reads *all* upstream
     /// partition files into its single output partition (broadcast pattern).
     pub broadcast: bool,
+
+    /// Optional coalesce metadata. `None` means the unresolved placeholder will
+    /// resolve to a non-coalesced ShuffleReaderExec (legacy behavior). When `Some`,
+    /// the value is forwarded at resolution time so the resulting reader is
+    /// constructed via `ShuffleReaderExec::try_new_coalesced`.
+    pub coalesce: Option<CoalescePlan>,
 
     properties: Arc<PlanProperties>,
 }
@@ -71,6 +80,7 @@ impl UnresolvedShuffleExec {
             output_partition_count: partition_count,
             upstream_partition_count: partition_count,
             broadcast: false,
+            coalesce: None,
             properties,
         }
     }
@@ -95,6 +105,41 @@ impl UnresolvedShuffleExec {
             output_partition_count: 1,
             upstream_partition_count,
             broadcast: true,
+            coalesce: None,
+            properties,
+        }
+    }
+
+    /// Create a new coalesce-aware UnresolvedShuffleExec.
+    ///
+    /// `partitioning` MUST already reflect the post-coalesce K (e.g. `Partitioning::Hash(keys, K)`)
+    /// so `output_partition_count == K` matches `coalesce.groups.len()`. The forwarding
+    /// to `ShuffleReaderExec::try_new_coalesced` happens at stage resolution time.
+    pub fn new_coalesced(
+        stage_id: usize,
+        schema: SchemaRef,
+        partitioning: Partitioning,
+        coalesce: CoalescePlan,
+    ) -> Self {
+        debug_assert_eq!(
+            partitioning.partition_count(),
+            coalesce.groups.len(),
+            "partitioning.partition_count() must equal coalesce.groups.len() (= K)",
+        );
+        let upstream_partition_count = coalesce.upstream_partition_count as usize;
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            partitioning,
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Self {
+            stage_id,
+            schema,
+            output_partition_count: properties.partitioning.partition_count(),
+            upstream_partition_count,
+            broadcast: false,
+            coalesce: Some(coalesce),
             properties,
         }
     }
@@ -119,7 +164,16 @@ impl DisplayAs for UnresolvedShuffleExec {
                         f,
                         "UnresolvedShuffleExec: partitioning: {}",
                         self.properties().output_partitioning()
-                    )
+                    )?;
+                    if let Some(c) = &self.coalesce {
+                        write!(
+                            f,
+                            ", coalesce: {} of {}",
+                            c.groups.len(),
+                            c.upstream_partition_count,
+                        )?;
+                    }
+                    Ok(())
                 }
             }
             DisplayFormatType::TreeRender => {
@@ -176,5 +230,45 @@ impl ExecutionPlan for UnresolvedShuffleExec {
         Err(DataFusionError::Plan(
             "Ballista UnresolvedShuffleExec does not support execution".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_plans::PartitionGroup;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    #[tokio::test]
+    async fn test_unresolved_shuffle_exec_display_with_coalesce_renders_k_of_m() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let coalesce = CoalescePlan {
+            upstream_partition_count: 8,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 1, 2],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![3, 4],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![5, 6, 7],
+                },
+            ],
+        };
+        let exec = UnresolvedShuffleExec::new_coalesced(
+            1,
+            schema,
+            Partitioning::UnknownPartitioning(3),
+            coalesce,
+        );
+        let s = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).indent(false)
+        );
+        assert!(
+            s.contains(", coalesce: 3 of 8"),
+            "expected ', coalesce: 3 of 8' annotation; got: {s}"
+        );
     }
 }
