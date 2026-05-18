@@ -48,13 +48,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          submodules: true
           fetch-depth: 1
 
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - name: Build Ballista binaries
         run: |
@@ -64,7 +65,7 @@ jobs:
             -p ballista-benchmarks
 
       - name: Install tpchgen-cli
-        uses: taiki-e/install-action@de6bbd1333b8f331563d54a051e542c7dfef81c3  # v2.68.34
+        uses: taiki-e/install-action@de6bbd1333b8f331563d54a051e542c7dfef81c3 # v2.68.34
         with:
           tool: tpchgen-cli@2.0.2
 
