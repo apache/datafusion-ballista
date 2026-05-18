@@ -172,40 +172,6 @@ mod standalone {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn standalone_push_scheduling_executes_sql() -> datafusion::error::Result<()> {
-        let (host, port) = crate::common::setup_test_cluster_push_scheduling().await;
-        let ctx = SessionContext::remote(&format!("df://{host}:{port}")).await?;
-        let test_data = crate::common::example_test_data();
-
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
-
-        let result = ctx
-            .sql("select string_col, timestamp_col from test where id > 4")
-            .await?
-            .collect()
-            .await?;
-
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
-
-        Ok(())
-    }
-
     // we testing if we can override default logical codec
     // in this specific test codec will throw exception which will
     // fail the query.

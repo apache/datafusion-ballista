@@ -24,11 +24,25 @@ mod common;
 #[cfg(test)]
 mod unsupported {
     use crate::common::{
-        remote_context, remote_context_push_scheduling, standalone_context,
+        remote_context_with_scheduling, standalone_context_with_scheduling,
     };
+    use ballista_core::config::TaskSchedulingPolicy;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use rstest::*;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    type ContextFuture = Pin<Box<dyn Future<Output = SessionContext> + Send>>;
+    type ContextFactory = fn(TaskSchedulingPolicy) -> ContextFuture;
+
+    fn standalone(scheduling_policy: TaskSchedulingPolicy) -> ContextFuture {
+        Box::pin(standalone_context_with_scheduling(scheduling_policy))
+    }
+
+    fn remote(scheduling_policy: TaskSchedulingPolicy) -> ContextFuture {
+        Box::pin(remote_context_with_scheduling(scheduling_policy))
+    }
 
     #[rstest::fixture]
     fn test_data() -> String {
@@ -36,16 +50,16 @@ mod unsupported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     #[should_panic]
     async fn should_support_sql_create_table(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) {
+        let ctx = context(scheduling_policy).await;
         ctx.sql("CREATE TABLE tbl_test (id INT, value INT)")
             .await
             .unwrap()
@@ -64,17 +78,17 @@ mod unsupported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     #[should_panic]
     async fn should_support_caching_data_frame(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) {
+        let ctx = context(scheduling_policy).await;
         ctx.sql("SET ballista.cache.noop = false")
             .await
             .unwrap()
@@ -109,15 +123,15 @@ mod unsupported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_support_on_cache_collect(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         // opt out case, should fail
         ctx.sql("SET ballista.cache.noop = false")
             .await?

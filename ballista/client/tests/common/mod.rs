@@ -292,8 +292,33 @@ pub async fn standalone_context() -> SessionContext {
 }
 
 #[allow(dead_code)]
+pub async fn standalone_context_with_scheduling(
+    scheduling_policy: TaskSchedulingPolicy,
+) -> SessionContext {
+    match scheduling_policy {
+        TaskSchedulingPolicy::PullStaged => standalone_context().await,
+        TaskSchedulingPolicy::PushStaged => {
+            let (host, port) = setup_test_cluster_push_scheduling().await;
+            SessionContext::remote(&format!("df://{host}:{port}"))
+                .await
+                .unwrap()
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub async fn remote_context() -> SessionContext {
     let (host, port) = setup_test_cluster().await;
+    SessionContext::remote(&format!("df://{host}:{port}"))
+        .await
+        .unwrap()
+}
+
+#[allow(dead_code)]
+pub async fn remote_context_with_scheduling(
+    scheduling_policy: TaskSchedulingPolicy,
+) -> SessionContext {
+    let (host, port) = setup_test_cluster_with_scheduling(scheduling_policy).await;
     SessionContext::remote(&format!("df://{host}:{port}"))
         .await
         .unwrap()
@@ -319,6 +344,27 @@ pub async fn standalone_context_with_state() -> SessionContext {
 }
 
 #[allow(dead_code)]
+pub async fn standalone_context_with_state_and_scheduling(
+    scheduling_policy: TaskSchedulingPolicy,
+) -> SessionContext {
+    match scheduling_policy {
+        TaskSchedulingPolicy::PullStaged => standalone_context_with_state().await,
+        TaskSchedulingPolicy::PushStaged => {
+            let config = SessionConfig::new_with_ballista();
+            let state = SessionStateBuilder::new()
+                .with_config(config)
+                .with_default_features()
+                .build();
+            let (host, port) =
+                setup_test_cluster_with_state_push_scheduling(state.clone()).await;
+            SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
+                .await
+                .unwrap()
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub async fn remote_context_with_state() -> SessionContext {
     let config = SessionConfig::new_with_ballista();
     let state = SessionStateBuilder::new()
@@ -326,6 +372,23 @@ pub async fn remote_context_with_state() -> SessionContext {
         .with_default_features()
         .build();
     let (host, port) = setup_test_cluster_with_state(state.clone()).await;
+    SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
+        .await
+        .unwrap()
+}
+
+#[allow(dead_code)]
+pub async fn remote_context_with_state_and_scheduling(
+    scheduling_policy: TaskSchedulingPolicy,
+) -> SessionContext {
+    let config = SessionConfig::new_with_ballista();
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+    let (host, port) =
+        setup_test_cluster_with_state_and_scheduling(state.clone(), scheduling_policy)
+            .await;
     SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
         .await
         .unwrap()
