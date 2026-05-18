@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod executor_details_popup;
 mod executors_table;
 mod jobs;
 
@@ -29,8 +30,17 @@ use ratatui::{
 use crate::tui::{
     TuiResult,
     app::App,
+    domain::executors::Executor,
     event::{Event, UiData},
 };
+
+pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
+    let executor = app.http_client.get_executor(executor_id).await?;
+    app.send_event(Event::DataLoaded {
+        data: UiData::ExecutorDetails(executor),
+    })
+    .await
+}
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
@@ -72,4 +82,14 @@ pub async fn load_executors_data(app: &App) -> TuiResult<()> {
         data: UiData::Executors(scheduler_state, executors_data, jobs_data),
     })
     .await
+}
+
+fn format_last_seen(executor: &Executor, app: &App) -> String {
+    executor
+        .last_seen
+        .map(|d| match d.try_into() {
+            Ok(d) => app.format_datetime(d),
+            Err(_) => "Invalid timestamp".to_string(),
+        })
+        .unwrap_or_else(|| "N/A".to_string())
 }

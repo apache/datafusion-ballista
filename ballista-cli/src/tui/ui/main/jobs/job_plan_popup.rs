@@ -40,7 +40,7 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
 
 fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
     let details = &job_plans.details;
-    let tab = &job_plans.tab;
+    let tab = job_plans.get_tab();
 
     let plan = match tab {
         PlanTab::Stage => details.stage_plan.as_deref().unwrap_or("N/A"),
@@ -56,9 +56,10 @@ fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
         .border_style(Style::default().fg(Color::LightCyan))
         .border_type(BorderType::Thick);
 
-    let paragraph = Paragraph::new(plan)
-        .block(block)
-        .scroll((job_plans.scroll_position, 0));
+    let paragraph = Paragraph::new(plan).block(block).scroll((
+        job_plans.vertical_scroll_position(),
+        job_plans.horizontal_scroll_position(),
+    ));
 
     f.render_widget(paragraph, area);
 }

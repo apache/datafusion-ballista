@@ -30,22 +30,51 @@ pub struct HttpSettings {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct JobSettings {
+    /// The job stages' settings
+    pub stage: JobStageSettings,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JobStageSettings {
+    /// The job plan's settings
+    pub plan: JobPlanSettings,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JobPlanSettings {
+    /// Whether to render the plan as a tree.
+    pub tree: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Settings {
     pub scheduler: SchedulerSettings,
     pub http: HttpSettings,
+    /// How often to refresh the UI. In millis.
+    pub tick_interval_ms: u64,
+
+    pub job: JobSettings,
 }
 
 const DEFAULT_CONFIG: &str = r#"
+tick_interval_ms: 2000
+
 scheduler:
   url: http://localhost:50050
 
 http:
   timeout: 2000
+
+job:
+  stage:
+    plan:
+      tree: false
 "#;
 
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
-        let config_dir = dirs::config_dir()
+        let config_dir = dirs::config_local_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
             .unwrap_or_else(|| std::path::PathBuf::from(".config"))
             .join("ballista");
@@ -55,13 +84,14 @@ impl Settings {
             .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml))
             // Add in user's config file
             .add_source(
-                File::with_name(&format!("{}/config", config_dir.display()))
+                File::with_name(&format!("{}/tui", config_dir.display()))
+                    .format(FileFormat::Yaml)
                     .required(false),
             )
             // Add in settings from the environment (with a prefix of BALLISTA_)
             // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
             // would set the scheduler url key
-            .add_source(Environment::with_prefix("BALLISTA"))
+            .add_source(Environment::with_prefix("BALLISTA").separator("_"))
             .build()?;
 
         s.try_deserialize()

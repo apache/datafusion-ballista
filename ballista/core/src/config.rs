@@ -19,6 +19,7 @@
 //! Ballista configuration
 
 use crate::error::{BallistaError, Result};
+use crate::execution_plans::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
@@ -66,19 +67,24 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
-/// Number of times that the optimizer will attempt to optimize the plan
-pub const BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES: &str =
-    "ballista.planner.adaptive.planner_pass";
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
+/// Configuration key for shuffle writer bounded-channel capacity.
+pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
+    "ballista.shuffle.writer_channel_capacity";
 /// Configuration key for the per-task buffered-bytes budget at which the
 /// sort shuffle writer spills its in-memory batches to disk.
 pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
     "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
+/// Configuration key for the byte-size threshold below which a hash join's
+/// smaller side is promoted to `CollectLeft` and lowered via the broadcast
+/// pattern in the distributed planner. Set to `0` to disable promotion.
+pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
+    "ballista.optimizer.broadcast_join_threshold_bytes";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -132,10 +138,6 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES.to_string(),
-                         "Number of times that the adaptive optimizer will attempt to optimize the plan".to_string(),
-                         DataType::UInt64,
-                         Some(3.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
@@ -144,6 +146,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
                          Some((8192).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY.to_string(),
+                         "Bounded channel capacity for async-to-blocking I/O bridge in shuffle writer".to_string(),
+                         DataType::UInt32,
+                         Some(DEFAULT_SHUFFLE_CHANNEL_CAPACITY.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES.to_string(),
                          "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
                          in-memory batches to disk. Counted independently of the runtime memory pool, so \
@@ -151,6 +157,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          memory per executor is approximately concurrent_tasks * this value.".to_string(),
                          DataType::UInt64,
                          Some((256 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
+                         "Byte-size threshold below which a hash join's smaller side is \
+                          promoted to CollectLeft and lowered via the broadcast pattern. \
+                          Set to 0 to disable promotion.".to_string(),
+                         DataType::UInt64,
+                         Some((10 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -339,10 +351,6 @@ impl BallistaConfig {
     pub fn adaptive_query_planner_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
     }
-    /// Number of times that the adaptive optimizer will attempt to optimize the plan
-    pub fn adaptive_query_planner_max_passes(&self) -> usize {
-        self.get_usize_setting(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES)
-    }
 
     /// Returns whether sort-based shuffle is enabled.
     ///
@@ -357,10 +365,22 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
     }
 
+    /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
+    pub fn shuffle_writer_channel_capacity(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY)
+    }
+
     /// Returns the per-task buffered-bytes budget at which the sort shuffle
     /// writer spills its in-memory batches to disk.
     pub fn shuffle_sort_based_memory_limit_per_task_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES)
+    }
+
+    /// Returns the byte-size threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern.
+    /// `0` disables promotion.
+    pub fn broadcast_join_threshold_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
     /// Should client employ pull or push job tracking strategy

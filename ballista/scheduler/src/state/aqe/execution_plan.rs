@@ -210,7 +210,7 @@ impl DisplayAs for ExchangeExec {
                     self.stage_id()
                         .map(|stage_id| format!("{}", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
-                    self.shuffle_partitions.lock().is_some()
+                    self.shuffle_created()
                 )
             }
             DisplayFormatType::TreeRender => {
@@ -230,11 +230,7 @@ impl DisplayAs for ExchangeExec {
                         .map(|stage_id| format!("({})", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
                 )?;
-                writeln!(
-                    f,
-                    "stage_resolved={}",
-                    self.shuffle_partitions.lock().is_some()
-                )
+                writeln!(f, "stage_resolved={}", self.shuffle_created())
             }
         }
     }
@@ -411,12 +407,13 @@ impl DisplayAs for AdaptiveDatafusionExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "AdaptiveDatafusionExec: is_final={:?}, plan_id={}, stage_id={}",
+                    "AdaptiveDatafusionExec: is_final={:?}, plan_id={}, stage_id={}, stage_resolved={}",
                     self.is_final,
                     self.plan_id,
                     self.stage_id()
                         .map(|stage_id| format!("{}", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
+                    self.shuffle_created()
                 )
             }
             DisplayFormatType::TreeRender => {
@@ -428,7 +425,8 @@ impl DisplayAs for AdaptiveDatafusionExec {
                     self.stage_id()
                         .map(|stage_id| format!("({})", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
-                )
+                )?;
+                writeln!(f, "stage_resolved={}", self.shuffle_created())
             }
         }
     }

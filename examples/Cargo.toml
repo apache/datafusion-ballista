@@ -34,6 +34,11 @@ path = "examples/standalone-sql.rs"
 required-features = ["ballista/standalone"]
 
 [[example]]
+name = "standalone_broadcast_join"
+path = "examples/standalone-broadcast-join.rs"
+required-features = ["ballista/standalone"]
+
+[[example]]
 name = "mtls-cluster"
 path = "examples/mtls-cluster.rs"
 required-features = ["tls"]

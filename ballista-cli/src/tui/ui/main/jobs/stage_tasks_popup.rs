@@ -17,7 +17,6 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::StageTaskResponse;
-use datafusion::common::human_readable_count;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
@@ -42,28 +41,26 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         .fg(Color::LightYellow)
         .bg(Color::Black)
         .bold();
-    let header = [
-        "Task ID",
-        "Status",
-        "Input Rows",
-        "Output Rows",
-        "Partition ID",
-        "Scheduled Time",
-        "Launch latency",
-        "Start latency",
-        // "End Time",
-        "Duration",
-        "Total Time",
-    ]
-    .into_iter()
-    .map(|h| Cell::from(Text::from(h).centered()))
-    .collect::<Row>()
+
+    let header_row = Row::new(vec![
+        Cell::from(Text::from("Task ID".to_string()).right_aligned()),
+        Cell::from(Text::from("Status".to_string()).centered()),
+        Cell::from(Text::from("Input Rows".to_string()).right_aligned()),
+        Cell::from(Text::from("Output Rows".to_string()).right_aligned()),
+        Cell::from(Text::from("Partition ID".to_string()).right_aligned()),
+        Cell::from(Text::from("Scheduled Time".to_string()).centered()),
+        Cell::from(Text::from("Launch Latency".to_string()).right_aligned()),
+        Cell::from(Text::from("Start Latency".to_string()).right_aligned()),
+        Cell::from(Text::from("Duration".to_string()).right_aligned()),
+        Cell::from(Text::from("Total Time".to_string()).right_aligned()),
+    ])
     .style(header_style)
     .height(1);
 
     let rows = stage
         .tasks
         .iter()
+        .flatten()
         .enumerate()
         .map(|(i, task)| build_stage_task_row(i, task, app));
 
@@ -92,7 +89,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::Indexed(193)).bold())
             .border_type(BorderType::Thick),
     )
-    .header(header)
+    .header(header_row)
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
 
@@ -114,31 +111,39 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
     };
 
     Row::new(vec![
-        Cell::from(Text::from(task.id.to_string()).centered()),
+        Cell::from(Text::from(task.id.to_string()).right_aligned()),
         Cell::from(
             Text::from(task.status.clone())
                 .style(Style::default().fg(status_color).bold())
                 .centered(),
         ),
-        Cell::from(Text::from(human_readable_count(task.input_rows)).centered()),
-        Cell::from(Text::from(human_readable_count(task.output_rows)).centered()),
-        Cell::from(Text::from(task.partition_id.to_string()).centered()),
+        Cell::from(Text::from(app.format_count(task.input_rows)).right_aligned()),
+        Cell::from(Text::from(app.format_count(task.output_rows)).right_aligned()),
+        Cell::from(Text::from(task.partition_id.to_string()).right_aligned()),
         Cell::from(Text::from(format_datetime(task.scheduled_time, app)).centered()),
         Cell::from(
-            Text::from(app.format_duration(task.launch_time - task.scheduled_time))
-                .centered(),
+            Text::from(
+                app.format_duration(task.launch_time.saturating_sub(task.scheduled_time)),
+            )
+            .right_aligned(),
         ),
         Cell::from(
-            Text::from(app.format_duration(task.start_exec_time - task.scheduled_time))
-                .centered(),
+            Text::from(app.format_duration(
+                task.start_exec_time.saturating_sub(task.scheduled_time),
+            ))
+            .right_aligned(),
         ),
         Cell::from(
-            Text::from(app.format_duration(task.end_exec_time - task.start_exec_time))
-                .centered(),
+            Text::from(app.format_duration(
+                task.end_exec_time.saturating_sub(task.start_exec_time),
+            ))
+            .right_aligned(),
         ),
         Cell::from(
-            Text::from(app.format_duration(task.finish_time - task.scheduled_time))
-                .centered(),
+            Text::from(
+                app.format_duration(task.finish_time.saturating_sub(task.scheduled_time)),
+            )
+            .right_aligned(),
         ),
     ])
     .style(Style::default().bg(bg))

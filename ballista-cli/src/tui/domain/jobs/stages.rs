@@ -29,14 +29,17 @@ pub struct JobStageResponse {
     pub id: String,
     #[serde(rename = "stage_status")]
     pub status: String,
-    #[serde(rename = "stage_plan")]
+    #[serde(rename = "stage_plan", default)]
     pub plan: String,
     pub input_rows: usize,
     pub output_rows: usize,
-    pub elapsed_compute: String,
-    pub task_duration_percentiles: TaskPercentiles,
-    pub task_input_percentiles: TaskPercentiles,
-    pub tasks: Vec<StageTaskResponse>,
+    pub elapsed_compute: Option<String>,
+    #[serde(default)]
+    pub task_duration_percentiles: Option<TaskPercentiles>,
+    #[serde(default)]
+    pub task_input_percentiles: Option<TaskPercentiles>,
+    #[serde(default)]
+    pub tasks: Vec<Option<StageTaskResponse>>,
 }
 
 // TaskSummary
@@ -77,6 +80,8 @@ pub struct JobStagesPopup {
     pub stages: JobStagesResponse,
     pub table_state: TableState,
     details_view: StageDetailsView,
+    plan_vertical_scroll_position: u16,
+    plan_horizontal_scroll_position: u16,
 }
 
 impl JobStagesPopup {
@@ -86,7 +91,17 @@ impl JobStagesPopup {
             stages,
             table_state: TableState::default(),
             details_view: StageDetailsView::None,
+            plan_vertical_scroll_position: 0,
+            plan_horizontal_scroll_position: 0,
         }
+    }
+
+    pub fn plan_vertical_scroll_position(&self) -> u16 {
+        self.plan_vertical_scroll_position
+    }
+
+    pub fn plan_horizontal_scroll_position(&self) -> u16 {
+        self.plan_horizontal_scroll_position
     }
 
     pub fn set_tasks_view(&mut self) {
@@ -95,6 +110,8 @@ impl JobStagesPopup {
 
     pub fn set_plan_view(&mut self) {
         self.details_view = StageDetailsView::Plan;
+        self.plan_vertical_scroll_position = 0;
+        self.plan_horizontal_scroll_position = 0;
     }
 
     pub fn set_no_details_view(&mut self) {
@@ -114,36 +131,60 @@ impl JobStagesPopup {
     }
 
     pub fn scroll_down(&mut self) {
-        let len = self.stages.stages.len();
-        if len == 0 {
-            self.table_state.select(None);
-            return;
-        }
-        if let Some(selected) = self.table_state.selected() {
-            if selected < len - 1 {
-                self.table_state.select(Some(selected + 1));
-            } else {
+        if self.is_no_details_view() {
+            let len = self.stages.stages.len();
+            if len == 0 {
                 self.table_state.select(None);
+                return;
             }
-        } else {
-            self.table_state.select(Some(0));
+            if let Some(selected) = self.table_state.selected() {
+                if selected < len - 1 {
+                    self.table_state.select(Some(selected + 1));
+                } else {
+                    self.table_state.select(None);
+                }
+            } else {
+                self.table_state.select(Some(0));
+            }
+        } else if self.is_plan_view() {
+            self.plan_vertical_scroll_position =
+                self.plan_vertical_scroll_position.saturating_add(1);
         }
     }
 
     pub fn scroll_up(&mut self) {
-        let len = self.stages.stages.len();
-        if len == 0 {
-            self.table_state.select(None);
-            return;
-        }
-        if let Some(selected) = self.table_state.selected() {
-            if selected == 0 {
+        if self.is_no_details_view() {
+            let len = self.stages.stages.len();
+            if len == 0 {
                 self.table_state.select(None);
-            } else {
-                self.table_state.select(Some(selected - 1));
+                return;
             }
-        } else {
-            self.table_state.select(Some(len - 1));
+            if let Some(selected) = self.table_state.selected() {
+                if selected == 0 {
+                    self.table_state.select(None);
+                } else {
+                    self.table_state.select(Some(selected - 1));
+                }
+            } else {
+                self.table_state.select(Some(len - 1));
+            }
+        } else if self.is_plan_view() {
+            self.plan_vertical_scroll_position =
+                self.plan_vertical_scroll_position.saturating_sub(1);
+        }
+    }
+
+    pub fn scroll_left(&mut self) {
+        if self.is_plan_view() {
+            self.plan_horizontal_scroll_position =
+                self.plan_horizontal_scroll_position.saturating_sub(1);
+        }
+    }
+
+    pub fn scroll_right(&mut self) {
+        if self.is_plan_view() {
+            self.plan_horizontal_scroll_position =
+                self.plan_horizontal_scroll_position.saturating_add(1);
         }
     }
 
@@ -207,9 +248,9 @@ mod tests {
             plan: String::new(),
             input_rows: 0,
             output_rows: 0,
-            elapsed_compute: "0".to_string(),
-            task_duration_percentiles: make_percentiles(),
-            task_input_percentiles: make_percentiles(),
+            elapsed_compute: Some("1ns".to_string()),
+            task_duration_percentiles: Some(make_percentiles()),
+            task_input_percentiles: Some(make_percentiles()),
             tasks: Vec::new(),
         }
     }

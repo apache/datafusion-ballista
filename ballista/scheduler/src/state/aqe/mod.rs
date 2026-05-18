@@ -39,8 +39,15 @@ use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
+
+// TODO: the AQE planner runs DataFusion's DefaultPhysicalPlanner with a
+// list of PhysicalOptimizerRules and never goes through
+// DefaultDistributedPlanner::plan_query_stages_internal, so neither
+// maybe_promote_to_broadcast nor the HashJoinExec(CollectLeft) shuffle
+// lowering fire here. Joins that would broadcast under the default
+// planner stay on the Partitioned shuffle path. Move the lowering into
+// an AQE optimizer rule in a follow-up PR.
 
 mod adapter;
 mod execution_plan;
@@ -1159,6 +1166,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     /// fail job with error message
     fn fail_job(&mut self, error: String) {
+        self.end_time = timestamp_millis();
+
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
@@ -1186,10 +1195,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             .map(|l| l.try_into())
             .collect::<ballista_core::error::Result<Vec<_>>>()?;
 
-        self.end_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        self.end_time = timestamp_millis();
 
         self.status = JobStatus {
             job_id: self.job_id.clone(),
@@ -1282,10 +1288,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 let task_attempt = stage.task_failure_numbers[partition_id];
                 let task_info = crate::state::execution_graph::TaskInfo {
                     task_id,
-                    scheduled_time: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis(),
+                    scheduled_time: timestamp_millis() as u128,
                     // Those times will be updated when the task finish
                     launch_time: 0,
                     start_exec_time: 0,

@@ -37,9 +37,11 @@ pub enum UiData {
     JobDetails(JobDetails),
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
+    ExecutorDetails(Executor),
 }
 
 #[derive(Clone, Debug)]
+#[expect(clippy::large_enum_variant)]
 pub enum Event {
     Key(KeyEvent),
     Tick,

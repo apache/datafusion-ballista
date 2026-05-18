@@ -26,7 +26,8 @@
 
 <img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
 
-Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion) by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
+Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion)
+by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
 Existing DataFusion application:
 
@@ -35,27 +36,28 @@ use datafusion::prelude::*;
 
 #[tokio::main]
 async fn main() -> datafusion::error::Result<()> {
-  let ctx = SessionContext::new();
+    let ctx = SessionContext::new();
 
-  // register the table
-  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
-      .await?;
+    // register the table
+    ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
+        .await?;
 
-  // create a plan to run a SQL query
-  let df = ctx
-      .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
-      .await?;
+    // create a plan to run a SQL query
+    let df = ctx
+        .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
+        .await?;
 
-  // execute and print results
-  df.show().await?;
-  Ok(())
+    // execute and print results
+    df.show().await?;
+    Ok(())
 }
 ```
 
 can be distributed with few lines of code changed:
 
 > [!IMPORTANT]  
-> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively working to close the gap
+> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively working
+> to close the gap
 
 ```rust
 use ballista::prelude::*;
@@ -170,6 +172,14 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | `build-binary`            | Yes     | Builds the executor binary with CLI and logging       |
 | `mimalloc`                | Yes     | Uses mimalloc memory allocator for better performance |
 | `spark-compat`            | No      | Enables Spark compatibility mode                      |
+
+### ballista-cli
+
+| Feature | Default | Description                                        |
+| ------- | ------- | -------------------------------------------------- |
+| `tui`   | Yes     | Enables a REST client with Terminal User Interface |
+
+![TUI Jobs table](./docs/source/user-guide/screenshots/tui-jobs-table.png)
 
 ### Usage Examples
 

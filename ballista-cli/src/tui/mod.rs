@@ -27,11 +27,13 @@ mod ui;
 use app::App;
 use event::{Event, EventHandler};
 use ratatui::widgets::ScrollbarState;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use terminal::TuiWrapper;
 
 use crate::tui::domain::{
-    executors::ExecutorsData,
+    executors::{ExecutorDetailsPopup, ExecutorsData},
     jobs::{JobsData, stages::JobStagesPopup},
     metrics::MetricsData,
 };
@@ -39,19 +41,20 @@ use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
-pub async fn tui_main() -> TuiResult<()> {
-    infrastructure::init_file_logger("ballista", "info")?;
+pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
+    tui_mode.store(true, Ordering::Release);
     tracing::info!("Starting the Ballista TUI application");
 
     let config = Settings::new()?;
+    tracing::debug!("TUI configuration: {:?}", config);
 
     let mut tui_wrapper = TuiWrapper::new()?;
+    let mut events = EventHandler::new(Duration::from_millis(config.tick_interval_ms));
     let mut app = App::new(config)?;
-    let mut events = EventHandler::new(Duration::from_millis(2000));
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
     app.set_event_tx(app_tx);
-    let _ = crate::tui::ui::load_executors_data(&app).await;
+    let _ = ui::load_executors_data(&app).await;
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;
@@ -113,6 +116,10 @@ pub async fn tui_main() -> TuiResult<()> {
                     }
                     UiData::JobStagesData(job_id, stages) => {
                         app.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
+                    }
+                    UiData::ExecutorDetails(executor) => {
+                        app.executor_details_popup =
+                            Some(ExecutorDetailsPopup::new(executor));
                     }
                   }
                 }
