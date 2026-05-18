@@ -60,6 +60,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     let rows = stage
         .tasks
         .iter()
+        .flatten()
         .enumerate()
         .map(|(i, task)| build_stage_task_row(i, task, app));
 
@@ -121,20 +122,28 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         Cell::from(Text::from(task.partition_id.to_string()).right_aligned()),
         Cell::from(Text::from(format_datetime(task.scheduled_time, app)).centered()),
         Cell::from(
-            Text::from(app.format_duration(task.launch_time - task.scheduled_time))
-                .right_aligned(),
+            Text::from(
+                app.format_duration(task.launch_time.saturating_sub(task.scheduled_time)),
+            )
+            .right_aligned(),
         ),
         Cell::from(
-            Text::from(app.format_duration(task.start_exec_time - task.scheduled_time))
-                .right_aligned(),
+            Text::from(app.format_duration(
+                task.start_exec_time.saturating_sub(task.scheduled_time),
+            ))
+            .right_aligned(),
         ),
         Cell::from(
-            Text::from(app.format_duration(task.end_exec_time - task.start_exec_time))
-                .right_aligned(),
+            Text::from(app.format_duration(
+                task.end_exec_time.saturating_sub(task.start_exec_time),
+            ))
+            .right_aligned(),
         ),
         Cell::from(
-            Text::from(app.format_duration(task.finish_time - task.scheduled_time))
-                .right_aligned(),
+            Text::from(
+                app.format_duration(task.finish_time.saturating_sub(task.scheduled_time)),
+            )
+            .right_aligned(),
         ),
     ])
     .style(Style::default().bg(bg))
