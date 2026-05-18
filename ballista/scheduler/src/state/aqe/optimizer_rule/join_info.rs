@@ -51,7 +51,7 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
 /// Getting sure that incoming plan (either from left or right) is empty
 ///
 /// Note that when we have [Precision::Absent] it means we know nothing about the value
-/// Hence we can decide whether it is empty
+/// Hence we can't decide whether it is empty
 pub fn is_guaranteed_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
     let Ok(stats) = plan.partition_statistics(None) else {
         return false;
