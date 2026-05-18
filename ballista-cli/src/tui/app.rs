@@ -589,11 +589,9 @@ impl App {
     }
 
     fn open_job_plan_popup(&mut self) {
-        let in_status_for_popup = self
-            .jobs_data
-            .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Completed" || j.status == "Running");
-        if in_status_for_popup && let Some(details) = &self.job_details {
+        if self.is_selected_job_completed_or_running()
+            && let Some(details) = &self.job_details
+        {
             self.job_plan_popup =
                 Some(JobPlansPopup::new(details.clone(), PlanTab::Stage));
         }
@@ -1081,5 +1079,37 @@ mod tests {
         app.jobs_data.jobs = vec![make_job("j1", "Completed")];
         app.jobs_data.table_state.select(Some(0));
         assert!(!app.is_selected_job_cancelable());
+    }
+
+    #[test]
+    fn is_selected_job_completed_or_running_for_completed() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Completed")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.is_selected_job_completed_or_running());
+    }
+
+    #[test]
+    fn is_selected_job_completed_or_running_for_running() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.is_selected_job_completed_or_running());
+    }
+
+    #[test]
+    fn is_selected_job_completed_or_running_for_queued() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Queued")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(!app.is_selected_job_completed_or_running());
+    }
+
+    #[test]
+    fn is_selected_job_completed_or_running_for_failed() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Failed")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(!app.is_selected_job_completed_or_running());
     }
 }
