@@ -79,6 +79,7 @@ pub struct JobStagesPopup {
     pub job_id: String,
     pub stages: JobStagesResponse,
     pub table_state: TableState,
+    pub scrollbar_state: ScrollbarState,
     pub tasks_table_state: TableState,
     pub tasks_scrollbar_state: ScrollbarState,
     details_view: StageDetailsView,
@@ -90,6 +91,7 @@ impl JobStagesPopup {
     pub fn new(job_id: String, stages: JobStagesResponse) -> Self {
         Self {
             job_id,
+            scrollbar_state: ScrollbarState::new(stages.stages.len()).position(0),
             stages,
             table_state: TableState::default(),
             tasks_table_state: TableState::default(),
@@ -150,11 +152,14 @@ impl JobStagesPopup {
             if let Some(selected) = self.table_state.selected() {
                 if selected < len - 1 {
                     self.table_state.select(Some(selected + 1));
+                    self.scrollbar_state = self.scrollbar_state.position(selected + 1);
                 } else {
                     self.table_state.select(None);
+                    self.scrollbar_state = self.scrollbar_state.position(0);
                 }
             } else {
                 self.table_state.select(Some(0));
+                self.scrollbar_state = self.scrollbar_state.position(0);
             }
         } else if self.is_tasks_view() {
             self.tasks_scroll_down();
@@ -174,11 +179,14 @@ impl JobStagesPopup {
             if let Some(selected) = self.table_state.selected() {
                 if selected == 0 {
                     self.table_state.select(None);
+                    self.scrollbar_state = self.scrollbar_state.position(0);
                 } else {
                     self.table_state.select(Some(selected - 1));
+                    self.scrollbar_state = self.scrollbar_state.position(selected - 1);
                 }
             } else {
                 self.table_state.select(Some(len - 1));
+                self.scrollbar_state = self.scrollbar_state.position(len - 1);
             }
         } else if self.is_tasks_view() {
             self.tasks_scroll_up();

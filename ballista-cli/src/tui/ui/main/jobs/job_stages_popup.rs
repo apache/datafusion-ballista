@@ -80,7 +80,9 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     .highlight_spacing(HighlightSpacing::Always);
 
     let mut table_state = popup.table_state;
+    let mut scroll_state = popup.scrollbar_state;
     f.render_stateful_widget(table, area, &mut table_state);
+    crate::tui::ui::vertical_scrollbar::render_scrollbar(f, area, &mut scroll_state);
 }
 
 fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static> {
