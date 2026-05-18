@@ -35,11 +35,13 @@ use crate::cluster::JobState;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
     JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
+    task_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
 
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::limit_tracker::{EarlyStopDecision, JobLimitTracker};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
@@ -135,6 +137,12 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     task_max_failures: usize,
     /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
     stage_max_failures: usize,
+    /// Per-job row-count trackers for AQE early-stop on global LIMIT.
+    /// Populated by `submit_job` when the AQE planner tagged an eligible
+    /// LIMIT. Consulted by `update_task_statuses` on each task completion.
+    /// Removed by `clean_up_job_delayed` on job completion (success or
+    /// failure) and by `early_stop_job` once the trigger has fired.
+    job_limit_trackers: Arc<DashMap<String, Arc<JobLimitTracker>>>,
 }
 
 /// Cache for active job information managed by this scheduler.
@@ -232,6 +240,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
+            job_limit_trackers: Arc::new(DashMap::new()),
         }
     }
 
@@ -251,6 +260,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher,
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
+            job_limit_trackers: Arc::new(DashMap::new()),
         }
     }
 
@@ -292,7 +302,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             warn!(
                 "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
             );
-            Box::new(AdaptiveExecutionGraph::try_new(
+            let adaptive = AdaptiveExecutionGraph::try_new(
                 &self.scheduler_id,
                 job_id,
                 job_name,
@@ -301,7 +311,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 queued_at,
                 session_config,
                 logical_plan,
-            )?) as ExecutionGraphBox
+            )?;
+            self.register_limit_tracker(job_id, &adaptive);
+            Box::new(adaptive) as ExecutionGraphBox
         } else {
             debug!("Using static query planner for job planning");
             Box::new(StaticExecutionGraph::new(
@@ -458,6 +470,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let num_tasks = statuses.len();
             debug!("Updating {num_tasks} tasks in job {job_id}");
 
+            // Observe early-stop row counts BEFORE mutating the graph so
+            // that a single status batch that crosses the threshold still
+            // fires exactly once (the swap on `triggered` enforces this).
+            if let Some(early_stop_event) =
+                self.observe_early_stop_rows(&job_id, &statuses)
+            {
+                events.push(early_stop_event);
+            }
+
             // let graph = self.get_active_execution_graph(&job_id).await;
             let job_events = if let Some(cached) =
                 self.get_active_execution_graph(&job_id)
@@ -483,6 +504,120 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
 
         Ok(events)
+    }
+
+    /// Register a `JobLimitTracker` if the AQE planner tagged exactly one
+    /// eligible LIMIT for this job. Multi-LIMIT jobs are deferred to v2
+    /// — see `aqe-tasks/03b-early-stop-global-limit-v2.md`.
+    fn register_limit_tracker(
+        &self,
+        job_id: &str,
+        graph: &AdaptiveExecutionGraph,
+    ) {
+        // Default safety_factor; the config system does not currently
+        // support f64 keys, so this is hardcoded. Surface as a tunable
+        // when the config layer grows f64 support.
+        const SAFETY_FACTOR: f64 = 1.5;
+        match graph.limit_contexts.as_slice() {
+            [] => {}
+            [ctx] => {
+                let tracker = Arc::new(JobLimitTracker::new(
+                    ctx.fetch,
+                    SAFETY_FACTOR,
+                    ctx.producer_stage_ids.clone(),
+                ));
+                info!(
+                    "Registering AQE early-stop tracker for job {} (limit={}, \
+                     threshold={}, producer stages={:?})",
+                    job_id,
+                    tracker.limit(),
+                    tracker.threshold(),
+                    ctx.producer_stage_ids,
+                );
+                self.job_limit_trackers
+                    .insert(job_id.to_string(), tracker);
+            }
+            many => {
+                warn!(
+                    "AQE early-stop: job {} has {} eligible LIMIT contexts; \
+                     v1 only tracks single-LIMIT jobs. See \
+                     aqe-tasks/03b-early-stop-global-limit-v2.md.",
+                    job_id,
+                    many.len()
+                );
+            }
+        }
+    }
+
+    /// Test-only: inject a pre-built tracker for `job_id`. This bypasses
+    /// the analyzer-driven registration in `register_limit_tracker` so
+    /// integration tests can exercise the observation + cancel pipeline
+    /// against real graphs whose `GlobalLimitExec` was stripped by
+    /// DataFusion's `LimitPushdown` (see v2.6 in
+    /// `aqe-tasks/03b-early-stop-global-limit-v2.md`).
+    #[cfg(test)]
+    pub(crate) fn insert_limit_tracker_for_test(
+        &self,
+        job_id: &str,
+        tracker: Arc<JobLimitTracker>,
+    ) {
+        self.job_limit_trackers
+            .insert(job_id.to_string(), tracker);
+    }
+
+    /// Test-only: read the current tracker for `job_id`, if any.
+    #[cfg(test)]
+    pub(crate) fn get_limit_tracker_for_test(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<JobLimitTracker>> {
+        self.job_limit_trackers.get(job_id).map(|r| r.clone())
+    }
+
+    /// Sum `ShuffleWritePartition.num_rows` across all successful tasks
+    /// in this batch and pass to the tracker. Returns an
+    /// `EarlyStopCancel` event iff this batch crossed the threshold for
+    /// the first time.
+    fn observe_early_stop_rows(
+        &self,
+        job_id: &str,
+        statuses: &[TaskStatus],
+    ) -> Option<QueryStageSchedulerEvent> {
+        let tracker = self.job_limit_trackers.get(job_id)?;
+        if tracker.is_triggered() {
+            return None;
+        }
+        let mut decision = EarlyStopDecision::Continue;
+        for status in statuses {
+            let Some(task_status::Status::Successful(ref ok)) = status.status
+            else {
+                continue;
+            };
+            let rows: u64 = ok.partitions.iter().map(|p| p.num_rows).sum();
+            if rows == 0 {
+                continue;
+            }
+            if let EarlyStopDecision::CancelRemaining =
+                tracker.observe(status.stage_id as usize, rows)
+            {
+                decision = EarlyStopDecision::CancelRemaining;
+            }
+        }
+        match decision {
+            EarlyStopDecision::CancelRemaining => {
+                info!(
+                    "AQE early-stop trigger fired for job {} \
+                     (rows_so_far={}, threshold={})",
+                    job_id,
+                    tracker.rows_so_far(),
+                    tracker.threshold(),
+                );
+                Some(QueryStageSchedulerEvent::EarlyStopCancel {
+                    job_id: job_id.to_string(),
+                })
+            }
+            EarlyStopDecision::Continue => None,
+        }
     }
 
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
@@ -511,6 +646,41 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_id: &str,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         self.abort_job(job_id, "Cancelled".to_owned()).await
+    }
+
+    /// Short-stop the producer stages tagged by the AQE early-stop
+    /// tracker for `job_id`. Synthesizes successful completion for the
+    /// remaining tasks of those stages so the consumer (LIMIT) stage can
+    /// run on the partial shuffle output. Returns the in-flight tasks to
+    /// cancel and any follow-up scheduler events emitted by the cascade.
+    ///
+    /// The job is NOT removed from the active cache here — finalization
+    /// happens naturally when the consumer stage completes, at which
+    /// point the job ends `Successful` (not `Cancelled`) with the
+    /// downstream `LimitExec` slicing to exactly `fetch` rows.
+    pub(crate) async fn early_stop_job(
+        &self,
+        job_id: &str,
+    ) -> Result<(Vec<RunningTaskInfo>, Vec<QueryStageSchedulerEvent>)> {
+        let Some(tracker) =
+            self.job_limit_trackers.remove(job_id).map(|(_, v)| v)
+        else {
+            warn!(
+                "early_stop_job called for job {job_id} but no tracker is \
+                 registered; this is a no-op"
+            );
+            return Ok((vec![], vec![]));
+        };
+        let producer_stage_ids = tracker.tagged_producer_stage_ids().clone();
+        let Some(cached) = self.get_active_execution_graph(job_id) else {
+            warn!(
+                "early_stop_job: job {job_id} no longer in active cache; \
+                 nothing to do"
+            );
+            return Ok((vec![], vec![]));
+        };
+        let mut graph = cached.write().await;
+        graph.early_stop_stages(&producer_stage_ids)
     }
 
     /// Abort the job and return a Vec of running tasks need to cancel
@@ -764,11 +934,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .map(|cached| cached.execution_graph.clone())
     }
 
-    /// Remove the `ExecutionGraph` for the given job ID from cache
+    /// Remove the `ExecutionGraph` for the given job ID from cache. Also
+    /// drops any AQE early-stop tracker registered for the job since the
+    /// graph is the only consumer.
     pub(crate) fn remove_active_execution_graph(
         &self,
         job_id: &str,
     ) -> Option<Arc<RwLock<ExecutionGraphBox>>> {
+        self.job_limit_trackers.remove(job_id);
         self.active_job_cache
             .remove(job_id)
             .map(|value| value.1.execution_graph)

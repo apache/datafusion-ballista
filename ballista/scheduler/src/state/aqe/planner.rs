@@ -417,6 +417,13 @@ impl AdaptivePlanner {
     pub fn current_plan(&self) -> &dyn ExecutionPlan {
         self.plan.as_ref()
     }
+
+    /// Returns the current physical plan as an `Arc`. Used by the
+    /// scheduler-side AQE early-stop analyzer which needs to walk the
+    /// post-stage-resolution plan tree to identify eligible LIMITs.
+    pub(crate) fn plan(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.plan
+    }
     /// Returns the default set of physical optimizer rules.
     ///
     /// # Returns

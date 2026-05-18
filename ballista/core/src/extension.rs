@@ -220,6 +220,10 @@ pub trait SessionConfigExt {
     /// Is adaptive query planner enabled
     fn ballista_adaptive_query_planner_enabled(&self) -> bool;
 
+    /// Is AQE early-stop on global LIMIT enabled. Only takes effect when
+    /// [`Self::ballista_adaptive_query_planner_enabled`] is also true.
+    fn ballista_aqe_limit_early_stop_enabled(&self) -> bool;
+
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
 
@@ -535,6 +539,16 @@ impl SessionConfigExt for SessionConfig {
             .get::<BallistaConfig>()
             .map(|c| c.adaptive_query_planner_enabled())
             .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner_enabled())
+    }
+
+    fn ballista_aqe_limit_early_stop_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.aqe_limit_early_stop_enabled())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().aqe_limit_early_stop_enabled()
+            })
     }
 
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {

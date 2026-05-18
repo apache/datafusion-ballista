@@ -18,20 +18,25 @@
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
+use crate::state::aqe::limit_early_stop::{
+    JobLimitContext, LimitEarlyStopAnalyzer,
+};
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
 };
 use crate::state::execution_stage::RunningStage;
+use crate::state::execution_stage::TaskInfo;
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::ShuffleWriter;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
-    job_status, task_status,
+    FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob,
+    SuccessfulTask, TaskStatus, job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
 use datafusion::physical_plan::ExecutionPlan;
@@ -39,6 +44,7 @@ use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 // TODO: the AQE planner runs DataFusion's DefaultPhysicalPlanner with a
@@ -51,6 +57,8 @@ use std::vec;
 
 mod adapter;
 mod execution_plan;
+pub mod limit_early_stop;
+pub mod limit_tracker;
 pub mod optimizer_rule;
 pub mod planner;
 #[cfg(test)]
@@ -120,6 +128,46 @@ pub(crate) struct AdaptiveExecutionGraph {
     logical_plan: Option<String>,
     /// Physical plan, captured at submission time.
     physical_plan: Arc<dyn ExecutionPlan>,
+    /// Eligible global-LIMIT contexts identified by the AQE early-stop
+    /// analyzer at submission time. Empty if early-stop is disabled or no
+    /// eligible LIMIT was found. Consumed by `TaskManager::submit_job` to
+    /// register a `JobLimitTracker` for the job.
+    pub(crate) limit_contexts: Vec<JobLimitContext>,
+}
+
+/// AQE early-stop helper: fill every task_info slot of `stage` with a
+/// synthetic Successful TaskInfo so the stage's `to_successful` path
+/// (which panics on any None) sees a complete set. The synthetic
+/// entries carry no shuffle output partitions — the partial output
+/// already on disk (from real completed tasks) is what the downstream
+/// consumer will read.
+fn synthesize_early_stop_completion(stage: &mut RunningStage) {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    for slot in stage.task_infos.iter_mut() {
+        let needs_synthesis = match slot {
+            None => true,
+            Some(info) => {
+                !matches!(info.task_status, task_status::Status::Successful(_))
+            }
+        };
+        if needs_synthesis {
+            *slot = Some(TaskInfo {
+                task_id: 0,
+                scheduled_time: now_ms,
+                launch_time: now_ms,
+                start_exec_time: now_ms,
+                end_exec_time: now_ms,
+                finish_time: now_ms,
+                task_status: task_status::Status::Successful(SuccessfulTask {
+                    executor_id: "aqe-early-stop-synthetic".to_string(),
+                    partitions: vec![],
+                }),
+            });
+        }
+    }
 }
 
 impl AdaptiveExecutionGraph {
@@ -166,6 +214,26 @@ impl AdaptiveExecutionGraph {
                 .collect();
         let stages = stages?;
 
+        // Run the AQE early-stop analyzer on the post-stage-resolution plan,
+        // so producer ExchangeExecs have their stage_ids assigned. If the
+        // flag is disabled, we still build the field (empty) so downstream
+        // code can unconditionally read it.
+        let limit_contexts =
+            if session_config.ballista_aqe_limit_early_stop_enabled() {
+                let contexts = LimitEarlyStopAnalyzer::new(planner.plan()).analyze();
+                if !contexts.is_empty() {
+                    info!(
+                        "AQE early-stop analyzer tagged {} eligible LIMIT \
+                         context(s) for job {}",
+                        contexts.len(),
+                        job_id,
+                    );
+                }
+                contexts
+            } else {
+                Vec::new()
+            };
+
         Ok(Self {
             planner,
             scheduler_id: Some(scheduler_id.to_string()),
@@ -192,6 +260,7 @@ impl AdaptiveExecutionGraph {
             session_config,
             logical_plan,
             physical_plan: plan,
+            limit_contexts,
         })
     }
 }
@@ -1210,6 +1279,85 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         };
 
         Ok(())
+    }
+
+    fn early_stop_stages(
+        &mut self,
+        producer_stage_ids: &HashSet<usize>,
+    ) -> ballista_core::error::Result<(
+        Vec<RunningTaskInfo>,
+        Vec<QueryStageSchedulerEvent>,
+    )> {
+        let job_id = self.job_id.clone();
+        let mut tasks_to_cancel: Vec<RunningTaskInfo> = Vec::new();
+        let mut newly_successful: HashSet<usize> = HashSet::new();
+
+        for &stage_id in producer_stage_ids {
+            let Some(ExecutionStage::Running(running_stage)) =
+                self.stages.get_mut(&stage_id)
+            else {
+                warn!(
+                    "early_stop_stages: stage {}/{} is not in Running \
+                     state; skipping",
+                    job_id, stage_id
+                );
+                continue;
+            };
+
+            // Collect actually-running tasks BEFORE we synthesize their
+            // completion. The scheduler will cancel these via RPC; any
+            // that race to completion before their cancel arrives are
+            // fine — their shuffle output is already on disk and the
+            // downstream LimitExec slices to exact fetch.
+            for (task_id, _stage_id, partition_id, executor_id) in
+                running_stage.running_tasks()
+            {
+                tasks_to_cancel.push(RunningTaskInfo {
+                    task_id,
+                    job_id: job_id.clone(),
+                    stage_id,
+                    partition_id,
+                    executor_id,
+                });
+            }
+
+            // Synthesize Successful TaskInfo with empty shuffle output
+            // for every partition that has not already completed
+            // successfully. `to_successful` requires every task_info
+            // slot to be Some(Successful(_)); without this synthesis it
+            // would panic on the unfinished partitions.
+            synthesize_early_stop_completion(running_stage);
+            newly_successful.insert(stage_id);
+        }
+
+        // Drive the planner's per-stage finalisation. The planner has
+        // accumulated locations from real completed tasks via
+        // update_exchange_locations; finalise_stage extracts them and
+        // identifies the next batch of runnable stages.
+        for &stage_id in &newly_successful {
+            let stages_to_cancel =
+                self.update_stage_progress(stage_id, true, vec![])?;
+            if !stages_to_cancel.is_empty() {
+                debug!(
+                    "early_stop_stages: planner flagged stages {:?} for \
+                     cancellation while finalising stage {}",
+                    stages_to_cancel, stage_id
+                );
+            }
+        }
+
+        // Cascade graph state: for each early-stopped stage, transition
+        // Running -> Successful via succeed_stage and, if the consumer
+        // stage is also already done, finalize the job as Successful.
+        let events = self.processing_stages_update(UpdatedStages {
+            resolved_stages: HashSet::new(),
+            successful_stages: newly_successful,
+            failed_stages: HashMap::new(),
+            rollback_running_stages: HashMap::new(),
+            resubmit_successful_stages: HashSet::new(),
+        })?;
+
+        Ok((tasks_to_cancel, events))
     }
 
     fn stages(&self) -> &HashMap<usize, ExecutionStage> {

@@ -342,6 +342,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     warn!("Fail to cancel running tasks due to {e:?}");
                 }
             }
+            QueryStageSchedulerEvent::EarlyStopCancel { job_id } => {
+                info!("AQE early-stop firing for job {job_id}");
+                match self.state.task_manager.early_stop_job(&job_id).await {
+                    Ok((tasks_to_cancel, follow_up_events)) => {
+                        if !tasks_to_cancel.is_empty() {
+                            event_sender
+                                .post_event(
+                                    QueryStageSchedulerEvent::CancelTasks(
+                                        tasks_to_cancel,
+                                    ),
+                                )
+                                .await?;
+                        }
+                        for ev in follow_up_events {
+                            event_sender.post_event(ev).await?;
+                        }
+                        // Producer stages are now Successful so the
+                        // consumer (LIMIT) stage can be scheduled;
+                        // revive offers to pick it up.
+                        if self.state.config.is_push_staged_scheduling() {
+                            event_sender
+                                .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                                .await?;
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to short-stop AQE producer stages for \
+                             job {job_id}: {e:?}"
+                        );
+                    }
+                }
+            }
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 self.state.executor_manager.clean_up_job_data(job_id);
             }

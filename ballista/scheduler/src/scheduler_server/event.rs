@@ -96,6 +96,15 @@ pub enum QueryStageSchedulerEvent {
     ExecutorLost(String, Option<String>),
     /// Request to cancel specific running tasks.
     CancelTasks(Vec<RunningTaskInfo>),
+    /// AQE early-stop trigger fired: a tracked job's accumulated row
+    /// count has crossed its LIMIT threshold. The handler short-stops the
+    /// tagged producer stages (synthesizing successful completion for any
+    /// remaining tasks so the consumer stage can run with the partial
+    /// shuffle output) and cancels the now-irrelevant in-flight tasks.
+    EarlyStopCancel {
+        /// Unique job identifier.
+        job_id: String,
+    },
 }
 
 impl Debug for QueryStageSchedulerEvent {
@@ -164,6 +173,9 @@ impl Debug for QueryStageSchedulerEvent {
             }
             QueryStageSchedulerEvent::CancelTasks(status) => {
                 write!(f, "CancelTasks : status:[{status:?}].")
+            }
+            QueryStageSchedulerEvent::EarlyStopCancel { job_id } => {
+                write!(f, "EarlyStopCancel : job_id={job_id}.")
             }
         }
     }

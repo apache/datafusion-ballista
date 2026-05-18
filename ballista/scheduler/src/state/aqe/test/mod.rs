@@ -17,6 +17,8 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// Integration tests for the AQE early-stop on global LIMIT feature
+mod early_stop;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 
@@ -126,9 +128,12 @@ pub(crate) fn mock_context() -> SessionContext {
     SessionContext::new_with_state(state)
 }
 
-pub(crate) fn mock_context_sort_shuffle() -> SessionContext {
+/// Build a session context with a single Ballista boolean flag set to
+/// `"true"`. Shared by tests that need the AQE planner or sort-based
+/// shuffle enabled and otherwise mirror `mock_context`'s settings.
+pub(crate) fn mock_context_with_ballista_flag(flag: &str) -> SessionContext {
     let config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
+        .set_str(flag, "true")
         .with_target_partitions(2)
         .with_round_robin_repartition(false);
 
@@ -138,4 +143,8 @@ pub(crate) fn mock_context_sort_shuffle() -> SessionContext {
         .build();
 
     SessionContext::new_with_state(state)
+}
+
+pub(crate) fn mock_context_sort_shuffle() -> SessionContext {
+    mock_context_with_ballista_flag(BALLISTA_SHUFFLE_SORT_BASED_ENABLED)
 }

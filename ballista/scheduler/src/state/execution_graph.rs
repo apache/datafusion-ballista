@@ -221,6 +221,26 @@ pub trait ExecutionGraph: Debug {
     /// Returns an error if the job is not in a successful state.
     fn succeed_job(&mut self) -> Result<()>;
 
+    /// AQE early-stop: short-stop the producer stages identified by the
+    /// `LimitEarlyStopAnalyzer`. For each stage, synthesizes successful
+    /// completion for any tasks that have not yet finished (so the
+    /// `LimitExec`-bearing consumer stage can run with the partial
+    /// shuffle output already on disk), and returns:
+    ///   - the list of in-flight tasks the scheduler must cancel
+    ///   - the cascading scheduler events emitted by the stage
+    ///     transition (e.g. dependent stages becoming resolved, the job
+    ///     reaching `Successful`)
+    ///
+    /// Default impl is a no-op for graphs without AQE support (the
+    /// `LimitEarlyStopAnalyzer` only runs under AQE, so this should
+    /// never be invoked for non-adaptive graphs).
+    fn early_stop_stages(
+        &mut self,
+        _producer_stage_ids: &HashSet<usize>,
+    ) -> Result<(Vec<RunningTaskInfo>, Vec<QueryStageSchedulerEvent>)> {
+        Ok((vec![], vec![]))
+    }
+
     /// Exposes executions stages and stage id's
     fn stages(&self) -> &HashMap<usize, ExecutionStage>;
 

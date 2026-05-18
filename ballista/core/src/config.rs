@@ -67,6 +67,10 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
+
+/// Setting key for [`BallistaConfig::aqe_limit_early_stop_enabled`].
+pub const BALLISTA_AQE_LIMIT_EARLY_STOP_ENABLED: &str =
+    "ballista.aqe.limit_early_stop.enabled";
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
@@ -138,6 +142,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_AQE_LIMIT_EARLY_STOP_ENABLED.to_string(),
+                         "When AQE is enabled, cancels remaining tasks of stages feeding an \
+                          eligible bare GlobalLimitExec once the rows already written exceed \
+                          the limit. Eligibility excludes OFFSET, sorted inputs, and limits \
+                          inside a non-pass-through subtree.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
@@ -350,6 +361,16 @@ impl BallistaConfig {
     /// Is Adaptive Query Planner enabled
     pub fn adaptive_query_planner_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
+    }
+
+    /// Is AQE early-stop on global LIMIT enabled.
+    ///
+    /// Only takes effect when [`Self::adaptive_query_planner_enabled`] is
+    /// also true. When on, the scheduler tracks rows produced by stages
+    /// that feed an eligible `GlobalLimitExec` and cancels remaining
+    /// tasks once the limit is satisfied.
+    pub fn aqe_limit_early_stop_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_AQE_LIMIT_EARLY_STOP_ENABLED)
     }
 
     /// Returns whether sort-based shuffle is enabled.
