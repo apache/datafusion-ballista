@@ -17,6 +17,8 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// Functional tests for the CoalescePartitionsRule end-to-end through the planner
+mod coalesce_rule;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 

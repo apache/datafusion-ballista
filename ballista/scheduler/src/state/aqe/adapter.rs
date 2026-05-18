@@ -22,6 +22,7 @@ use ballista_core::execution_plans::ShuffleReaderExec;
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::Partitioning;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     physical_plan::ExecutionPlan,
@@ -57,10 +58,46 @@ impl BallistaAdapter {
             })?;
             self.inputs.push(stage_id);
             let partitioning = exchange.properties().partitioning.clone();
-            let shuffle_read =
-                ShuffleReaderExec::try_new(stage_id, partitions, schema, partitioning)?;
 
-            Ok(Transformed::yes(Arc::new(shuffle_read)))
+            let reader = match exchange.coalesce() {
+                Some(cp) => {
+                    // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
+                    let k_shape: Vec<Vec<_>> = cp
+                        .groups
+                        .iter()
+                        .map(|pg| {
+                            let mut concat = Vec::new();
+                            for &idx in &pg.upstream_indices {
+                                if let Some(inner) = partitions.get(idx as usize) {
+                                    concat.extend_from_slice(inner);
+                                }
+                            }
+                            concat
+                        })
+                        .collect();
+                    let new_partitioning = match &partitioning {
+                        Partitioning::Hash(keys, _m) => {
+                            Partitioning::Hash(keys.clone(), cp.groups.len())
+                        }
+                        _ => Partitioning::UnknownPartitioning(cp.groups.len()),
+                    };
+                    ShuffleReaderExec::try_new_coalesced(
+                        stage_id,
+                        k_shape,
+                        (*cp).clone(),
+                        schema,
+                        new_partitioning,
+                    )?
+                }
+                None => ShuffleReaderExec::try_new(
+                    stage_id,
+                    partitions,
+                    schema,
+                    partitioning,
+                )?,
+            };
+
+            Ok(Transformed::yes(Arc::new(reader)))
         } else {
             Ok(Transformed::no(plan))
         }

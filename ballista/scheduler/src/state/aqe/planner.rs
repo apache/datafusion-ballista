@@ -17,7 +17,8 @@
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
-    DistributedExchangeRule, PropagateEmptyExecRule, WarnOnDuplicateExecRule,
+    CoalescePartitionsRule, DistributedExchangeRule, PropagateEmptyExecRule,
+    WarnOnDuplicateExecRule,
 };
 
 use crate::state::execution_stage::StageOutput;
@@ -26,6 +27,7 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
 use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
@@ -296,8 +298,13 @@ impl AdaptivePlanner {
                 let (stage_ids, shuffle_writers) = stages
                     .into_iter()
                     .map(|plan| {
-                        // TODO: we need to find input stages for given stage
-                        //       thus result should change
+                        // Run the coalesce rule per-stage: the root of `plan` is
+                        // the stage's wrapper exchange, so the rule's walker sees
+                        // only this stage's input exchanges as the alignment
+                        // group. This avoids cross-stage gluing and stale state
+                        // that would arise if the rule walked the entire residual
+                        // plan in `default_optimizers()`.
+                        let plan = CoalescePartitionsRule.optimize(plan, config)?;
                         BallistaAdapter::adapt_to_ballista(
                             plan,
                             self.job_name.as_str(),
@@ -430,6 +437,10 @@ impl AdaptivePlanner {
         // to detect possible duplicate execs.
         // rule does not mutate plan hance it can go after `DistributedExchangeRule`
         physical_optimizers.push(Arc::new(WarnOnDuplicateExecRule::default()));
+
+        // `CoalescePartitionsRule` is invoked per-stage in `actionable_stages()`
+        // rather than registered here, so each invocation sees only one stage's
+        // plan and forms an alignment group scoped to that stage's inputs.
 
         physical_optimizers
     }

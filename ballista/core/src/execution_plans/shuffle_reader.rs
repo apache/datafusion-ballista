@@ -60,6 +60,39 @@ use std::task::{Context, Poll};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
+/// Coalesce plan attached to a `ShuffleReaderExec` or `UnresolvedShuffleExec`.
+///
+/// Produced by the AQE `CoalescePartitionsRule` and round-tripped through
+/// proto so it survives stage retries. Absent (`None` on the parent operator)
+/// means "no coalesce" — the existing one-to-one read behavior.
+///
+/// `K = self.groups.len()` is the post-coalesce partition count.
+/// `M = self.upstream_partition_count` is the original upstream partition count.
+/// EXPLAIN renders this as `coalesce: K of M` (see `DisplayAs::fmt_as`).
+///
+/// Note: `Default` is intentionally NOT derived. Callers must construct explicitly
+/// to keep "absent coalesce" (`Option::None`) semantically distinct from "empty plan".
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoalescePlan {
+    /// Original upstream partition count (M) before coalescing.
+    pub upstream_partition_count: u32,
+    /// Output partition groups. Length is K (the post-coalesce partition count).
+    pub groups: Vec<PartitionGroup>,
+}
+
+/// One output partition's upstream-index list.
+///
+/// Each value is an index into the M-shape `Vec<Vec<PartitionLocation>>` produced by
+/// the upstream `ShuffleWriterExec` (or `SortShuffleWriterExec`). The default
+/// `split_size_list_by_target_size` algorithm produces only contiguous ranges,
+/// but proto permits arbitrary index sets for future strategies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartitionGroup {
+    /// Indices into the upstream `Vec<Vec<PartitionLocation>>` that this output
+    /// partition concatenates.
+    pub upstream_indices: Vec<u32>,
+}
+
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
 #[derive(Debug, Clone)]
@@ -76,8 +109,14 @@ pub struct ShuffleReaderExec {
     pub broadcast: bool,
     /// Number of shuffle output partitions on the upstream stage. Useful for
     /// metrics and EXPLAIN output. For non-broadcast readers this equals
-    /// `partition.len()`.
+    /// `partition.len()` (or, when coalesced, `coalesce.upstream_partition_count`).
     pub upstream_partition_count: usize,
+    /// Optional coalesce metadata. `None` means the reader behaves identically to
+    /// the legacy one-to-one read (no coalescing). When `Some`, `partition.len()` equals
+    /// `coalesce.groups.len()` (= K, the post-coalesce partition count); the rule
+    /// is responsible for pre-concatenating the M-shape upstream
+    /// `Vec<Vec<PartitionLocation>>` into K-shape before invoking `try_new_coalesced`.
+    pub coalesce: Option<CoalescePlan>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -107,6 +146,7 @@ impl ShuffleReaderExec {
             partition,
             broadcast: false,
             upstream_partition_count,
+            coalesce: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -136,6 +176,58 @@ impl ShuffleReaderExec {
             partition: vec![all_locations],
             broadcast: true,
             upstream_partition_count,
+            coalesce: None,
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
+        })
+    }
+
+    /// Create a new coalesced ShuffleReaderExec.
+    ///
+    /// `partition` MUST be the K-shape, pre-concatenated `Vec<Vec<PartitionLocation>>`
+    /// produced by the AQE rule: each output index `idx` in `0..K` holds the
+    /// concatenation of the upstream `Vec<PartitionLocation>`s named by
+    /// `coalesce.groups[idx].upstream_indices`. `partitioning` MUST
+    /// be `Partitioning::Hash(keys, K)` (or another `Partitioning` of width K) so
+    /// `partition_count() == K` and `Partitioning::Hash` co-partitioning is preserved
+    /// across joins.
+    ///
+    /// In debug builds this constructor asserts `partition.len() == coalesce.groups.len()`
+    /// and `partitioning.partition_count() == coalesce.groups.len()` to catch
+    /// rule-side mistakes early; release builds skip the check.
+    pub fn try_new_coalesced(
+        stage_id: usize,
+        partition: Vec<Vec<PartitionLocation>>,
+        coalesce: CoalescePlan,
+        schema: SchemaRef,
+        partitioning: Partitioning,
+    ) -> Result<Self> {
+        debug_assert_eq!(
+            partition.len(),
+            coalesce.groups.len(),
+            "K-shape partition vector length must equal coalesce.groups.len()",
+        );
+        debug_assert_eq!(
+            partitioning.partition_count(),
+            coalesce.groups.len(),
+            "partitioning.partition_count() must equal coalesce.groups.len() (= K)",
+        );
+        let upstream_partition_count = coalesce.upstream_partition_count as usize;
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            partitioning,
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            stage_id,
+            schema,
+            partition,
+            broadcast: false,
+            upstream_partition_count,
+            coalesce: Some(coalesce),
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -151,6 +243,7 @@ impl ShuffleReaderExec {
             partition: self.partition.clone(),
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
+            coalesce: self.coalesce.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -165,6 +258,7 @@ impl ShuffleReaderExec {
             partition: self.partition.clone(),
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
+            coalesce: self.coalesce.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
@@ -192,7 +286,16 @@ impl DisplayAs for ShuffleReaderExec {
                         f,
                         "ShuffleReaderExec: partitioning: {}",
                         self.properties.partitioning,
-                    )
+                    )?;
+                    if let Some(c) = &self.coalesce {
+                        write!(
+                            f,
+                            ", coalesce: {} of {}",
+                            c.groups.len(),
+                            c.upstream_partition_count,
+                        )?;
+                    }
+                    Ok(())
                 }
             }
             DisplayFormatType::TreeRender => {
@@ -233,6 +336,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 partition: self.partition.clone(),
                 broadcast: self.broadcast,
                 upstream_partition_count: self.upstream_partition_count,
+                coalesce: self.coalesce.clone(),
                 metrics: ExecutionPlanMetricsSet::new(),
                 properties: self.properties.clone(),
                 work_dir: self.work_dir.clone(),
@@ -351,8 +455,19 @@ impl ExecutionPlan for ShuffleReaderExec {
                     partition_count
                 );
             }
-            let stat_for_partition =
-                stats_for_partition(idx, self.schema.fields().len(), &self.partition);
+            // K-shape (coalesced): self.partition[idx] is the inner Vec holding
+            // the concatenated upstream PartitionLocations for output partition
+            // `idx`. Sum across that inner Vec.
+            // M-shape (legacy): outer = replicas, inner = partition index.
+            // Use the existing axis-flipped helper.
+            let stat_for_partition = if self.coalesce.is_some() {
+                Ok(stats_for_partitions(
+                    self.schema.fields().len(),
+                    self.partition[idx].iter().map(|loc| loc.partition_stats),
+                ))
+            } else {
+                stats_for_partition(idx, self.schema.fields().len(), &self.partition)
+            };
 
             trace!(
                 "shuffle reader at stage: {} and partition {} returned statistics: {:?}",
@@ -880,6 +995,67 @@ mod tests {
     use datafusion::physical_plan::common;
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
+
+    /// Build an M-shape upstream `Vec<Vec<PartitionLocation>>` with per-partition
+    /// `num_bytes` and `num_rows` taken from parallel slices.
+    ///
+    /// `bytes_per_partition.len()` and `rows_per_partition.len()` define M and must
+    /// be equal. Used by tests that require distinct per-partition stats so the
+    /// test cannot accidentally pass under a wrong-axis aggregation.
+    fn make_upstream_partitions_nonuniform(
+        stage_id: usize,
+        bytes_per_partition: &[u64],
+        rows_per_partition: &[u64],
+    ) -> Vec<Vec<PartitionLocation>> {
+        assert_eq!(bytes_per_partition.len(), rows_per_partition.len());
+        let job_id = "test_job_coalesce_nonuniform";
+        bytes_per_partition
+            .iter()
+            .zip(rows_per_partition.iter())
+            .enumerate()
+            .map(|(i, (&bytes, &rows))| {
+                vec![PartitionLocation {
+                    map_partition_id: 0,
+                    partition_id: PartitionId {
+                        job_id: job_id.to_string(),
+                        stage_id,
+                        partition_id: i,
+                    },
+                    executor_meta: ExecutorMetadata {
+                        id: "executor_1".to_string(),
+                        host: "executor_1".to_string(),
+                        port: 7070,
+                        grpc_port: 8080,
+                        specification: ExecutorSpecification::default()
+                            .with_task_slots(1),
+                        os_info: ExecutorOperatingSystemSpecification::default(),
+                    },
+                    partition_stats: PartitionStats {
+                        num_rows: Some(rows),
+                        num_batches: None,
+                        num_bytes: Some(bytes),
+                    },
+                    file_id: None,
+                    is_sort_shuffle: false,
+                }]
+            })
+            .collect()
+    }
+
+    /// Concatenate selected upstream M-shape inner-Vecs into a K-shape inner-Vec.
+    ///
+    /// Used by the coalesce tests to mirror what the rule does at
+    /// construction time.
+    fn coalesce_upstream(
+        upstream: &[Vec<PartitionLocation>],
+        indices: &[u32],
+    ) -> Vec<PartitionLocation> {
+        let mut out = Vec::new();
+        for &i in indices {
+            out.extend(upstream[i as usize].iter().cloned());
+        }
+        out
+    }
 
     #[tokio::test]
     async fn test_stats_for_partitions_empty() {
@@ -1581,5 +1757,94 @@ mod tests {
             msg.contains("invalid partition index 1"),
             "unexpected error message: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_display_with_coalesce_renders_k_of_m() -> Result<()>
+    {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let coalesce = CoalescePlan {
+            upstream_partition_count: 8,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 1, 2],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![3, 4],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![5, 6, 7],
+                },
+            ],
+        };
+        let exec = ShuffleReaderExec::try_new_coalesced(
+            1,
+            vec![vec![], vec![], vec![]],
+            coalesce,
+            schema,
+            Partitioning::UnknownPartitioning(3),
+        )?;
+        // Exercise propagation through with_work_dir to verify the field survives a
+        // builder chain (Self-literal propagation pitfall).
+        let exec = exec.with_work_dir("/tmp".to_string());
+        let s = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).indent(false)
+        );
+        assert!(
+            s.contains(", coalesce: 3 of 8"),
+            "expected ', coalesce: 3 of 8' annotation; got: {s}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_coalesced_reader_partition_statistics_sums_concatenated_bytes()
+    -> Result<()> {
+        // Non-uniform group sizes [3,2] over M=5, with non-uniform per-partition
+        // byte counts [10,20,30,40,50]. Distinct expected totals (60 vs 90) ensure
+        // the wrong axis cannot accidentally produce the right result.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let stage_id = 16;
+        let bytes = [10u64, 20, 30, 40, 50];
+        let rows_per_partition = [1u64, 2, 3, 4, 5];
+        let m = bytes.len();
+        let upstream =
+            make_upstream_partitions_nonuniform(stage_id, &bytes, &rows_per_partition);
+        let groups = vec![
+            PartitionGroup {
+                upstream_indices: vec![0, 1, 2],
+            },
+            PartitionGroup {
+                upstream_indices: vec![3, 4],
+            },
+        ];
+        let k = groups.len();
+        let coalesce = CoalescePlan {
+            upstream_partition_count: m as u32,
+            groups: groups.clone(),
+        };
+        let k_shape: Vec<Vec<PartitionLocation>> = groups
+            .iter()
+            .map(|g| coalesce_upstream(&upstream, &g.upstream_indices))
+            .collect();
+
+        let exec = ShuffleReaderExec::try_new_coalesced(
+            stage_id,
+            k_shape,
+            coalesce,
+            schema,
+            Partitioning::UnknownPartitioning(k),
+        )?;
+
+        // partition[0] = upstream [0,1,2] -> 10+20+30 = 60 bytes, 1+2+3 = 6 rows
+        let stats0 = exec.partition_statistics(Some(0))?;
+        assert_eq!(60, *stats0.total_byte_size.get_value().unwrap());
+        assert_eq!(6, *stats0.num_rows.get_value().unwrap());
+        // partition[1] = upstream [3,4] -> 40+50 = 90 bytes, 4+5 = 9 rows
+        let stats1 = exec.partition_statistics(Some(1))?;
+        assert_eq!(90, *stats1.total_byte_size.get_value().unwrap());
+        assert_eq!(9, *stats1.num_rows.get_value().unwrap());
+        Ok(())
     }
 }
