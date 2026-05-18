@@ -38,6 +38,7 @@ pub struct JobStageResponse {
     pub task_duration_percentiles: Option<TaskPercentiles>,
     #[serde(default)]
     pub task_input_percentiles: Option<TaskPercentiles>,
+    #[serde(default)]
     pub tasks: Vec<Option<StageTaskResponse>>,
 }
 
