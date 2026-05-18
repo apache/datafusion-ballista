@@ -62,7 +62,7 @@ futures = { version = "0.3" }
 log = { version = "0.4" }
 parking_lot = { version = "0.12" }
 tempfile = { version = "3.27" }
-dashmap = { version = "6.1" }
+dashmap = { version = "6.2" }
 async-trait = { version = "0.1" }
 serde = { version = "1.0" }
 tokio-stream = { version = "0.1" }
