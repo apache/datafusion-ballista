@@ -197,10 +197,13 @@ impl App {
         }
 
         if let Some(popup) = &mut self.job_stages_popup {
-            if popup.is_tasks_view()
-                && let KeyCode::Esc = key.code
-            {
-                popup.set_no_details_view();
+            if popup.is_tasks_view() {
+                match key.code {
+                    KeyCode::Esc => popup.set_no_details_view(),
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    _ => {}
+                }
             } else if popup.is_plan_view() {
                 match key.code {
                     KeyCode::Esc => popup.set_no_details_view(),

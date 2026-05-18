@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ratatui::widgets::TableState;
+use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone, Debug)]
@@ -79,6 +79,8 @@ pub struct JobStagesPopup {
     pub job_id: String,
     pub stages: JobStagesResponse,
     pub table_state: TableState,
+    pub tasks_table_state: TableState,
+    pub tasks_scrollbar_state: ScrollbarState,
     details_view: StageDetailsView,
     plan_vertical_scroll_position: u16,
     plan_horizontal_scroll_position: u16,
@@ -90,6 +92,8 @@ impl JobStagesPopup {
             job_id,
             stages,
             table_state: TableState::default(),
+            tasks_table_state: TableState::default(),
+            tasks_scrollbar_state: ScrollbarState::new(0),
             details_view: StageDetailsView::None,
             plan_vertical_scroll_position: 0,
             plan_horizontal_scroll_position: 0,
@@ -105,7 +109,13 @@ impl JobStagesPopup {
     }
 
     pub fn set_tasks_view(&mut self) {
+        let task_count = self
+            .selected_stage()
+            .map(|s| s.tasks.iter().flatten().count())
+            .unwrap_or(0);
         self.details_view = StageDetailsView::Tasks;
+        self.tasks_table_state = TableState::default().with_selected(Some(0));
+        self.tasks_scrollbar_state = ScrollbarState::new(task_count).position(0);
     }
 
     pub fn set_plan_view(&mut self) {
@@ -146,6 +156,8 @@ impl JobStagesPopup {
             } else {
                 self.table_state.select(Some(0));
             }
+        } else if self.is_tasks_view() {
+            self.tasks_scroll_down();
         } else if self.is_plan_view() {
             self.plan_vertical_scroll_position =
                 self.plan_vertical_scroll_position.saturating_add(1);
@@ -168,10 +180,39 @@ impl JobStagesPopup {
             } else {
                 self.table_state.select(Some(len - 1));
             }
+        } else if self.is_tasks_view() {
+            self.tasks_scroll_up();
         } else if self.is_plan_view() {
             self.plan_vertical_scroll_position =
                 self.plan_vertical_scroll_position.saturating_sub(1);
         }
+    }
+
+    fn tasks_scroll_down(&mut self) {
+        let len = self
+            .selected_stage()
+            .map(|s| s.tasks.iter().flatten().count())
+            .unwrap_or(0);
+        if len == 0 {
+            return;
+        }
+        let next = self
+            .tasks_table_state
+            .selected()
+            .map(|i| (i + 1).min(len - 1))
+            .unwrap_or(0);
+        self.tasks_table_state.select(Some(next));
+        self.tasks_scrollbar_state = self.tasks_scrollbar_state.position(next);
+    }
+
+    fn tasks_scroll_up(&mut self) {
+        let prev = self
+            .tasks_table_state
+            .selected()
+            .map(|i| i.saturating_sub(1))
+            .unwrap_or(0);
+        self.tasks_table_state.select(Some(prev));
+        self.tasks_scrollbar_state = self.tasks_scrollbar_state.position(prev);
     }
 
     pub fn scroll_left(&mut self) {
