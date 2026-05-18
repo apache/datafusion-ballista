@@ -17,6 +17,7 @@
 
 pub mod datafusion_patch;
 pub mod distributed_exchange;
+pub mod join_info;
 pub mod propagate_empty;
 
 pub use datafusion_patch::*;

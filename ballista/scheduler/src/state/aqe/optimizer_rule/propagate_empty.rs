@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::ExchangeExec;
-use datafusion::common::JoinType::Inner;
+use crate::state::aqe::optimizer_rule::join_info::{as_join, is_guaranteed_empty};
+use datafusion::common::JoinType;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
@@ -27,7 +28,6 @@ use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use std::sync::Arc;
@@ -85,12 +85,28 @@ impl PropagateEmptyExecRule {
             && is_empty_exec!(aggregation.input())
         {
             empty_exec!(aggregation)
-        } else if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>()
-            // TODO: - we need other joins, this one is used for testing cancellation
-            && hash_join.join_type == Inner
-            && (is_empty_exec!(hash_join.left) || is_empty_exec!(hash_join.right))
-        {
-            empty_exec!(hash_join)
+        } else if let Some(join) = as_join(&plan) {
+            let left_empty = is_guaranteed_empty(join.left);
+            let right_empty = is_guaranteed_empty(join.right);
+
+            let should_eliminate = match join.join_type {
+                JoinType::Inner => left_empty || right_empty,
+                JoinType::Full => left_empty && right_empty,
+                JoinType::Left
+                | JoinType::RightSemi
+                | JoinType::LeftAnti
+                | JoinType::LeftMark => left_empty,
+                JoinType::Right
+                | JoinType::LeftSemi
+                | JoinType::RightAnti
+                | JoinType::RightMark => right_empty,
+            };
+
+            if should_eliminate {
+                Ok(Transformed::yes(Arc::new(EmptyExec::new(plan.schema()))))
+            } else {
+                Ok(Transformed::no(plan))
+            }
         } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
             let stats = exchange.partition_statistics(None)?;
             match stats.num_rows {
@@ -119,5 +135,98 @@ impl PhysicalOptimizerRule for PropagateEmptyExecRule {
 
     fn schema_check(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::aqe::optimizer_rule::join_info::test_helpers::*;
+    use datafusion::common::JoinType;
+
+    #[test]
+    fn inner_left_empty_eliminated() {
+        let plan = hash_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_some());
+    }
+
+    #[test]
+    fn inner_right_empty_eliminated() {
+        let plan = hash_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Inner);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_some());
+    }
+
+    #[test]
+    fn inner_neither_empty_not_eliminated() {
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Inner,
+        );
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_none());
+    }
+
+    #[test]
+    fn full_both_empty_eliminated() {
+        let plan = hash_join(empty_stats_exec(), empty_stats_exec(), JoinType::Full);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_some());
+    }
+
+    #[test]
+    fn full_only_left_empty_not_eliminated() {
+        // Full join preserves rows from both sides — one empty side is not enough
+        let plan = hash_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Full);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_none());
+    }
+
+    #[test]
+    fn left_join_left_empty_eliminated() {
+        let plan = hash_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Left);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_some());
+    }
+
+    #[test]
+    fn left_join_right_empty_not_eliminated() {
+        // Left join preserves all left rows even when right is empty
+        let plan = hash_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Left);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_none());
+    }
+
+    #[test]
+    fn right_join_right_empty_eliminated() {
+        let plan = hash_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Right);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_some());
+    }
+
+    #[test]
+    fn smj_inner_left_empty_eliminated() {
+        let plan =
+            sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_some());
+    }
+
+    #[test]
+    fn smj_left_join_right_empty_not_eliminated() {
+        let plan =
+            sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Left);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_none());
+    }
+
+    #[test]
+    fn smj_full_only_one_side_empty_not_eliminated() {
+        let plan =
+            sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Full);
+        let result = PropagateEmptyExecRule::transform(plan).unwrap();
+        assert!(result.data.as_any().downcast_ref::<EmptyExec>().is_none());
     }
 }
