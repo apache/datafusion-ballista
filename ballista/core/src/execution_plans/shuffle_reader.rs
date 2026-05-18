@@ -93,6 +93,44 @@ pub struct PartitionGroup {
     pub upstream_indices: Vec<u32>,
 }
 
+/// Split plan attached to a `ShuffleReaderExec` when `SplitPartitionsRule`
+/// has fired: the inverse of [`CoalescePlan`], one upstream partition fans
+/// out to many output partitions via round-robin file-list assignment.
+/// `K' = shards.len()`, `M = upstream_partition_count`, always `K' >= M`.
+/// Mutually exclusive with `CoalescePlan` on a given reader.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitPlan {
+    /// Original upstream partition count (M) before splitting.
+    pub upstream_partition_count: u32,
+    /// Output shards. Length is K' (the post-split partition count).
+    pub shards: Vec<SplitShard>,
+}
+
+/// One output partition's reference back to its upstream M-index.
+/// `split_factor == 1` is a passthrough (whole inner Vec → this shard);
+/// `split_factor > 1` means this shard takes file indices where
+/// `i % split_factor == shard_idx`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitShard {
+    /// Index into the upstream `Vec<Vec<PartitionLocation>>` this shard reads.
+    pub upstream_idx: u32,
+    /// Round-robin slot among the `split_factor` shards covering `upstream_idx`.
+    pub shard_idx: u32,
+    /// Number of shards this `upstream_idx` is split into; `1` is passthrough.
+    pub split_factor: u32,
+}
+
+impl SplitShard {
+    /// Round-robin ownership predicate. Encapsulates the
+    /// `i % split_factor == shard_idx` formula so the rule and the adapter
+    /// share one source of truth; also returns `true` for every `file_idx`
+    /// when `split_factor == 1` (passthrough), letting callers use the same
+    /// filter for both cases.
+    pub fn owns_file(&self, file_idx: usize) -> bool {
+        self.split_factor <= 1 || (file_idx as u32) % self.split_factor == self.shard_idx
+    }
+}
+
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
 #[derive(Debug, Clone)]
@@ -117,6 +155,11 @@ pub struct ShuffleReaderExec {
     /// is responsible for pre-concatenating the M-shape upstream
     /// `Vec<Vec<PartitionLocation>>` into K-shape before invoking `try_new_coalesced`.
     pub coalesce: Option<CoalescePlan>,
+    /// Optional split metadata. `None` means no split rewrite was applied.
+    /// When `Some`, `partition.len() == split.shards.len()` (K') and the
+    /// adapter has pre-sharded the M-shape upstream locations. Mutually
+    /// exclusive with `coalesce`.
+    pub split: Option<SplitPlan>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -147,6 +190,7 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: None,
+            split: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -177,6 +221,7 @@ impl ShuffleReaderExec {
             broadcast: true,
             upstream_partition_count,
             coalesce: None,
+            split: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -228,6 +273,44 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: Some(coalesce),
+            split: None,
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
+        })
+    }
+
+    /// Create a new split ShuffleReaderExec. `partition` MUST be the K'-shape,
+    /// pre-sharded `Vec<Vec<PartitionLocation>>` produced by `BallistaAdapter`
+    /// from the leaf Exchange's `SplitPlan`. `partitioning` MUST be
+    /// `Partitioning::UnknownPartitioning(K')` — file-list sharding breaks
+    /// hash co-partitioning, which is why `SplitPartitionsRule` bails on
+    /// join / FinalPartitioned consumers.
+    pub fn try_new_split(
+        stage_id: usize,
+        partition: Vec<Vec<PartitionLocation>>,
+        split: SplitPlan,
+        schema: SchemaRef,
+        partitioning: Partitioning,
+    ) -> Result<Self> {
+        debug_assert_eq!(partition.len(), split.shards.len());
+        debug_assert_eq!(partitioning.partition_count(), split.shards.len());
+        let upstream_partition_count = split.upstream_partition_count as usize;
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            partitioning,
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            stage_id,
+            schema,
+            partition,
+            broadcast: false,
+            upstream_partition_count,
+            coalesce: None,
+            split: Some(split),
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -244,6 +327,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            split: self.split.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -259,6 +343,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            split: self.split.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
@@ -293,6 +378,14 @@ impl DisplayAs for ShuffleReaderExec {
                             ", coalesce: {} of {}",
                             c.groups.len(),
                             c.upstream_partition_count,
+                        )?;
+                    }
+                    if let Some(s) = &self.split {
+                        write!(
+                            f,
+                            ", split: {} of {}",
+                            s.shards.len(),
+                            s.upstream_partition_count,
                         )?;
                     }
                     Ok(())
@@ -337,6 +430,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 broadcast: self.broadcast,
                 upstream_partition_count: self.upstream_partition_count,
                 coalesce: self.coalesce.clone(),
+                split: self.split.clone(),
                 metrics: ExecutionPlanMetricsSet::new(),
                 properties: self.properties.clone(),
                 work_dir: self.work_dir.clone(),
@@ -455,12 +549,13 @@ impl ExecutionPlan for ShuffleReaderExec {
                     partition_count
                 );
             }
-            // K-shape (coalesced): self.partition[idx] is the inner Vec holding
-            // the concatenated upstream PartitionLocations for output partition
-            // `idx`. Sum across that inner Vec.
+            // K-shape (coalesced) and K'-shape (split): self.partition[idx] is the
+            // inner Vec holding the per-output-partition PartitionLocations (already
+            // concatenated for coalesce or round-robin-sharded for split). Sum across
+            // that inner Vec.
             // M-shape (legacy): outer = replicas, inner = partition index.
             // Use the existing axis-flipped helper.
-            let stat_for_partition = if self.coalesce.is_some() {
+            let stat_for_partition = if self.coalesce.is_some() || self.split.is_some() {
                 Ok(stats_for_partitions(
                     self.schema.fields().len(),
                     self.partition[idx].iter().map(|loc| loc.partition_stats),

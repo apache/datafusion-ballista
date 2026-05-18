@@ -15,14 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod coalesce_partitions;
-pub mod datafusion_patch;
-pub mod distributed_exchange;
-pub mod propagate_empty;
-pub mod split_partitions;
+//! AQE split-skewed-partitions helpers. See [`algorithm`] for details.
 
-pub use coalesce_partitions::*;
-pub use datafusion_patch::*;
-pub use distributed_exchange::*;
-pub use propagate_empty::*;
-pub use split_partitions::*;
+pub(crate) mod algorithm;
+pub(crate) use algorithm::*;

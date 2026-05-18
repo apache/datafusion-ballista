@@ -26,12 +26,9 @@
 
 use crate::assert_plan;
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::{mock_batch, mock_schema};
+use crate::state::aqe::test::{mock_batch, mock_schema, partitions_with_bytes_and_files};
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
-};
+use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -81,31 +78,9 @@ fn register_partitioned_table(
 fn partitions_with_byte_sizes(
     per_partition_bytes: &[u64],
 ) -> Vec<Vec<PartitionLocation>> {
-    per_partition_bytes
-        .iter()
-        .enumerate()
-        .map(|(idx, &bytes)| {
-            vec![PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: "".to_string(),
-                    stage_id: 0,
-                    partition_id: idx,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "".to_string(),
-                    host: "".to_string(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_task_slots(0),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats::new(Some(1), None, Some(bytes)),
-                file_id: None,
-                is_sort_shuffle: false,
-            }]
-        })
-        .collect()
+    let with_files: Vec<(u64, usize)> =
+        per_partition_bytes.iter().map(|&b| (b, 1)).collect();
+    partitions_with_bytes_and_files(&with_files)
 }
 
 /// Happy path: M=8 upstream partitions @ 50 bytes each, target=200.

@@ -18,7 +18,7 @@ use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DistributedExchangeRule, PropagateEmptyExecRule,
-    WarnOnDuplicateExecRule,
+    SplitPartitionsRule, WarnOnDuplicateExecRule,
 };
 
 use crate::state::execution_stage::StageOutput;
@@ -305,6 +305,14 @@ impl AdaptivePlanner {
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
+                        // SplitPartitionsRule runs immediately after coalesce so
+                        // it sees post-coalesce stats: if coalesce already folded
+                        // small partitions away, the resulting median is across
+                        // fewer, larger buckets and split is unlikely to fire
+                        // (correct). The rule short-circuits on any leaf that
+                        // already has `coalesce()` set, so the two rules can't
+                        // produce conflicting decisions on the same Exchange.
+                        let plan = SplitPartitionsRule.optimize(plan, config)?;
                         BallistaAdapter::adapt_to_ballista(
                             plan,
                             self.job_name.as_str(),
