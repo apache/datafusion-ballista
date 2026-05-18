@@ -34,7 +34,7 @@
 //!   shuffle metadata.
 
 use ballista_core::execution_plans::{
-    CoalescePlan, stats_for_partition, stats_for_partitions,
+    CoalescePlan, SplitPlan, stats_for_partition, stats_for_partitions,
 };
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -96,6 +96,21 @@ pub struct ExchangeExec {
     /// transform-rebuilt parent chains. Same pattern as `shuffle_partitions`.
     coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
 
+    /// Per-stage split decision attached to this Exchange by
+    /// `SplitPartitionsRule` before adapter conversion. Mutually exclusive
+    /// with [`Self::coalesce`] — the rule bails if either slot is already set.
+    ///
+    /// `None` means: no split rewrite.
+    /// `Some(sp)` means: the adapter pre-shards the M-shape upstream locations
+    /// into K' = `sp.shards.len()` output partitions (always `K' >= M`) via
+    /// round-robin file-list assignment, and builds the SR with
+    /// `try_new_split(sp)`. Output partitioning becomes `UnknownPartitioning(K')`.
+    ///
+    /// Wrapped in `Arc<Mutex<…>>` for the same reason as `coalesce` —
+    /// `with_new_children` must propagate the slot when the parent chain is
+    /// rebuilt by a transform pass.
+    split: Arc<Mutex<Option<Arc<SplitPlan>>>>,
+
     /// this disables stage from running even it would be suitable to run.
     ///
     /// the main reason for this property this is to allow rules to override
@@ -152,6 +167,7 @@ impl ExchangeExec {
             shuffle_partitions: stage_partitions,
             partitioning,
             coalesce: Arc::new(Mutex::new(None)),
+            split: Arc::new(Mutex::new(None)),
             inactive_stage: false,
         }
     }
@@ -227,6 +243,17 @@ impl ExchangeExec {
     pub fn coalesce(&self) -> Option<Arc<CoalescePlan>> {
         self.coalesce.lock().clone()
     }
+
+    /// Attaches a `SplitPlan`. Mutually exclusive with [`Self::set_coalesce`];
+    /// the rule enforces that invariant. Idempotent overwrite.
+    pub fn set_split(&self, sp: Arc<SplitPlan>) {
+        self.split.lock().replace(sp);
+    }
+
+    /// Returns the attached `SplitPlan`, if `set_split` was called.
+    pub fn split(&self) -> Option<Arc<SplitPlan>> {
+        self.split.lock().clone()
+    }
 }
 
 impl DisplayAs for ExchangeExec {
@@ -256,6 +283,14 @@ impl DisplayAs for ExchangeExec {
                         ", coalesce={} of {}",
                         cp.groups.len(),
                         cp.upstream_partition_count,
+                    )?;
+                }
+                if let Some(sp) = self.split.lock().as_ref() {
+                    write!(
+                        f,
+                        ", split={} of {}",
+                        sp.shards.len(),
+                        sp.upstream_partition_count,
                     )?;
                 }
                 Ok(())
@@ -323,6 +358,8 @@ impl ExecutionPlan for ExchangeExec {
             // Carry the coalesce slot so a transform-rebuilt parent chain
             // doesn't lose the rule's decision.
             new_exec.coalesce = self.coalesce.clone();
+            // Same reason for the split slot.
+            new_exec.split = self.split.clone();
 
             Ok(Arc::new(new_exec))
         } else {

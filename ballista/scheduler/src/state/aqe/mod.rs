@@ -57,6 +57,7 @@ pub(crate) mod coalesce;
 pub(crate) mod execution_plan;
 pub mod optimizer_rule;
 pub mod planner;
+pub(crate) mod split;
 #[cfg(test)]
 mod test;
 

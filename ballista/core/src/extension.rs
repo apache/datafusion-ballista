@@ -21,8 +21,9 @@ use crate::config::{
     BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
     BALLISTA_COALESCE_TARGET_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
-    BallistaConfig,
+    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_SPLIT_ENABLED,
+    BALLISTA_SPLIT_MAX_FACTOR, BALLISTA_SPLIT_MIN_BYTES, BALLISTA_SPLIT_SKEW_FACTOR,
+    BALLISTA_STANDALONE_PARALLELISM, BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -267,6 +268,28 @@ pub trait SessionConfigExt {
     fn ballista_coalesce_merged_partition_factor(&self) -> f64;
     /// Sets the merged-partition early-flush factor (Spark legacy).
     fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns whether the AQE split-skewed-partitions rule is enabled.
+    fn ballista_split_enabled(&self) -> bool;
+    /// Sets whether the AQE split-skewed-partitions rule is enabled.
+    fn with_ballista_split_enabled(self, enabled: bool) -> Self;
+
+    /// Returns the multiplier over per-partition byte median at which a partition
+    /// qualifies as skewed (Spark's `skewedPartitionFactor`).
+    fn ballista_split_skew_factor(&self) -> f64;
+    /// Sets the per-partition skew factor.
+    fn with_ballista_split_skew_factor(self, factor: f64) -> Self;
+
+    /// Returns the minimum partition byte size below which the split rule
+    /// never fires.
+    fn ballista_split_min_split_bytes(&self) -> u64;
+    /// Sets the minimum-bytes threshold for splitting.
+    fn with_ballista_split_min_split_bytes(self, bytes: u64) -> Self;
+
+    /// Returns the upper bound on per-partition split factor.
+    fn ballista_split_max_split_factor(&self) -> u32;
+    /// Sets the upper bound on per-partition split factor.
+    fn with_ballista_split_max_split_factor(self, factor: u32) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -680,6 +703,75 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_str(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, &s)
+        }
+    }
+
+    fn ballista_split_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.split_enabled())
+            .unwrap_or_else(|| BallistaConfig::default().split_enabled())
+    }
+
+    fn with_ballista_split_enabled(self, enabled: bool) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_SPLIT_ENABLED, enabled)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_SPLIT_ENABLED, enabled)
+        }
+    }
+
+    fn ballista_split_skew_factor(&self) -> f64 {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.split_skew_factor())
+            .unwrap_or_else(|| BallistaConfig::default().split_skew_factor())
+    }
+
+    fn with_ballista_split_skew_factor(self, factor: f64) -> Self {
+        let s = factor.to_string();
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_SPLIT_SKEW_FACTOR, &s)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_SPLIT_SKEW_FACTOR, &s)
+        }
+    }
+
+    fn ballista_split_min_split_bytes(&self) -> u64 {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.split_min_split_bytes())
+            .unwrap_or_else(|| BallistaConfig::default().split_min_split_bytes())
+    }
+
+    fn with_ballista_split_min_split_bytes(self, bytes: u64) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_SPLIT_MIN_BYTES, bytes as usize)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_SPLIT_MIN_BYTES, bytes as usize)
+        }
+    }
+
+    fn ballista_split_max_split_factor(&self) -> u32 {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.split_max_split_factor())
+            .unwrap_or_else(|| BallistaConfig::default().split_max_split_factor())
+    }
+
+    fn with_ballista_split_max_split_factor(self, factor: u32) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_SPLIT_MAX_FACTOR, factor as usize)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_SPLIT_MAX_FACTOR, factor as usize)
         }
     }
 }

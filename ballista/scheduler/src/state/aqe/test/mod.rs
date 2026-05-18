@@ -21,6 +21,8 @@ mod alter_stages;
 mod coalesce_rule;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// Functional tests for the SplitPartitionsRule (mixed SQL bail + synthetic happy path)
+mod split_rule;
 
 use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use ballista_core::extension::SessionConfigExt;
@@ -140,4 +142,57 @@ pub(crate) fn mock_context_sort_shuffle() -> SessionContext {
         .build();
 
     SessionContext::new_with_state(state)
+}
+
+/// Build a `Vec<Vec<PartitionLocation>>` where upstream partition `i`
+/// reports `bytes_and_files[i].0` bytes spread evenly across
+/// `bytes_and_files[i].1` `PartitionLocation` entries (one per upstream
+/// map task).
+///
+/// The two consumers of this helper read different fields:
+/// - the **coalesce** rule sums `num_bytes` across leaves; file count is
+///   irrelevant (use `files = 1`).
+/// - the **split** rule reads both summed `num_bytes` and per-partition
+///   file count (`inner.len()` on leaf 0).
+///
+/// When `files == 1` the entry uses `file_id = None` to match the
+/// coalesce-style "no file metadata" shape; for `files >= 2` each entry
+/// gets a distinct `file_id` and `map_partition_id` so round-robin
+/// assignment in the split adapter has stable ordering.
+pub(crate) fn partitions_with_bytes_and_files(
+    bytes_and_files: &[(u64, usize)],
+) -> Vec<Vec<PartitionLocation>> {
+    bytes_and_files
+        .iter()
+        .enumerate()
+        .map(|(idx, &(bytes, files))| {
+            let per_file = if files == 0 { 0 } else { bytes / files as u64 };
+            (0..files)
+                .map(|file_id| PartitionLocation {
+                    map_partition_id: if files == 1 { 0 } else { file_id },
+                    partition_id: PartitionId {
+                        job_id: "".to_string(),
+                        stage_id: 0,
+                        partition_id: idx,
+                    },
+                    executor_meta: ExecutorMetadata {
+                        id: "".to_string(),
+                        host: "".to_string(),
+                        port: 0,
+                        grpc_port: 0,
+                        specification: ExecutorSpecification::default()
+                            .with_task_slots(0),
+                        os_info: ExecutorOperatingSystemSpecification::default(),
+                    },
+                    partition_stats: PartitionStats::new(Some(1), None, Some(per_file)),
+                    file_id: if files == 1 {
+                        None
+                    } else {
+                        Some(file_id as u64)
+                    },
+                    is_sort_shuffle: false,
+                })
+                .collect()
+        })
+        .collect()
 }
