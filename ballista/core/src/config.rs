@@ -85,6 +85,9 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 /// pattern in the distributed planner. Set to `0` to disable promotion.
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
+/// Configuration key for enabling dynamic streaming↔hash aggregation switching in AQE.
+pub const BALLISTA_AQE_DYNAMIC_AGGREGATE_ENABLED: &str =
+    "ballista.aqe.dynamic_aggregate.enabled";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -163,6 +166,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           Set to 0 to disable promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_AQE_DYNAMIC_AGGREGATE_ENABLED.to_string(),
+                         "Enable dynamic streaming↔hash aggregation switching in Adaptive Query \
+                          Execution. When enabled, re-derives InputOrderMode from the current \
+                          input EquivalenceProperties after each stage completes and rewrites the \
+                          aggregate if the derived mode differs (EXPERIMENTAL).".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -381,6 +391,11 @@ impl BallistaConfig {
     /// `0` disables promotion.
     pub fn broadcast_join_threshold_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
+    }
+
+    /// Returns whether dynamic streaming↔hash aggregation switching is enabled in AQE.
+    pub fn aqe_dynamic_aggregate_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_AQE_DYNAMIC_AGGREGATE_ENABLED)
     }
 
     /// Should client employ pull or push job tracking strategy

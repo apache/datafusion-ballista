@@ -17,8 +17,10 @@
 
 pub mod datafusion_patch;
 pub mod distributed_exchange;
+pub mod dynamic_aggregate_algorithm;
 pub mod propagate_empty;
 
 pub use datafusion_patch::*;
 pub use distributed_exchange::*;
+pub use dynamic_aggregate_algorithm::*;
 pub use propagate_empty::*;

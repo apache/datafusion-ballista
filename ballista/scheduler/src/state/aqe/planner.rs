@@ -17,7 +17,8 @@
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
-    DistributedExchangeRule, PropagateEmptyExecRule, WarnOnDuplicateExecRule,
+    DistributedExchangeRule, DynamicAggregateAlgorithmRule, PropagateEmptyExecRule,
+    WarnOnDuplicateExecRule,
 };
 
 use crate::state::execution_stage::StageOutput;
@@ -424,6 +425,7 @@ impl AdaptivePlanner {
     fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers = PhysicalOptimizer::new().rules;
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
+        physical_optimizers.push(Arc::new(DynamicAggregateAlgorithmRule::default()));
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
         // we should remove it at the later stage this is just temporary
