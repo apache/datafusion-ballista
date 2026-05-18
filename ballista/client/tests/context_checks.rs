@@ -42,13 +42,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_collect(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -82,13 +83,14 @@ mod supported {
     // tests if client will collect statistics for
     // collect/show operation
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_collect_client_statistics_for_show(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -163,13 +165,14 @@ mod supported {
     // tests if client will collect statistics for
     // insert operation
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_collect_client_statistics_for_insert(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -235,13 +238,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_show_configs(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         let result = ctx
@@ -267,13 +271,14 @@ mod supported {
         Ok(())
     }
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_show_configs_ballista(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         let state = ctx.state();
@@ -304,13 +309,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_set_configs(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
@@ -340,13 +346,14 @@ mod supported {
     // select from ballista config
     // check for SET =
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_show_tables(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -381,13 +388,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_create_external_table(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -414,13 +422,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_collect_from_dataframe(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -450,13 +459,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_write(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -503,13 +513,14 @@ mod supported {
     // `datafusion.execution.parquet.schema_force_view_types` have been disabled
     // temporary as they could break shuffle reader/writer.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_disable_view_types(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         let result = ctx
@@ -539,13 +550,14 @@ mod supported {
     // has been disabled until fixed
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_disable_collect_left(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         let result = ctx
@@ -569,13 +581,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_show_with_url_table(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -605,13 +618,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_support_sql_insert_into(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) {
@@ -665,16 +679,17 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
-    #[case::standalone_state(standalone_context_with_state())]
-    #[case::remote_state(remote_context_with_state())]
-    #[case::remote_state_push(remote_context_with_state_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_write_read_roundtrip(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling(),
+            standalone_context_with_state(),
+            remote_context_with_state(),
+            remote_context_with_state_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -764,16 +779,17 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
-    #[case::standalone_state(standalone_context_with_state())]
-    #[case::remote_state(remote_context_with_state())]
-    #[case::remote_state_push(remote_context_with_state_push_scheduling())]
     #[tokio::test]
     async fn should_execute_sql_show_multiple_times(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling(),
+            standalone_context_with_state(),
+            remote_context_with_state(),
+            remote_context_with_state_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -810,16 +826,17 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
-    #[case::standalone_state(standalone_context_with_state())]
-    #[case::remote_state(remote_context_with_state())]
-    #[case::remote_state_push(remote_context_with_state_push_scheduling())]
     #[tokio::test]
     async fn should_execute_group_by(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling(),
+            standalone_context_with_state(),
+            remote_context_with_state(),
+            remote_context_with_state_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -851,13 +868,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_force_local_read(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -910,13 +928,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_force_local_read_with_flight(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -977,13 +996,14 @@ mod supported {
     // Ballista defaults to sort-merge join (see issue #1648). This test
     // verifies that default by inspecting the physical plan.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_support_sort_merge_join(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -1033,13 +1053,14 @@ mod supported {
     // Users can opt back into hash join via the standard DataFusion knob,
     // even though Ballista defaults `prefer_hash_join` to false. See #1648.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_support_hash_join_when_opted_in(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -1092,13 +1113,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_explain_query_correctly(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) {
         let result = ctx
@@ -1150,13 +1172,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_execute_explain_analyze_query(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         let result = ctx
@@ -1234,13 +1257,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_force_client_pull(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -1293,14 +1317,15 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
 
     async fn should_execute_sql_collect_from_arrow_file(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
@@ -1332,13 +1357,14 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::remote_push(remote_context_push_scheduling())]
     #[tokio::test]
     async fn should_set_io_retry_config(
         #[future(awt)]
-        #[case]
+        #[values(
+            standalone_context(),
+            remote_context(),
+            remote_context_push_scheduling()
+        )]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         ctx.sql("SET ballista.client.io_retries_times = 5")
