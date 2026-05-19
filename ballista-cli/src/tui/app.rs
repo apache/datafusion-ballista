@@ -1115,4 +1115,115 @@ mod tests {
         app.jobs_data.table_state.select(Some(0));
         assert!(!app.is_selected_job_completed_or_running());
     }
+
+    // --- has_selected_job with selection ---
+
+    #[test]
+    fn has_selected_job_true_when_selected() {
+        let mut app = make_app();
+        app.jobs_data.jobs = vec![make_job("j1", "Running")];
+        app.jobs_data.table_state.select(Some(0));
+        assert!(app.has_selected_job());
+    }
+
+    // --- format_datetime tests ---
+
+    #[test]
+    fn format_datetime_zero_timestamp_is_valid_format() {
+        let app = make_app();
+        let result = app.format_datetime(0);
+        assert_eq!(result, "1970-01-01 02:00:00");
+    }
+
+    #[test]
+    fn format_datetime_known_timestamp_contains_year() {
+        // 1_000_000_000_000 ms = 2001-09-09T01:46:40 UTC
+        let app = make_app();
+        let result = app.format_datetime(1_000_000_000_000);
+        assert_eq!(result, "2001-09-09 04:46:40");
+    }
+
+    #[test]
+    fn format_datetime_out_of_range_returns_invalid() {
+        let app = make_app();
+        assert_eq!(app.format_datetime(i64::MAX), "Invalid date");
+    }
+
+    // --- format_duration tests ---
+
+    #[test]
+    fn format_duration_zero_ms_returns_nanoseconds() {
+        let app = make_app();
+        assert_eq!(app.format_duration(0), "0ns");
+    }
+
+    #[test]
+    fn format_duration_one_ms_returns_milliseconds() {
+        let app = make_app();
+        assert_eq!(app.format_duration(1), "1.00ms");
+    }
+
+    #[test]
+    fn format_duration_one_second() {
+        let app = make_app();
+        assert_eq!(app.format_duration(1_000), "1.00s");
+    }
+
+    #[test]
+    fn format_duration_large_value_returns_seconds() {
+        let app = make_app();
+        assert_eq!(app.format_duration(90_000), "90.00s");
+    }
+
+    // --- format_count tests ---
+
+    #[test]
+    fn format_count_zero() {
+        let app = make_app();
+        assert_eq!(app.format_count(0), "0");
+    }
+
+    #[test]
+    fn format_count_below_thousand_returns_raw() {
+        let app = make_app();
+        assert_eq!(app.format_count(999), "999");
+    }
+
+    #[test]
+    fn format_count_thousands_two_decimals() {
+        let app = make_app();
+        assert_eq!(app.format_count(1_000), "1.00K");
+    }
+
+    #[test]
+    fn format_count_thousands_large_one_decimal() {
+        let app = make_app();
+        assert_eq!(app.format_count(100_000), "100.0K");
+    }
+
+    #[test]
+    fn format_count_millions() {
+        let app = make_app();
+        assert_eq!(app.format_count(1_000_000), "1.00M");
+    }
+
+    #[test]
+    fn format_count_billions() {
+        let app = make_app();
+        assert_eq!(app.format_count(1_000_000_000), "1.00B");
+    }
+
+    #[test]
+    fn format_count_trillions() {
+        let app = make_app();
+        assert_eq!(app.format_count(1_000_000_000_000), "1.00T");
+    }
+
+    // --- format_size additional boundary ---
+
+    #[test]
+    fn format_size_terabytes() {
+        let app = make_app();
+        assert_eq!(app.format_size(2 * 1024 * 1024 * 1024 * 1024), "2.0TB");
+    }
 }
