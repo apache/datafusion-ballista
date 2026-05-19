@@ -91,7 +91,7 @@ impl JobStagesPopup {
     pub fn new(job_id: String, stages: JobStagesResponse) -> Self {
         Self {
             job_id,
-            scrollbar_state: ScrollbarState::new(stages.stages.len()).position(0),
+            scrollbar_state: ScrollbarState::new(stages.stages.len()),
             stages,
             table_state: TableState::default(),
             tasks_table_state: TableState::default(),
@@ -114,7 +114,7 @@ impl JobStagesPopup {
         let task_count = self.tasks_count();
         self.details_view = StageDetailsView::Tasks;
         self.tasks_table_state = TableState::default().with_selected(Some(0));
-        self.tasks_scrollbar_state = ScrollbarState::new(task_count).position(0);
+        self.tasks_scrollbar_state = ScrollbarState::new(task_count);
     }
 
     pub fn set_plan_view(&mut self) {
