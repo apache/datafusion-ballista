@@ -139,16 +139,21 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     if !sorted_jobs.is_empty() {
         let mut scroll_state = app.jobs_data.scrollbar_state;
         let mut table_state = app.jobs_data.table_state;
+        let table_area = Layout::horizontal([
+            Constraint::Min(1),    // Table
+            Constraint::Length(3), // Scrollbar
+        ])
+        .split(rects[1]);
         render_jobs_table(
             f,
-            rects[1],
+            table_area[0],
             &sorted_jobs,
             &mut table_state,
             &app.jobs_data.sort_column,
             &app.jobs_data.sort_order,
             app,
         );
-        render_scrollbar(f, rects[1], &mut scroll_state);
+        render_scrollbar(f, table_area[1], &mut scroll_state);
     } else {
         render_no_jobs(f, rects[1]);
     }
