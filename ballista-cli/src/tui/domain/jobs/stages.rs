@@ -199,26 +199,29 @@ impl JobStagesPopup {
         if tasks_count == 0 {
             return;
         }
-        let next = self
-            .tasks_table_state
-            .selected()
-            .map(|i| (i + 1).min(tasks_count - 1))
-            .unwrap_or(0);
-        self.tasks_table_state.select(Some(next));
-        self.tasks_scrollbar_state = self.tasks_scrollbar_state.position(next);
+        let next = match self.tasks_table_state.selected() {
+            Some(i) if i < tasks_count - 1 => Some(i + 1),
+            Some(_) => None,
+            None => Some(0),
+        };
+        self.tasks_table_state.select(next);
+        self.tasks_scrollbar_state =
+            self.tasks_scrollbar_state.position(next.unwrap_or(0));
     }
 
     fn tasks_scroll_up(&mut self) {
-        if self.tasks_count() == 0 {
+        let tasks_count = self.tasks_count();
+        if tasks_count == 0 {
             return;
         }
-        let prev = self
-            .tasks_table_state
-            .selected()
-            .map(|i| i.saturating_sub(1))
-            .unwrap_or(0);
-        self.tasks_table_state.select(Some(prev));
-        self.tasks_scrollbar_state = self.tasks_scrollbar_state.position(prev);
+        let prev = match self.tasks_table_state.selected() {
+            Some(i) if i > 0 => Some(i - 1),
+            Some(_) => None,
+            None => Some(tasks_count - 1),
+        };
+        self.tasks_table_state.select(prev);
+        self.tasks_scrollbar_state =
+            self.tasks_scrollbar_state.position(prev.unwrap_or(0));
     }
 
     pub fn scroll_left(&mut self) {
