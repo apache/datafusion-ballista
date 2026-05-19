@@ -77,6 +77,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
             Constraint::Percentage(9),  // Start latency
             Constraint::Percentage(9),  // Duration
             Constraint::Percentage(9),  // Total Time
+            Constraint::Percentage(1),  // A bit of a space
         ],
     )
     .block(
