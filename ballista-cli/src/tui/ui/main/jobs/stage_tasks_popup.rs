@@ -18,7 +18,7 @@
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::StageTaskResponse;
 use ratatui::Frame;
-use ratatui::layout::Constraint;
+use ratatui::layout::{Constraint, Layout};
 use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{
@@ -95,8 +95,13 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
 
     let mut table_state = popup.tasks_table_state;
     let mut scroll_state = popup.tasks_scrollbar_state;
-    f.render_stateful_widget(table, area, &mut table_state);
-    crate::tui::ui::vertical_scrollbar::render_scrollbar(f, area, &mut scroll_state);
+    let rects = Layout::horizontal([
+        Constraint::Min(1),    // Table
+        Constraint::Length(3), // Scrollbar
+    ])
+    .split(area);
+    f.render_stateful_widget(table, rects[0], &mut table_state);
+    crate::tui::ui::vertical_scrollbar::render_scrollbar(f, rects[1], &mut scroll_state);
 }
 
 fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'static> {
