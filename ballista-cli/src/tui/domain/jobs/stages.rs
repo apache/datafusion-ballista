@@ -111,10 +111,7 @@ impl JobStagesPopup {
     }
 
     pub fn set_tasks_view(&mut self) {
-        let task_count = self
-            .selected_stage()
-            .map(|s| s.tasks.iter().flatten().count())
-            .unwrap_or(0);
+        let task_count = self.tasks_count();
         self.details_view = StageDetailsView::Tasks;
         self.tasks_table_state = TableState::default().with_selected(Some(0));
         self.tasks_scrollbar_state = ScrollbarState::new(task_count).position(0);
@@ -197,17 +194,14 @@ impl JobStagesPopup {
     }
 
     fn tasks_scroll_down(&mut self) {
-        let len = self
-            .selected_stage()
-            .map(|s| s.tasks.iter().flatten().count())
-            .unwrap_or(0);
-        if len == 0 {
+        let tasks_count = self.tasks_count();
+        if tasks_count == 0 {
             return;
         }
         let next = self
             .tasks_table_state
             .selected()
-            .map(|i| (i + 1).min(len - 1))
+            .map(|i| (i + 1).min(tasks_count - 1))
             .unwrap_or(0);
         self.tasks_table_state.select(Some(next));
         self.tasks_scrollbar_state = self.tasks_scrollbar_state.position(next);
@@ -241,6 +235,12 @@ impl JobStagesPopup {
         self.table_state
             .selected()
             .and_then(|i| self.stages.stages.get(i))
+    }
+
+    fn tasks_count(&self) -> usize {
+        self.selected_stage()
+            .map(|s| s.tasks.iter().flatten().count())
+            .unwrap_or(0)
     }
 }
 
