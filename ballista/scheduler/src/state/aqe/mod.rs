@@ -139,7 +139,6 @@ impl AdaptiveExecutionGraph {
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         queued_at: u64,
-        session_config: Arc<SessionConfig>,
     ) -> ballista_core::error::Result<Self> {
         let session_id = ctx.session_id();
 
@@ -151,7 +150,7 @@ impl AdaptiveExecutionGraph {
         //       do we handle it now or just ignore it?
         let physical_plan = handle_explain_plan(job_id, ctx, logical_plan, plan).await?;
         let logical_plan = Some(logical_plan.display_indent().to_string());
-
+        let session_config = Arc::new(ctx.copied_config());
         // TODO: run planner set of optimizers in try_new
         let mut planner = AdaptivePlanner::try_new(
             &session_config,

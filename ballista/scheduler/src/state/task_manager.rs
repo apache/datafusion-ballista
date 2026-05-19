@@ -282,8 +282,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
-        let session_config = Arc::new(ctx.copied_config());
-
+        let session_state = ctx.state();
+        let session_config = session_state.config();
         let mut graph = if session_config.ballista_adaptive_query_planner_enabled() {
             debug!("Using adaptive query planner (AQE) for job planning");
             warn!(
@@ -297,12 +297,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     &ctx,
                     logical_plan,
                     queued_at,
-                    session_config,
                 )
                 .await?,
             ) as ExecutionGraphBox
         } else {
             debug!("Using static query planner for job planning");
+            let session_config = Arc::new(ctx.copied_config());
 
             let plan = ctx.state().create_physical_plan(logical_plan).await?;
             let plan = handle_explain_plan(job_id, &ctx, logical_plan, plan).await?;
