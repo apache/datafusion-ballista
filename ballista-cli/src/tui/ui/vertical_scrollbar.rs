@@ -16,7 +16,7 @@
 // under the License.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use std::rc::Rc;
 
@@ -30,10 +30,7 @@ pub(crate) fn render_scrollbar(
             .orientation(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼")),
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        }),
+        area,
         scroll_state,
     );
 }
@@ -44,7 +41,7 @@ pub(crate) fn render_scrollbar(
 pub(crate) fn split_area(area: Rect) -> Rc<[Rect]> {
     Layout::horizontal([
         Constraint::Min(1),    // Table
-        Constraint::Length(3), // Scrollbar
+        Constraint::Length(1), // Scrollbar
     ])
     .split(area)
 }

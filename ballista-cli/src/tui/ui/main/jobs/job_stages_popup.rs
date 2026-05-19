@@ -84,7 +84,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     let mut scroll_state = popup.scrollbar_state;
     let rects = vertical_scrollbar::split_area(area);
     f.render_stateful_widget(table, rects[0], &mut table_state);
-    crate::tui::ui::vertical_scrollbar::render_scrollbar(f, rects[1], &mut scroll_state);
+    vertical_scrollbar::render_scrollbar(f, rects[1], &mut scroll_state);
 }
 
 fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static> {
