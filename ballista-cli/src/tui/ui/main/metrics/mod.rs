@@ -28,6 +28,7 @@ use crate::tui::{
 };
 use prometheus_parse::HistogramCount;
 
+use crate::tui::ui::vertical_scrollbar;
 use ratatui::style::Color;
 use ratatui::{
     Frame,
@@ -79,11 +80,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     if !filtered_metrics.is_empty() {
         let mut scroll_state = app.metrics_data.scrollbar_state;
         let mut table_state = app.metrics_data.table_state;
-        let table_area = Layout::horizontal([
-            Constraint::Min(1),    // Table
-            Constraint::Length(3), // Scrollbar
-        ])
-        .split(rects[1]);
+        let table_area = vertical_scrollbar::split_area(rects[1]);
         render_metrics_table(f, table_area[0], app, &filtered_metrics, &mut table_state);
         render_scrollbar(f, table_area[1], &mut scroll_state);
     } else if are_metrics_enabled(app) {

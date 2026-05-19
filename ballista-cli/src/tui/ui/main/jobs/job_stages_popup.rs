@@ -17,8 +17,9 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::JobStageResponse;
+use crate::tui::ui::vertical_scrollbar;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{
@@ -81,11 +82,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
 
     let mut table_state = popup.table_state;
     let mut scroll_state = popup.scrollbar_state;
-    let rects = Layout::horizontal([
-        Constraint::Min(1),    // Table
-        Constraint::Length(3), // Scrollbar
-    ])
-    .split(area);
+    let rects = vertical_scrollbar::split_area(area);
     f.render_stateful_widget(table, rects[0], &mut table_state);
     crate::tui::ui::vertical_scrollbar::render_scrollbar(f, rects[1], &mut scroll_state);
 }

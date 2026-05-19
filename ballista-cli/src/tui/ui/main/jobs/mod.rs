@@ -34,6 +34,7 @@ use crate::tui::{
     ui::vertical_scrollbar::render_scrollbar,
 };
 
+use crate::tui::ui::vertical_scrollbar;
 use ratatui::style::Color;
 use ratatui::{
     Frame,
@@ -138,11 +139,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     if !sorted_jobs.is_empty() {
         let mut scroll_state = app.jobs_data.scrollbar_state;
         let mut table_state = app.jobs_data.table_state;
-        let table_area = Layout::horizontal([
-            Constraint::Min(1),    // Table
-            Constraint::Length(3), // Scrollbar
-        ])
-        .split(rects[1]);
+        let table_area = vertical_scrollbar::split_area(rects[1]);
         render_jobs_table(
             f,
             table_area[0],
