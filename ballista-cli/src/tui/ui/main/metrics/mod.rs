@@ -68,12 +68,11 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
-    let vertical = Layout::vertical([
+    let rects = Layout::vertical([
         Constraint::Length(3), // Search box
         Constraint::Min(5),    // Table
-        Constraint::Length(3), // Scrollbar
-    ]);
-    let rects = vertical.split(area);
+    ])
+    .split(area);
 
     render_search_box(f, rects[0], app);
 

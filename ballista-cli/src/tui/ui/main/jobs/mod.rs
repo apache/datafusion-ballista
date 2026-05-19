@@ -127,7 +127,6 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     let rects = Layout::vertical([
         Constraint::Length(3), // Search box
         Constraint::Min(5),    // Table
-        Constraint::Length(4), // Scrollbar padding
     ])
     .split(area);
 
