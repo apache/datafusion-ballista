@@ -56,3 +56,7 @@ tui-big-text = { version = "0.8.4", optional = true }
 [features]
 default = ["tui"]
 tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures", "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text"]
+
+[[bin]]
+name = "ballista-cli"
+test = false
