@@ -209,6 +209,9 @@ impl JobStagesPopup {
     }
 
     fn tasks_scroll_up(&mut self) {
+        if self.tasks_count() == 0 {
+            return;
+        }
         let prev = self
             .tasks_table_state
             .selected()
