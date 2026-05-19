@@ -113,7 +113,8 @@ impl JobStagesPopup {
     pub fn set_tasks_view(&mut self) {
         let task_count = self.tasks_count();
         self.details_view = StageDetailsView::Tasks;
-        self.tasks_table_state = TableState::default().with_selected(Some(0));
+        self.tasks_table_state =
+            TableState::default().with_selected((task_count > 0).then_some(0));
         self.tasks_scrollbar_state = ScrollbarState::new(task_count);
     }
 
