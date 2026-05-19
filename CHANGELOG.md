@@ -21,6 +21,8 @@
 
 ## [53.0.0](https://github.com/apache/datafusion-ballista/tree/53.0.0) (2026-05-19)
 
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/52.0.0...53.0.0)
+
 **Implemented enhancements:**
 
 - [REST]: Cancelling a completed/failed job should return "false" [#1494](https://github.com/apache/datafusion-ballista/pull/1494) (martin-g)
