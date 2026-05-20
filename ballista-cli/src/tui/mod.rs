@@ -25,22 +25,21 @@ mod terminal;
 mod ui;
 
 use app::App;
+#[cfg(not(feature = "web"))]
 use event::{Event, EventHandler};
-use ratatui::widgets::ScrollbarState;
+#[cfg(not(feature = "web"))]
 use std::sync::Arc;
+#[cfg(not(feature = "web"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(feature = "web"))]
 use std::time::Duration;
 use terminal::TuiWrapper;
 
-use crate::tui::domain::{
-    executors::{ExecutorDetailsPopup, ExecutorsData},
-    jobs::{JobsData, stages::JobStagesPopup},
-    metrics::MetricsData,
-};
-use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
+use crate::tui::{error::TuiError, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
+#[cfg(not(feature = "web"))]
 pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
     tui_mode.store(true, Ordering::Release);
     tracing::info!("Starting the Ballista TUI application");
@@ -70,58 +69,7 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
             }
             Some(app_event) = app_rx.recv() => {
                 if let Event::DataLoaded { data } = app_event {
-                  match data {
-                    UiData::Executors(state, executors, jobs) => {
-                            let old_scrollbar_position = app.executors_data.scrollbar_state.get_position();
-                            let scrollbar_state = ScrollbarState::new(executors.len()).position(old_scrollbar_position);
-                            app.executors_data = ExecutorsData {
-                                executors,
-                                scrollbar_state,
-                                table_state: app.executors_data.table_state,
-                                sort_column: app.executors_data.sort_column,
-                                sort_order: app.executors_data.sort_order,
-                                scheduler_state: state,
-                                jobs,
-                            };
-                            app.executors_data.sort();
-                    },
-                    UiData::Metrics(metrics) => {
-                            let old_scrollbar_position = app.metrics_data.scrollbar_state.get_position();
-                            let scrollbar_state = ScrollbarState::new(metrics.len()).position(old_scrollbar_position);
-                            app.metrics_data = MetricsData {
-                                metrics,
-                                scrollbar_state,
-                                table_state: app.metrics_data.table_state,
-                                sort_column: app.metrics_data.sort_column,
-                                sort_order: app.metrics_data.sort_order
-                            };
-                            app.metrics_data.sort();
-                    }
-                    UiData::Jobs(jobs) => {
-                            let old_scrollbar_position = app.jobs_data.scrollbar_state.get_position();
-                            let scrollbar_state = ScrollbarState::new(jobs.len()).position(old_scrollbar_position);
-                            app.jobs_data = JobsData {
-                                jobs,
-                                scrollbar_state,
-                                table_state: app.jobs_data.table_state,
-                                sort_column: app.jobs_data.sort_column,
-                                sort_order: app.jobs_data.sort_order
-                            };
-                    }
-                    UiData::JobDetails(details) => {
-                        app.job_details = Some(details);
-                    }
-                    UiData::JobStagesGraph(graph) => {
-                        app.job_dot_popup = Some(graph);
-                    }
-                    UiData::JobStagesData(job_id, stages) => {
-                        app.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
-                    }
-                    UiData::ExecutorDetails(executor) => {
-                        app.executor_details_popup =
-                            Some(ExecutorDetailsPopup::new(executor));
-                    }
-                  }
+                    app.apply_ui_data(data);
                 }
             }
         }
@@ -133,6 +81,154 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
             break;
         }
     }
+
+    Ok(())
+}
+
+/// Entry point for the web browser TUI (WASM target). Sets up Ratzilla callbacks and starts
+/// the Ratatui render loop via `draw_web`.
+#[cfg(feature = "web")]
+pub fn tui_web_main() -> TuiResult<()> {
+    use app::WebKeyAsyncAction;
+    use ratzilla::WebRenderer;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen_futures::spawn_local;
+
+    let config = Settings::new()?;
+    let tick_ms = config.tick_interval_ms as u32;
+
+    let wrapper = TuiWrapper::new()?;
+    let app = Rc::new(RefCell::new(App::new(config)?));
+
+    // ── Initial data load ─────────────────────────────────────────────
+    {
+        let app = Rc::clone(&app);
+        spawn_local(async move {
+            let data = app.borrow().load_tick_data().await;
+            app.borrow_mut().apply_ui_data(data);
+        });
+    }
+
+    // ── Tick timer: refresh data periodically ─────────────────────────
+    let app_tick = Rc::clone(&app);
+    let _tick_timer = gloo_timers::callback::Interval::new(tick_ms, move || {
+        let app = Rc::clone(&app_tick);
+        spawn_local(async move {
+            let data = app.borrow().load_tick_data().await;
+            app.borrow_mut().apply_ui_data(data);
+        });
+    });
+
+    // ── Keyboard events ───────────────────────────────────────────────
+    let app_key = Rc::clone(&app);
+    wrapper.terminal.on_key_event(move |key_event| {
+        let app = Rc::clone(&app_key);
+        spawn_local(async move {
+            // Synchronous state mutation (brief mutable borrow — released before any await)
+            let async_action = {
+                let mut a = app.borrow_mut();
+                a.on_key_sync(&key_event)
+            };
+
+            // Async work (uses immutable borrow, or brief mutable borrow for updates)
+            if let Some(action) = async_action {
+                match action {
+                    WebKeyAsyncAction::LoadJobStages(job_id) => {
+                        let result = {
+                            let a = app.borrow();
+                            a.http_client.get_job_stages(&job_id).await
+                        };
+                        match result {
+                            Ok(stages) => app.borrow_mut().apply_ui_data(
+                                crate::tui::event::UiData::JobStagesData(job_id, stages),
+                            ),
+                            Err(e) => {
+                                tracing::error!("Failed to load job stages: {e:?}")
+                            }
+                        }
+                    }
+                    WebKeyAsyncAction::LoadExecutorDetails(executor_id) => {
+                        let result = {
+                            let a = app.borrow();
+                            a.http_client.get_executor(&executor_id).await
+                        };
+                        match result {
+                            Ok(executor) => app.borrow_mut().apply_ui_data(
+                                crate::tui::event::UiData::ExecutorDetails(executor),
+                            ),
+                            Err(e) => {
+                                tracing::error!("Failed to load executor details: {e:?}")
+                            }
+                        }
+                    }
+                    WebKeyAsyncAction::LoadJobDot(job_id) => {
+                        let result = {
+                            let a = app.borrow();
+                            a.http_client.get_job_dot(&job_id).await
+                        };
+                        match result {
+                            Ok(dot_string) => {
+                                let graph =
+                                    ui::dot_parser::parse_dot(&job_id, &dot_string);
+                                app.borrow_mut().apply_ui_data(
+                                    crate::tui::event::UiData::JobStagesGraph(graph),
+                                )
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to load job dot: {e:?}")
+                            }
+                        }
+                    }
+                    WebKeyAsyncAction::CancelJob(job_id) => {
+                        let result = {
+                            let a = app.borrow();
+                            a.http_client.cancel_job(&job_id).await
+                        };
+                        use crate::tui::domain::jobs::CancelJobResult;
+                        let cancel_result = match result {
+                            Ok(resp) if resp.canceled => {
+                                CancelJobResult::Success { job_id }
+                            }
+                            Ok(_) => CancelJobResult::NotCanceled { job_id },
+                            Err(e) => CancelJobResult::Failure {
+                                job_id,
+                                error: e.to_string(),
+                            },
+                        };
+                        app.borrow_mut().cancel_job_result = Some(cancel_result);
+                    }
+                    WebKeyAsyncAction::UpdateJobDetails(job_id) => {
+                        if let Some(id) = job_id {
+                            let result = {
+                                let a = app.borrow();
+                                a.http_client.get_job_details(&id).await
+                            };
+                            match result {
+                                Ok(details) => app.borrow_mut().apply_ui_data(
+                                    crate::tui::event::UiData::JobDetails(details),
+                                ),
+                                Err(e) => {
+                                    tracing::error!("Failed to load job details: {e:?}")
+                                }
+                            }
+                        }
+                    }
+                    WebKeyAsyncAction::ReloadView => {
+                        let data = app.borrow().load_tick_data().await;
+                        app.borrow_mut().apply_ui_data(data);
+                    }
+                }
+            }
+        });
+    });
+
+    // ── Render loop (driven by requestAnimationFrame) ─────────────────
+    let app_render = Rc::clone(&app);
+    wrapper.terminal.draw_web(move |f| {
+        let app = app_render.borrow();
+        ui::render(f, &*app);
+    });
 
     Ok(())
 }

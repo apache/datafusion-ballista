@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "web"))]
 use crate::tui::event::Event;
+#[cfg(feature = "tui")]
 use config::ConfigError;
-use datafusion::common::DataFusionError;
+#[cfg(not(feature = "web"))]
 use tokio::sync::mpsc::error::SendError;
 use tracing_subscriber::filter::ParseError;
 
@@ -26,10 +28,11 @@ pub enum TuiError {
     Reqwest(reqwest::Error),
     Json(serde_json::Error),
     IO(std::io::Error),
+    #[cfg(not(feature = "web"))]
     SendError(Box<SendError<Event>>),
+    #[cfg(feature = "tui")]
     Config(Box<ConfigError>),
     Tracing(Box<ParseError>),
-    DataFusion(Box<DataFusionError>),
 }
 
 impl std::fmt::Display for TuiError {
@@ -38,10 +41,11 @@ impl std::fmt::Display for TuiError {
             TuiError::Reqwest(err) => write!(f, "Reqwest error: {err}"),
             TuiError::Json(err) => write!(f, "JSON error: {err}"),
             TuiError::IO(err) => write!(f, "An IO error occurred: {err}"),
+            #[cfg(not(feature = "web"))]
             TuiError::SendError(err) => write!(f, "Send error: {err}"),
+            #[cfg(feature = "tui")]
             TuiError::Config(err) => write!(f, "Config error: {err}"),
             TuiError::Tracing(err) => write!(f, "Tracing error: {err}"),
-            TuiError::DataFusion(err) => write!(f, "DataFusion error: {err}"),
         }
     }
 }
@@ -52,10 +56,11 @@ impl std::error::Error for TuiError {
             TuiError::Reqwest(err) => Some(err),
             TuiError::Json(err) => Some(err),
             TuiError::IO(err) => Some(err),
+            #[cfg(not(feature = "web"))]
             TuiError::SendError(err) => Some(err.as_ref()),
+            #[cfg(feature = "tui")]
             TuiError::Config(err) => Some(err.as_ref()),
             TuiError::Tracing(err) => Some(err.as_ref()),
-            TuiError::DataFusion(err) => Some(err.as_ref()),
         }
     }
 }
@@ -72,6 +77,7 @@ impl From<serde_json::Error> for TuiError {
     }
 }
 
+#[cfg(not(feature = "web"))]
 impl From<SendError<Event>> for TuiError {
     fn from(err: SendError<Event>) -> Self {
         TuiError::SendError(Box::new(err))
@@ -84,6 +90,7 @@ impl From<std::io::Error> for TuiError {
     }
 }
 
+#[cfg(feature = "tui")]
 impl From<ConfigError> for TuiError {
     fn from(err: ConfigError) -> Self {
         TuiError::Config(Box::new(err))
@@ -93,11 +100,5 @@ impl From<ConfigError> for TuiError {
 impl From<ParseError> for TuiError {
     fn from(err: ParseError) -> Self {
         TuiError::Tracing(Box::new(err))
-    }
-}
-
-impl From<DataFusionError> for TuiError {
-    fn from(err: DataFusionError) -> Self {
-        TuiError::DataFusion(Box::new(err))
     }
 }

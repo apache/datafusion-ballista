@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "web"))]
 use crossterm::event::{EventStream, KeyEvent};
+#[cfg(not(feature = "web"))]
 use futures::{FutureExt, StreamExt};
+#[cfg(not(feature = "web"))]
 use tokio::sync::mpsc;
 
 use crate::tui::domain::{
@@ -40,6 +43,7 @@ pub enum UiData {
     ExecutorDetails(Executor),
 }
 
+#[cfg(not(feature = "web"))]
 #[derive(Clone, Debug)]
 #[expect(clippy::large_enum_variant)]
 pub enum Event {
@@ -48,11 +52,13 @@ pub enum Event {
     DataLoaded { data: UiData },
 }
 
+#[cfg(not(feature = "web"))]
 #[derive(Debug)]
 pub struct EventHandler {
     rx: mpsc::UnboundedReceiver<Event>,
 }
 
+#[cfg(not(feature = "web"))]
 impl EventHandler {
     pub fn new(tick_rate: std::time::Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();

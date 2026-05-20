@@ -15,21 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod dot_parser;
+pub(crate) mod dot_parser;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
 pub mod job_stages_popup;
 pub mod stage_plan_popup;
 pub mod stage_tasks_popup;
 
+#[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
+    event::{Event, UiData},
+};
+use crate::tui::{
     app::App,
     domain::{
         SortOrder,
         jobs::{Job, SortColumn},
     },
-    event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
 };
@@ -46,6 +49,7 @@ use ratatui::{
     },
 };
 
+#[cfg(not(feature = "web"))]
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
     let jobs = app.http_client.get_jobs().await.unwrap_or_else(|e| {
         tracing::error!("Failed to load the jobs: {e:?}");
@@ -58,6 +62,7 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
     .await
 }
 
+#[cfg(not(feature = "web"))]
 pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     match app.http_client.get_job_dot(job_id).await {
         Ok(dot_content) => {
@@ -74,6 +79,7 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     }
 }
 
+#[cfg(not(feature = "web"))]
 pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     let mut stages = app
         .http_client
@@ -94,6 +100,7 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     .await
 }
 
+#[cfg(not(feature = "web"))]
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
     let details = match app.http_client.get_job_details(job_id).await {
         Ok(d) => d,

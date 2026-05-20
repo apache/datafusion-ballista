@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "web"))]
+use crate::tui::TuiError;
 use crate::tui::TuiResult;
+#[cfg(not(feature = "web"))]
+use crate::tui::event::Event;
 use crate::tui::{
-    TuiError,
     domain::{
         SortOrder,
         executors::{
@@ -31,16 +34,21 @@ use crate::tui::{
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
     },
-    event::Event,
+    event::UiData,
     infrastructure::Settings,
 };
 use chrono::DateTime;
+#[cfg(not(feature = "web"))]
 use crossterm::event::{KeyCode, KeyEvent};
+#[cfg(feature = "web")]
+use ratzilla::event::{KeyCode, KeyEvent};
 use std::string::ToString;
 use std::sync::Arc;
+#[cfg(not(feature = "web"))]
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
+#[cfg(not(feature = "web"))]
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
     load_job_stages_popup, load_jobs_data, load_metrics_data,
@@ -64,6 +72,7 @@ enum InputMode {
 pub(crate) struct App {
     should_quit: bool,
 
+    #[cfg(not(feature = "web"))]
     event_tx: Option<Sender<Event>>,
 
     current_view: Views,
@@ -94,6 +103,7 @@ impl App {
     pub fn new(config: Settings) -> TuiResult<Self> {
         Ok(Self {
             should_quit: false,
+            #[cfg(not(feature = "web"))]
             event_tx: None,
             current_view: Views::Jobs,
             input_mode: InputMode::View,
@@ -133,14 +143,17 @@ impl App {
         self.input_mode == InputMode::Edit
     }
 
+    #[cfg(not(feature = "web"))]
     pub fn should_quit(&self) -> bool {
         self.should_quit
     }
 
+    #[cfg(not(feature = "web"))]
     pub fn set_event_tx(&mut self, tx: Sender<Event>) {
         self.event_tx = Some(tx);
     }
 
+    #[cfg(not(feature = "web"))]
     pub async fn send_event(&self, event: Event) -> TuiResult<()> {
         if let Some(tx) = &self.event_tx {
             tx.send(event)
@@ -153,6 +166,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     pub async fn on_tick(&mut self) {
         if self.is_executors_view() {
             self.load_executors_data().await;
@@ -174,6 +188,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
         if self.is_edit_mode() {
@@ -410,6 +425,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(not(feature = "web"))]
     async fn update_selected_job_details(&mut self) {
         self.job_details = None;
         if let Some(job_id) = self
@@ -421,12 +437,14 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_selected_job_details(&self, job_id: &str) {
         if let Err(e) = load_job_details(self, job_id).await {
             tracing::error!("Failed to load job details: {e:?}");
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_job_dot_data(&self) {
         if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
             if selected_job.status == "Completed"
@@ -439,6 +457,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_job_stages_popup_data(&self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
             let job_id = job.job_id.clone();
@@ -448,6 +467,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_executor_details_popup_data(&self) {
         if let Some(executor) = self.executors_data.selected_executor()
             && let Err(e) = load_executor_details_popup(self, &executor.id).await
@@ -459,18 +479,21 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_executors_data(&mut self) {
         if let Err(e) = load_executors_data(self).await {
             tracing::error!("Failed to load executors data on tick: {e:?}");
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_jobs_data(&mut self) {
         if let Err(e) = load_jobs_data(self).await {
             tracing::error!("Failed to load jobs data on tick: {e:?}");
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_metrics_data(&mut self) {
         if let Err(e) = load_metrics_data(self).await {
             tracing::error!("Failed to load metrics data on tick: {e:?}");
@@ -527,6 +550,7 @@ impl App {
         self.metrics_data.sort();
     }
 
+    #[cfg(not(feature = "web"))]
     async fn cancel_selected_job(&mut self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term)
             && (job.status == "Running" || job.status == "Queued")
@@ -688,6 +712,391 @@ impl App {
             format!("{value:.2}{unit}")
         }
     }
+
+    /// Applies a loaded data payload to the app state directly.
+    /// Used by the WASM path where data is loaded without going through the event channel.
+    pub fn apply_ui_data(&mut self, data: UiData) {
+        use ratatui::widgets::ScrollbarState;
+        match data {
+            UiData::Executors(state, executors, jobs) => {
+                let old_pos = self.executors_data.scrollbar_state.get_position();
+                let scrollbar_state =
+                    ScrollbarState::new(executors.len()).position(old_pos);
+                let table_state = self.executors_data.table_state.clone();
+                let sort_column = self.executors_data.sort_column.clone();
+                let sort_order = self.executors_data.sort_order.clone();
+                self.executors_data = ExecutorsData {
+                    executors,
+                    scrollbar_state,
+                    table_state,
+                    sort_column,
+                    sort_order,
+                    scheduler_state: state,
+                    jobs,
+                };
+                self.executors_data.sort();
+            }
+            UiData::Metrics(metrics) => {
+                let old_pos = self.metrics_data.scrollbar_state.get_position();
+                let scrollbar_state =
+                    ScrollbarState::new(metrics.len()).position(old_pos);
+                let table_state = self.metrics_data.table_state.clone();
+                let sort_column = self.metrics_data.sort_column.clone();
+                let sort_order = self.metrics_data.sort_order.clone();
+                self.metrics_data = MetricsData {
+                    metrics,
+                    scrollbar_state,
+                    table_state,
+                    sort_column,
+                    sort_order,
+                };
+                self.metrics_data.sort();
+            }
+            UiData::Jobs(jobs) => {
+                let old_pos = self.jobs_data.scrollbar_state.get_position();
+                let scrollbar_state = ScrollbarState::new(jobs.len()).position(old_pos);
+                let table_state = self.jobs_data.table_state.clone();
+                let sort_column = self.jobs_data.sort_column.clone();
+                let sort_order = self.jobs_data.sort_order.clone();
+                self.jobs_data = JobsData {
+                    jobs,
+                    scrollbar_state,
+                    table_state,
+                    sort_column,
+                    sort_order,
+                };
+            }
+            UiData::JobDetails(details) => {
+                self.job_details = Some(details);
+            }
+            UiData::JobStagesGraph(graph) => {
+                self.job_dot_popup = Some(graph);
+            }
+            UiData::JobStagesData(job_id, stages) => {
+                self.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
+            }
+            UiData::ExecutorDetails(executor) => {
+                self.executor_details_popup = Some(ExecutorDetailsPopup::new(executor));
+            }
+        }
+    }
+
+    /// Loads data for the currently active view. Takes `&self` so the borrow can be released
+    /// before calling `apply_ui_data`, avoiding holding `RefCell::borrow_mut` across awaits.
+    #[cfg(feature = "web")]
+    pub async fn load_tick_data(&self) -> UiData {
+        if self.is_executors_view() {
+            let (scheduler_result, executors_result, jobs_result) = tokio::join!(
+                self.http_client.get_scheduler_state(),
+                self.http_client.get_executors(),
+                self.http_client.get_jobs(),
+            );
+            UiData::Executors(
+                scheduler_result
+                    .map_err(|e| tracing::error!("Failed to load scheduler state: {e:?}"))
+                    .ok(),
+                executors_result.unwrap_or_else(|e| {
+                    tracing::error!("Failed to load executors: {e:?}");
+                    vec![]
+                }),
+                jobs_result.unwrap_or_else(|e| {
+                    tracing::error!("Failed to load jobs: {e:?}");
+                    vec![]
+                }),
+            )
+        } else if self.is_jobs_view() {
+            let jobs = self.http_client.get_jobs().await.unwrap_or_else(|e| {
+                tracing::error!("Failed to load jobs: {e:?}");
+                vec![]
+            });
+            UiData::Jobs(jobs)
+        } else {
+            let metrics = self.http_client.get_metrics().await.unwrap_or_else(|e| {
+                tracing::error!("Failed to load metrics: {e:?}");
+                vec![]
+            });
+            UiData::Metrics(metrics)
+        }
+    }
+
+    /// Synchronous portion of key handling for the WASM path. Returns an async action
+    /// descriptor when further async work (e.g. HTTP calls) is needed.
+    #[cfg(feature = "web")]
+    pub fn on_key_sync(&mut self, key: &KeyEvent) -> Option<WebKeyAsyncAction> {
+        if self.is_edit_mode() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.search_term.clear();
+                    self.input_mode = InputMode::View;
+                }
+                KeyCode::Backspace => {
+                    self.search_term.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.search_term.push(c);
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        if self.cancel_job_result.is_some() {
+            self.cancel_job_result = None;
+            return None;
+        }
+
+        if let Some(popup) = &mut self.job_stages_popup {
+            if popup.is_tasks_view() {
+                match key.code {
+                    KeyCode::Esc => popup.set_no_details_view(),
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    _ => {}
+                }
+            } else if popup.is_plan_view() {
+                match key.code {
+                    KeyCode::Esc => popup.set_no_details_view(),
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    KeyCode::Left => popup.scroll_left(),
+                    KeyCode::Right => popup.scroll_right(),
+                    _ => {}
+                }
+            } else if popup.is_no_details_view() {
+                match key.code {
+                    KeyCode::Up => popup.scroll_up(),
+                    KeyCode::Down => popup.scroll_down(),
+                    KeyCode::Enter if popup.selected_stage().is_some() => {
+                        popup.set_tasks_view();
+                    }
+                    KeyCode::Char('p') if popup.selected_stage().is_some() => {
+                        popup.set_plan_view();
+                    }
+                    KeyCode::Esc => {
+                        self.job_stages_popup = None;
+                    }
+                    _ => {}
+                }
+            }
+            return None;
+        }
+
+        if let Some(ref mut job_graph_popup) = self.job_dot_popup {
+            match key.code {
+                KeyCode::Up => job_graph_popup.scroll_up(),
+                KeyCode::Down => job_graph_popup.scroll_down(),
+                KeyCode::Esc => self.job_dot_popup = None,
+                _ => {}
+            }
+            return None;
+        }
+
+        if let Some(ref mut plans_popup) = self.job_plan_popup {
+            match key.code {
+                KeyCode::Up => plans_popup.scroll_up(),
+                KeyCode::Down => plans_popup.scroll_down(),
+                KeyCode::Left => plans_popup.scroll_left(),
+                KeyCode::Right => plans_popup.scroll_right(),
+                KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
+                KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
+                KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
+                KeyCode::Esc => self.job_plan_popup = None,
+                _ => {}
+            }
+            return None;
+        }
+
+        if let Some(ref mut executor_popup) = self.executor_details_popup {
+            match key.code {
+                KeyCode::Up => executor_popup.scroll_up(),
+                KeyCode::Down => executor_popup.scroll_down(),
+                KeyCode::Esc => self.executor_details_popup = None,
+                _ => {}
+            }
+            return None;
+        }
+
+        if self.show_help || self.show_scheduler_info {
+            self.show_help = false;
+            self.show_scheduler_info = false;
+            return None;
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.should_quit = true;
+                None
+            }
+            KeyCode::Char('?') | KeyCode::Char('h') => {
+                self.show_help = true;
+                None
+            }
+            KeyCode::Char('i') => {
+                self.show_scheduler_info = true;
+                None
+            }
+            KeyCode::Enter if self.is_jobs_view() => {
+                let job_id = self
+                    .jobs_data
+                    .selected_job(&self.search_term)
+                    .map(|j| j.job_id.clone());
+                job_id.map(|id| WebKeyAsyncAction::LoadJobStages(id))
+            }
+            KeyCode::Enter if self.is_executors_view() => {
+                let executor_id = self
+                    .executors_data
+                    .selected_executor()
+                    .map(|e| e.id.clone());
+                executor_id.map(|id| WebKeyAsyncAction::LoadExecutorDetails(id))
+            }
+            KeyCode::Char('g') if self.is_jobs_view() => {
+                let job_id = self
+                    .jobs_data
+                    .selected_job(&self.search_term)
+                    .filter(|j| j.status == "Completed")
+                    .map(|j| j.job_id.clone());
+                job_id.map(|id| WebKeyAsyncAction::LoadJobDot(id))
+            }
+            KeyCode::Char('p') if self.is_jobs_view() => {
+                self.open_job_plan_popup();
+                None
+            }
+            KeyCode::Char('e') if self.is_scheduler_up() => {
+                self.current_view = Views::Executors;
+                Some(WebKeyAsyncAction::ReloadView)
+            }
+            KeyCode::Char('j') if self.is_scheduler_up() => {
+                self.current_view = Views::Jobs;
+                Some(WebKeyAsyncAction::ReloadView)
+            }
+            KeyCode::Char('m') if self.is_scheduler_up() => {
+                self.current_view = Views::Metrics;
+                Some(WebKeyAsyncAction::ReloadView)
+            }
+            KeyCode::Char('/') if self.is_jobs_view() || self.is_metrics_view() => {
+                self.input_mode = InputMode::Edit;
+                None
+            }
+            KeyCode::Char('1') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Id);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::Host);
+                } else if self.is_metrics_view() {
+                    self.sort_metrics_by(MetricsSortColumn::Name);
+                }
+                None
+            }
+            KeyCode::Char('2') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Name);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::Id);
+                }
+                None
+            }
+            KeyCode::Char('3') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Status);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::CpuCores);
+                }
+                None
+            }
+            KeyCode::Char('4') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StagesCompleted);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                }
+                None
+            }
+            KeyCode::Char('5') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::PercentComplete);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::ProcPhysicalMemoryUsage);
+                }
+                None
+            }
+            KeyCode::Char('6') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::StartTime);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::PeakPhysicalMemoryUsage);
+                }
+                None
+            }
+            KeyCode::Char('7') => {
+                if self.is_jobs_view() {
+                    self.sort_jobs_by(JobsSortColumn::Duration);
+                } else if self.is_executors_view() {
+                    self.sort_executors_by(ExecutorsSortColumn::LastSeen);
+                }
+                None
+            }
+            KeyCode::Char('c')
+                if self.is_jobs_view() && self.input_mode == InputMode::View =>
+            {
+                let job_id = self
+                    .jobs_data
+                    .selected_job(&self.search_term)
+                    .filter(|j| j.status == "Running" || j.status == "Queued")
+                    .map(|j| j.job_id.clone());
+                job_id.map(|id| WebKeyAsyncAction::CancelJob(id))
+            }
+            KeyCode::Down => {
+                if self.is_jobs_view() {
+                    self.jobs_data.scroll_down();
+                    let job_id = self
+                        .jobs_data
+                        .selected_job(&self.search_term)
+                        .map(|j| j.job_id.clone());
+                    self.job_details = None;
+                    Some(WebKeyAsyncAction::UpdateJobDetails(job_id))
+                } else if self.is_executors_view() {
+                    self.executors_data.scroll_down();
+                    None
+                } else if self.is_metrics_view() {
+                    self.metrics_data.scroll_down();
+                    None
+                } else {
+                    None
+                }
+            }
+            KeyCode::Up => {
+                if self.is_jobs_view() {
+                    self.jobs_data.scroll_up();
+                    let job_id = self
+                        .jobs_data
+                        .selected_job(&self.search_term)
+                        .map(|j| j.job_id.clone());
+                    self.job_details = None;
+                    Some(WebKeyAsyncAction::UpdateJobDetails(job_id))
+                } else if self.is_executors_view() {
+                    self.executors_data.scroll_up();
+                    None
+                } else if self.is_metrics_view() {
+                    self.metrics_data.scroll_up();
+                    None
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Async action descriptors returned by [`App::on_key_sync`] on the WASM path.
+#[cfg(feature = "web")]
+pub enum WebKeyAsyncAction {
+    LoadJobStages(String),
+    LoadExecutorDetails(String),
+    LoadJobDot(String),
+    CancelJob(String),
+    UpdateJobDetails(Option<String>),
+    ReloadView,
 }
 
 #[cfg(test)]

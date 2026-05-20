@@ -28,35 +28,76 @@ homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
-ballista = { path = "../ballista/client", version = "53.0.0", features = ["standalone"] }
+# CLI-only deps (DataFusion/Ballista) — gated by `cli` feature
+ballista = { path = "../ballista/client", version = "53.0.0", features = ["standalone"], optional = true }
+datafusion = { workspace = true, optional = true }
+datafusion-cli = { workspace = true, optional = true }
+rustyline = { version = "17.0.1", optional = true }
+mimalloc = { workspace = true, optional = true }
+
+# TUI/web shared deps
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
 config = { version = "0.15.23", default-features = false, features = ["yaml"], optional = true }
-crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
-datafusion = { workspace = true }
-datafusion-cli = { workspace = true }
 dirs = "6.0"
 dotparser = { version = "0.3.0", optional = true }
 futures = { version = "0.3.31", optional = true }
-mimalloc = { workspace = true }
 percent-encoding = { version = "2.3.2", optional = true }
 prometheus-parse = { version = "0.2", optional = true }
-ratatui = { version = "0.30.0", optional = true }
+ratatui = { version = "0.30.0", default-features = false, optional = true }
 reqwest = { version = "0.13.3", features = ["json"], optional = true }
-rustyline = "17.0.1"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "parking_lot"] }
 tracing = { version = "0.1" }
-tracing-appender = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tui-big-text = { version = "0.8.4", optional = true }
 
+# Native-only TUI deps
+crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
+tracing-appender = { version = "0.2", optional = true }
+
+# Web-only deps (WASM)
+ratzilla = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "parking_lot"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+
 [features]
-default = ["tui"]
-tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures", "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text"]
+default = ["tui", "cli"]
+
+cli = [
+  "dep:ballista", "dep:datafusion", "dep:datafusion-cli",
+  "dep:rustyline", "dep:mimalloc",
+]
+
+tui = [
+  "dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures",
+  "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
+  "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text",
+  "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
+  "ratatui/layout-cache", "ratatui/underline-color",
+]
+
+web = [
+  "dep:chrono", "dep:dotparser", "dep:futures", "dep:percent-encoding",
+  "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
+  "dep:serde", "dep:serde_json", "dep:tui-big-text",
+  "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
+  "dep:gloo-timers", "dep:console_error_panic_hook",
+]
 
 [[bin]]
 name = "ballista-cli"
 test = false
+required-features = ["cli"]

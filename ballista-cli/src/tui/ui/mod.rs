@@ -27,11 +27,16 @@ mod vertical_scrollbar;
 use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
+#[cfg(feature = "web")]
+pub(crate) use main::dot_parser;
 pub use main::{
     executor_details_popup, job_dot_popup, job_plan_popup, job_stages_popup,
+    stage_plan_popup, stage_tasks_popup,
+};
+#[cfg(not(feature = "web"))]
+pub use main::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
-    load_job_stages_popup, load_jobs_data, load_metrics_data, stage_plan_popup,
-    stage_tasks_popup,
+    load_job_stages_popup, load_jobs_data, load_metrics_data,
 };
 use main::{render_executors, render_jobs, render_metrics};
 use ratatui::{
