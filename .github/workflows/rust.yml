@@ -23,6 +23,7 @@ concurrency:
 
 on:
   push:
+    branches: ["main"]
     paths-ignore:
       - "docs/**"
       - "**.md"
@@ -219,8 +220,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [ amd64 ]
-        rust: [ stable ]
+        arch: [amd64]
+        rust: [stable]
     container:
       image: ${{ matrix.arch }}/rust
       env:
@@ -248,8 +249,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [ amd64 ]
-        rust: [ stable ]
+        arch: [amd64]
+        rust: [stable]
     container:
       image: ${{ matrix.arch }}/rust
       env:
