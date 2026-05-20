@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use tracing::{Level, info, span};
 use tracing_subscriber::fmt::format::Pretty;
 use tracing_subscriber::prelude::*;
 use tracing_web::{MakeWebConsoleWriter, performance_layer};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 
 /// WASM entry point. Registered as the `start` function so the browser calls it
 /// automatically when the WASM module is loaded.
@@ -28,10 +28,12 @@ pub fn wasm_start() {
     console_error_panic_hook::set_once();
     initialize_logging();
 
-    if let Err(e) = crate::tui::tui_web_main() {
-        // unwrap_throw produces a JS exception visible in the browser console
-        wasm_bindgen::throw_str(&format!("Ballista TUI failed to start: {e}"));
-    }
+    spawn_local(async move {
+        if let Err(e) = crate::tui::tui_web_main().await {
+            // unwrap_throw produces a JS exception visible in the browser console
+            wasm_bindgen::throw_str(&format!("Ballista TUI failed to start: {e}"));
+        }
+    });
 }
 
 fn initialize_logging() {
@@ -47,5 +49,5 @@ fn initialize_logging() {
         .with(perf_layer)
         .init(); // Install these as subscribers to tracing events
 
-    info!("WASM app initialized");
+    tracing::info!("WASM app initialized");
 }

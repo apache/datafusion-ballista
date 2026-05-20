@@ -38,6 +38,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use ratzilla::WebRenderer;
 #[cfg(not(feature = "web"))]
 use tokio::sync::mpsc;
 
@@ -113,7 +114,7 @@ pub struct EventHandler {
 
 #[cfg(feature = "web")]
 impl EventHandler {
-    pub fn new(tick_rate: u32, app_tick: Rc<RefCell<App>>) -> Self {
+    pub fn new(tick_rate: u32, app_tick: Rc<RefCell<App>>, terminal: &ratatui::Terminal<ratzilla::DomBackend>) -> Self {
         use wasm_bindgen_futures::spawn_local;
 
         // ── Initial data load ─────────────────────────────────────────────
@@ -136,14 +137,20 @@ impl EventHandler {
             let app = Rc::clone(&app_tick);
             spawn_local(async move {
                 let data = app.borrow().load_tick_data().await;
-                tracing::info!("UIData: {:#?}", &data);
-                tick_events
-                    .borrow_mut()
-                    .push_back(Event::DataLoaded { data });
-                // app.borrow_mut().apply_ui_data(data);
+                // tracing::info!("UIData: {:#?}", &data);
+                // tick_events
+                //     .borrow_mut()
+                //     .push_back(Event::DataLoaded { data });
+                app.borrow_mut().apply_ui_data(data);
             });
         })
         .forget();
+
+        // let key_events = Arc::clone(&events);
+        // terminal.on_key_event(move |key_event| {
+        //     tracing::info!("on key event: {key_event:?}");
+        //     key_events.borrow_mut().push_back(Event::Key(key_event));
+        // });
 
         Self { events }
     }

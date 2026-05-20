@@ -183,7 +183,6 @@ impl App {
         }
     }
 
-    #[cfg(not(feature = "web"))]
     pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
         if self.is_edit_mode() {
@@ -420,7 +419,6 @@ impl App {
         Ok(())
     }
 
-    #[cfg(not(feature = "web"))]
     async fn update_selected_job_details(&mut self) {
         self.job_details = None;
         if let Some(job_id) = self
@@ -432,14 +430,12 @@ impl App {
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_selected_job_details(&self, job_id: &str) {
         if let Err(e) = load_job_details(self, job_id).await {
             tracing::error!("Failed to load job details: {e:?}");
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_job_dot_data(&self) {
         if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
             if selected_job.status == "Completed"
@@ -452,7 +448,6 @@ impl App {
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_job_stages_popup_data(&self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
             let job_id = job.job_id.clone();
@@ -541,7 +536,6 @@ impl App {
         self.metrics_data.sort();
     }
 
-    #[cfg(not(feature = "web"))]
     async fn cancel_selected_job(&mut self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term)
             && (job.status == "Running" || job.status == "Queued")
