@@ -33,7 +33,6 @@ pub use main::{
     executor_details_popup, job_dot_popup, job_plan_popup, job_stages_popup,
     stage_plan_popup, stage_tasks_popup,
 };
-#[cfg(not(feature = "web"))]
 pub use main::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
     load_job_stages_popup, load_jobs_data, load_metrics_data,

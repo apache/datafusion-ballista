@@ -22,19 +22,17 @@ mod jobs;
 use jobs::render_jobs;
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     widgets::Clear,
+    Frame,
 };
 
-#[cfg(not(feature = "web"))]
-use crate::tui::{
-    TuiResult,
-    event::{Event, UiData},
-};
 use crate::tui::{app::App, domain::executors::Executor};
+use crate::tui::{
+    event::{Event, UiData},
+    TuiResult,
+};
 
-#[cfg(not(feature = "web"))]
 pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
     let executor = app.http_client.get_executor(executor_id).await?;
     app.send_event(Event::DataLoaded {
@@ -60,8 +58,8 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-#[cfg(not(feature = "web"))]
 pub async fn load_executors_data(app: &App) -> TuiResult<()> {
+    tracing::info!("Loading executors data");
     let (scheduler_result, executors_result, jobs_result) = tokio::join!(
         app.http_client.get_scheduler_state(),
         app.http_client.get_executors(),

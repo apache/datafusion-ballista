@@ -15,24 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(not(feature = "web"))]
+use crate::tui::event::Event;
+#[cfg(feature = "web")]
+use crate::tui::event::Sender;
 use crate::tui::TuiError;
 use crate::tui::TuiResult;
-#[cfg(not(feature = "web"))]
-use crate::tui::event::Event;
 use crate::tui::{
     domain::{
-        SortOrder,
         executors::{
             ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
         },
         jobs::{
-            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
+            stages::{JobStagesPopup, StagesGraph}, CancelJobResult, JobDetails, JobPlansPopup, JobsData,
+            PlanTab,
             SortColumn as JobsSortColumn,
-            stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
+        SortOrder,
     },
     event::UiData,
     infrastructure::Settings,
@@ -48,7 +48,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
-#[cfg(not(feature = "web"))]
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
     load_job_stages_popup, load_jobs_data, load_metrics_data,
@@ -72,7 +71,6 @@ enum InputMode {
 pub(crate) struct App {
     should_quit: bool,
 
-    #[cfg(not(feature = "web"))]
     event_tx: Option<Sender<Event>>,
 
     current_view: Views,
@@ -103,7 +101,6 @@ impl App {
     pub fn new(config: Settings) -> TuiResult<Self> {
         Ok(Self {
             should_quit: false,
-            #[cfg(not(feature = "web"))]
             event_tx: None,
             current_view: Views::Jobs,
             input_mode: InputMode::View,
@@ -148,12 +145,10 @@ impl App {
         self.should_quit
     }
 
-    #[cfg(not(feature = "web"))]
     pub fn set_event_tx(&mut self, tx: Sender<Event>) {
         self.event_tx = Some(tx);
     }
 
-    #[cfg(not(feature = "web"))]
     pub async fn send_event(&self, event: Event) -> TuiResult<()> {
         if let Some(tx) = &self.event_tx {
             tx.send(event)
@@ -467,7 +462,6 @@ impl App {
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_executor_details_popup_data(&self) {
         if let Some(executor) = self.executors_data.selected_executor()
             && let Err(e) = load_executor_details_popup(self, &executor.id).await
@@ -479,21 +473,18 @@ impl App {
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_executors_data(&mut self) {
         if let Err(e) = load_executors_data(self).await {
             tracing::error!("Failed to load executors data on tick: {e:?}");
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_jobs_data(&mut self) {
         if let Err(e) = load_jobs_data(self).await {
             tracing::error!("Failed to load jobs data on tick: {e:?}");
         }
     }
 
-    #[cfg(not(feature = "web"))]
     async fn load_metrics_data(&mut self) {
         if let Err(e) = load_metrics_data(self).await {
             tracing::error!("Failed to load metrics data on tick: {e:?}");
@@ -1101,17 +1092,17 @@ pub enum WebKeyAsyncAction {
 
 #[cfg(test)]
 mod tests {
-    use crate::tui::App;
-    use crate::tui::Settings;
     use crate::tui::app::{
-        ExecutorsSortColumn, INVALID_DATE, JobsSortColumn, MetricsSortColumn,
+        ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn, INVALID_DATE,
     };
     use crate::tui::domain::{
-        SchedulerState, SortOrder,
-        executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification},
+        executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification}, jobs::stages::{JobStagesPopup, JobStagesResponse},
         jobs::Job,
-        jobs::stages::{JobStagesPopup, JobStagesResponse},
+        SchedulerState,
+        SortOrder,
     };
+    use crate::tui::App;
+    use crate::tui::Settings;
 
     fn make_app() -> App {
         let settings =
@@ -1162,6 +1153,7 @@ mod tests {
         assert!(!app.is_scheduler_up());
     }
 
+    #[cfg(not(feature = "web"))]
     #[test]
     fn new_app_should_not_quit() {
         let app = make_app();

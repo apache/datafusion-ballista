@@ -15,22 +15,31 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::App;
+use crate::tui::domain::{
+    executors::Executor,
+    jobs::{
+        stages::{JobStagesResponse, StagesGraph}, Job,
+        JobDetails,
+    },
+    metrics::Metric,
+    SchedulerState,
+};
+use crate::tui::TuiResult;
 #[cfg(not(feature = "web"))]
 use crossterm::event::{EventStream, KeyEvent};
 #[cfg(not(feature = "web"))]
 use futures::{FutureExt, StreamExt};
+#[cfg(feature = "web")]
+use ratzilla::event::KeyEvent;
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 #[cfg(not(feature = "web"))]
 use tokio::sync::mpsc;
-
-use crate::tui::domain::{
-    SchedulerState,
-    executors::Executor,
-    jobs::{
-        Job, JobDetails,
-        stages::{JobStagesResponse, StagesGraph},
-    },
-    metrics::Metric,
-};
 
 #[derive(Clone, Debug)]
 pub enum UiData {
@@ -43,7 +52,6 @@ pub enum UiData {
     ExecutorDetails(Executor),
 }
 
-#[cfg(not(feature = "web"))]
 #[derive(Clone, Debug)]
 #[expect(clippy::large_enum_variant)]
 pub enum Event {
@@ -60,7 +68,7 @@ pub struct EventHandler {
 
 #[cfg(not(feature = "web"))]
 impl EventHandler {
-    pub fn new(tick_rate: std::time::Duration) -> Self {
+    pub fn new(tick_rate: Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
@@ -94,5 +102,92 @@ impl EventHandler {
 
     pub async fn next(&mut self) -> Option<Event> {
         self.rx.recv().await
+    }
+}
+
+#[cfg(feature = "web")]
+#[derive(Debug)]
+pub struct EventHandler {
+    events: Arc<RefCell<VecDeque<Event>>>,
+}
+
+#[cfg(feature = "web")]
+impl EventHandler {
+    pub fn new(tick_rate: u32, app_tick: Rc<RefCell<App>>) -> Self {
+        use wasm_bindgen_futures::spawn_local;
+
+        // ── Initial data load ─────────────────────────────────────────────
+        {
+            tracing::info!("Initial data load");
+            let app = Rc::clone(&app_tick);
+            spawn_local(async move {
+                let _ = crate::tui::ui::load_executors_data(&app.borrow()).await;
+                let data = app.borrow().load_tick_data().await;
+                app.borrow_mut().apply_ui_data(data);
+            });
+        }
+
+        let events = Arc::new(RefCell::new(VecDeque::new()));
+
+        tracing::info!("Setting up tick timer: refresh data every {tick_rate}ms");
+        let tick_events = Arc::clone(&events);
+        gloo_timers::callback::Interval::new(tick_rate, move || {
+            let tick_events = Arc::clone(&tick_events);
+            let app = Rc::clone(&app_tick);
+            spawn_local(async move {
+                let data = app.borrow().load_tick_data().await;
+                tracing::info!("UIData: {:#?}", &data);
+                tick_events
+                    .borrow_mut()
+                    .push_back(Event::DataLoaded { data });
+                // app.borrow_mut().apply_ui_data(data);
+            });
+        })
+        .forget();
+
+        Self { events }
+    }
+
+    pub async fn next(&mut self) -> Option<Event> {
+        self.events.borrow_mut().pop_front()
+    }
+}
+
+#[cfg(feature = "web")]
+pub struct Sender<E> {
+    app: Rc<RefCell<App>>,
+    phantom: std::marker::PhantomData<E>,
+}
+
+#[cfg(feature = "web")]
+impl Debug for Sender<Event> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sender")
+    }
+}
+
+#[cfg(feature = "web")]
+impl<E> Sender<E>
+where
+    E: Debug + Send + 'static,
+{
+    pub fn new(app: Rc<RefCell<App>>) -> Self {
+        Self {
+            app,
+            phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub async fn send(&self, event: Event) -> TuiResult<()> {
+        tracing::info!("Sending {event:?}");
+        match event {
+            Event::DataLoaded { data } => {
+                // self.app.borrow_mut().apply_ui_data(data);
+            }
+            _ => {
+                tracing::warn!("Unhandled event: {event:?}");
+            }
+        }
+        Ok(())
     }
 }

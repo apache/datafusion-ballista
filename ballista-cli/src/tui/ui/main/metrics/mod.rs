@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
     event::{Event, UiData},
@@ -43,15 +42,11 @@ use ratatui::{
     },
 };
 
-#[cfg(not(feature = "web"))]
 pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
-    let metrics = match app.http_client.get_metrics().await {
-        Ok(metrics) => metrics,
-        Err(e) => {
-            tracing::error!("Failed to load the metrics: {e:?}");
-            Vec::new()
-        }
-    };
+    let metrics = app.http_client.get_metrics().await.unwrap_or_else(|e| {
+        tracing::error!("Failed to load the metrics: {e:?}");
+        Vec::new()
+    });
 
     app.send_event(Event::DataLoaded {
         data: UiData::Metrics(metrics),

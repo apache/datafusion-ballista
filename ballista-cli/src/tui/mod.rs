@@ -28,9 +28,9 @@ use app::App;
 #[cfg(not(feature = "web"))]
 use event::{Event, EventHandler};
 #[cfg(not(feature = "web"))]
-use std::sync::Arc;
-#[cfg(not(feature = "web"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(feature = "web"))]
+use std::sync::Arc;
 #[cfg(not(feature = "web"))]
 use std::time::Duration;
 use terminal::TuiWrapper;
@@ -89,6 +89,7 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
 /// the Ratatui render loop via `draw_web`.
 #[cfg(feature = "web")]
 pub fn tui_web_main() -> TuiResult<()> {
+    use crate::tui::event::{EventHandler, Sender};
     use app::WebKeyAsyncAction;
     use ratzilla::WebRenderer;
     use std::cell::RefCell;
@@ -101,28 +102,34 @@ pub fn tui_web_main() -> TuiResult<()> {
     let wrapper = TuiWrapper::new()?;
     let app = Rc::new(RefCell::new(App::new(config)?));
 
+    let sender = Sender::new(Rc::clone(&app));
+    app.borrow_mut().set_event_tx(sender);
+
+    let event_handler = EventHandler::new(tick_ms, app.clone());
+
     // ── Initial data load ─────────────────────────────────────────────
-    {
-        let app = Rc::clone(&app);
-        spawn_local(async move {
-            let data = app.borrow().load_tick_data().await;
-            app.borrow_mut().apply_ui_data(data);
-        });
-    }
+    // {
+    //     let app = Rc::clone(&app);
+    //     spawn_local(async move {
+    //         let data = app.borrow().load_tick_data().await;
+    //         app.borrow_mut().apply_ui_data(data);
+    //     });
+    // }
 
     // ── Tick timer: refresh data periodically ─────────────────────────
-    let app_tick = Rc::clone(&app);
-    let _tick_timer = gloo_timers::callback::Interval::new(tick_ms, move || {
-        let app = Rc::clone(&app_tick);
-        spawn_local(async move {
-            let data = app.borrow().load_tick_data().await;
-            app.borrow_mut().apply_ui_data(data);
-        });
-    });
+    // let app_tick = Rc::clone(&app);
+    // let _tick_timer = gloo_timers::callback::Interval::new(tick_ms, move || {
+    //     let app = Rc::clone(&app_tick);
+    //     spawn_local(async move {
+    //         let data = app.borrow().load_tick_data().await;
+    //         app.borrow_mut().apply_ui_data(data);
+    //     });
+    // });
 
     // ── Keyboard events ───────────────────────────────────────────────
     let app_key = Rc::clone(&app);
     wrapper.terminal.on_key_event(move |key_event| {
+        tracing::info!("on key event: {key_event:?}");
         let app = Rc::clone(&app_key);
         spawn_local(async move {
             // Synchronous state mutation (brief mutable borrow — released before any await)
