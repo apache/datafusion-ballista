@@ -48,8 +48,23 @@ mod native {
     }
 
     pub fn restore() -> TuiResult<()> {
-        execute!(io::stdout(), LeaveAlternateScreen)?;
-        disable_raw_mode()?;
+        let mut first_err: Option<std::io::Error> = None;
+
+        if let Err(e) = disable_raw_mode() {
+            tracing::error!("Failed to disable raw mode: {e:?}");
+            first_err = Some(e);
+        }
+
+        if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen) {
+            tracing::error!("Failed to leave alternate screen: {e:?}");
+            if first_err.is_none() {
+                first_err = Some(e);
+            }
+        }
+
+        if let Some(e) = first_err {
+            return Err(e.into());
+        }
         Ok(())
     }
 
