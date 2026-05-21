@@ -28,9 +28,9 @@ use app::App;
 #[cfg(not(feature = "web"))]
 use event::{Event, EventHandler};
 #[cfg(not(feature = "web"))]
-use std::sync::Arc;
-#[cfg(not(feature = "web"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(feature = "web"))]
+use std::sync::Arc;
 #[cfg(not(feature = "web"))]
 use std::time::Duration;
 use terminal::TuiWrapper;
@@ -90,7 +90,7 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
 /// the Ratatui render loop via `draw_web`.
 #[cfg(feature = "web")]
 pub async fn tui_web_main() -> TuiResult<()> {
-    use crate::tui::event::{EventHandler, Sender};
+    use crate::tui::event::{EventHandler, UiData};
     use ratzilla::WebRenderer;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -102,47 +102,67 @@ pub async fn tui_web_main() -> TuiResult<()> {
     let wrapper = TuiWrapper::new()?;
     let app = Rc::new(RefCell::new(App::new(config)?));
 
-    let sender = Sender::new(Rc::clone(&app));
-    app.borrow_mut().set_event_tx(sender);
+    let (sender, mut event_handler) = EventHandler::new(tick_ms, &wrapper.terminal);
+    app.borrow_mut().set_event_tx(sender.clone());
 
-    let mut event_handler = EventHandler::new(tick_ms, app.clone(), &wrapper.terminal);
-
-    // tracing::info!("Listening on key event");
-    // let key_event_app = Rc::clone(&app);
-    // wrapper.terminal.on_key_event(move |key_event| {
-    //     let key_event_app = Rc::clone(&key_event_app);
-    //     spawn_local(async move {
-    //         match key_event_app.borrow_mut().on_key(key_event.clone()).await {
-    //             Ok(_) => {
-    //                 tracing::info!("==== Handled {key_event:?}");
-    //             }
-    //             Err(e) => {
-    //                 tracing::error!("An error while handling a key event: {e}")
-    //             }
-    //         }
-    //     });
-    // });
+    // Initial data load — http_client extracted with a brief borrow, no borrow held across await
+    {
+        tracing::info!("Initial data load");
+        let http_client = app.borrow().http_client.clone();
+        let tx = sender.clone();
+        spawn_local(async move {
+            let data = match http_client.get_scheduler_state().await {
+                Ok(state) => UiData::SchedulerState(Some(state)),
+                Err(e) => {
+                    tracing::error!("Failed to load scheduler state: {e:?}");
+                    UiData::SchedulerState(None)
+                }
+            };
+            tx.send(Event::DataLoaded { data }).await.ok();
+        });
+    }
 
     // ── Render loop (driven by requestAnimationFrame) ─────────────────
     let app_render = Rc::clone(&app);
     wrapper.terminal.draw_web(move |f| {
         while let Some(event) = event_handler.next() {
             match event {
-                Event::DataLoaded { data } => app.borrow_mut().apply_ui_data(data),
+                Event::DataLoaded { data } => {
+                    // Brief synchronous borrow — safe, no await held
+                    app.borrow_mut().apply_ui_data(data);
+                }
                 Event::Tick => {
-                    tracing::info!("==== Received Tick Event");
+                    // Extract state with brief borrows, then spawn async data load
+                    let http_client = app.borrow().http_client.clone();
+                    let is_executors = app.borrow().is_executors_view();
+                    let is_jobs = app.borrow().is_jobs_view();
+                    let tx = sender.clone();
+                    spawn_local(async move {
+                        let data =
+                            load_tick_data_for_view(&http_client, is_executors, is_jobs)
+                                .await;
+                        tx.send(Event::DataLoaded { data }).await.ok();
+                    });
                 }
                 Event::Key(key_event) => {
-                    tracing::info!("==== Received KeyEvent: {key_event:?}");
-                    let app_key_event = Rc::clone(&app_render);
-                    spawn_local(async move {
-                        match app_key_event.borrow_mut().on_key(key_event).await {
-                            Ok(_) => tracing::info!("==== Handled key event"),
-                            Err(err) => tracing::error!(
-                                "An error while handling a key event: {err}"
-                            ),
-                        }
-                    });
+                    // on_key_sync is purely synchronous — brief borrow_mut, no await
+                    let action = app.borrow_mut().on_key_sync(&key_event);
+                    if let Some(action) = action {
+                        let http_client = app.borrow().http_client.clone();
+                        let is_executors = app.borrow().is_executors_view();
+                        let is_jobs = app.borrow().is_jobs_view();
+                        let tx = sender.clone();
+                        spawn_local(async move {
+                            execute_web_async_action(
+                                http_client,
+                                tx,
+                                is_executors,
+                                is_jobs,
+                                action,
+                            )
+                            .await;
+                        });
+                    }
                 }
             }
         }
@@ -152,4 +172,135 @@ pub async fn tui_web_main() -> TuiResult<()> {
     });
 
     Ok(())
+}
+
+/// Loads data for the currently active view without borrowing `App` during the await.
+#[cfg(feature = "web")]
+async fn load_tick_data_for_view(
+    http_client: &crate::tui::http_client::HttpClient,
+    is_executors: bool,
+    is_jobs: bool,
+) -> event::UiData {
+    use crate::tui::event::UiData;
+    if is_executors {
+        let (scheduler_result, executors_result, jobs_result) = tokio::join!(
+            http_client.get_scheduler_state(),
+            http_client.get_executors(),
+            http_client.get_jobs(),
+        );
+        UiData::Executors(
+            scheduler_result
+                .map_err(|e| tracing::error!("Failed to load scheduler state: {e:?}"))
+                .ok(),
+            executors_result.unwrap_or_else(|e| {
+                tracing::error!("Failed to load executors: {e:?}");
+                vec![]
+            }),
+            jobs_result.unwrap_or_else(|e| {
+                tracing::error!("Failed to load jobs: {e:?}");
+                vec![]
+            }),
+        )
+    } else if is_jobs {
+        UiData::Jobs(http_client.get_jobs().await.unwrap_or_else(|e| {
+            tracing::error!("Failed to load jobs: {e:?}");
+            vec![]
+        }))
+    } else {
+        UiData::Metrics(http_client.get_metrics().await.unwrap_or_else(|e| {
+            tracing::error!("Failed to load metrics: {e:?}");
+            vec![]
+        }))
+    }
+}
+
+/// Executes an async action triggered by a key press, sending the result through `tx`.
+/// Captures only `Arc<HttpClient>` and `Sender<Event>` — no `Rc<RefCell<App>>` borrow.
+#[cfg(feature = "web")]
+async fn execute_web_async_action(
+    http_client: std::sync::Arc<http_client::HttpClient>,
+    tx: event::Sender<Event>,
+    is_executors: bool,
+    is_jobs: bool,
+    action: app::WebKeyAsyncAction,
+) {
+    use crate::tui::domain::jobs::CancelJobResult;
+    use app::WebKeyAsyncAction;
+    use event::{Event, UiData};
+
+    match action {
+        WebKeyAsyncAction::LoadJobStages(id) => {
+            match http_client.get_job_stages(&id).await {
+                Ok(mut stages) => {
+                    stages
+                        .stages
+                        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+                    tx.send(Event::DataLoaded {
+                        data: UiData::JobStagesData(id, stages),
+                    })
+                    .await
+                    .ok();
+                }
+                Err(e) => tracing::error!("Failed to load stages for job '{id}': {e:?}"),
+            }
+        }
+        WebKeyAsyncAction::LoadExecutorDetails(id) => {
+            match http_client.get_executor(&id).await {
+                Ok(executor) => {
+                    tx.send(Event::DataLoaded {
+                        data: UiData::ExecutorDetails(executor),
+                    })
+                    .await
+                    .ok();
+                }
+                Err(e) => tracing::error!("Failed to load executor '{id}': {e:?}"),
+            }
+        }
+        WebKeyAsyncAction::LoadJobDot(id) => match http_client.get_job_dot(&id).await {
+            Ok(dot_content) => {
+                let graph = ui::dot_parser::parse_dot(&id, &dot_content);
+                tx.send(Event::DataLoaded {
+                    data: UiData::JobStagesGraph(graph),
+                })
+                .await
+                .ok();
+            }
+            Err(e) => tracing::error!("Failed to load job dot for '{id}': {e:?}"),
+        },
+        WebKeyAsyncAction::CancelJob(id) => {
+            let result = match http_client.cancel_job(&id).await {
+                Ok(resp) if resp.canceled => CancelJobResult::Success { job_id: id },
+                Ok(_) => CancelJobResult::NotCanceled { job_id: id },
+                Err(e) => CancelJobResult::Failure {
+                    job_id: id,
+                    error: e.to_string(),
+                },
+            };
+            tx.send(Event::DataLoaded {
+                data: UiData::CancelJobResult(result),
+            })
+            .await
+            .ok();
+        }
+        WebKeyAsyncAction::UpdateJobDetails(job_id) => {
+            if let Some(id) = job_id {
+                match http_client.get_job_details(&id).await {
+                    Ok(details) => {
+                        tx.send(Event::DataLoaded {
+                            data: UiData::JobDetails(details),
+                        })
+                        .await
+                        .ok();
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load job details for '{id}': {e:?}")
+                    }
+                }
+            }
+        }
+        WebKeyAsyncAction::ReloadView => {
+            let data = load_tick_data_for_view(&http_client, is_executors, is_jobs).await;
+            tx.send(Event::DataLoaded { data }).await.ok();
+        }
+    }
 }

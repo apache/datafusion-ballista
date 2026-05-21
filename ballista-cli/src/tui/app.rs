@@ -766,44 +766,9 @@ impl App {
             UiData::ExecutorDetails(executor) => {
                 self.executor_details_popup = Some(ExecutorDetailsPopup::new(executor));
             }
-        }
-    }
-
-    /// Loads data for the currently active view. Takes `&self` so the borrow can be released
-    /// before calling `apply_ui_data`, avoiding holding `RefCell::borrow_mut` across awaits.
-    #[cfg(feature = "web")]
-    pub async fn load_tick_data(&self) -> UiData {
-        if self.is_executors_view() {
-            let (scheduler_result, executors_result, jobs_result) = tokio::join!(
-                self.http_client.get_scheduler_state(),
-                self.http_client.get_executors(),
-                self.http_client.get_jobs(),
-            );
-            UiData::Executors(
-                scheduler_result
-                    .map_err(|e| tracing::error!("Failed to load scheduler state: {e:?}"))
-                    .ok(),
-                executors_result.unwrap_or_else(|e| {
-                    tracing::error!("Failed to load executors: {e:?}");
-                    vec![]
-                }),
-                jobs_result.unwrap_or_else(|e| {
-                    tracing::error!("Failed to load jobs: {e:?}");
-                    vec![]
-                }),
-            )
-        } else if self.is_jobs_view() {
-            let jobs = self.http_client.get_jobs().await.unwrap_or_else(|e| {
-                tracing::error!("Failed to load jobs: {e:?}");
-                vec![]
-            });
-            UiData::Jobs(jobs)
-        } else {
-            let metrics = self.http_client.get_metrics().await.unwrap_or_else(|e| {
-                tracing::error!("Failed to load metrics: {e:?}");
-                vec![]
-            });
-            UiData::Metrics(metrics)
+            UiData::CancelJobResult(result) => {
+                self.cancel_job_result = Some(result);
+            }
         }
     }
 
