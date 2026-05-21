@@ -25,7 +25,6 @@ mod terminal;
 mod ui;
 
 use app::App;
-#[cfg(not(feature = "web"))]
 use event::{Event, EventHandler};
 #[cfg(not(feature = "web"))]
 use std::sync::Arc;
@@ -35,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use terminal::TuiWrapper;
 
-use crate::tui::event::Event;
+use crate::tui::event::UiData;
 use crate::tui::{error::TuiError, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
@@ -54,7 +53,15 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
     app.set_event_tx(app_tx);
-    let _ = ui::load_executors_data(&app).await;
+    // let _ = ui::load_executors_data(&app).await;
+    let data = match app.http_client.get_scheduler_state().await {
+        Ok(state) => UiData::SchedulerState(Some(state)),
+        Err(e) => {
+            tracing::error!("Failed to load scheduler state: {e:?}");
+            UiData::SchedulerState(None)
+        }
+    };
+    app.send_event(Event::DataLoaded { data }).await.ok();
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;
@@ -90,7 +97,7 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
 /// the Ratatui render loop via `draw_web`.
 #[cfg(feature = "web")]
 pub async fn tui_web_main() -> TuiResult<()> {
-    use crate::tui::event::{EventHandler, UiData};
+    use crate::tui::event::UiData;
     use ratzilla::WebRenderer;
     use std::cell::RefCell;
     use std::rc::Rc;

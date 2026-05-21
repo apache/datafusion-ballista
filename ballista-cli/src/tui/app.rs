@@ -541,14 +541,21 @@ impl App {
             && (job.status == "Running" || job.status == "Queued")
         {
             let job_id = job.job_id.clone();
-            self.cancel_job_result =
-                Some(match self.http_client.cancel_job(&job_id).await {
-                    Ok(resp) if resp.canceled => CancelJobResult::Success { job_id },
-                    Ok(_) => CancelJobResult::NotCanceled { job_id },
-                    Err(e) => CancelJobResult::Failure {
-                        job_id,
-                        error: e.to_string(),
-                    },
+            let cancel_job_result = match self.http_client.cancel_job(&job_id).await {
+                Ok(resp) if resp.canceled => CancelJobResult::Success { job_id },
+                Ok(_) => CancelJobResult::NotCanceled { job_id },
+                Err(e) => CancelJobResult::Failure {
+                    job_id,
+                    error: e.to_string(),
+                },
+            };
+            let _ = self
+                .send_event(Event::DataLoaded {
+                    data: UiData::CancelJobResult(cancel_job_result),
+                })
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to send CancelJobResult event: {e:?}")
                 });
         }
     }
@@ -710,7 +717,7 @@ impl App {
                 let old_pos = self.executors_data.scrollbar_state.get_position();
                 let scrollbar_state =
                     ScrollbarState::new(executors.len()).position(old_pos);
-                let table_state = self.executors_data.table_state.clone();
+                let table_state = self.executors_data.table_state;
                 let sort_column = self.executors_data.sort_column.clone();
                 let sort_order = self.executors_data.sort_order.clone();
                 self.executors_data = ExecutorsData {
@@ -728,7 +735,7 @@ impl App {
                 let old_pos = self.metrics_data.scrollbar_state.get_position();
                 let scrollbar_state =
                     ScrollbarState::new(metrics.len()).position(old_pos);
-                let table_state = self.metrics_data.table_state.clone();
+                let table_state = self.metrics_data.table_state;
                 let sort_column = self.metrics_data.sort_column.clone();
                 let sort_order = self.metrics_data.sort_order.clone();
                 self.metrics_data = MetricsData {
@@ -743,7 +750,7 @@ impl App {
             UiData::Jobs(jobs) => {
                 let old_pos = self.jobs_data.scrollbar_state.get_position();
                 let scrollbar_state = ScrollbarState::new(jobs.len()).position(old_pos);
-                let table_state = self.jobs_data.table_state.clone();
+                let table_state = self.jobs_data.table_state;
                 let sort_column = self.jobs_data.sort_column.clone();
                 let sort_order = self.jobs_data.sort_order.clone();
                 self.jobs_data = JobsData {

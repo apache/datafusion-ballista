@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "web")]
 use crate::tui::TuiResult;
 use crate::tui::domain::{
     SchedulerState,
@@ -33,9 +34,13 @@ use futures::{FutureExt, StreamExt};
 use ratzilla::WebRenderer;
 #[cfg(feature = "web")]
 use ratzilla::event::KeyEvent;
+#[cfg(feature = "web")]
 use std::cell::RefCell;
+#[cfg(feature = "web")]
 use std::collections::VecDeque;
+#[cfg(feature = "web")]
 use std::fmt::Debug;
+#[cfg(feature = "web")]
 use std::rc::Rc;
 #[cfg(not(feature = "web"))]
 use std::time::Duration;
