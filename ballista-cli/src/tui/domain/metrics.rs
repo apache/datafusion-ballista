@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::App;
 use crate::tui::domain::SortOrder;
 use prometheus_parse::Sample;
 use ratatui::widgets::{ScrollbarState, TableState};
@@ -137,11 +138,7 @@ impl FromStr for MetricsResponse {
             .lines()
             .map(|line| Ok(line.to_string()))
             .collect();
-        #[cfg(not(feature = "web"))]
-        let now = chrono::Utc::now();
-        #[cfg(feature = "web")]
-        let now = chrono::DateTime::from_timestamp_secs(0).unwrap();
-        let scrape = prometheus_parse::Scrape::parse_at(lines.into_iter(), now)?;
+        let scrape = prometheus_parse::Scrape::parse_at(lines.into_iter(), App::now())?;
         for sample in scrape.samples {
             let metric = Metric {
                 sample: sample.clone(),

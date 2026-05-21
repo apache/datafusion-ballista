@@ -37,7 +37,7 @@ use crate::tui::{
     event::UiData,
     infrastructure::Settings,
 };
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 #[cfg(not(feature = "web"))]
 use crossterm::event::{KeyCode, KeyEvent};
 #[cfg(feature = "web")]
@@ -703,6 +703,20 @@ impl App {
         } else {
             format!("{value:.2}{unit}")
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn now() -> DateTime<Utc> {
+        Utc::now()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn now() -> DateTime<Utc> {
+        let timestamp = js_sys::Date::now();
+        DateTime::from_timestamp_millis(timestamp as i64).unwrap_or_else(|| {
+            tracing::warn!("Failed to convert JS timestamp to DateTime. Falling back to Unix epoch for metrics' timestamps.");
+            DateTime::from_timestamp_millis(0).unwrap()
+        })
     }
 
     /// Applies a loaded data payload to the app state directly.
@@ -1589,6 +1603,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn format_count_trillions() {
         let app = make_app();
         assert_eq!(app.format_count(1_000_000_000_000), "1.00T");

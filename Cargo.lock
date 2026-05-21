@@ -1018,6 +1018,7 @@ dependencies = [
  "dotparser",
  "futures",
  "gloo-timers",
+ "js-sys",
  "mimalloc",
  "percent-encoding",
  "prometheus-parse",

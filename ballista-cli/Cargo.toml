@@ -68,6 +68,7 @@ gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 tracing-web = { version = "0.1", optional = true }
 web-sys = { version = "0.3", optional = true }
+js-sys = { version = "0.3.95", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "parking_lot"] }
@@ -98,7 +99,7 @@ web = [
     "dep:serde", "dep:serde_json", "dep:tui-big-text",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
     "dep:gloo-timers", "dep:console_error_panic_hook",
-    "dep:tracing-web", "dep:web-sys"
+    "dep:tracing-web", "dep:web-sys", "dep:js-sys"
 ]
 
 [[bin]]
