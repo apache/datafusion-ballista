@@ -30,5 +30,15 @@
     </style>
 </head>
 <body>
+
+<script type="module">
+    document.addEventListener('keydown', (event) => {
+        // prevent arrow keys from scrolling the page
+        // the arrow keys are handled by the application to select the next/previous table row
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+        }
+    });
+</script>
 </body>
 </html>
