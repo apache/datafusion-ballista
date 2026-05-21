@@ -20,8 +20,7 @@ use crate::tui::domain::{
     SchedulerState,
     executors::Executor,
     jobs::{
-        CancelJobResult,
-        Job, JobDetails,
+        CancelJobResult, Job, JobDetails,
         stages::{JobStagesResponse, StagesGraph},
     },
     metrics::Metric,
@@ -138,7 +137,10 @@ impl EventHandler {
         let key_sender = sender.clone();
         terminal.on_key_event(move |key_event| {
             tracing::info!("on key event: {key_event:?}");
-            key_sender.queue.borrow_mut().push_back(Event::Key(key_event));
+            key_sender
+                .queue
+                .borrow_mut()
+                .push_back(Event::Key(key_event));
         });
 
         (sender, Self { events: queue })

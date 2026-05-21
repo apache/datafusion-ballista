@@ -28,9 +28,9 @@ use app::App;
 #[cfg(not(feature = "web"))]
 use event::{Event, EventHandler};
 #[cfg(not(feature = "web"))]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(feature = "web"))]
 use std::sync::Arc;
+#[cfg(not(feature = "web"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(feature = "web"))]
 use std::time::Duration;
 use terminal::TuiWrapper;

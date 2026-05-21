@@ -1505,7 +1505,7 @@ mod tests {
 
     #[test]
     fn format_datetime_known_timestamp_contains_year() {
-        // 1_000_000_000_000 ms = 2001-09-09T01:46:40 UTC
+        // 1_000_000_000_000 ms = 2001-09-09T01:46:40
         let app = make_app();
         let result = app.format_datetime(1_000_000_000_000);
         assert!(result.contains("2001"), "{result} must contain year 2001");

@@ -137,7 +137,11 @@ impl FromStr for MetricsResponse {
             .lines()
             .map(|line| Ok(line.to_string()))
             .collect();
-        let scrape = prometheus_parse::Scrape::parse(lines.into_iter())?;
+        #[cfg(not(feature = "web"))]
+        let now = chrono::Utc::now();
+        #[cfg(feature = "web")]
+        let now = chrono::DateTime::from_timestamp_secs(0).unwrap();
+        let scrape = prometheus_parse::Scrape::parse_at(lines.into_iter(), now)?;
         for sample in scrape.samples {
             let metric = Metric {
                 sample: sample.clone(),
