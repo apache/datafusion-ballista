@@ -99,7 +99,7 @@ pub async fn tui_main(tui_mode: Arc<AtomicBool>) -> TuiResult<()> {
 pub async fn tui_web_main() -> TuiResult<()> {
     use crate::tui::event::UiData;
     use ratzilla::WebRenderer;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use wasm_bindgen_futures::spawn_local;
 
@@ -108,6 +108,7 @@ pub async fn tui_web_main() -> TuiResult<()> {
 
     let wrapper = TuiWrapper::new()?;
     let app = Rc::new(RefCell::new(App::new(config)?));
+    let tick_in_flight = Rc::new(Cell::new(false));
 
     let (sender, mut event_handler) = EventHandler::new(tick_ms, &wrapper.terminal);
     app.borrow_mut().set_event_tx(sender.clone());
@@ -139,16 +140,22 @@ pub async fn tui_web_main() -> TuiResult<()> {
                     app.borrow_mut().apply_ui_data(data);
                 }
                 Event::Tick => {
+                    if tick_in_flight.get() {
+                        continue;
+                    }
+                    tick_in_flight.set(true);
                     // Extract state with brief borrows, then spawn async data load
                     let http_client = app.borrow().http_client.clone();
                     let is_executors = app.borrow().is_executors_view();
                     let is_jobs = app.borrow().is_jobs_view();
                     let tx = sender.clone();
+                    let tick_in_flight_done = Rc::clone(&tick_in_flight);
                     spawn_local(async move {
                         let data =
                             load_tick_data_for_view(&http_client, is_executors, is_jobs)
                                 .await;
                         tx.send(Event::DataLoaded { data }).await.ok();
+                        tick_in_flight_done.set(false);
                     });
                 }
                 Event::Key(key_event) => {
