@@ -28,15 +28,15 @@ use app::App;
 #[cfg(not(feature = "web"))]
 use event::{Event, EventHandler};
 #[cfg(not(feature = "web"))]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(feature = "web"))]
 use std::sync::Arc;
+#[cfg(not(feature = "web"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(feature = "web"))]
 use std::time::Duration;
 use terminal::TuiWrapper;
 
-use crate::tui::{error::TuiError, infrastructure::Settings};
 use crate::tui::event::Event;
+use crate::tui::{error::TuiError, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
@@ -107,160 +107,46 @@ pub async fn tui_web_main() -> TuiResult<()> {
 
     let mut event_handler = EventHandler::new(tick_ms, app.clone(), &wrapper.terminal);
 
-    // ── Initial data load ─────────────────────────────────────────────
-    // {
-    //     let app = Rc::clone(&app);
-    //     spawn_local(async move {
-    //         let data = app.borrow().load_tick_data().await;
-    //         app.borrow_mut().apply_ui_data(data);
-    //     });
-    // }
-
-    // ── Tick timer: refresh data periodically ─────────────────────────
-    // let app_tick = Rc::clone(&app);
-    // let _tick_timer = gloo_timers::callback::Interval::new(tick_ms, move || {
-    //     let app = Rc::clone(&app_tick);
-    //     spawn_local(async move {
-    //         let data = app.borrow().load_tick_data().await;
-    //         app.borrow_mut().apply_ui_data(data);
-    //     });
-    // });
-
-    // ── Keyboard events ───────────────────────────────────────────────
-    // let app_key = Rc::clone(&app);
+    // tracing::info!("Listening on key event");
+    // let key_event_app = Rc::clone(&app);
     // wrapper.terminal.on_key_event(move |key_event| {
-    //     tracing::info!("on key event: {key_event:?}");
-    //     let app = Rc::clone(&app_key);
+    //     let key_event_app = Rc::clone(&key_event_app);
     //     spawn_local(async move {
-    //         // Synchronous state mutation (brief mutable borrow — released before any await)
-    //         let async_action = {
-    //             let mut a = app.borrow_mut();
-    //             a.on_key_sync(&key_event)
-    //         };
-    //
-    //         // Async work (uses immutable borrow, or brief mutable borrow for updates)
-    //         if let Some(action) = async_action {
-    //             match action {
-    //                 WebKeyAsyncAction::LoadJobStages(job_id) => {
-    //                     let result = {
-    //                         let a = app.borrow();
-    //                         a.http_client.get_job_stages(&job_id).await
-    //                     };
-    //                     match result {
-    //                         Ok(stages) => app.borrow_mut().apply_ui_data(
-    //                             crate::tui::event::UiData::JobStagesData(job_id, stages),
-    //                         ),
-    //                         Err(e) => {
-    //                             tracing::error!("Failed to load job stages: {e:?}")
-    //                         }
-    //                     }
-    //                 }
-    //                 WebKeyAsyncAction::LoadExecutorDetails(executor_id) => {
-    //                     let result = {
-    //                         let a = app.borrow();
-    //                         a.http_client.get_executor(&executor_id).await
-    //                     };
-    //                     match result {
-    //                         Ok(executor) => app.borrow_mut().apply_ui_data(
-    //                             crate::tui::event::UiData::ExecutorDetails(executor),
-    //                         ),
-    //                         Err(e) => {
-    //                             tracing::error!("Failed to load executor details: {e:?}")
-    //                         }
-    //                     }
-    //                 }
-    //                 WebKeyAsyncAction::LoadJobDot(job_id) => {
-    //                     let result = {
-    //                         let a = app.borrow();
-    //                         a.http_client.get_job_dot(&job_id).await
-    //                     };
-    //                     match result {
-    //                         Ok(dot_string) => {
-    //                             let graph =
-    //                                 ui::dot_parser::parse_dot(&job_id, &dot_string);
-    //                             app.borrow_mut().apply_ui_data(
-    //                                 crate::tui::event::UiData::JobStagesGraph(graph),
-    //                             )
-    //                         }
-    //                         Err(e) => {
-    //                             tracing::error!("Failed to load job dot: {e:?}")
-    //                         }
-    //                     }
-    //                 }
-    //                 WebKeyAsyncAction::CancelJob(job_id) => {
-    //                     let result = {
-    //                         let a = app.borrow();
-    //                         a.http_client.cancel_job(&job_id).await
-    //                     };
-    //                     use crate::tui::domain::jobs::CancelJobResult;
-    //                     let cancel_result = match result {
-    //                         Ok(resp) if resp.canceled => {
-    //                             CancelJobResult::Success { job_id }
-    //                         }
-    //                         Ok(_) => CancelJobResult::NotCanceled { job_id },
-    //                         Err(e) => CancelJobResult::Failure {
-    //                             job_id,
-    //                             error: e.to_string(),
-    //                         },
-    //                     };
-    //                     app.borrow_mut().cancel_job_result = Some(cancel_result);
-    //                 }
-    //                 WebKeyAsyncAction::UpdateJobDetails(job_id) => {
-    //                     if let Some(id) = job_id {
-    //                         let result = {
-    //                             let a = app.borrow();
-    //                             a.http_client.get_job_details(&id).await
-    //                         };
-    //                         match result {
-    //                             Ok(details) => app.borrow_mut().apply_ui_data(
-    //                                 crate::tui::event::UiData::JobDetails(details),
-    //                             ),
-    //                             Err(e) => {
-    //                                 tracing::error!("Failed to load job details: {e:?}")
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //                 WebKeyAsyncAction::ReloadView => {
-    //                     let data = app.borrow().load_tick_data().await;
-    //                     app.borrow_mut().apply_ui_data(data);
-    //                 }
+    //         match key_event_app.borrow_mut().on_key(key_event.clone()).await {
+    //             Ok(_) => {
+    //                 tracing::info!("==== Handled {key_event:?}");
+    //             }
+    //             Err(e) => {
+    //                 tracing::error!("An error while handling a key event: {e}")
     //             }
     //         }
     //     });
     // });
 
-    tracing::info!("Listening on key event");
-    let key_event_app = Rc::clone(&app);
-    wrapper.terminal.on_key_event(move |key_event| {
-        let key_event_app = Rc::clone(&key_event_app);
-        spawn_local(async move {
-            match key_event_app.borrow_mut().on_key(key_event.clone()).await {
-                Ok(_) => {
-                    tracing::info!("==== Handled {key_event:?}");
-                }
-                Err(e) => {
-                    tracing::error!("An error while handling a key event: {e}")
-                }
-            }
-        });
-    });
-
-    while let Some(event) = event_handler.next().await {
-        match event {
-            Event::DataLoaded {data} => app.borrow_mut().apply_ui_data(data),
-            Event::Tick => {
-                tracing::info!("==== Received Tick Event");
-            },
-            Event::Key(key_event) => {
-                tracing::info!("==== Received KeyEvent: {key_event:?}");
-            }
-        }
-    }
-
     // ── Render loop (driven by requestAnimationFrame) ─────────────────
     let app_render = Rc::clone(&app);
     wrapper.terminal.draw_web(move |f| {
+        while let Some(event) = event_handler.next() {
+            match event {
+                Event::DataLoaded { data } => app.borrow_mut().apply_ui_data(data),
+                Event::Tick => {
+                    tracing::info!("==== Received Tick Event");
+                }
+                Event::Key(key_event) => {
+                    tracing::info!("==== Received KeyEvent: {key_event:?}");
+                    let app_key_event = Rc::clone(&app_render);
+                    spawn_local(async move {
+                        match app_key_event.borrow_mut().on_key(key_event).await {
+                            Ok(_) => tracing::info!("==== Handled key event"),
+                            Err(err) => tracing::error!(
+                                "An error while handling a key event: {err}"
+                            ),
+                        }
+                    });
+                }
+            }
+        }
+
         let app = app_render.borrow();
         ui::render(f, &*app);
     });

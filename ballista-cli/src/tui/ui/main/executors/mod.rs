@@ -22,16 +22,16 @@ mod jobs;
 use jobs::render_jobs;
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     widgets::Clear,
-    Frame,
 };
 
-use crate::tui::{app::App, domain::executors::Executor};
 use crate::tui::{
-    event::{Event, UiData},
     TuiResult,
+    event::{Event, UiData},
 };
+use crate::tui::{app::App, domain::executors::Executor};
 
 pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
     let executor = app.http_client.get_executor(executor_id).await?;

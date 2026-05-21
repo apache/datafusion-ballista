@@ -15,24 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::TuiError;
+use crate::tui::TuiResult;
 use crate::tui::event::Event;
 #[cfg(feature = "web")]
 use crate::tui::event::Sender;
-use crate::tui::TuiError;
-use crate::tui::TuiResult;
 use crate::tui::{
     domain::{
+        SortOrder,
         executors::{
             ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
         },
         jobs::{
-            stages::{JobStagesPopup, StagesGraph}, CancelJobResult, JobDetails, JobPlansPopup, JobsData,
-            PlanTab,
+            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
             SortColumn as JobsSortColumn,
+            stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
-        SortOrder,
     },
     event::UiData,
     infrastructure::Settings,
@@ -703,6 +703,9 @@ impl App {
     pub fn apply_ui_data(&mut self, data: UiData) {
         use ratatui::widgets::ScrollbarState;
         match data {
+            UiData::SchedulerState(state) => {
+                self.executors_data.scheduler_state = state;
+            }
             UiData::Executors(state, executors, jobs) => {
                 let old_pos = self.executors_data.scrollbar_state.get_position();
                 let scrollbar_state =
@@ -1086,17 +1089,17 @@ pub enum WebKeyAsyncAction {
 
 #[cfg(test)]
 mod tests {
-    use crate::tui::app::{
-        ExecutorsSortColumn, JobsSortColumn, MetricsSortColumn, INVALID_DATE,
-    };
-    use crate::tui::domain::{
-        executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification}, jobs::stages::{JobStagesPopup, JobStagesResponse},
-        jobs::Job,
-        SchedulerState,
-        SortOrder,
-    };
     use crate::tui::App;
     use crate::tui::Settings;
+    use crate::tui::app::{
+        ExecutorsSortColumn, INVALID_DATE, JobsSortColumn, MetricsSortColumn,
+    };
+    use crate::tui::domain::{
+        SchedulerState, SortOrder,
+        executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification},
+        jobs::Job,
+        jobs::stages::{JobStagesPopup, JobStagesResponse},
+    };
 
     fn make_app() -> App {
         let settings =

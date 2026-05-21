@@ -15,21 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::TuiResult;
 use crate::tui::app::App;
 use crate::tui::domain::{
+    SchedulerState,
     executors::Executor,
     jobs::{
-        stages::{JobStagesResponse, StagesGraph}, Job,
-        JobDetails,
+        Job, JobDetails,
+        stages::{JobStagesResponse, StagesGraph},
     },
     metrics::Metric,
-    SchedulerState,
 };
-use crate::tui::TuiResult;
 #[cfg(not(feature = "web"))]
 use crossterm::event::{EventStream, KeyEvent};
 #[cfg(not(feature = "web"))]
 use futures::{FutureExt, StreamExt};
+use ratzilla::WebRenderer;
 #[cfg(feature = "web")]
 use ratzilla::event::KeyEvent;
 use std::cell::RefCell;
@@ -38,12 +39,12 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use ratzilla::WebRenderer;
 #[cfg(not(feature = "web"))]
 use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub enum UiData {
+    SchedulerState(Option<SchedulerState>),
     Executors(Option<SchedulerState>, Vec<Executor>, Vec<Job>),
     Metrics(Vec<Metric>),
     Jobs(Vec<Job>),
@@ -114,21 +115,34 @@ pub struct EventHandler {
 
 #[cfg(feature = "web")]
 impl EventHandler {
-    pub fn new(tick_rate: u32, app_tick: Rc<RefCell<App>>, terminal: &ratatui::Terminal<ratzilla::DomBackend>) -> Self {
+    pub fn new(
+        tick_rate: u32,
+        app_tick: Rc<RefCell<App>>,
+        terminal: &ratatui::Terminal<ratzilla::DomBackend>,
+    ) -> Self {
         use wasm_bindgen_futures::spawn_local;
+
+        let events = Arc::new(RefCell::new(VecDeque::new()));
 
         // ── Initial data load ─────────────────────────────────────────────
         {
             tracing::info!("Initial data load");
-            let app = Rc::clone(&app_tick);
+            let app_initial = Rc::clone(&app_tick);
+            let events_initial = Arc::clone(&events);
             spawn_local(async move {
-                let _ = crate::tui::ui::load_executors_data(&app.borrow()).await;
-                let data = app.borrow().load_tick_data().await;
-                app.borrow_mut().apply_ui_data(data);
+                let data =
+                    match app_initial.borrow().http_client.get_scheduler_state().await {
+                        Ok(state) => UiData::SchedulerState(Some(state)),
+                        Err(e) => {
+                            tracing::error!("Failed to load scheduler state: {e:?}");
+                            UiData::SchedulerState(None)
+                        }
+                    };
+                events_initial
+                    .borrow_mut()
+                    .push_back(Event::DataLoaded { data });
             });
         }
-
-        let events = Arc::new(RefCell::new(VecDeque::new()));
 
         tracing::info!("Setting up tick timer: refresh data every {tick_rate}ms");
         let tick_events = Arc::clone(&events);
@@ -138,24 +152,23 @@ impl EventHandler {
             spawn_local(async move {
                 let data = app.borrow().load_tick_data().await;
                 // tracing::info!("UIData: {:#?}", &data);
-                // tick_events
-                //     .borrow_mut()
-                //     .push_back(Event::DataLoaded { data });
-                app.borrow_mut().apply_ui_data(data);
+                tick_events
+                    .borrow_mut()
+                    .push_back(Event::DataLoaded { data });
             });
         })
         .forget();
 
-        // let key_events = Arc::clone(&events);
-        // terminal.on_key_event(move |key_event| {
-        //     tracing::info!("on key event: {key_event:?}");
-        //     key_events.borrow_mut().push_back(Event::Key(key_event));
-        // });
+        let key_events = Arc::clone(&events);
+        terminal.on_key_event(move |key_event| {
+            tracing::info!("on key event: {key_event:?}");
+            key_events.borrow_mut().push_back(Event::Key(key_event));
+        });
 
         Self { events }
     }
 
-    pub async fn next(&mut self) -> Option<Event> {
+    pub fn next(&mut self) -> Option<Event> {
         self.events.borrow_mut().pop_front()
     }
 }
