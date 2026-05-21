@@ -75,7 +75,7 @@ job:
 "#;
 
 impl Settings {
-    #[cfg(feature = "tui")]
+    #[cfg(all(feature = "tui", not(feature = "web")))]
     pub(crate) fn new() -> Result<Self, ConfigError> {
         let config_dir = dirs::config_local_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
