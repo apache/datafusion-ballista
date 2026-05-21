@@ -77,8 +77,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [features]
-#default = ["tui", "cli"]
-default = ["web"]
+default = ["tui", "cli"]
 
 cli = [
     "dep:ballista", "dep:datafusion", "dep:datafusion-cli",
