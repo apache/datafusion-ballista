@@ -37,6 +37,10 @@ pub struct DistributedExchangeRule {
 }
 
 impl DistributedExchangeRule {
+    pub(crate) fn new(plan_id_generator: Arc<AtomicUsize>) -> Self {
+        Self { plan_id_generator }
+    }
+
     pub(crate) fn transform(
         &self,
         execution_plan: Arc<dyn ExecutionPlan>,

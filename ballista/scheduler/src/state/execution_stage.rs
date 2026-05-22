@@ -1061,14 +1061,19 @@ impl StageOutput {
     pub fn partition_locations(
         mut self,
         output_partitions: usize,
+        is_broadcast: bool,
     ) -> Vec<Vec<PartitionLocation>> {
-        let mut partition_locations = Vec::new();
-        for i in 0..output_partitions {
-            let p = self.partition_locations.remove(&i).unwrap_or_default();
-            partition_locations.push(p);
-        }
+        if is_broadcast {
+            self.partition_locations.into_values().collect()
+        } else {
+            let mut partition_locations = Vec::new();
+            for i in 0..output_partitions {
+                let p = self.partition_locations.remove(&i).unwrap_or_default();
+                partition_locations.push(p);
+            }
 
-        partition_locations
+            partition_locations
+        }
     }
 }
 

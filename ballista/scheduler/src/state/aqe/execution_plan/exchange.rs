@@ -81,6 +81,10 @@ pub struct ExchangeExec {
     /// stage execution logic, and to support making more complex
     /// stage run decisions.
     pub(crate) inactive_stage: bool,
+
+    // TODO: make decent description here
+    /// collect left type of thing
+    pub(crate) broadcast: bool,
 }
 
 impl ExchangeExec {
@@ -98,7 +102,37 @@ impl ExchangeExec {
             plan_id,
             Arc::new(AtomicI64::new(-1)),
             Arc::new(Mutex::new(None)),
+            false,
         )
+    }
+    /// new broadcast exchange
+    pub fn new_broadcast(
+        input: Arc<dyn ExecutionPlan>,
+        partitioning: Option<Partitioning>,
+        plan_id: usize,
+    ) -> Self {
+        Self::new_with_details(
+            input,
+            partitioning,
+            plan_id,
+            Arc::new(AtomicI64::new(-1)),
+            Arc::new(Mutex::new(None)),
+            true,
+        )
+    }
+
+    pub fn to_broadcast(&self, plan_id: usize) -> Self {
+        Self {
+            input: self.input.clone(),
+            properties: self.properties.clone(),
+            partitioning: None,
+            plan_id,
+            stage_id: self.stage_id.clone(),
+            shuffle_partitions: self.shuffle_partitions.clone(),
+            coalesce: self.coalesce.clone(),
+            inactive_stage: self.inactive_stage,
+            broadcast: true,
+        }
     }
 
     /// Creates a new `ExchangeExec` with explicitly-provided stage ID and
@@ -110,10 +144,12 @@ impl ExchangeExec {
         plan_id: usize,
         stage_id: Arc<AtomicI64>,
         stage_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+        broadcast: bool,
     ) -> Self {
-        let plan_partitioning = match partitioning.as_ref() {
-            Some(partitioning) => partitioning.clone(),
-            None => input.output_partitioning().clone(),
+        let plan_partitioning = match (partitioning.as_ref(), broadcast) {
+            (Some(partitioning), false) => partitioning.clone(),
+            (None, false) => input.output_partitioning().clone(),
+            (_, true) => Partitioning::UnknownPartitioning(1),
         };
         let eq_properties = input.properties().eq_properties.clone();
         let properties = Arc::new(PlanProperties::new(
@@ -132,6 +168,7 @@ impl ExchangeExec {
             partitioning,
             coalesce: Arc::new(Mutex::new(None)),
             inactive_stage: false,
+            broadcast,
         }
     }
 
@@ -169,6 +206,14 @@ impl ExchangeExec {
     /// `true` if `shuffle_partitions` contains a value, `false` otherwise.
     pub fn shuffle_partitions(&self) -> Option<Vec<Vec<PartitionLocation>>> {
         self.shuffle_partitions.lock().clone()
+    }
+
+    /// Flattens partition locations into single vector,
+    /// this method is usually used when we want to collect partitions
+    /// to form a broadcast join
+    pub(crate) fn shuffle_partitions_flattened(&self) -> Vec<PartitionLocation> {
+        let partitions = self.shuffle_partitions.lock().clone().unwrap_or_default();
+        partitions.into_iter().flatten().collect()
     }
 
     /// sets the stage id running this exchange
@@ -237,6 +282,9 @@ impl DisplayAs for ExchangeExec {
                         cp.upstream_partition_count,
                     )?;
                 }
+                if self.broadcast {
+                    write!(f, ", broadcast=true",)?
+                }
                 Ok(())
             }
             DisplayFormatType::TreeRender => {
@@ -256,7 +304,11 @@ impl DisplayAs for ExchangeExec {
                         .map(|stage_id| format!("({})", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
                 )?;
-                writeln!(f, "stage_resolved={}", self.shuffle_created())
+                writeln!(f, "stage_resolved={}", self.shuffle_created())?;
+                if self.broadcast {
+                    writeln!(f, "broadcast=true")?;
+                }
+                Ok(())
             }
         }
     }
@@ -297,6 +349,7 @@ impl ExecutionPlan for ExchangeExec {
                 self.plan_id,
                 self.stage_id.clone(),
                 self.shuffle_partitions.clone(),
+                self.broadcast,
             );
             new_exec.inactive_stage = self.inactive_stage;
             // Carry the coalesce slot so a transform-rebuilt parent chain

@@ -17,16 +17,19 @@
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
-    CoalescePartitionsRule, DistributedExchangeRule, PropagateEmptyExecRule,
-    WarnOnDuplicateExecRule,
+    CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
+    PropagateEmptyExecRule, SelectJoinRule, WarnOnDuplicateExecRule,
 };
 
+use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
+use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
@@ -36,6 +39,7 @@ use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::time::Instant;
 
 type PhysicalOptimizerRuleRef =
@@ -52,13 +56,16 @@ pub struct AdaptivePlanner {
     /// Generates the next stage ID.
     /// Stage IDs are incremental and unique for each job.
     stage_id_generator: usize,
+    /// plan id generator
+    #[allow(dead_code)] // TODO: keep it for now until we refactor it
+    pub plan_id_generator: Arc<AtomicUsize>,
     /// The session state needed for optimizer calls.
     /// This also freezes the session configuration for a given job.
     session_state: SessionState,
     /// Physical planner used for this job
     physical_planner: Arc<DefaultPhysicalPlanner>,
     /// physical plan representing given job
-    plan: Arc<dyn ExecutionPlan>,
+    pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// caches current runnable stages
     runnable_stage_cache: HashMap<usize, Arc<dyn ExecutionPlan>>,
     /// job name
@@ -90,6 +97,7 @@ impl AdaptivePlanner {
     pub fn try_new_with_optimizers(
         session_config: &SessionConfig,
         plan: Arc<dyn ExecutionPlan>,
+        plan_id_generator: Arc<AtomicUsize>,
         job_name: String,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
@@ -99,7 +107,8 @@ impl AdaptivePlanner {
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
         Ok(Self {
-            stage_id_generator: 0,
+            stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
+            plan_id_generator,
             session_state,
             physical_planner: planner.into(),
             plan,
@@ -118,16 +127,54 @@ impl AdaptivePlanner {
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
-    pub fn try_new(
+    #[cfg(test)]
+    pub fn try_from_plan(
         session_config: &SessionConfig,
         plan: Arc<dyn ExecutionPlan>,
         job_name: String,
     ) -> common::Result<Self> {
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
         Self::try_new_with_optimizers(
             session_config,
             plan,
+            plan_id_generator.clone(),
             job_name,
-            Self::default_optimizers(),
+            Self::default_optimizers(plan_id_generator),
+        )
+    }
+
+    /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The session context
+    /// * `logical_plan` - The logical plan for the job.
+    /// * `job_name` - The name of the job.
+    ///
+    /// # Returns
+    /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
+    pub async fn try_new(
+        ctx: &SessionContext,
+        logical_plan: &LogicalPlan,
+        job_name: String,
+    ) -> common::Result<Self> {
+        let state = SessionStateBuilder::new_from_existing(ctx.state())
+            .with_physical_optimizer_rules(vec![Arc::new(
+                DelayJoinSelectionRule::default(),
+            )])
+            .build();
+
+        let plan = state.create_physical_plan(logical_plan).await?;
+        let plan = handle_explain_plan(&job_name, ctx, logical_plan, plan)
+            .await
+            .unwrap(); // FIXME
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+        Self::try_new_with_optimizers(
+            ctx.state().config(),
+            plan,
+            plan_id_generator.clone(),
+            job_name,
+            Self::default_optimizers(plan_id_generator),
         )
     }
     /// Cancels a stage by its ID.
@@ -210,14 +257,18 @@ impl AdaptivePlanner {
         &mut self,
         stage_id: usize,
     ) -> common::Result<Vec<Vec<PartitionLocation>>> {
-        let output_partition_count = self
-            .runnable_stage_cache
-            .get(&stage_id)
-            .ok_or(datafusion::error::DataFusionError::Execution(
+        let stage = self.runnable_stage_cache.get(&stage_id).ok_or(
+            datafusion::error::DataFusionError::Execution(
                 "Can't find active cache resolve".into(),
-            ))?
-            .output_partitioning()
-            .partition_count();
+            ),
+        )?;
+        let is_broadcast = stage
+            .as_any()
+            .downcast_ref::<ExchangeExec>()
+            .map(|e| e.broadcast)
+            .unwrap_or(false);
+
+        let output_partition_count = stage.output_partitioning().partition_count();
 
         let stage_output = self
             .runnable_stage_output
@@ -225,7 +276,7 @@ impl AdaptivePlanner {
             .ok_or(datafusion::error::DataFusionError::Execution(
                 "Can't find active stage to update resolve".into(),
             ))?
-            .partition_locations(output_partition_count);
+            .partition_locations(output_partition_count, is_broadcast);
 
         self.finalise_stage_internal(stage_id, stage_output.clone())?;
 
@@ -428,11 +479,22 @@ impl AdaptivePlanner {
     ///
     /// # Returns
     /// A vector of default physical optimizer rules.
-    fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
-        let mut physical_optimizers = PhysicalOptimizer::new().rules;
+    fn default_optimizers(
+        plan_id_generator: Arc<AtomicUsize>,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
+        let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
+            vec![];
+        // select actual join implementation based on current runtime information
+        physical_optimizers
+            .push(Arc::new(SelectJoinRule::new(plan_id_generator.clone())));
+        // add default set
+        physical_optimizers.extend(PhysicalOptimizer::new().rules);
+
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
+
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
-        physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
+        physical_optimizers
+            .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
         // we should remove it at the later stage this is just temporary
         // to detect possible duplicate execs.
         // rule does not mutate plan hance it can go after `DistributedExchangeRule`

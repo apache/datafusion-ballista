@@ -22,7 +22,7 @@ use ballista_core::execution_plans::ShuffleReaderExec;
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::Partitioning;
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     physical_plan::ExecutionPlan,
@@ -51,6 +51,7 @@ impl BallistaAdapter {
                     "partitions have to be resolved at this point".to_string(),
                 )
             })?;
+
             let stage_id = exchange.stage_id().ok_or_else(|| {
                 DataFusionError::Execution(
                     "stage ID has to be generated at this point".to_string(),
@@ -59,8 +60,8 @@ impl BallistaAdapter {
             self.inputs.push(stage_id);
             let partitioning = exchange.properties().partitioning.clone();
 
-            let reader = match exchange.coalesce() {
-                Some(cp) => {
+            let reader = match (exchange.coalesce(), exchange.broadcast) {
+                (Some(cp), false) => {
                     // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
                     let k_shape: Vec<Vec<_>> = cp
                         .groups
@@ -89,11 +90,17 @@ impl BallistaAdapter {
                         new_partitioning,
                     )?
                 }
-                None => ShuffleReaderExec::try_new(
+                (None, false) => ShuffleReaderExec::try_new(
                     stage_id,
                     partitions,
                     schema,
                     partitioning,
+                )?,
+                (_, true) => ShuffleReaderExec::try_new_broadcast(
+                    stage_id,
+                    exchange.shuffle_partitions_flattened(),
+                    schema,
+                    exchange.input().output_partitioning().partition_count(),
                 )?,
             };
 

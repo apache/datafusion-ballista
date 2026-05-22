@@ -767,11 +767,11 @@ impl SessionConfigHelperExt for SessionConfig {
             // has been disabled until fixed
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                0,
+                10 * 1024 * 1024,
             )
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-                0,
+                100_000,
             )
             //
             // DataFusion's hash join has no spill support, so each parallel
@@ -781,7 +781,7 @@ impl SessionConfigHelperExt for SessionConfig {
             // `SET datafusion.optimizer.prefer_hash_join = true`.
             //
             // See https://github.com/apache/datafusion-ballista/issues/1648
-            .set_bool("datafusion.optimizer.prefer_hash_join", false)
+            .set_bool("datafusion.optimizer.prefer_hash_join", true)
     }
 }
 
