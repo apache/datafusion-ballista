@@ -59,6 +59,12 @@ repository = "https://github.com/apache/datafusion-ballista"
 [tool.isort]
 profile = "black"
 
+[tool.ruff.format]
+# Jupyter notebooks are committed with the JSON indentation that the Jupyter
+# UI writes; ruff format would rewrite that on every run, producing large
+# whitespace-only diffs. Lint (ruff check) still applies to notebook cells.
+exclude = ["*.ipynb"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "ballista._internal_ballista"
