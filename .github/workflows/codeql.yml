@@ -21,7 +21,11 @@ name: "CodeQL"
 on:
   push:
     branches: ["main"]
+    paths:
+      - ".github/**"
   pull_request:
+    paths:
+      - ".github/**"
   schedule:
     - cron: "16 4 * * 1"
 
