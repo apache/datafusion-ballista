@@ -31,9 +31,6 @@ on:
       - 'python/**'
   push:
     tags: [ "*-rc*" ]
-    branches: [ "branch-*" ]
-    paths:
-      - 'python/**'
 
 jobs:
   test-release:
@@ -301,12 +298,17 @@ jobs:
 
       - name: Assert sdist build does not generate wheels
         run: |
-          if [ "$(ls -A target/wheels)" ]; then
-            echo "Error: Sdist build generated wheels"
+          cd python
+          # `--out dist` causes maturin to place artifacts under python/dist/.
+          # Older maturin versions also wrote to the default python/target/wheels/,
+          # so check both locations.
+          found=$(find dist target/wheels -name '*.whl' 2>/dev/null || true)
+          if [ -n "$found" ]; then
+            echo "Error: Sdist build generated wheels:"
+            echo "$found"
             exit 1
-          else
-            echo "Directory is clean"
           fi
+          echo "No wheels generated (expected)."
         shell: bash
 
       - name: Archive sdist
