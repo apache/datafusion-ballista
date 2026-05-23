@@ -20,16 +20,10 @@ from datafusion import (
     SessionContext,
     DataFrame,
     ParquetWriterOptions,
-    DataFrameWriteOptions
+    DataFrameWriteOptions,
 )
 from datafusion.dataframe import Compression
-from typing import (
-    Dict,
-    List,
-    Union,
-    Optional,
-    Callable
-)
+from typing import Dict, List, Union, Optional, Callable
 import warnings
 
 from ._internal_ballista import create_ballista_data_frame
@@ -151,6 +145,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
         self.address = address
         self.session_id = session_id
         self.cluster_config = cluster_config
+
     #
     # this will create a ballista dataframe, which has ballista
     # session context, and ballista planner.
@@ -164,12 +159,19 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
             self.cluster_config,
         )
         return df
-    
-    def write_json(self, path, write_options: Union[DataFrameWriteOptions, None] = None):
+
+    def write_json(
+        self, path, write_options: Union[DataFrameWriteOptions, None] = None
+    ):
         df = self._to_internal_df()
         df.write_json(path, None)
 
-    def write_csv(self, path, with_header=False, write_options: Union[DataFrameWriteOptions, None] = None,):
+    def write_csv(
+        self,
+        path,
+        with_header=False,
+        write_options: Union[DataFrameWriteOptions, None] = None,
+    ):
         df = self._to_internal_df()
         df.write_csv(path, with_header, None)
 
@@ -221,10 +223,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
         df = self._to_internal_df()
 
         df.write_parquet_with_options(
-            str(path),
-            options_internal,
-            column_specific_options_internal,
-            None
+            str(path), options_internal, column_specific_options_internal, None
         )
 
     def write_parquet(
@@ -384,7 +383,7 @@ class ExecutionPlanVisualization:
 
         dot_lines = [
             "digraph ExecutionPlan {",
-            '    rankdir=TB;',
+            "    rankdir=TB;",
             '    node [shape=box, style="rounded,filled", fontname="Helvetica"];',
             '    edge [fontname="Helvetica"];',
             "",
@@ -404,7 +403,9 @@ class ExecutionPlanVisualization:
             content = line.strip()
 
             # Skip non-plan lines
-            if content.startswith("physical_plan") or content.startswith("logical_plan"):
+            if content.startswith("physical_plan") or content.startswith(
+                "logical_plan"
+            ):
                 continue
 
             # Create a node for this plan element
@@ -432,7 +433,9 @@ class ExecutionPlanVisualization:
                 # Wrap long labels
                 label = label[:57] + "..."
 
-            nodes.append(f'    node{current_id} [label="{label}", fillcolor="{color}"];')
+            nodes.append(
+                f'    node{current_id} [label="{label}", fillcolor="{color}"];'
+            )
 
             # Connect to parent based on indentation
             while stack and stack[-1][0] >= indent:
@@ -481,7 +484,11 @@ class ExecutionPlanVisualization:
             if process.returncode == 0:
                 self._svg_cache = process.stdout.decode()
                 return self._svg_cache
-        except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        except (
+            subprocess.SubprocessError,
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+        ) as e:
             warnings.warn(f"Could not convert the execution plan to SVG format: {e}")
             pass
 
@@ -495,7 +502,7 @@ class ExecutionPlanVisualization:
         <div style="font-family: monospace; background: #f5f5f5; padding: 10px; 
                     border-radius: 5px; overflow-x: auto;">
             <div style="color: #666; margin-bottom: 5px;">
-                Execution Plan {'(with statistics)' if self.analyze else ''}
+                Execution Plan {"(with statistics)" if self.analyze else ""}
                 <br><small>Install graphviz for visual diagram: brew install graphviz</small>
             </div>
             <pre style="margin: 0;">{escaped_plan}</pre>
@@ -599,7 +606,9 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
             if schema_names:
                 tables_info = {}
                 for schema_name in schema_names:
-                    tables_info[schema_name] = list(catalog.schema(name=schema_name).table_names())
+                    tables_info[schema_name] = list(
+                        catalog.schema(name=schema_name).table_names()
+                    )
                 return tables_info
         except (AttributeError, NotImplementedError) as e:
             warnings.warn(f"Could not retrieve tables from catalog: {e}")

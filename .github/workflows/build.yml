@@ -113,7 +113,7 @@ jobs:
           path: LICENSE.txt
 
   build-python-mac-win:
-    needs: [generate-license]
+    needs: [generate-license, build, test-release]
     name: Mac/Win
     runs-on: ${{ matrix.os }}
     strategy:
@@ -177,7 +177,7 @@ jobs:
           path: python/target/wheels/*
 
   build-manylinux-x86_64:
-    needs: [generate-license]
+    needs: [generate-license, build, test-release]
     name: Manylinux x86_64
     runs-on: ubuntu-latest
     steps:
@@ -218,7 +218,7 @@ jobs:
           path: python/target/wheels/*
 
   build-manylinux-aarch64:
-    needs: [generate-license]
+    needs: [generate-license, build, test-release]
     name: Manylinux arm64
     runs-on: ubuntu-latest
     steps:
@@ -259,7 +259,7 @@ jobs:
           path: python/target/wheels/*
 
   build-sdist:
-    needs: [generate-license]
+    needs: [generate-license, build, test-release]
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
