@@ -291,7 +291,7 @@ are downloaded from the release candidate's CI run, not rebuilt.
 
 #### Prerequisites
 
-A DataFusion committer can publish the [`ballista` package on
+A DataFusion PMC member can publish the [`ballista` package on
 PyPI](https://pypi.org/project/ballista/) after an official project release has
 been made. One-time setup:
 
