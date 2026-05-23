@@ -18,8 +18,28 @@
 name: Docker
 on:
   pull_request:
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
+      - ".github/workflows/docker.yml"
   push:
     branches: ["main"]
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
+      - ".github/workflows/docker.yml"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
