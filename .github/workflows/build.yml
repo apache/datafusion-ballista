@@ -99,6 +99,7 @@ jobs:
           uv run --no-project ruff format --check .
 
   generate-license:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -113,7 +114,8 @@ jobs:
           path: LICENSE.txt
 
   build-python-mac-win:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [generate-license, build, test-release]
     name: Mac/Win
     runs-on: ${{ matrix.os }}
     strategy:
@@ -177,7 +179,8 @@ jobs:
           path: python/target/wheels/*
 
   build-manylinux-x86_64:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [generate-license, build, test-release]
     name: Manylinux x86_64
     runs-on: ubuntu-latest
     steps:
@@ -218,7 +221,8 @@ jobs:
           path: python/target/wheels/*
 
   build-manylinux-aarch64:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [generate-license, build, test-release]
     name: Manylinux arm64
     runs-on: ubuntu-latest
     steps:
@@ -259,7 +263,8 @@ jobs:
           path: python/target/wheels/*
 
   build-sdist:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [generate-license, build, test-release]
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
@@ -304,6 +309,7 @@ jobs:
         shell: bash
 
   merge-build-artifacts:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs:
       - build-python-mac-win

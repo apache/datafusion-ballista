@@ -80,6 +80,7 @@ except ImportError:
             # Used as @line_magic("name") with arguments
             def decorator(func):
                 return func
+
             return decorator
 
     def cell_magic(name_or_func):
@@ -88,18 +89,22 @@ except ImportError:
         if callable(name_or_func):
             return name_or_func
         else:
+
             def decorator(func):
                 return func
+
             return decorator
-        
+
     def line_cell_magic(name_or_func):
         """Stub line_cell_magic decorator for when IPython is not available"""
         # Handle both @line_cell_magic and @line_cell_magic("name") usage
         if callable(name_or_func):
             return name_or_func
         else:
+
             def decorator(func):
                 return func
+
             return decorator
 
 
@@ -183,8 +188,10 @@ class BallistaMagics(Magics):
         elif cmd == "help":
             return self._show_help()
         else:
-            return f"Unknown command: {cmd}. Use '%ballista help' for available commands."
-        
+            return (
+                f"Unknown command: {cmd}. Use '%ballista help' for available commands."
+            )
+
     @line_magic
     def register(self, line: str) -> Optional[str]:
         """Register a new table"""
@@ -210,11 +217,13 @@ class BallistaMagics(Magics):
             elif file_type == "csv":
                 self._ctx.register_csv(table_name, file_name)
             else:
-                raise NotImplementedError("Currently not supporting the inserted file format")
+                raise NotImplementedError(
+                    "Currently not supporting the inserted file format"
+                )
 
-    @line_cell_magic 
+    @line_cell_magic
     def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
-        """ 
+        """
         Execute a SQL query (both line and cell magic).
 
         Two cases possible: with cell or without cell
@@ -231,7 +240,7 @@ class BallistaMagics(Magics):
             FROM test_data_v1
             WHERE id > 2
             ORDER BY id
-            LIMIT 5 
+            LIMIT 5
 
         `my_result` will store the result of the SQL-query
         """
@@ -242,7 +251,7 @@ class BallistaMagics(Magics):
             query = cell.strip()
             if not query:
                 return None
-            
+
             args = line.strip().split()
             i = 0
             while i < len(args):
@@ -293,7 +302,7 @@ class BallistaMagics(Magics):
         if IPYTHON_AVAILABLE:
             display(HTML(f"✓ Disconnected from {address}"))
         else:
-             print(f"✓ Disconnected from {address}")
+            print(f"✓ Disconnected from {address}")
 
     def _status(self) -> Optional[str]:
         """Show connection status."""
@@ -308,7 +317,9 @@ class BallistaMagics(Magics):
         ]
 
         if self._last_result is not None:
-            status_lines.append("Last result: Available (access via '_' or '_last_result')")
+            status_lines.append(
+                "Last result: Available (access via '_' or '_last_result')"
+            )
 
         def _format_html_status_output(line: str) -> str:
             name, value = line.split(":", 1)
@@ -319,7 +330,7 @@ class BallistaMagics(Magics):
             display(HTML(html))
         else:
             print("\n".join(status_lines))
-            
+
     def _tables(self) -> Optional[str]:
         """List all registered tables."""
         try:
@@ -331,10 +342,18 @@ class BallistaMagics(Magics):
             table_count = sum(len(v) for v in tables.values())
             # Build a nice table display (HTML-formatted if applicable)
             lines = [
-                {"content": f"Total: {table_count} table(s) in {schema_count} schema(s)", "is_info": True},
+                {
+                    "content": f"Total: {table_count} table(s) in {schema_count} schema(s)",
+                    "is_info": True,
+                },
                 {"content": "Registered tables:", "is_info": True},
-                *[{"content": f"Schema: {schema_name}. Tables: {', '.join(table_names)}", "is_info": False}
-                  for schema_name, table_names in tables.items()]
+                *[
+                    {
+                        "content": f"Schema: {schema_name}. Tables: {', '.join(table_names)}",
+                        "is_info": False,
+                    }
+                    for schema_name, table_names in tables.items()
+                ],
             ]
 
             def _format_html_tables_output(line: str, is_info: bool = False) -> str:
@@ -342,10 +361,15 @@ class BallistaMagics(Magics):
                     return f"<pre><strong>{line}</strong></pre>"
                 else:
                     return f"<p><pre><i>{line}</i></pre></p>"
-            
+
             if IPYTHON_AVAILABLE:
                 display(
-                    HTML("".join(_format_html_tables_output(val["content"], val["is_info"]) for val in lines))
+                    HTML(
+                        "".join(
+                            _format_html_tables_output(val["content"], val["is_info"])
+                            for val in lines
+                        )
+                    )
                 )
             else:
                 print("".join(val["content"] for val in lines))
@@ -386,7 +410,7 @@ class BallistaMagics(Magics):
 
             # Store result
             self._last_result = result
-            if self.shell is not None and hasattr(self.shell, 'user_ns'):
+            if self.shell is not None and hasattr(self.shell, "user_ns"):
                 self.shell.user_ns["_last_result"] = result
 
             # Record in history
@@ -405,7 +429,11 @@ class BallistaMagics(Magics):
             error_msg = f"Query failed: {e}"
             if IPYTHON_AVAILABLE:
                 try:
-                    display(HTML(f'<div style="color: red; font-weight: bold;">{error_msg}</div>'))
+                    display(
+                        HTML(
+                            f'<div style="color: red; font-weight: bold;">{error_msg}</div>'
+                        )
+                    )
                 except Exception:
                     print(error_msg)
             else:
@@ -419,9 +447,15 @@ class BallistaMagics(Magics):
 
         lines = ["Query History:", "-" * 60]
         for i, entry in enumerate(self._query_history[-10:], 1):  # Last 10 queries
-            query_preview = entry["query"][:50] + "..." if len(entry["query"]) > 50 else entry["query"]
+            query_preview = (
+                entry["query"][:50] + "..."
+                if len(entry["query"]) > 50
+                else entry["query"]
+            )
             query_preview = query_preview.replace("\n", " ")
-            lines.append(f"{i}. [{entry['timestamp']}] ({entry['elapsed_seconds']:.2f}s)")
+            lines.append(
+                f"{i}. [{entry['timestamp']}] ({entry['elapsed_seconds']:.2f}s)"
+            )
             lines.append(f"   {query_preview}")
         lines.append("-" * 60)
         output = "\n".join(lines)
@@ -478,6 +512,7 @@ Examples:
             display(HTML(f"<pre>{help_info}</pre>"))
         else:
             print(help_info)
+
 
 def load_ipython_extension(ipython):
     """
