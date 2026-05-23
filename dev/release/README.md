@@ -63,6 +63,7 @@ Although some tasks can only be performed by a PMC member, many tasks can be per
 | Task                                                         | Role Required |
 |--------------------------------------------------------------| ------------- |
 | Create PR against datafusion-site with updated documentation | None          |
+| Publish Python wheels to PyPI                                | PMC           |
 
 ## Detailed Guide
 
@@ -280,6 +281,205 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 (cd ballista/client && cargo publish)
 (cd ballista-cli && cargo publish)
 ```
+
+### Publish Python Wheels to PyPI
+
+Only approved releases of the tarball should be published to PyPI, in order to
+conform to Apache Software Foundation governance standards. The Python wheels
+that get uploaded must be the same artifacts that the community voted on — they
+are downloaded from the release candidate's CI run, not rebuilt.
+
+#### Prerequisites
+
+A DataFusion PMC member can publish the [`ballista` package on
+PyPI](https://pypi.org/project/ballista/) after an official project release has
+been made. One-time setup:
+
+- Create accounts on [pypi.org](https://pypi.org) and
+  [test.pypi.org](https://test.pypi.org) (separate accounts).
+- Ask an existing maintainer of the `ballista` PyPI project — listed on the
+  project page — to add you as a maintainer. The request should be made on the
+  dev mailing list so it is publicly tracked.
+- Generate project-scoped API tokens for both PyPI and TestPyPI.
+- Configure `~/.pypirc`:
+
+  ```ini
+  [distutils]
+  index-servers =
+      pypi
+      testpypi
+
+  [pypi]
+  username = __token__
+  password = pypi-...
+
+  [testpypi]
+  repository = https://test.pypi.org/legacy/
+  username = __token__
+  password = pypi-...
+  ```
+
+- Restrict the permissions on `~/.pypirc` so the API tokens are not world-readable:
+
+  ```bash
+  chmod 600 ~/.pypirc
+  ```
+
+- Install `twine` and `requests` (the latter is used by
+  `dev/release/download-python-wheels.py`):
+
+  ```bash
+  pip install twine requests
+  ```
+
+#### Download the Voted-On Wheels
+
+Once the vote passes and the final tag has been created from the RC commit,
+download the same wheels that were voted on from the RC's CI run. Retagging the
+RC commit does not trigger a fresh build, so the RC artifacts remain the
+canonical source.
+
+> **Artifact retention warning:** GitHub Actions artifacts default to 90-day
+> retention. If the elapsed time from cutting the RC to publishing PyPI wheels
+> exceeds that window, the wheels will have been deleted and are unrecoverable
+> — you cannot publish the voted-on artifacts and must cut a new RC and revote.
+> Plan the vote and the post-vote publish so the publish step happens
+> comfortably inside the 90-day window. Check the run's `expires_at` on
+> `https://github.com/apache/datafusion-ballista/actions` if in doubt.
+
+Export the release version and RC number so the rest of this section can be
+copy-pasted without manual edits:
+
+```bash
+export BALLISTA_VERSION=53.0.0       # PEP 440 release version; matches the wheels
+export BALLISTA_RC_NUM=1              # which RC tag CI built the wheels from
+export GH_TOKEN=...                   # GitHub PAT with read access to actions
+```
+
+```bash
+mkdir ballista-pypi-${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+cd ballista-pypi-${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+python ../dev/release/download-python-wheels.py ${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+ls *.whl *.tar.gz       # confirm filenames carry the right version
+```
+
+The merged artifact should contain one of each of the following platform wheels
+(file naming uses [PEP 425](https://peps.python.org/pep-0425/) tags):
+
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-macosx_*_arm64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-win_amd64.whl`
+- `ballista-${BALLISTA_VERSION}.tar.gz` (sdist)
+
+> **Verify every expected file is present.** The `merge-build-artifacts` job
+> in `.github/workflows/build.yml` has been observed to silently drop wheels
+> when merging the per-platform artifacts. If any wheel from the list above is
+> missing from the merged `dist` artifact, fall back to downloading the
+> individual per-platform artifacts directly from the workflow run:
+>
+> ```bash
+> gh run download <run-id> --repo apache/datafusion-ballista \
+>   --name dist-manylinux-aarch64 \
+>   --name dist-manylinux-x86_64 \
+>   --name dist-macos-latest \
+>   --name dist-windows-latest
+> ```
+>
+> Then re-sign each downloaded file with `gpg --detach-sig` and regenerate the
+> `.sha256` / `.sha512` checksums the same way `download-python-wheels.py`
+> does. Do **not** proceed to upload an incomplete platform set.
+>
+> The `build-sdist` job currently does not upload its output as a workflow
+> artifact, so the sdist may be absent from the merged `dist` even when all
+> wheels are present. If you need the sdist, build it locally from the RC tag:
+>
+> ```bash
+> git checkout ${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+> cd python
+> uv run --no-project maturin build --release --sdist --out dist
+> ```
+
+#### Validate the Artifacts
+
+```bash
+twine check *.whl *.tar.gz
+```
+
+The `download-python-wheels.py` script also writes `.asc` GPG signatures and
+`.sha256` / `.sha512` checksum files alongside each artifact. Those are for ASF
+SVN — PyPI rejects them. Pass explicit globs to `twine` so only the wheels and
+sdist are considered.
+
+#### TestPyPI Dry-Run
+
+PyPI uploads are immutable: once a version is published it cannot be replaced
+or re-uploaded, only yanked. A TestPyPI dry-run takes a few minutes and catches
+the common ways a release goes wrong.
+
+```bash
+twine upload --repository testpypi *.whl *.tar.gz
+
+python -m venv /tmp/ballista-pypi-smoke
+source /tmp/ballista-pypi-smoke/bin/activate
+pip install -i https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ \
+    ballista==${BALLISTA_VERSION}
+python -c "from ballista import BallistaSessionContext; print('ok')"
+deactivate
+```
+
+`--extra-index-url` is required because TestPyPI does not mirror dependencies
+like `pyarrow` and `datafusion`.
+
+#### Upload to PyPI
+
+```bash
+twine upload *.whl *.tar.gz
+```
+
+If the upload fails partway through, re-run with `--skip-existing` to retry only
+the files that did not get through.
+
+#### Verify
+
+Confirm the new version appears at
+`https://pypi.org/project/ballista/${BALLISTA_VERSION}/`. Then in another fresh
+virtual environment:
+
+```bash
+python -m venv /tmp/ballista-pypi-verify
+source /tmp/ballista-pypi-verify/bin/activate
+pip install ballista==${BALLISTA_VERSION}
+python -c "from ballista import BallistaSessionContext; print('ok')"
+deactivate
+```
+
+#### Recovery
+
+**`twine check` fails.** The artifacts shipped from CI are malformed (bad
+metadata, missing `LICENSE.txt`, etc.). Do not proceed. Open an issue, fix in
+`python/pyproject.toml` or the `generate-license` job, cut a new RC, re-vote.
+Do not hand-edit wheels.
+
+**TestPyPI smoke install or import fails.** Same recovery — the wheels are
+broken; cut a new RC. The TestPyPI version stays published forever; you can
+yank it with `twine yank --repository testpypi ballista ${BALLISTA_VERSION}`
+so it does not resolve, but the filename is permanently consumed on TestPyPI.
+
+**PyPI upload fails partway.** Some wheels uploaded, others did not. Re-run
+with `--skip-existing`:
+
+```bash
+twine upload --skip-existing *.whl *.tar.gz
+```
+
+If a *broken* file actually made it to PyPI, it cannot be replaced.
+`twine yank ballista ${BALLISTA_VERSION}` removes the version from
+`pip install ballista` resolution, but the version number is permanently
+consumed. Recovery requires bumping to `${BALLISTA_VERSION}.post1` and
+starting over from "Download the Voted-On Wheels" — which in turn requires
+cutting a new RC, since post-releases must also be voted on.
 
 ### Publish Docker Images
 
