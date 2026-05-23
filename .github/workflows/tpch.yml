@@ -27,17 +27,23 @@ concurrency:
 on:
   push:
     branches: ["main"]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/tpch.yml"
+      - ".github/actions/setup-builder/**"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/tpch.yml"
+      - ".github/actions/setup-builder/**"
   workflow_dispatch:
 
 jobs:
