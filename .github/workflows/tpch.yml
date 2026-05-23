@@ -29,9 +29,7 @@ on:
     branches: ["main"]
     paths:
       - "ballista/**"
-      - "ballista-cli/**"
       - "benchmarks/**"
-      - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -40,9 +38,7 @@ on:
   pull_request:
     paths:
       - "ballista/**"
-      - "ballista-cli/**"
       - "benchmarks/**"
-      - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
