@@ -91,6 +91,7 @@ def main():
         if artifact["name"] != "dist":
             continue
         download_url = artifact["archive_download_url"]
+        break
 
     if download_url is None:
         print(f"ERROR: Could not resolve python wheel download URL from list of artifacts: {artifacts}")
