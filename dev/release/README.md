@@ -319,10 +319,17 @@ been made. One-time setup:
   password = pypi-...
   ```
 
-- Install `twine`:
+- Restrict the permissions on `~/.pypirc` so the API tokens are not world-readable:
 
   ```bash
-  pip install twine
+  chmod 600 ~/.pypirc
+  ```
+
+- Install `twine` and `requests` (the latter is used by
+  `dev/release/download-python-wheels.py`):
+
+  ```bash
+  pip install twine requests
   ```
 
 #### Download the Voted-On Wheels
@@ -340,27 +347,58 @@ canonical source.
 > comfortably inside the 90-day window. Check the run's `expires_at` on
 > `https://github.com/apache/datafusion-ballista/actions` if in doubt.
 
+Export the release version and RC number so the rest of this section can be
+copy-pasted without manual edits:
+
 ```bash
-export GH_TOKEN=...     # GitHub PAT with read access to actions
-mkdir ballista-pypi-<version> && cd ballista-pypi-<version>
-python ../dev/release/download-python-wheels.py <version>-rc<N>
+export BALLISTA_VERSION=53.0.0       # PEP 440 release version; matches the wheels
+export BALLISTA_RC_NUM=1              # which RC tag CI built the wheels from
+export GH_TOKEN=...                   # GitHub PAT with read access to actions
+```
+
+```bash
+mkdir ballista-pypi-${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+cd ballista-pypi-${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+python ../dev/release/download-python-wheels.py ${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
 ls *.whl *.tar.gz       # confirm filenames carry the right version
 ```
 
 The merged artifact should contain one of each of the following platform wheels
 (file naming uses [PEP 425](https://peps.python.org/pep-0425/) tags):
 
-- `ballista-<version>-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
-- `ballista-<version>-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl`
-- `ballista-<version>-cp310-abi3-macosx_*_arm64.whl`
-- `ballista-<version>-cp310-abi3-win_amd64.whl`
-- `ballista-<version>.tar.gz` (sdist)
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-macosx_*_arm64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-win_amd64.whl`
+- `ballista-${BALLISTA_VERSION}.tar.gz` (sdist)
 
-> **Known CI caveat:** the merged artifact currently contains the macOS arm64
-> wheel twice (jobs `build-python-mac-win`'s macOS leg and `build-macos-x86_64`
-> both run on `macos-latest`, which is now arm64) and **no** macOS x86_64 wheel.
-> Keep one copy of the arm64 wheel and delete any duplicate before upload.
-> Tracked in [#1608](https://github.com/apache/datafusion-ballista/issues/1608).
+> **Verify every expected file is present.** The `merge-build-artifacts` job
+> in `.github/workflows/build.yml` has been observed to silently drop wheels
+> when merging the per-platform artifacts. If any wheel from the list above is
+> missing from the merged `dist` artifact, fall back to downloading the
+> individual per-platform artifacts directly from the workflow run:
+>
+> ```bash
+> gh run download <run-id> --repo apache/datafusion-ballista \
+>   --name dist-manylinux-aarch64 \
+>   --name dist-manylinux-x86_64 \
+>   --name dist-macos-latest \
+>   --name dist-windows-latest
+> ```
+>
+> Then re-sign each downloaded file with `gpg --detach-sig` and regenerate the
+> `.sha256` / `.sha512` checksums the same way `download-python-wheels.py`
+> does. Do **not** proceed to upload an incomplete platform set.
+>
+> The `build-sdist` job currently does not upload its output as a workflow
+> artifact, so the sdist may be absent from the merged `dist` even when all
+> wheels are present. If you need the sdist, build it locally from the RC tag:
+>
+> ```bash
+> git checkout ${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
+> cd python
+> uv run --no-project maturin build --release --sdist --out dist
+> ```
 
 #### Validate the Artifacts
 
@@ -386,7 +424,7 @@ python -m venv /tmp/ballista-pypi-smoke
 source /tmp/ballista-pypi-smoke/bin/activate
 pip install -i https://test.pypi.org/simple/ \
     --extra-index-url https://pypi.org/simple/ \
-    ballista==<version>
+    ballista==${BALLISTA_VERSION}
 python -c "from ballista import BallistaSessionContext; print('ok')"
 deactivate
 ```
@@ -406,13 +444,13 @@ the files that did not get through.
 #### Verify
 
 Confirm the new version appears at
-`https://pypi.org/project/ballista/<version>/`. Then in another fresh
+`https://pypi.org/project/ballista/${BALLISTA_VERSION}/`. Then in another fresh
 virtual environment:
 
 ```bash
 python -m venv /tmp/ballista-pypi-verify
 source /tmp/ballista-pypi-verify/bin/activate
-pip install ballista==<version>
+pip install ballista==${BALLISTA_VERSION}
 python -c "from ballista import BallistaSessionContext; print('ok')"
 deactivate
 ```
@@ -426,8 +464,8 @@ Do not hand-edit wheels.
 
 **TestPyPI smoke install or import fails.** Same recovery — the wheels are
 broken; cut a new RC. The TestPyPI version stays published forever; you can
-yank it with `twine yank --repository testpypi ballista <version>` so it does
-not resolve, but the filename is permanently consumed on TestPyPI.
+yank it with `twine yank --repository testpypi ballista ${BALLISTA_VERSION}`
+so it does not resolve, but the filename is permanently consumed on TestPyPI.
 
 **PyPI upload fails partway.** Some wheels uploaded, others did not. Re-run
 with `--skip-existing`:
@@ -436,11 +474,12 @@ with `--skip-existing`:
 twine upload --skip-existing *.whl *.tar.gz
 ```
 
-If a *broken* file actually made it to PyPI, it cannot be replaced. `twine yank
-ballista <version>` removes the version from `pip install ballista` resolution,
-but the version number is permanently consumed. Recovery requires bumping to
-`<version>.post1` and starting over from "Download the Voted-On Wheels" — which
-in turn requires cutting a new RC, since post-releases must also be voted on.
+If a *broken* file actually made it to PyPI, it cannot be replaced.
+`twine yank ballista ${BALLISTA_VERSION}` removes the version from
+`pip install ballista` resolution, but the version number is permanently
+consumed. Recovery requires bumping to `${BALLISTA_VERSION}.post1` and
+starting over from "Download the Voted-On Wheels" — which in turn requires
+cutting a new RC, since post-releases must also be voted on.
 
 ### Publish Docker Images
 
