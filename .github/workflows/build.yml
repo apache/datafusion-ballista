@@ -293,7 +293,7 @@ jobs:
         run: |
           cd python
           uv sync --dev --no-install-package ballista
-          uv run --no-project maturin build --release --sdist --out dist --strip
+          uv run --no-project maturin sdist --out dist
 
       - name: Assert sdist build does not generate wheels
         run: |
