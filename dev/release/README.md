@@ -203,11 +203,41 @@ For the release to become "official" it needs at least three PMC members to vote
 
 ### Verifying Release Candidates
 
-The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification process. Run it like:
+The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification process. It downloads the source tarball from the ASF dev SVN, verifies the GPG signature and checksums, and builds the Rust workspace. Run it like:
 
 ```
 ./dev/release/verify-release-candidate.sh 0.11.0 0
 ```
+
+#### (Optional) Verify the Python wheels from TestPyPI
+
+If the release manager has uploaded the RC's Python wheels to
+[test.pypi.org](https://test.pypi.org/project/ballista/) as part of their
+pre-vote dry-run (see [Publish Python Wheels to PyPI](#publish-python-wheels-to-pypi)
+below), verifiers can install them in a throwaway virtualenv to sanity-check
+the artifacts that will ship to real PyPI. The wheels there are byte-identical
+to what would be uploaded to pypi.org if the vote passes.
+
+The wheels are built as `cp310-abi3`, so the venv needs Python ≥ 3.10:
+
+```bash
+export BALLISTA_VERSION=0.11.0    # version under vote
+
+python3.10 -m venv /tmp/ballista-rc-verify
+source /tmp/ballista-rc-verify/bin/activate
+pip install -i https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ \
+    ballista==${BALLISTA_VERSION}
+python -c "from ballista import BallistaSessionContext; print('ok')"
+deactivate
+```
+
+`--extra-index-url` is required because TestPyPI does not mirror dependencies
+like `pyarrow` and `datafusion`.
+
+If no version of `ballista==${BALLISTA_VERSION}` is yet on TestPyPI, the
+release manager has not (yet) uploaded the dry-run — that step is
+optional and not a blocker for voting.
 
 #### If the release is not approved
 
@@ -363,11 +393,22 @@ python ../dev/release/download-python-wheels.py ${BALLISTA_VERSION}-rc${BALLISTA
 ls *.whl *.tar.gz       # confirm filenames carry the right version
 ```
 
-The merged artifact should contain one of each of the following platform wheels
-(file naming uses [PEP 425](https://peps.python.org/pep-0425/) tags):
+> **GPG signing needs an interactive terminal.** The script signs each
+> artifact with `gpg --detach-sig`, which prompts for the key passphrase. From
+> a non-interactive shell the prompt fails with `gpg: signing failed:
+> Inappropriate ioctl for device` and the script aborts after the first
+> artifact. Either run from an interactive shell, or configure `gpg-agent`
+> with `pinentry-mode loopback` and a cached passphrase. The wheels and sdist
+> are downloaded before the signing step, so for a TestPyPI-only dry-run the
+> traceback is harmless (PyPI does not accept `.asc` files anyway).
 
-- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
-- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl`
+The merged artifact should contain one of each of the following platform wheels
+(file naming uses [PEP 425](https://peps.python.org/pep-0425/) tags; the
+`manylinux_X_Y` glibc tag depends on the Linux runner image and changes over
+time, so glob it rather than pinning a specific value):
+
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_*_x86_64.whl`
+- `ballista-${BALLISTA_VERSION}-cp310-abi3-manylinux_*_aarch64.whl`
 - `ballista-${BALLISTA_VERSION}-cp310-abi3-macosx_*_arm64.whl`
 - `ballista-${BALLISTA_VERSION}-cp310-abi3-win_amd64.whl`
 - `ballista-${BALLISTA_VERSION}.tar.gz` (sdist)
@@ -383,21 +424,22 @@ The merged artifact should contain one of each of the following platform wheels
 >   --name dist-manylinux-aarch64 \
 >   --name dist-manylinux-x86_64 \
 >   --name dist-macos-latest \
->   --name dist-windows-latest
+>   --name dist-windows-2022 \
+>   --name dist-sdist
 > ```
 >
 > Then re-sign each downloaded file with `gpg --detach-sig` and regenerate the
 > `.sha256` / `.sha512` checksums the same way `download-python-wheels.py`
 > does. Do **not** proceed to upload an incomplete platform set.
 >
-> The `build-sdist` job currently does not upload its output as a workflow
-> artifact, so the sdist may be absent from the merged `dist` even when all
-> wheels are present. If you need the sdist, build it locally from the RC tag:
+> If only the sdist is missing, it can also be rebuilt locally from the RC
+> tag (the `build-sdist` job uploads it as `dist-sdist` so this should not
+> normally be needed):
 >
 > ```bash
 > git checkout ${BALLISTA_VERSION}-rc${BALLISTA_RC_NUM}
 > cd python
-> uv run --no-project maturin build --release --sdist --out dist
+> uv run --no-project maturin sdist --out dist
 > ```
 
 #### Validate the Artifacts
@@ -420,7 +462,10 @@ the common ways a release goes wrong.
 ```bash
 twine upload --repository testpypi *.whl *.tar.gz
 
-python -m venv /tmp/ballista-pypi-smoke
+# Wheels are cp310-abi3 so the venv needs Python >= 3.10. Using `python -m venv`
+# with macOS's stock /usr/bin/python3 (3.9) silently picks no wheel and pip
+# reports a misleading "No matching distribution found".
+python3.10 -m venv /tmp/ballista-pypi-smoke
 source /tmp/ballista-pypi-smoke/bin/activate
 pip install -i https://test.pypi.org/simple/ \
     --extra-index-url https://pypi.org/simple/ \
