@@ -221,7 +221,7 @@ to what would be uploaded to pypi.org if the vote passes.
 The wheels are built as `cp310-abi3`, so the venv needs Python ≥ 3.10:
 
 ```bash
-export BALLISTA_VERSION=0.11.0    # version under vote
+export BALLISTA_VERSION=53.0.0    # version under vote
 
 python3.10 -m venv /tmp/ballista-rc-verify
 source /tmp/ballista-rc-verify/bin/activate
