@@ -117,7 +117,7 @@
 # Job and stages endpoint accept `render_tree=true` parameter which 
 # renders plans as tree.
 #
-# command actions and options
+# Command actions and options
 #
 # plan_print.sh <job_id> [options]
 # 
