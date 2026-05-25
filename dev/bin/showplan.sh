@@ -19,7 +19,7 @@
 
 
 #
-# PLAN PRINT HELPER
+# SHOW PLAN HELPER
 #
 # showplan.sh is a helper command line utility for Ballista.
 # which prints command line utility 
