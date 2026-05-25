@@ -130,7 +130,7 @@
 # -l display `logical_plan`
 # -e display `stage_plan` (from job info)
 # -s [<stage_id>] display `physical_plan` for specified stage, or all stages if omitted (from stages info)
-# -w  pipe output through `less -S` (no word wrap, horizontal scroll)
+# -w  displays result with no word wrap, horizontal scroll)
 # -t  display plans as tree render (where applicable)
 
 set -euo pipefail
@@ -151,7 +151,7 @@ usage() {
     echo "  -l             display logical_plan"
     echo "  -e             display stage_plan (from job info)"
     echo "  -s [STAGE_ID]  display stage_plan for the given stage, or all stages if omitted (from stages info)"
-    echo "  -w             pipe output through 'less -S' (no line-wrap, horizontal scroll)"
+    echo "  -w             displays result with no word wrap, horizontal scroll)"
     echo "  -t             display plans as tree render (where applicable)"
     exit 1
 }
