@@ -238,7 +238,7 @@ else
 fi
 
 COLS=$(tput cols 2>/dev/tty || echo 80)
-SEP=$(printf '%.0s-' $(seq 1 $COLS)) 
+SEP=$(printf '%*s' "$COLS" ' ' | tr ' ' '-')
 
 print_plan() {
     case "$DISPLAY_MODE" in
