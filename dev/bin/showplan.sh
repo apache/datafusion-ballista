@@ -24,7 +24,7 @@
 # plan print is a helper command line utility for ballista.
 # which prints command line utility 
 #
-# ballista exposes rest API at the  `http://localhost:50050/`` by default 
+# Ballista exposes REST API at `http://localhost:50050/` by default 
 # where address and port can be configurable. 
 #
 # `curl http://localhost:50050/api/jobs | jq` 
