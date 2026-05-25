@@ -126,19 +126,23 @@
 #
 # -a specify the Scheduler API address in format `http://executor-host:12345/`
 #    it should contain host and port
-# -p display `physical_plan` (default, if not specified)
-# -l display `logical_plan`
-# -e display `stage_plan` (from job info)
-# -s [<stage_id>] display `physical_plan` for specified stage, or all stages if omitted (from stages info)
+# -p display `physical_plan` (default, if not specified; combinable with other mode flags)
+# -l display `logical_plan` (combinable with other mode flags)
+# -e display `stage_plan` (from job info; combinable with other mode flags)
+# -s [<stage_id>] display `physical_plan` for specified stage, or all stages if omitted
+#    (from stages info; combinable with other mode flags)
 # -w  displays result with no word wrap, horizontal scroll)
 # -t  display plans as tree render (where applicable)
+#
+# Multiple mode flags can be combined and each will be printed in order.
+# Example: -p -l  prints physical plan followed by logical plan.
 
 set -euo pipefail
 
 # Defaults
 API_BASE="http://localhost:50050/"
 JOB_ID=""
-DISPLAY_MODE="physical"
+DISPLAY_MODE=()          # modes accumulate via flags; defaults to (physical) if none given
 STAGE_ID=""
 USE_PAGER=false
 RENDER_TREE=false
@@ -147,12 +151,15 @@ usage() {
     echo "Usage: $(basename "$0") [job_id] [-a address] [-p] [-l] [-e] [-s stage_id]"
     echo "  job_id         optional; defaults to the most recent job"
     echo "  -a ADDR        API base URL (default: http://localhost:50050/)"
-    echo "  -p             display physical_plan (default)"
-    echo "  -l             display logical_plan"
-    echo "  -e             display stage_plan (from job info)"
-    echo "  -s [STAGE_ID]  display stage_plan for the given stage, or all stages if omitted (from stages info)"
-    echo "  -w             displays result with no word wrap, horizontal scroll)"
+    echo "  -p             display physical_plan (default; combinable with other mode flags)"
+    echo "  -l             display logical_plan  (combinable with other mode flags)"
+    echo "  -e             display stage_plan from job info (combinable with other mode flags)"
+    echo "  -s [STAGE_ID]  display stage_plan for the given stage, or all stages if omitted (combinable)"
+    echo "  -w             displays result with no word wrap (horizontal scroll)"
     echo "  -t             display plans as tree render (where applicable)"
+    echo ""
+    echo "  Mode flags are cumulative — each selected mode is printed in order."
+    echo "  Example: $(basename "$0") -p -l   prints physical plan then logical plan."
     exit 1
 }
 
@@ -171,15 +178,15 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -p)
-            DISPLAY_MODE="physical"
+            DISPLAY_MODE+=("physical")
             shift
             ;;
         -l)
-            DISPLAY_MODE="logical"
+            DISPLAY_MODE+=("logical")
             shift
             ;;
         -s)
-            DISPLAY_MODE="stage"
+            DISPLAY_MODE+=("stage")
             # stage_id is optional; consume next arg only if it is not a flag
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 STAGE_ID="$2"
@@ -190,7 +197,7 @@ while [[ $# -gt 0 ]]; do
             fi
             ;;
         -e)
-            DISPLAY_MODE="execution"
+            DISPLAY_MODE+=("execution")
             shift
             ;;
         -w)
@@ -207,6 +214,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Default to physical if no mode flag was provided
+if [[ ${#DISPLAY_MODE[@]} -eq 0 ]]; then
+    DISPLAY_MODE=("physical")
+fi
 
 # Check dependencies
 for cmd in curl jq tput; do
@@ -241,45 +253,47 @@ COLS=$(tput cols 2>/dev/tty || echo 80)
 SEP=$(printf '%*s' "$COLS" ' ' | tr ' ' '-')
 
 print_plan() {
-    case "$DISPLAY_MODE" in
-        physical)
-            echo "${SEP}"
-            echo "Job ${JOB_ID} physical plan:"
-            echo "${SEP}"
-            curl -sSf "${JOB_URL}" | jq -r '.physical_plan'
-            ;;
-        logical)
-            echo "${SEP}"
-            echo "Job ${JOB_ID} logical plan:"
-            echo "${SEP}"
-            curl -sSf "${JOB_URL}" | jq -r '.logical_plan'
-            ;;
-        execution)
-            echo "${SEP}"
-            echo "Job ${JOB_ID} stage plan:"
-            echo "${SEP}"
-            curl -sSf "${JOB_URL}" | jq -r '.stage_plan'
-            ;;
-        stage)
-            STAGES_JSON=$(curl -sSf "${STAGES_URL}")
-            if [[ -n "$STAGE_ID" ]]; then
+    for mode in "${DISPLAY_MODE[@]}"; do
+        case "$mode" in
+            physical)
                 echo "${SEP}"
-                echo "Job ${JOB_ID}/${STAGE_ID} physical plan:"
+                echo "Job ${JOB_ID} physical plan:"
                 echo "${SEP}"
-                echo "${STAGES_JSON}" \
-                    | jq -r --arg sid "$STAGE_ID" '.stages[] | select(.stage_id == $sid) | .stage_plan'
-            else
-                STAGE_COUNT=$(echo "${STAGES_JSON}" | jq '.stages | length')
-                for ((i = 0; i < STAGE_COUNT; i++)); do
-                    SID=$(echo "${STAGES_JSON}" | jq -r ".stages[$i].stage_id")
+                curl -sSf "${JOB_URL}" | jq -r '.physical_plan'
+                ;;
+            logical)
+                echo "${SEP}"
+                echo "Job ${JOB_ID} logical plan:"
+                echo "${SEP}"
+                curl -sSf "${JOB_URL}" | jq -r '.logical_plan'
+                ;;
+            execution)
+                echo "${SEP}"
+                echo "Job ${JOB_ID} stage plan:"
+                echo "${SEP}"
+                curl -sSf "${JOB_URL}" | jq -r '.stage_plan'
+                ;;
+            stage)
+                STAGES_JSON=$(curl -sSf "${STAGES_URL}")
+                if [[ -n "$STAGE_ID" ]]; then
                     echo "${SEP}"
-                    echo "Job ${JOB_ID}/${SID} physical plan:"
+                    echo "Job ${JOB_ID}/${STAGE_ID} physical plan:"
                     echo "${SEP}"
-                    echo "${STAGES_JSON}" | jq -r ".stages[$i].stage_plan"
-                done
-            fi
-            ;;
-    esac
+                    echo "${STAGES_JSON}" \
+                        | jq -r --arg sid "$STAGE_ID" '.stages[] | select(.stage_id == $sid) | .stage_plan'
+                else
+                    STAGE_COUNT=$(echo "${STAGES_JSON}" | jq '.stages | length')
+                    for ((i = 0; i < STAGE_COUNT; i++)); do
+                        SID=$(echo "${STAGES_JSON}" | jq -r ".stages[$i].stage_id")
+                        echo "${SEP}"
+                        echo "Job ${JOB_ID}/${SID} physical plan:"
+                        echo "${SEP}"
+                        echo "${STAGES_JSON}" | jq -r ".stages[$i].stage_plan"
+                    done
+                fi
+                ;;
+        esac
+    done
 }
 
 if [[ "$USE_PAGER" == "true" ]]; then
