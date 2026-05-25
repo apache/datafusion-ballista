@@ -252,7 +252,7 @@ print_plan() {
             echo "${SEP}"
             echo "Job ${JOB_ID} logical plan:"
             echo "${SEP}"
-            curl -sf "${JOB_URL}" | jq -r '.logical_plan'
+            curl -sSf "${JOB_URL}" | jq -r '.logical_plan'
             ;;
         execution)
             echo "${SEP}"
