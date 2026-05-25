@@ -119,7 +119,7 @@
 #
 # Command actions and options
 #
-# plan_print.sh <job_id> [options]
+# showplan.sh <job_id> [options]
 # 
 # <job_id> is optional parameter specifying, if not provided
 #          uses the last job (filtered by max start time)
