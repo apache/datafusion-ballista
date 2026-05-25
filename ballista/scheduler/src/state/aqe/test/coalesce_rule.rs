@@ -427,7 +427,7 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
     ShuffleWriterExec: partitioning: None
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
-          ShuffleReaderExec: partitioning: Hash([c@0], 2), coalesce: 2 of 8
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2), coalesce: 2 of 8
     ");
 
     Ok(())

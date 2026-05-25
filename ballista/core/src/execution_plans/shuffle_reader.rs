@@ -278,14 +278,14 @@ impl DisplayAs for ShuffleReaderExec {
                 if self.broadcast {
                     write!(
                         f,
-                        "ShuffleReaderExec: broadcast=true, upstream_partitions: {}",
-                        self.upstream_partition_count,
+                        "ShuffleReaderExec: upstream_stage: {}, broadcast: true, upstream_partition_count: {}",
+                        self.stage_id, self.upstream_partition_count,
                     )
                 } else {
                     write!(
                         f,
-                        "ShuffleReaderExec: partitioning: {}",
-                        self.properties.partitioning,
+                        "ShuffleReaderExec: upstream_stage: {}, partitioning: {}",
+                        self.stage_id, self.properties.partitioning,
                     )?;
                     if let Some(c) = &self.coalesce {
                         write!(
@@ -299,7 +299,8 @@ impl DisplayAs for ShuffleReaderExec {
                 }
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "partitioning={}", self.properties.partitioning)
+                writeln!(f, "upstream_stage={}", self.stage_id)?;
+                writeln!(f, "partitioning={}", self.properties.partitioning)
             }
         }
     }
