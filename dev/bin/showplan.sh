@@ -221,7 +221,7 @@ API_BASE="${API_BASE%/}/"
 
 # Resolve job_id if not provided
 if [[ -z "$JOB_ID" ]]; then
-    JOB_ID=$(curl -sf "${API_BASE}api/jobs" | jq -r 'max_by(.start_time) | .job_id')
+    JOB_ID=$(curl -sSf "${API_BASE}api/jobs" | jq -r 'max_by(.start_time) | .job_id')
     if [[ -z "$JOB_ID" || "$JOB_ID" == "null" ]]; then
         echo "Error: no jobs found at ${API_BASE}api/jobs" >&2
         exit 1
