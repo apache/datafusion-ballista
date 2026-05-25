@@ -261,7 +261,7 @@ print_plan() {
             curl -sSf "${JOB_URL}" | jq -r '.stage_plan'
             ;;
         stage)
-            STAGES_JSON=$(curl -sf "${STAGES_URL}")
+            STAGES_JSON=$(curl -sSf "${STAGES_URL}")
             if [[ -n "$STAGE_ID" ]]; then
                 echo "${SEP}"
                 echo "Job ${JOB_ID}/${STAGE_ID} physical plan:"
