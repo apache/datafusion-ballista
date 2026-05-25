@@ -46,7 +46,7 @@
 # ]
 # ```
 #
-# jobs are not sorted,.
+# jobs are not sorted.
 #
 # `curl http://localhost:50050/api/job/LOZNWx3 | jq` 
 # returns the specific job `LOZNWx3` information
