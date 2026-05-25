@@ -21,7 +21,7 @@
 #
 # PLAN PRINT HELPER
 #
-# plan print is a helper command line utility for ballista.
+# showplan.sh is a helper command line utility for Ballista.
 # which prints command line utility 
 #
 # Ballista exposes REST API at `http://localhost:50050/` by default 
