@@ -124,7 +124,7 @@
 # <job_id> is optional parameter specifying, if not provided
 #          uses the last job (filtered by max start time)
 #
-# -a specify the Scheduler API address in format `http://executor-host:12345/`
+# -a specify the Scheduler API address in format `http://scheduler-host:12345/`
 #    it should contain host and port
 # -p display `physical_plan` (default, if not specified; combinable with other mode flags)
 # -l display `logical_plan` (combinable with other mode flags)
