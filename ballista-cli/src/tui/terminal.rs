@@ -90,9 +90,9 @@ mod native {
 mod web {
     use crate::tui::TuiResult;
     use ratatui::Terminal;
-    use ratzilla::DomBackend;
+    use ratzilla::CanvasBackend;
 
-    pub type WebTui = Terminal<DomBackend>;
+    pub type WebTui = Terminal<CanvasBackend>;
 
     pub struct TuiWrapper {
         pub terminal: WebTui,
@@ -100,7 +100,7 @@ mod web {
 
     impl TuiWrapper {
         pub fn new() -> TuiResult<Self> {
-            let backend = DomBackend::new().map_err(|e| {
+            let backend = CanvasBackend::new().map_err(|e| {
                 crate::tui::error::TuiError::IO(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     e.to_string(),
