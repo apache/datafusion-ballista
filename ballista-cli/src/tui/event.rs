@@ -125,7 +125,7 @@ impl EventHandler {
     /// to any code that needs to push events; the `EventHandler` drains the queue each frame.
     pub fn new(
         tick_rate: u32,
-        terminal: &ratatui::Terminal<ratzilla::CanvasBackend>,
+        terminal: &ratatui::Terminal<ratzilla::WebGl2Backend>,
     ) -> (Sender<Event>, Self) {
         let queue = Rc::new(RefCell::new(VecDeque::new()));
         let sender = Sender {
