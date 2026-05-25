@@ -208,6 +208,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Check dependencies
+for cmd in curl jq tput; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "Error: $cmd is not installed." >&2
+        exit 1
+    fi
+done
+
 # Normalize API base URL (ensure exactly one trailing slash)
 API_BASE="${API_BASE%/}/"
 
