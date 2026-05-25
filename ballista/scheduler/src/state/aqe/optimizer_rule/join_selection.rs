@@ -401,7 +401,7 @@ mod tests {
 
         assert_plan!(optimized.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)]
+          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -441,7 +441,7 @@ mod tests {
 
         assert_plan!(optimized.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)]
+          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -473,7 +473,7 @@ mod tests {
 
         assert_plan!(dynamic_plan.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)]
+          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -519,9 +519,9 @@ mod tests {
 
         assert_plan!(dynamic_plan.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)]
+          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             ProjectionExec: expr=[id@0 as id]
-              DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)]
+              DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
                 DataSourceExec: partitions=1, partition_sizes=[1]
                 DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]

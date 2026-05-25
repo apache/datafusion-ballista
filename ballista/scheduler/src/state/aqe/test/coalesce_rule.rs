@@ -46,7 +46,16 @@ fn coalesce_context(target_partitions: usize, enabled: bool) -> SessionContext {
         .with_target_partitions(target_partitions)
         .with_round_robin_repartition(false)
         .with_ballista_coalesce_enabled(enabled)
-        .with_ballista_coalesce_target_partition_bytes(200);
+        .with_ballista_coalesce_target_partition_bytes(200)
+        .set_bool("datafusion.optimizer.prefer_hash_join", false)
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        )
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+            0,
+        );
 
     let state = SessionStateBuilder::new()
         .with_config(config)
