@@ -141,31 +141,6 @@ impl AdaptiveExecutionGraph {
     ) -> ballista_core::error::Result<Self> {
         let session_id = ctx.session_id();
 
-        // TODO: this is to be changed, we do not run default optimizers coming with the state at this
-        //       point.
-
-        // this state does not have any of the physical optimizers build in by default
-        // //
-        // let state = SessionStateBuilder::new_from_existing(ctx.state())
-        //     .with_physical_optimizer_rules(vec![])
-        //     .build();
-
-        // let plan = state.create_physical_plan(logical_plan).await?;
-
-        // // this is redundant for noe
-        // // let plan = ctx.state().create_physical_plan(logical_plan).await?;
-
-        // // TODO: explain plan will probably return wrong explanation
-        // //       do we handle it now or just ignore it?
-        // let physical_plan = handle_explain_plan(job_id, ctx, logical_plan, plan).await?;
-        // let logical_plan = Some(logical_plan.display_indent().to_string());
-
-        // let mut planner = AdaptivePlanner::try_new(
-        //     &session_config,
-        //     physical_plan.clone(),
-        //     job_name.to_owned(),
-        // )?;
-
         let mut planner =
             AdaptivePlanner::try_new(ctx, logical_plan, job_name.to_owned()).await?;
 
@@ -221,7 +196,6 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            //physical_plan,
         })
     }
 }

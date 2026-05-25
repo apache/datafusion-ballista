@@ -352,7 +352,7 @@ impl DynamicJoinSelectionExec {
         }))
     }
 
-    pub(crate) fn children_are_ready(&self) -> bool {
+    pub(crate) fn children_resolved(&self) -> bool {
         fn has_dynamic_join(plan: &Arc<dyn ExecutionPlan>) -> bool {
             plan.as_any()
                 .downcast_ref::<DynamicJoinSelectionExec>()
