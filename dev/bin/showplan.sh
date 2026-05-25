@@ -258,7 +258,7 @@ print_plan() {
             echo "${SEP}"
             echo "Job ${JOB_ID} stage plan:"
             echo "${SEP}"
-            curl -sf "${JOB_URL}" | jq -r '.stage_plan'
+            curl -sSf "${JOB_URL}" | jq -r '.stage_plan'
             ;;
         stage)
             STAGES_JSON=$(curl -sf "${STAGES_URL}")
