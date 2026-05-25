@@ -24,6 +24,7 @@
 //! `coalesce_target_partition_bytes` so the bin-pack outcome is hand-traceable
 //! against `split_size_list_by_target_size`.
 
+use ballista_core::config::BallistaConfig;
 use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode},
@@ -47,20 +48,31 @@ impl PhysicalOptimizerRule for DelayJoinSelectionRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        _config: &datafusion::config::ConfigOptions,
+        config: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        let result = plan.transform_up(|node| {
-            if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
-                let dynamic = DynamicJoinSelectionExec::from_hash_join(hj)?;
-                Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
-            } else if let Some(smj) = node.as_any().downcast_ref::<SortMergeJoinExec>() {
-                let dynamic = DynamicJoinSelectionExec::from_sort_join(smj)?;
-                Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
-            } else {
-                Ok(Transformed::no(node))
-            }
-        })?;
-        Ok(result.data)
+        let bc = config
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_default();
+        if bc.adaptive_join_enabled() {
+            let result = plan.transform_up(|node| {
+                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                    let dynamic = DynamicJoinSelectionExec::from_hash_join(hj)?;
+                    Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
+                } else if let Some(smj) =
+                    node.as_any().downcast_ref::<SortMergeJoinExec>()
+                {
+                    let dynamic = DynamicJoinSelectionExec::from_sort_join(smj)?;
+                    Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
+                } else {
+                    Ok(Transformed::no(node))
+                }
+            })?;
+            Ok(result.data)
+        } else {
+            return Ok(plan);
+        }
     }
 
     fn name(&self) -> &str {
@@ -306,12 +318,14 @@ mod tests {
     use std::sync::Arc;
 
     use crate::assert_plan;
+    use ballista_core::config::BallistaConfig;
     use datafusion::{
         arrow::{
             array::{Int32Array, RecordBatch},
             datatypes::{DataType, Field, Schema},
         },
         common::config::ConfigOptions,
+        config::ExtensionOptions,
         datasource::MemTable,
         execution::{
             SessionStateBuilder, config::SessionConfig, context::SessionContext,
@@ -574,5 +588,57 @@ mod tests {
             .unwrap();
 
         assert_plan!(optimized.as_ref(), @ "DataSourceExec: partitions=1, partition_sizes=[1]");
+    }
+
+    /// When `ballista.planner.adaptive_join.enabled = false` the `DelayJoinSelectionRule`
+    /// must be a no-op: a plan containing a `DynamicJoinSelectionExec` node must
+    /// be returned unchanged.
+    #[tokio::test]
+    async fn test_select_join_rule_disabled_via_config() {
+        let ctx = make_ctx();
+        let state = SessionStateBuilder::new()
+            .with_physical_optimizer_rules(vec![])
+            .build();
+        let lp = ctx
+            .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
+            .await
+            .unwrap()
+            .into_optimized_plan()
+            .unwrap();
+
+        let plan = DefaultPhysicalPlanner::default()
+            .create_physical_plan(&lp, &state)
+            .await
+            .unwrap();
+
+        // Wrap the plan's joins in DynamicJoinSelectionExec nodes first.
+        let dynamic_plan = DelayJoinSelectionRule::default()
+            .optimize(plan.clone(), &ConfigOptions::default())
+            .unwrap();
+
+        assert_plan!(dynamic_plan.as_ref(), @ r"
+        ProjectionExec: expr=[id@0 as id, val@2 as val]
+          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+
+        // Build a ConfigOptions with adaptive_join disabled.
+        let mut bc = BallistaConfig::default();
+        bc.set("planner.adaptive_join.enabled", "false").unwrap();
+        let mut config = ConfigOptions::default();
+        config.extensions.insert(bc);
+
+        // SelectJoinRule must leave the plan untouched when the flag is off.
+        let dynamic_plan = DelayJoinSelectionRule::default()
+            .optimize(plan, &config)
+            .unwrap();
+
+        assert_plan!(dynamic_plan.as_ref(), @ r"
+        ProjectionExec: expr=[id@0 as id, val@2 as val]
+          HashJoinExec: mode=Auto, join_type=Inner, on=[(id@0, id@0)]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
     }
 }
