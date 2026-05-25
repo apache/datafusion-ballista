@@ -68,7 +68,7 @@
 # }
 # ```
 #
-# `curl http://localhost:50050/api/job/LOZNWx3/stages |jq`
+# `curl http://localhost:50050/api/job/LOZNWx3/stages | jq`
 # returns stage information for a given job
 # ```
 # {
