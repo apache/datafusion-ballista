@@ -34,7 +34,7 @@ use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
-use crate::execution_plans::create_shuffle_path;
+use crate::execution_plans::{create_shuffle_path, restrict_file_scan_to_partition};
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use datafusion::arrow::array::{
@@ -202,13 +202,17 @@ impl SortShuffleWriterExec {
     ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
         let metrics = SortShuffleWriteMetrics::new(input_partition, &self.metrics);
         let config = self.config.clone();
-        let plan = self.plan.clone();
+        // Restrict file scans to this task's partition so DataFusion 54's
+        // shared work queue can't pull files from sibling partitions; see
+        // [`restrict_file_scan_to_partition`] for the full story.
+        let plan = restrict_file_scan_to_partition(self.plan.clone(), input_partition);
         let work_dir = self.work_dir.clone();
         let job_id = self.job_id.clone();
         let stage_id = self.stage_id;
         let partitioning = self.shuffle_output_partitioning.clone();
 
         async move {
+            let plan = plan?;
             let now = Instant::now();
             let mut stream = plan.execute(input_partition, context.clone())?;
             let schema = stream.schema();

@@ -23,24 +23,19 @@ mod common;
 // work stealing).
 //
 // DataFusion 54's `FileScanConfig::create_sibling_state` returns a
-// `SharedWorkSource` populated with every file in the scan. When any
-// partition of that DataSourceExec opens its stream, it pulls files off the
-// shared queue until empty. In a single-process DataFusion run this is
-// harmless because all partitions of the same DataSourceExec instance share
-// the queue and the queue is drained exactly once across them.
+// `SharedWorkSource` populated with every file in the scan, and each
+// partition's stream drains files from that queue. In a single-process
+// DataFusion run that's fine because all partitions of the same
+// DataSourceExec instance cooperatively drain one queue, but Ballista
+// deserialises a fresh DataSourceExec for every task and runs a single
+// partition against it. Without intervention the partition that does run
+// drains the whole queue and reads every file, so a 6-file table executed
+// by 6 tasks returns 6x the data.
 //
-// Ballista breaks that invariant: each task deserialises its *own* copy of
-// the plan and executes a single partition. Each task therefore has its own
-// shared queue containing every file, and the partition it runs drains the
-// whole queue. The result is that every file is scanned once per task, so a
-// 6-file table with 6 tasks reads 36 files and returns 6x the correct row
-// count.
-//
-// These tests are deliberately left enabled but #[ignore]d so they document
-// the failure mode without blocking CI. They should turn green once Ballista
-// either pre-splits FileScanConfig file_groups per task before serialisation
-// (the approach datafusion-distributed took in PR #467) or otherwise stops
-// each task from inheriting the full shared work queue.
+// `restrict_file_scan_to_partition` in ballista-core narrows the
+// FileScanConfig to the running partition's files just before execution so
+// the SharedWorkSource only contains the slice this task is supposed to
+// process. These tests would fail without that helper.
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod work_stealing {
@@ -95,10 +90,6 @@ mod work_stealing {
         Ok((total_rows, total_sum))
     }
 
-    // Each Ballista task currently drains the full shared work queue, so the
-    // returned row count is `num_files * tasks` instead of `num_files *
-    // rows_per_file`. Re-enable once the upstream issue is addressed.
-    #[ignore = "FileScanConfig shared work queue causes per-task over-reads under DF 54"]
     #[tokio::test]
     async fn multi_file_parquet_scan_counts_every_row_exactly_once() -> Result<()> {
         let tmp_dir = TempDir::new().unwrap();
@@ -150,7 +141,6 @@ mod work_stealing {
         Ok(())
     }
 
-    #[ignore = "FileScanConfig shared work queue causes per-task over-reads under DF 54"]
     #[tokio::test]
     async fn multi_file_parquet_group_by_returns_each_value_once() -> Result<()> {
         let tmp_dir = TempDir::new().unwrap();

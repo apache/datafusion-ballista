@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::execution_plans::create_shuffle_path;
+use crate::execution_plans::{create_shuffle_path, restrict_file_scan_to_partition};
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
@@ -206,9 +206,13 @@ impl ShuffleWriterExec {
     ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
-        let plan = self.plan.clone();
+        // Restrict file scans to this task's partition so DataFusion 54's
+        // shared work queue can't pull files from sibling partitions; see
+        // [`restrict_file_scan_to_partition`] for the full story.
+        let plan = restrict_file_scan_to_partition(self.plan.clone(), input_partition);
 
         async move {
+            let plan = plan?;
             let now = Instant::now();
             let channel_capacity = context
                 .session_config()

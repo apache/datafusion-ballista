@@ -20,6 +20,7 @@
 
 mod distributed_explain_analyze;
 mod distributed_query;
+mod restrict_file_scan;
 mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
@@ -31,6 +32,7 @@ use std::path::{Path, PathBuf};
 use datafusion::common::exec_err;
 pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::DistributedQueryExec;
+pub use restrict_file_scan::restrict_file_scan_to_partition;
 pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
