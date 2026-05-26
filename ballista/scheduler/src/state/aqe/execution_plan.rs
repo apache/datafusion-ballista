@@ -34,7 +34,7 @@
 //!   shuffle metadata.
 
 use ballista_core::execution_plans::{
-    CoalescePlan, stats_for_partition, stats_for_partitions,
+    CoalescePlan, SkewJoinPlan, stats_for_partition, stats_for_partitions,
 };
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -96,6 +96,20 @@ pub struct ExchangeExec {
     /// transform-rebuilt parent chains. Same pattern as `shuffle_partitions`.
     coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
 
+    /// Per-stage skew-join decision attached to this Exchange by
+    /// `OptimizeSkewedJoinRule` before adapter conversion.
+    ///
+    /// `None` means: no skew-join rewrite applied; the adapter falls back to
+    /// `try_new` or `try_new_coalesced` depending on the `coalesce` slot.
+    /// `Some(sp)` means: build the SR with `try_new_skew_join(sp)` so the
+    /// reader exposes K' = `sp.shards.len()` partitions, each backed by a
+    /// per-mapper sub-range of one upstream partition.
+    ///
+    /// Mutually exclusive with `coalesce`: the rule short-circuits on any
+    /// leaf that already carries the other decision, and the adapter errors
+    /// loudly if both somehow end up set.
+    skew_join: Arc<Mutex<Option<Arc<SkewJoinPlan>>>>,
+
     /// this disables stage from running even it would be suitable to run.
     ///
     /// the main reason for this property this is to allow rules to override
@@ -152,6 +166,7 @@ impl ExchangeExec {
             shuffle_partitions: stage_partitions,
             partitioning,
             coalesce: Arc::new(Mutex::new(None)),
+            skew_join: Arc::new(Mutex::new(None)),
             inactive_stage: false,
         }
     }
@@ -227,6 +242,20 @@ impl ExchangeExec {
     pub fn coalesce(&self) -> Option<Arc<CoalescePlan>> {
         self.coalesce.lock().clone()
     }
+
+    /// Attaches a `SkewJoinPlan` to this Exchange. The adapter consumes the
+    /// plan when converting Exchange → ShuffleReader: a Some value triggers
+    /// `try_new_skew_join` (K'-partition reader, per-mapper sub-range
+    /// slicing). Mutually exclusive with `coalesce` — setting both is a rule
+    /// bug. Idempotent overwrite.
+    pub fn set_skew_join(&self, sp: Arc<SkewJoinPlan>) {
+        self.skew_join.lock().replace(sp);
+    }
+
+    /// Returns the attached `SkewJoinPlan`, if `set_skew_join` was called.
+    pub fn skew_join(&self) -> Option<Arc<SkewJoinPlan>> {
+        self.skew_join.lock().clone()
+    }
 }
 
 impl DisplayAs for ExchangeExec {
@@ -256,6 +285,14 @@ impl DisplayAs for ExchangeExec {
                         ", coalesce={} of {}",
                         cp.groups.len(),
                         cp.upstream_partition_count,
+                    )?;
+                }
+                if let Some(sp) = self.skew_join.lock().as_ref() {
+                    write!(
+                        f,
+                        ", skew_join={} of {}",
+                        sp.shards.len(),
+                        sp.upstream_partition_count,
                     )?;
                 }
                 Ok(())
@@ -323,6 +360,8 @@ impl ExecutionPlan for ExchangeExec {
             // Carry the coalesce slot so a transform-rebuilt parent chain
             // doesn't lose the rule's decision.
             new_exec.coalesce = self.coalesce.clone();
+            // Same reasoning for the skew-join slot.
+            new_exec.skew_join = self.skew_join.clone();
 
             Ok(Arc::new(new_exec))
         } else {

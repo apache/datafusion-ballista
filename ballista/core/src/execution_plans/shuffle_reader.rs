@@ -155,6 +155,14 @@ pub struct ShuffleReaderExec {
     /// is responsible for pre-concatenating the M-shape upstream
     /// `Vec<Vec<PartitionLocation>>` into K-shape before invoking `try_new_coalesced`.
     pub coalesce: Option<CoalescePlan>,
+    /// Optional skew-join metadata produced by `OptimizeSkewedJoinRule`.
+    /// `None` means the reader is not part of a skew-join rewrite. When `Some`,
+    /// `partition.len()` equals `skew_join.shards.len()` (= K', the post-rewrite
+    /// partition count); the rule/adapter is responsible for slicing each
+    /// upstream `Vec<PartitionLocation>` to the corresponding shard's
+    /// `[start_map_idx, end_map_idx)` window before invoking `try_new_skew_join`.
+    /// Mutually exclusive with `coalesce` by construction.
+    pub skew_join: Option<SkewJoinPlan>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -185,6 +193,7 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: None,
+            skew_join: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -215,6 +224,7 @@ impl ShuffleReaderExec {
             broadcast: true,
             upstream_partition_count,
             coalesce: None,
+            skew_join: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -266,6 +276,61 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: Some(coalesce),
+            skew_join: None,
+            metrics: ExecutionPlanMetricsSet::new(),
+            properties,
+            work_dir: None,    // to be updated at the executor side
+            client_pool: None, // to be updated at the executor side
+        })
+    }
+
+    /// Create a new skew-join ShuffleReaderExec.
+    ///
+    /// `partition` MUST be the K'-shape `Vec<Vec<PartitionLocation>>` produced
+    /// by the adapter: each output index `idx` in `0..K'` holds the
+    /// PartitionLocations of `skew_join.shards[idx].upstream_idx` sliced to
+    /// the `[start_map_idx, end_map_idx)` window for that shard. Passthrough
+    /// (non-split) shards take the full upstream location list.
+    /// `partitioning.partition_count()` MUST equal `K'`.
+    ///
+    /// Spark analog: `ShuffledRowRDD` reading from a `PartialReducerPartitionSpec`
+    /// list — each downstream task fetches blocks only from the mapper indices
+    /// in its shard's window.
+    ///
+    /// In debug builds this constructor asserts the shape invariants to catch
+    /// rule/adapter-side mistakes early.
+    pub fn try_new_skew_join(
+        stage_id: usize,
+        partition: Vec<Vec<PartitionLocation>>,
+        skew_join: SkewJoinPlan,
+        schema: SchemaRef,
+        partitioning: Partitioning,
+    ) -> Result<Self> {
+        debug_assert_eq!(
+            partition.len(),
+            skew_join.shards.len(),
+            "K'-shape partition vector length must equal skew_join.shards.len()",
+        );
+        debug_assert_eq!(
+            partitioning.partition_count(),
+            skew_join.shards.len(),
+            "partitioning.partition_count() must equal skew_join.shards.len() (= K')",
+        );
+        let upstream_partition_count = skew_join.upstream_partition_count as usize;
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            partitioning,
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            stage_id,
+            schema,
+            partition,
+            broadcast: false,
+            upstream_partition_count,
+            coalesce: None,
+            skew_join: Some(skew_join),
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -282,6 +347,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            skew_join: self.skew_join.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -297,6 +363,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            skew_join: self.skew_join.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
@@ -331,6 +398,14 @@ impl DisplayAs for ShuffleReaderExec {
                             ", coalesce: {} of {}",
                             c.groups.len(),
                             c.upstream_partition_count,
+                        )?;
+                    }
+                    if let Some(sj) = &self.skew_join {
+                        write!(
+                            f,
+                            ", skew_join: {} of {}",
+                            sj.shards.len(),
+                            sj.upstream_partition_count,
                         )?;
                     }
                     Ok(())
@@ -375,6 +450,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 broadcast: self.broadcast,
                 upstream_partition_count: self.upstream_partition_count,
                 coalesce: self.coalesce.clone(),
+                skew_join: self.skew_join.clone(),
                 metrics: ExecutionPlanMetricsSet::new(),
                 properties: self.properties.clone(),
                 work_dir: self.work_dir.clone(),
