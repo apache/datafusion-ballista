@@ -101,6 +101,31 @@ pub const BALLISTA_COALESCE_SMALL_PARTITION_FACTOR: &str =
 pub const BALLISTA_COALESCE_MERGED_PARTITION_FACTOR: &str =
     "ballista.planner.coalesce.merged_partition_factor";
 
+/// Configuration key to enable AQE optimize-skewed-join rule (Spark's
+/// `OptimizeSkewedJoin`). Disabled by default — opt in for workloads where
+/// per-key skew creates straggler tasks on join inputs.
+pub const BALLISTA_SKEW_JOIN_ENABLED: &str = "ballista.planner.skew_join.enabled";
+/// Multiplier over the per-side median below which a partition is not
+/// considered skewed. Mirrors Spark's
+/// `spark.sql.adaptive.skewJoin.skewedPartitionFactor`.
+pub const BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR: &str =
+    "ballista.planner.skew_join.skewed_partition_factor";
+/// Absolute byte threshold below which a partition is never split, even when
+/// the ratio-to-median qualifies. Mirrors Spark's
+/// `spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes`.
+pub const BALLISTA_SKEW_JOIN_SKEWED_PARTITION_THRESHOLD_BYTES: &str =
+    "ballista.planner.skew_join.skewed_partition_threshold_bytes";
+/// Advisory target sub-shard byte size used by the bin-packer when splitting
+/// a skewed partition's per-mapper outputs. Decoupled from the coalesce
+/// target so the two rules can be tuned independently.
+pub const BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES: &str =
+    "ballista.planner.skew_join.advisory_partition_bytes";
+/// Tail-merge factor: a trailing sub-shard whose size is below
+/// `small_partition_factor * advisory` folds back into its predecessor
+/// (Spark's `splitSizeListByTargetSize` legacy).
+pub const BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR: &str =
+    "ballista.planner.skew_join.small_partition_factor";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -219,6 +244,47 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             "Merged-partition early-flush factor (Spark legacy).".to_string(),
             DataType::Float64,
             Some("1.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_ENABLED.to_string(),
+            "Enables the AQE optimize-skewed-join rule (Spark's \
+             OptimizeSkewedJoin). Disabled by default — opt in for workloads \
+             where per-key skew creates straggler tasks on join inputs."
+                .to_string(),
+            DataType::Boolean,
+            Some(false.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR.to_string(),
+            "Multiplier over per-side median below which a partition is not \
+             considered skewed (Spark's skewedPartitionFactor)."
+                .to_string(),
+            DataType::Float64,
+            Some("5.0".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_SKEWED_PARTITION_THRESHOLD_BYTES.to_string(),
+            "Absolute byte threshold below which a partition is never split \
+             (Spark's skewedPartitionThresholdInBytes)."
+                .to_string(),
+            DataType::UInt64,
+            Some((256 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES.to_string(),
+            "Advisory target sub-shard byte size used by the bin-packer when \
+             splitting a skewed partition."
+                .to_string(),
+            DataType::UInt64,
+            Some((64 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR.to_string(),
+            "Tail-merge factor for the skew-join sub-shard bin-packer \
+             (Spark legacy)."
+                .to_string(),
+            DataType::Float64,
+            Some("0.2".to_string()),
         ),
     ];
     entries
@@ -448,6 +514,35 @@ impl BallistaConfig {
     /// Returns the merged-partition early-flush factor (Spark legacy).
     pub fn coalesce_merged_partition_factor(&self) -> f64 {
         self.get_float_setting(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR)
+    }
+
+    /// Returns whether the AQE optimize-skewed-join rule is enabled.
+    pub fn skew_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SKEW_JOIN_ENABLED)
+    }
+
+    /// Returns the skewed-partition factor (Spark's
+    /// `skewedPartitionFactor`).
+    pub fn skew_join_skewed_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR)
+    }
+
+    /// Returns the absolute skewed-partition byte threshold
+    /// (Spark's `skewedPartitionThresholdInBytes`).
+    pub fn skew_join_skewed_partition_threshold_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SKEW_JOIN_SKEWED_PARTITION_THRESHOLD_BYTES)
+            as u64
+    }
+
+    /// Returns the advisory target sub-shard byte size used by the bin-packer
+    /// when splitting a skewed partition.
+    pub fn skew_join_advisory_partition_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES) as u64
+    }
+
+    /// Returns the tail-merge factor for the skew-join sub-shard bin-packer.
+    pub fn skew_join_small_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR)
     }
 
     /// Should client employ pull or push job tracking strategy

@@ -93,6 +93,44 @@ pub struct PartitionGroup {
     pub upstream_indices: Vec<u32>,
 }
 
+/// Skew-join plan attached to the two leaf `ShuffleReaderExec`s of a join
+/// stage by the AQE `OptimizeSkewedJoinRule`.
+///
+/// Spark analog: the rewrite that replaces both legs' `AQEShuffleReadExec`
+/// with a paired list of `PartialReducerPartitionSpec`s. K' (the post-rewrite
+/// partition count) equals `shards.len()` and matches across legs by
+/// construction — the planner builds matched join inputs by zipping the two
+/// legs' shard lists.
+///
+/// Note: `Default` is intentionally NOT derived. Callers must construct
+/// explicitly to keep "absent skew-join rewrite" (`Option::None`) semantically
+/// distinct from "empty plan".
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkewJoinPlan {
+    /// Original upstream partition count (M) before the rewrite. Same value
+    /// on both legs of the join (alignment invariant; enforced by the rule).
+    pub upstream_partition_count: u32,
+    /// Per-output-partition shard descriptors. Length K' is the same on both
+    /// legs after rewrite.
+    pub shards: Vec<SkewJoinShard>,
+}
+
+/// One output partition's read window for the skew-join rewrite.
+///
+/// Spark analog: `PartialReducerPartitionSpec(reducerIndex, startMapIndex,
+/// endMapIndex, dataSize)`. A non-split (passthrough) shard uses
+/// `start_map_idx = 0` and `end_map_idx = num_maps_for_idx`, equivalent to
+/// reading the full mapper-output range for that reducer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkewJoinShard {
+    /// Upstream partition (= original reducer index `i`) this shard reads from.
+    pub upstream_idx: u32,
+    /// Inclusive lower bound of the upstream mapper-output index range to read.
+    pub start_map_idx: u32,
+    /// Exclusive upper bound of the upstream mapper-output index range to read.
+    pub end_map_idx: u32,
+}
+
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
 #[derive(Debug, Clone)]
