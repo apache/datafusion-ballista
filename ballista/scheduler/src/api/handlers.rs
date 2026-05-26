@@ -32,7 +32,7 @@ use ballista_core::serde::scheduler::{
 use ballista_core::utils::get_current_time;
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::displayable;
+use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan, displayable};
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -523,11 +523,16 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(running_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(running_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        summary.stage_plan = running_stage.stage_metrics.as_deref().map(|m| {
+                            format_stage_plan_with_metrics(running_stage.plan.as_ref(), m, render_tree)
+                        }).or_else(|| {
+                            // no metrics yet
+                            Some(if render_tree {
+                                displayable(running_stage.plan.as_ref()).tree_render().to_string()
+                            } else {
+                                displayable(running_stage.plan.as_ref()).indent(false).to_string()
+                            })
+                        });
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -577,11 +582,11 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(completed_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        summary.stage_plan = Some(format_stage_plan_with_metrics(
+                            completed_stage.plan.as_ref(),
+                            &completed_stage.stage_metrics,
+                            render_tree,
+                        ));
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -680,6 +685,80 @@ fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentile
         p75: percentile_duration(&durations, 75.0),
         max: *durations.last().unwrap(),
     })
+}
+
+fn format_stage_plan_with_metrics(
+    plan: &dyn ExecutionPlan,
+    stage_metrics: &[MetricsSet],
+    render_tree: bool,
+) -> String {
+    // If it is empty - fall back to render_tree
+    if stage_metrics.is_empty() {
+        return if render_tree {
+            displayable(plan).tree_render().to_string()
+        } else {
+            displayable(plan).indent(false).to_string()
+        };
+    }
+
+    let mut metric_idx = 0;
+    let result = format_node(plan, stage_metrics, &mut metric_idx, 0);
+
+    debug_assert_eq!(
+        metric_idx,
+        stage_metrics.len(),
+        "metric count mismatch: consumed {} but stage_metrics has {}",
+        metric_idx,
+        stage_metrics.len()
+    );
+
+    result
+}
+
+/// Formatting the node in DFS fashion
+/// It is constructed in the same way it is collected (using in-order traversal)
+/// 
+/// For reference how the metrics are collected on the executor's side - see ballista-core/utils.rs
+fn format_node(
+    plan: &dyn ExecutionPlan,
+    stage_metrics: &[MetricsSet],
+    metric_idx: &mut usize,
+    indent: usize,
+) -> String {
+    let metrics_set = if plan.metrics().is_some() {
+        let m = stage_metrics.get(*metric_idx);
+        *metric_idx += 1;
+        m
+    } else {
+        None
+    };
+
+    let metric_str = metrics_set
+        .map(|m| {
+            let aggregated = m.aggregate_by_name();
+            format!(", metrics=[{}]", aggregated)
+        })
+        .unwrap_or_else(|| ", metrics=[]".to_string());
+
+    // Single-node display without children
+    let node_line = {
+        struct SingleNode<'a>(&'a dyn ExecutionPlan);
+        impl std::fmt::Display for SingleNode<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt_as(DisplayFormatType::Default, f)
+            }
+        }
+        SingleNode(plan).to_string()
+    };
+
+    let prefix = "  ".repeat(indent);
+    let mut result = format!("{}{}{}\n", prefix, node_line, metric_str);
+
+    for child in plan.children() {
+        result.push_str(&format_node(child.as_ref(), stage_metrics, metric_idx, indent + 1));
+    }
+
+    result
 }
 
 /// Returns elapsed wall time in milliseconds for API formatting.
