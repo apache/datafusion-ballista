@@ -132,22 +132,29 @@ impl PhysicalOptimizerRule for SelectJoinRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        let result = plan.transform_up(|node| {
-            if let Some(dynamic_join) =
-                node.as_any().downcast_ref::<DynamicJoinSelectionExec>()
-            {
-                if dynamic_join.children_resolved() {
-                    match dynamic_join.to_actual_join(config)? {
-                        // at this point we know there are two exchanges
-                        JoinSelectionAction::LateCollectLeft(hash_join_exec) => {
-                            if Self::supports_swap_join_order(
-                                hash_join_exec.left.as_ref(),
-                                hash_join_exec.right.as_ref(),
-                            )? {
-                                let left = hash_join_exec.left.clone();
-                                let right = hash_join_exec.right.clone();
+        let bc = config
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_default();
+        if bc.adaptive_join_enabled() {
+            let result = plan.transform_up(|node| {
+                if let Some(dynamic_join) =
+                    node.as_any().downcast_ref::<DynamicJoinSelectionExec>()
+                {
+                    if dynamic_join.children_resolved() {
+                        match dynamic_join.to_actual_join(config)? {
+                            // at this point we know there are two exchanges
+                            // as we added them beforehand
+                            JoinSelectionAction::LateCollectLeft(hash_join_exec) => {
+                                if Self::supports_swap_join_order(
+                                    hash_join_exec.left.as_ref(),
+                                    hash_join_exec.right.as_ref(),
+                                )? {
+                                    let left = hash_join_exec.left.clone();
+                                    let right = hash_join_exec.right.clone();
 
-                                let right = right
+                                    let right = right
                                     .as_any()
                                     .downcast_ref::<ExchangeExec>()
                                     .ok_or(DataFusionError::Execution(
@@ -155,23 +162,23 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                             .to_owned(),
                                     ))?
                                     .to_broadcast(self.plan_id());
-                                let right = Arc::new(right);
+                                    let right = Arc::new(right);
 
-                                let join = hash_join_exec
-                                    .with_new_children(vec![left, right])?;
+                                    let join = hash_join_exec
+                                        .with_new_children(vec![left, right])?;
 
-                                let join = join
+                                    let join = join
                                     .as_any()
                                     .downcast_ref::<HashJoinExec>()
                                     .ok_or(DataFusionError::Execution(
                                     "HashJoinExec is expected at this point (right)"
                                         .to_owned(),
                                 ))?;
-                                let join =
-                                    join.swap_inputs(PartitionMode::CollectLeft)?;
-                                Ok(Transformed::yes(join))
-                            } else {
-                                let left = hash_join_exec
+                                    let join =
+                                        join.swap_inputs(PartitionMode::CollectLeft)?;
+                                    Ok(Transformed::yes(join))
+                                } else {
+                                    let left = hash_join_exec
                                     .left
                                     .as_any()
                                     .downcast_ref::<ExchangeExec>()
@@ -180,127 +187,150 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                             .to_owned(),
                                     ))?
                                     .to_broadcast(self.plan_id());
-                                let left = Arc::new(left);
+                                    let left = Arc::new(left);
 
-                                let right = hash_join_exec.right.clone();
+                                    let right = hash_join_exec.right.clone();
 
-                                let join = hash_join_exec
-                                    .with_new_children(vec![left, right])?;
-                                Ok(Transformed::yes(join))
+                                    let join = hash_join_exec
+                                        .with_new_children(vec![left, right])?;
+                                    Ok(Transformed::yes(join))
+                                }
                             }
-                        }
 
-                        JoinSelectionAction::CollectLeft(hash_join_exec) => {
-                            let plan = if Self::supports_swap_join_order(
-                                hash_join_exec.left.as_ref(),
-                                hash_join_exec.right.as_ref(),
-                            )? {
-                                hash_join_exec.swap_inputs(PartitionMode::CollectLeft)?
-                            } else {
-                                hash_join_exec
-                            };
+                            JoinSelectionAction::CollectLeft(hash_join_exec) => {
+                                let plan = if Self::supports_swap_join_order(
+                                    hash_join_exec.left.as_ref(),
+                                    hash_join_exec.right.as_ref(),
+                                )? {
+                                    hash_join_exec
+                                        .swap_inputs(PartitionMode::CollectLeft)?
+                                } else {
+                                    hash_join_exec
+                                };
 
-                            let exec = plan.transform_up(|p| {
-                                if let Some(hash_join) =
-                                    p.as_any().downcast_ref::<HashJoinExec>()
-                                    && matches!(
-                                        hash_join.partition_mode(),
-                                        PartitionMode::CollectLeft
-                                    )
-                                {
-                                    if let Some(data_source) = hash_join
-                                        .left
-                                        .as_any()
-                                        .downcast_ref::<DataSourceExec>(
-                                    ) && let Ok(Some(left)) =
-                                        data_source.repartitioned(1, config)
+                                let exec = plan.transform_up(|p| {
+                                    if let Some(hash_join) =
+                                        p.as_any().downcast_ref::<HashJoinExec>()
+                                        && matches!(
+                                            hash_join.partition_mode(),
+                                            PartitionMode::CollectLeft
+                                        )
                                     {
-                                        let right = hash_join.right.clone();
-                                        let p = p.with_new_children(vec![left, right])?;
-                                        Ok(Transformed::yes(p))
-                                    } else if hash_join
-                                        .left
-                                        .properties()
-                                        .partitioning
-                                        .partition_count()
-                                        > 1
-                                    {
-                                        //if hash_join.left.as_any().downcast_ref::<ExchangeExec>()
-                                        let left = Arc::new(ExchangeExec::new_broadcast(
-                                            hash_join.left.clone(),
-                                            None,
-                                            self.plan_id(),
-                                        ));
-                                        let right = hash_join.right.clone();
-                                        let p = p.with_new_children(vec![left, right])?;
-                                        Ok(Transformed::yes(p))
+                                        if let Some(data_source) = hash_join
+                                            .left
+                                            .as_any()
+                                            .downcast_ref::<DataSourceExec>()
+                                            && let Ok(Some(left)) =
+                                                data_source.repartitioned(1, config)
+                                        {
+                                            let right = hash_join.right.clone();
+                                            let p =
+                                                p.with_new_children(vec![left, right])?;
+                                            Ok(Transformed::yes(p))
+                                        } else if hash_join
+                                            .left
+                                            .properties()
+                                            .partitioning
+                                            .partition_count()
+                                            > 1
+                                        {
+                                            let left = if let Some(exchange) = hash_join
+                                                .left
+                                                .as_any()
+                                                .downcast_ref::<ExchangeExec>()
+                                            {
+                                                Arc::new(
+                                                    exchange.to_broadcast(self.plan_id()),
+                                                )
+                                            } else {
+                                                Arc::new(ExchangeExec::new_broadcast(
+                                                    hash_join.left.clone(),
+                                                    None,
+                                                    self.plan_id(),
+                                                ))
+                                            };
+                                            let right = hash_join.right.clone();
+                                            let p =
+                                                p.with_new_children(vec![left, right])?;
+                                            Ok(Transformed::yes(p))
+                                        } else {
+                                            Ok(Transformed::no(p))
+                                        }
                                     } else {
                                         Ok(Transformed::no(p))
                                     }
+                                })?;
+
+                                Ok(Transformed::yes(exec.data))
+                            }
+                            JoinSelectionAction::Repartition(dynamic_join) => {
+                                // initial idea to use:
+                                //
+                                // let partition_count = dynamic_join
+                                //     .properties()
+                                //     .output_partitioning()
+                                //     .partition_count();
+                                //
+                                // failed as new exchange nodes will be added due to
+                                // miss match between expected and actual partitioning
+                                let partition_count = config.execution.target_partitions;
+                                let partitioning = dynamic_join
+                                    ._required_input_distribution()
+                                    .iter()
+                                    .map(|d| {
+                                        d.clone().create_partitioning(partition_count)
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                let left = dynamic_join.left.clone();
+                                let right = dynamic_join.right.clone();
+
+                                let left = Arc::new(ExchangeExec::new(
+                                    left,
+                                    Some(partitioning[0].clone()),
+                                    self.plan_id(),
+                                ));
+
+                                let right = Arc::new(ExchangeExec::new(
+                                    right,
+                                    Some(partitioning[1].clone()),
+                                    self.plan_id(),
+                                ));
+
+                                let dynamic_join =
+                                    dynamic_join.with_new_children(vec![left, right])?;
+
+                                Ok(Transformed::yes(dynamic_join))
+                            }
+                            JoinSelectionAction::Hash(hash_join_exec) => {
+                                let hash_join_exec = if Self::supports_swap_join_order(
+                                    hash_join_exec.left.as_ref(),
+                                    hash_join_exec.right.as_ref(),
+                                )? {
+                                    hash_join_exec
+                                        .swap_inputs(*hash_join_exec.partition_mode())?
                                 } else {
-                                    Ok(Transformed::no(p))
-                                }
-                            })?;
+                                    hash_join_exec
+                                };
 
-                            Ok(Transformed::yes(exec.data))
+                                Ok(Transformed::yes(hash_join_exec))
+                            }
+                            JoinSelectionAction::Sort(sort_merge_join_exec) => {
+                                Ok(Transformed::yes(sort_merge_join_exec))
+                            }
                         }
-                        JoinSelectionAction::Repartition(dynamic_join) => {
-                            // let partition_count = dynamic_join
-                            //     .properties()
-                            //     .output_partitioning()
-                            //     .partition_count();
-                            let partition_count = config.execution.target_partitions;
-                            let partitioning = dynamic_join
-                                ._required_input_distribution()
-                                .iter()
-                                .map(|d| d.clone().create_partitioning(partition_count))
-                                .collect::<Vec<_>>();
-
-                            let left = dynamic_join.left.clone();
-                            let right = dynamic_join.right.clone();
-
-                            let left = Arc::new(ExchangeExec::new(
-                                left,
-                                Some(partitioning[0].clone()),
-                                self.plan_id(),
-                            ));
-
-                            let right = Arc::new(ExchangeExec::new(
-                                right,
-                                Some(partitioning[1].clone()),
-                                self.plan_id(),
-                            ));
-
-                            let dynamic_join =
-                                dynamic_join.with_new_children(vec![left, right])?;
-
-                            Ok(Transformed::yes(dynamic_join))
-                        }
-                        JoinSelectionAction::Hash(hash_join_exec) => {
-                            let hash_join_exec = if Self::supports_swap_join_order(
-                                hash_join_exec.left.as_ref(),
-                                hash_join_exec.right.as_ref(),
-                            )? {
-                                hash_join_exec
-                                    .swap_inputs(*hash_join_exec.partition_mode())?
-                            } else {
-                                hash_join_exec
-                            };
-
-                            Ok(Transformed::yes(hash_join_exec))
-                        }
-                        JoinSelectionAction::Sort(sort_merge_join_exec) => {
-                            Ok(Transformed::yes(sort_merge_join_exec))
-                        }
+                    } else {
+                        Ok(Transformed::no(node))
                     }
                 } else {
                     Ok(Transformed::no(node))
                 }
-            } else {
-                Ok(Transformed::no(node))
-            }
-        })?;
-        Ok(result.data)
+            })?;
+            Ok(result.data)
+        } else {
+            // disabled using configuration
+            Ok(plan)
+        }
     }
 
     fn name(&self) -> &str {
@@ -596,9 +626,11 @@ mod tests {
     #[tokio::test]
     async fn test_select_join_rule_disabled_via_config() {
         let ctx = make_ctx();
+
         let state = SessionStateBuilder::new()
             .with_physical_optimizer_rules(vec![])
             .build();
+
         let lp = ctx
             .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
             .await
@@ -611,7 +643,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Wrap the plan's joins in DynamicJoinSelectionExec nodes first.
         let dynamic_plan = DelayJoinSelectionRule::default()
             .optimize(plan.clone(), &ConfigOptions::default())
             .unwrap();
@@ -623,15 +654,38 @@ mod tests {
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
+        let resolve_plan = SelectJoinRule::default()
+            .optimize(dynamic_plan.clone(), &ConfigOptions::default())
+            .unwrap();
+
+        assert_plan!(resolve_plan.as_ref(), @ r"
+        ProjectionExec: expr=[id@0 as id, val@2 as val]
+          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+
+        //
         // Build a ConfigOptions with adaptive_join disabled.
+        //
         let mut bc = BallistaConfig::default();
         bc.set("planner.adaptive_join.enabled", "false").unwrap();
-        let mut config = ConfigOptions::default();
-        config.extensions.insert(bc);
+        let mut config_disabled = ConfigOptions::default();
+        config_disabled.extensions.insert(bc);
 
-        // SelectJoinRule must leave the plan untouched when the flag is off.
+        let resolve_plan = SelectJoinRule::default()
+            .optimize(dynamic_plan.clone(), &config_disabled)
+            .unwrap();
+
+        assert_plan!(resolve_plan.as_ref(), @ r"
+        ProjectionExec: expr=[id@0 as id, val@2 as val]
+          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+
         let dynamic_plan = DelayJoinSelectionRule::default()
-            .optimize(plan, &config)
+            .optimize(plan, &config_disabled)
             .unwrap();
 
         assert_plan!(dynamic_plan.as_ref(), @ r"

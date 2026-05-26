@@ -781,7 +781,7 @@ impl SessionConfigHelperExt for SessionConfig {
             // `SET datafusion.optimizer.prefer_hash_join = true`.
             //
             // See https://github.com/apache/datafusion-ballista/issues/1648
-            .set_bool("datafusion.optimizer.prefer_hash_join", true)
+            .set_bool("datafusion.optimizer.prefer_hash_join", false)
     }
 }
 

@@ -1058,22 +1058,28 @@ impl StageOutput {
     }
     /// returns vector of partition locations
     /// which is compatible with ShuffleReader vector format
+    ///
+    /// `output_partition_count` is the number of expected
+    ///  output partition number
     pub fn partition_locations(
         mut self,
-        output_partitions: usize,
-        is_broadcast: bool,
+        output_partition_count: usize,
     ) -> Vec<Vec<PartitionLocation>> {
-        if is_broadcast {
-            self.partition_locations.into_values().collect()
-        } else {
-            let mut partition_locations = Vec::new();
-            for i in 0..output_partitions {
-                let p = self.partition_locations.remove(&i).unwrap_or_default();
-                partition_locations.push(p);
-            }
-
-            partition_locations
+        let mut partition_locations = Vec::new();
+        for i in 0..output_partition_count {
+            let p = self.partition_locations.remove(&i).unwrap_or_default();
+            partition_locations.push(p);
         }
+
+        partition_locations
+    }
+
+    /// returns vector of partition locations
+    /// which is compatible with ShuffleReader vector format
+    /// supporting broadcast shuffle read.
+    /// All partitions are merged into one
+    pub fn partition_locations_broadcast(self) -> Vec<Vec<PartitionLocation>> {
+        self.partition_locations.into_values().collect()
     }
 }
 

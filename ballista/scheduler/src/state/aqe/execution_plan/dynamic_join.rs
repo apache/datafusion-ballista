@@ -26,7 +26,7 @@
 
 use datafusion::{
     arrow::compute::SortOptions,
-    common::{JoinType, NullEquality, Result, internal_err},
+    common::{JoinType, NullEquality, Result, exec_err, internal_err},
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
         DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
@@ -108,8 +108,8 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
         _partition: usize,
         _context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
-        todo!(
-            "this should not be executed, it should have been replaced with optimizer rule"
+        exec_err!(
+            "Operator should not be executed; it should have been replaced by an optimizer rule."
         )
     }
 }

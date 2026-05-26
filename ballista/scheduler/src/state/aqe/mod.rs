@@ -121,8 +121,6 @@ pub(crate) struct AdaptiveExecutionGraph {
     session_config: Arc<SessionConfig>,
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
-    // /// Physical plan, captured at submission time.
-    //physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl AdaptiveExecutionGraph {

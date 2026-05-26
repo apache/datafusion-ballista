@@ -269,17 +269,22 @@ impl AdaptivePlanner {
             .unwrap_or(false);
 
         let output_partition_count = stage.output_partitioning().partition_count();
-
-        let stage_output = self
-            .runnable_stage_output
-            .remove(&stage_id)
-            .ok_or(datafusion::error::DataFusionError::Execution(
-                "Can't find active stage to update resolve".into(),
-            ))?
-            .partition_locations(output_partition_count, is_broadcast);
-
+        let stage_output = if is_broadcast {
+            self.runnable_stage_output
+                .remove(&stage_id)
+                .ok_or(datafusion::error::DataFusionError::Execution(
+                    "Can't find active stage to resolve".into(),
+                ))?
+                .partition_locations_broadcast()
+        } else {
+            self.runnable_stage_output
+                .remove(&stage_id)
+                .ok_or(datafusion::error::DataFusionError::Execution(
+                    "Can't find active stage to resolve".into(),
+                ))?
+                .partition_locations(output_partition_count)
+        };
         self.finalise_stage_internal(stage_id, stage_output.clone())?;
-
         Ok(stage_output)
     }
 
