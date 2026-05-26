@@ -148,7 +148,7 @@ fn write_plan_recursive(
     let node_name = format!("{prefix}_{i}");
     let display_name = get_operator_name(plan);
 
-    if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
+    if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
         for part in &reader.partition {
             for loc in part {
                 state
@@ -156,7 +156,7 @@ fn write_plan_recursive(
                     .insert(node_name.clone(), loc.partition_id.stage_id);
             }
         }
-    } else if let Some(reader) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+    } else if let Some(reader) = plan.downcast_ref::<UnresolvedShuffleExec>() {
         state.readers.insert(node_name.clone(), reader.stage_id);
     }
 
@@ -230,9 +230,9 @@ fn sanitize(str: &str, max_len: Option<usize>) -> String {
 }
 #[allow(deprecated)]
 fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
-    if let Some(exec) = plan.as_any().downcast_ref::<FilterExec>() {
+    if let Some(exec) = plan.downcast_ref::<FilterExec>() {
         format!("Filter: {}", exec.predicate())
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ProjectionExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<ProjectionExec>() {
         let expr = exec
             .expr()
             .iter()
@@ -241,7 +241,7 @@ fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
             .collect::<Vec<String>>()
             .join(", ");
         format!("Projection: {}", sanitize_dot_label(&expr))
-    } else if let Some(exec) = plan.as_any().downcast_ref::<SortExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<SortExec>() {
         let sort_expr = exec
             .expr()
             .iter()
@@ -257,7 +257,7 @@ fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
             .collect::<Vec<String>>()
             .join(", ");
         format!("Sort: {}", sanitize_dot_label(&sort_expr))
-    } else if let Some(exec) = plan.as_any().downcast_ref::<AggregateExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
         let group_exprs_with_alias = exec.group_expr().expr();
         let group_expr = group_exprs_with_alias
             .iter()
@@ -277,19 +277,19 @@ aggr=[{}]",
             sanitize_dot_label(&group_expr),
             sanitize_dot_label(&aggr_expr)
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<CoalesceBatchesExec>() {
         format!("CoalesceBatches [batchSize={}]", exec.target_batch_size())
-    } else if let Some(exec) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<CoalescePartitionsExec>() {
         format!(
             "CoalescePartitions [{}]",
             format_partitioning(exec.properties().output_partitioning().clone())
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<RepartitionExec>() {
         format!(
             "RepartitionExec [{}]",
             format_partitioning(exec.properties().output_partitioning().clone())
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<HashJoinExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<HashJoinExec>() {
         let join_expr = exec
             .on()
             .iter()
@@ -308,49 +308,46 @@ filter_expr={}",
             sanitize_dot_label(&join_expr),
             sanitize_dot_label(&filter_expr)
         )
-    } else if plan.as_any().downcast_ref::<CrossJoinExec>().is_some() {
+    } else if plan.downcast_ref::<CrossJoinExec>().is_some() {
         "CrossJoin".to_string()
-    } else if plan.as_any().downcast_ref::<UnionExec>().is_some() {
+    } else if plan.downcast_ref::<UnionExec>().is_some() {
         "Union".to_string()
-    } else if let Some(exec) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<UnresolvedShuffleExec>() {
         format!("UnresolvedShuffleExec [stage_id={}]", exec.stage_id)
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<ShuffleReaderExec>() {
         format!("ShuffleReader [{} partitions]", exec.partition.len())
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<ShuffleWriterExec>() {
         format!(
             "ShuffleWriter [{} partitions]",
             exec.input_partition_count()
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<SortShuffleWriterExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<SortShuffleWriterExec>() {
         format!(
             "SortShuffleWriter [{} partitions]",
             exec.input_partition_count()
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
-        let config = if let Some(config) =
-            exec.data_source().as_any().downcast_ref::<FileScanConfig>()
-        {
-            get_file_scan(config)
-        } else if let Some(_config) = exec
-            .data_source()
-            .as_any()
-            .downcast_ref::<MemorySourceConfig>()
-        {
-            "Memory".to_string()
-        } else {
-            "Unknown".to_string()
-        };
+    } else if let Some(exec) = plan.downcast_ref::<DataSourceExec>() {
+        let config =
+            if let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>() {
+                get_file_scan(config)
+            } else if let Some(_config) =
+                exec.data_source().downcast_ref::<MemorySourceConfig>()
+            {
+                "Memory".to_string()
+            } else {
+                "Unknown".to_string()
+            };
 
         let parts = exec.properties().output_partitioning().partition_count();
 
         format!("DataSourceExec: ({config}) [{parts} partitions]")
-    } else if let Some(exec) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<GlobalLimitExec>() {
         format!(
             "GlobalLimit(skip={}, fetch={:?})",
             exec.skip(),
             exec.fetch()
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
+    } else if let Some(exec) = plan.downcast_ref::<LocalLimitExec>() {
         format!("LocalLimit({})", exec.fetch())
     } else {
         debug!("Unknown physical operator when producing DOT graph: {plan:?}");

@@ -24,7 +24,6 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 
 use datafusion::arrow::ipc::writer::StreamWriter;
-use std::any::Any;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::File;
@@ -285,7 +284,7 @@ impl ShuffleWriterExec {
                             exprs,
                             num_output_partitions,
                             repart_time,
-                        );
+                        )?;
 
                         while let Some(input_batch) = rx.blocking_recv() {
                             partitioner.partition(
@@ -437,10 +436,6 @@ impl ExecutionPlan for ShuffleWriterExec {
         "ShuffleWriterExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.plan.schema()
     }
@@ -560,7 +555,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.plan.partition_statistics(partition)
     }
 }

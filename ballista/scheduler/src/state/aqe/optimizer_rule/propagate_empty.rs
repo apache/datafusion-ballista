@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 macro_rules! is_empty_exec {
     ($e:expr) => {
-        $e.as_any().downcast_ref::<EmptyExec>().is_some()
+        $e.downcast_ref::<EmptyExec>().is_some()
     };
 }
 
@@ -57,41 +57,41 @@ impl PropagateEmptyExecRule {
     fn transform(
         plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>()
+        if let Some(filter) = plan.downcast_ref::<FilterExec>()
             && is_empty_exec!(filter.input())
         {
             Ok(Transformed::yes(filter.input().clone()))
-        } else if let Some(coalesce) = plan.as_any().downcast_ref::<CoalesceBatchesExec>()
+        } else if let Some(coalesce) = plan.downcast_ref::<CoalesceBatchesExec>()
             && is_empty_exec!(coalesce.input())
         {
             Ok(Transformed::yes(coalesce.input().clone()))
-        } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>()
+        } else if let Some(exchange) = plan.downcast_ref::<ExchangeExec>()
             && is_empty_exec!(exchange.input())
         {
             Ok(Transformed::yes(exchange.input().clone()))
-        } else if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>()
+        } else if let Some(projection) = plan.downcast_ref::<ProjectionExec>()
             && is_empty_exec!(projection.input())
         {
             empty_exec!(projection)
-        } else if let Some(limit) = plan.as_any().downcast_ref::<GlobalLimitExec>()
+        } else if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>()
             && is_empty_exec!(limit.input())
         {
             Ok(Transformed::yes(limit.input().clone()))
-        } else if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>()
+        } else if let Some(limit) = plan.downcast_ref::<LocalLimitExec>()
             && is_empty_exec!(limit.input())
         {
             Ok(Transformed::yes(limit.input().clone()))
-        } else if let Some(aggregation) = plan.as_any().downcast_ref::<AggregateExec>()
+        } else if let Some(aggregation) = plan.downcast_ref::<AggregateExec>()
             && is_empty_exec!(aggregation.input())
         {
             empty_exec!(aggregation)
-        } else if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>()
+        } else if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
             // TODO: - we need other joins, this one is used for testing cancellation
             && hash_join.join_type == Inner
             && (is_empty_exec!(hash_join.left) || is_empty_exec!(hash_join.right))
         {
             empty_exec!(hash_join)
-        } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        } else if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
             let stats = exchange.partition_statistics(None)?;
             match stats.num_rows {
                 Precision::Exact(0) => empty_exec!(plan),

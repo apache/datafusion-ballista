@@ -48,7 +48,6 @@ use datafusion_proto::logical_plan::{
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{debug, error, info};
 use parking_lot::Mutex;
-use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -174,10 +173,6 @@ impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
 impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn name(&self) -> &str {
         "DistributedQueryExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
@@ -839,7 +834,6 @@ mod test {
 
         let new_exec = exec.clone().with_new_children(vec![]).unwrap();
         let new_exec = new_exec
-            .as_any()
             .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
             .unwrap();
 

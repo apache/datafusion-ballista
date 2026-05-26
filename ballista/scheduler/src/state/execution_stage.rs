@@ -1005,11 +1005,11 @@ impl Debug for FailedStage {
 /// will be different. Here, we should use the input partition count.
 fn get_stage_partitions(plan: Arc<dyn ExecutionPlan>) -> usize {
     // Try ShuffleWriterExec first
-    if let Some(shuffle_writer) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+    if let Some(shuffle_writer) = plan.downcast_ref::<ShuffleWriterExec>() {
         return shuffle_writer.input_partition_count();
     }
     // Try SortShuffleWriterExec
-    if let Some(shuffle_writer) = plan.as_any().downcast_ref::<SortShuffleWriterExec>() {
+    if let Some(shuffle_writer) = plan.downcast_ref::<SortShuffleWriterExec>() {
         return shuffle_writer.input_partition_count();
     }
     // Fallback to output partitioning

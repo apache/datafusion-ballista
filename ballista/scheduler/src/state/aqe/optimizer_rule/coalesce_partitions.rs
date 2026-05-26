@@ -155,7 +155,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         );
 
         // Get the subtree below the root. Two root kinds, same outcome.
-        let input = if let Some(ex) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        let input = if let Some(ex) = plan.downcast_ref::<ExchangeExec>() {
             debug!(
                 "[coalesce-rule] root=ExchangeExec plan_id={} stage_id={:?} stage_resolved={}",
                 ex.plan_id,
@@ -163,7 +163,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
                 ex.shuffle_partitions().is_some(),
             );
             ex.input().clone()
-        } else if let Some(adp) = plan.as_any().downcast_ref::<AdaptiveDatafusionExec>() {
+        } else if let Some(adp) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
             debug!(
                 "[coalesce-rule] root=AdaptiveDatafusionExec stage_id={:?}",
                 adp.stage_id(),
@@ -182,7 +182,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         // *this* stage's group, they belong to whatever stage wrote them.
         let mut leaves: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
         input.apply(|node| {
-            if node.as_any().is::<ExchangeExec>() {
+            if node.is::<ExchangeExec>() {
                 leaves.push(node.clone());
                 Ok(TreeNodeRecursion::Jump)
             } else {
@@ -192,8 +192,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
 
         // Helper: downcast each Arc back to &ExchangeExec.
         fn as_exchange(arc: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
-            arc.as_any()
-                .downcast_ref::<ExchangeExec>()
+            arc.downcast_ref::<ExchangeExec>()
                 .expect("filtered to ExchangeExec above")
         }
 

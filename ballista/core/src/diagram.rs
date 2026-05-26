@@ -84,43 +84,27 @@ fn build_exec_plan_diagram(
     id: &mut AtomicUsize,
     draw_entity: bool,
 ) -> Result<usize> {
-    let operator_str = if plan.as_any().downcast_ref::<AggregateExec>().is_some() {
+    let operator_str = if plan.is::<AggregateExec>() {
         "AggregateExec"
-    } else if plan.as_any().downcast_ref::<SortExec>().is_some() {
+    } else if plan.is::<SortExec>() {
         "SortExec"
-    } else if plan.as_any().downcast_ref::<ProjectionExec>().is_some() {
+    } else if plan.is::<ProjectionExec>() {
         "ProjectionExec"
-    } else if plan.as_any().downcast_ref::<HashJoinExec>().is_some() {
+    } else if plan.is::<HashJoinExec>() {
         "HashJoinExec"
-    } else if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
+    } else if plan.is::<DataSourceExec>() {
         "DataSourceExec"
-    } else if plan.as_any().downcast_ref::<FilterExec>().is_some() {
+    } else if plan.is::<FilterExec>() {
         "FilterExec"
-    } else if plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some() {
+    } else if plan.is::<ShuffleWriterExec>() {
         "ShuffleWriterExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<SortShuffleWriterExec>()
-        .is_some()
-    {
+    } else if plan.is::<SortShuffleWriterExec>() {
         "SortShuffleWriterExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<UnresolvedShuffleExec>()
-        .is_some()
-    {
+    } else if plan.is::<UnresolvedShuffleExec>() {
         "UnresolvedShuffleExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<CoalesceBatchesExec>()
-        .is_some()
-    {
+    } else if plan.is::<CoalesceBatchesExec>() {
         "CoalesceBatchesExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<CoalescePartitionsExec>()
-        .is_some()
-    {
+    } else if plan.is::<CoalescePartitionsExec>() {
         "CoalescePartitionsExec"
     } else {
         warn!("Unknown: {plan:?}");
@@ -137,7 +121,7 @@ fn build_exec_plan_diagram(
         )?;
     }
     for child in plan.children() {
-        if let Some(shuffle) = child.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+        if let Some(shuffle) = child.downcast_ref::<UnresolvedShuffleExec>() {
             if !draw_entity {
                 writeln!(
                     w,

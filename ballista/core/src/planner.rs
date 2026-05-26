@@ -308,12 +308,10 @@ mod test {
 
         assert!(matches!(analyze_df.logical_plan(), LogicalPlan::Analyze(_)));
         let explain = plan
-            .as_any()
             .downcast_ref::<DistributedExplainAnalyzeExec<LogicalPlanNode>>()
             .unwrap();
         assert!(
             explain.children()[0]
-                .as_any()
                 .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
                 .is_some()
         );

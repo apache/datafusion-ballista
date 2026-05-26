@@ -25,8 +25,8 @@ use crate::state::aqe::test::{
 use ballista_core::execution_plans::SortShuffleWriterExec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ColumnStatistics;
-use datafusion::physical_plan::Statistics;
 use datafusion::physical_plan::test::exec::StatisticsExec;
+use datafusion::physical_plan::{ExecutionPlan, Statistics};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -451,7 +451,7 @@ async fn should_use_sort_shuffle_when_enabled() -> datafusion::error::Result<()>
 
     let plan = stages.first().unwrap().plan.as_ref();
     assert!(
-        plan.as_any()
+        (plan as &dyn ExecutionPlan)
             .downcast_ref::<SortShuffleWriterExec>()
             .is_some(),
         "expected SortShuffleWriterExec when sort shuffle is enabled, got plan: {plan:?}"
@@ -478,7 +478,7 @@ async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
 
     let plan = stages.first().unwrap().plan.as_ref();
     assert!(
-        plan.as_any()
+        (plan as &dyn ExecutionPlan)
             .downcast_ref::<SortShuffleWriterExec>()
             .is_some(),
         "expected SortShuffleWriterExec by default, got plan: {plan:?}"

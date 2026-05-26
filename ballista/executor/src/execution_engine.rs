@@ -114,7 +114,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
     ) -> Result<Arc<dyn QueryStageExecutor>> {
         let plan = plan
             .transform(|p| {
-                if let Some(reader) = p.as_any().downcast_ref::<ShuffleReaderExec>() {
+                if let Some(reader) = p.downcast_ref::<ShuffleReaderExec>() {
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
                             reader
@@ -133,7 +133,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
 
         // the query plan created by the scheduler always starts with a shuffle writer
         // (either ShuffleWriterExec or SortShuffleWriterExec)
-        if let Some(shuffle_writer) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+        if let Some(shuffle_writer) = plan.downcast_ref::<ShuffleWriterExec>() {
             // recreate the shuffle writer with the correct working directory
             let exec = ShuffleWriterExec::try_new(
                 job_id,
@@ -146,7 +146,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 ShuffleWriterVariant::Hash(exec),
             )))
         } else if let Some(sort_shuffle_writer) =
-            plan.as_any().downcast_ref::<SortShuffleWriterExec>()
+            plan.downcast_ref::<SortShuffleWriterExec>()
         {
             // recreate the sort shuffle writer with the correct working directory
             let exec = SortShuffleWriterExec::try_new(

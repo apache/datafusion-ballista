@@ -21,7 +21,7 @@ use datafusion::functions::all_default_functions;
 use datafusion::functions_aggregate::all_default_aggregate_functions;
 use datafusion::functions_window::all_default_window_functions;
 use datafusion::logical_expr::planner::ExprPlanner;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::logical_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUDF};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -134,6 +134,19 @@ impl FunctionRegistry for BallistaFunctionRegistry {
                 "There is no UDWF named \"{name}\" in the TaskContext"
             ))
         })
+    }
+
+    fn higher_order_function_names(&self) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn higher_order_function(
+        &self,
+        name: &str,
+    ) -> datafusion::common::Result<Arc<dyn HigherOrderUDF>> {
+        Err(DataFusionError::Internal(format!(
+            "There is no higher order function named \"{name}\" in the TaskContext"
+        )))
     }
 }
 

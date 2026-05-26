@@ -19,7 +19,6 @@ use ballista_core::JobStatusSubscriber;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use datafusion::catalog::Session;
-use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -82,10 +81,6 @@ pub struct ExplodingTableProvider;
 
 #[async_trait]
 impl TableProvider for ExplodingTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::new(Schema::empty())
     }

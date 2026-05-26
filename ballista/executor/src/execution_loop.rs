@@ -40,6 +40,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
 use log::{debug, error, info, trace, warn};
 use std::any::Any;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
@@ -264,6 +265,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         session_id,
         session_config,
         task_scalar_functions,
+        HashMap::new(),
         task_aggregate_functions,
         task_window_functions,
         runtime.clone(),

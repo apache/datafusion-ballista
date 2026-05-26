@@ -21,7 +21,6 @@
 //! per input partition, along with an index file mapping partition IDs to
 //! byte offsets.
 
-use std::any::Any;
 use std::fs::File;
 use std::future::Future;
 use std::io::{BufWriter, Seek, Write};
@@ -538,10 +537,6 @@ impl ExecutionPlan for SortShuffleWriterExec {
         "SortShuffleWriterExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.plan.schema()
     }
@@ -662,7 +657,7 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.plan.partition_statistics(partition)
     }
 }
@@ -1163,7 +1158,8 @@ mod tests {
 
         // Reference: DataFusion's BatchPartitioner::new_hash_partitioner
         let mut ref_partitioner =
-            BatchPartitioner::new_hash_partitioner(exprs.clone(), 4, Time::default());
+            BatchPartitioner::new_hash_partitioner(exprs.clone(), 4, Time::default())
+                .unwrap();
         let mut ref_assignments = [usize::MAX; 10];
         ref_partitioner
             .partition(batch.clone(), |partition, sub_batch| {
