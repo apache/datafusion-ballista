@@ -64,7 +64,7 @@ tracing-appender = { version = "0.2", optional = true }
 ratzilla = { version = "0.3", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
-gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+gloo-timers = { version = "0.4", features = ["futures"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 tracing-web = { version = "0.1", optional = true }
 web-sys = { version = "0.3", optional = true }
@@ -77,7 +77,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [features]
-default = ["tui", "cli"]
+default = ["cli", "tui"]
 
 cli = [
     "dep:ballista", "dep:datafusion", "dep:datafusion-cli",
@@ -98,7 +98,7 @@ web = [
     "dep:serde", "dep:serde_json", "dep:tui-big-text",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
     "dep:gloo-timers", "dep:console_error_panic_hook",
-    "dep:tracing-web", "dep:web-sys", "dep:js-sys"
+    "dep:tracing-web", "dep:web-sys", "dep:js-sys",
 ]
 
 [[bin]]

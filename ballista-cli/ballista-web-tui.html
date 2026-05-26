@@ -27,9 +27,23 @@
             margin: 0;
             background: #000;
         }
+
+        #ballista-logo {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 30%;
+            max-width: 500px;
+            max-height: 15vh;
+            object-fit: contain;
+            pointer-events: none;
+            z-index: 10;
+        }
     </style>
+    <link data-trunk rel="copy-file" href="./src/tui/ui/header/ballista-logo.svg"/>
 </head>
 <body>
+<img src="ballista-logo.svg" id="ballista-logo" alt="Ballista Logo">
 
 <script type="module">
     document.addEventListener('keydown', (event) => {

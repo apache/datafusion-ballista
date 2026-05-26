@@ -16,7 +16,17 @@
 # under the License.
 
 [build]
-target = "index.html"
+target = "ballista-web-tui.html"
+dist = "../target/web-tui"
 
 [watch]
-ignore = ["./dist"]
+ignore = []
+
+[[hooks]]
+stage = "build"
+command = "sh"
+command_arguments = ["-c", "cp -f ./src/tui/ui/header/ballista-logo.svg $TRUNK_STAGING_DIR/"]
+
+[hooks.windows]
+command = "cmd"
+command_arguments = ["/c", "copy .\\src\\tui\\ui\\header\\ballista-logo.svg %TRUNK_STAGING_DIR%"]
