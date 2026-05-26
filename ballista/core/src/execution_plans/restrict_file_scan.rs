@@ -15,54 +15,59 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Per-task `FileScanConfig` narrowing.
+//! Disable DataFusion 54's cross-partition file work stealing on every
+//! `FileScanConfig` in a plan tree.
 //!
-//! DataFusion 54 added a shared work queue (`SharedWorkSource`) to
-//! `FileScanConfig`: when any partition opens its stream, it pulls files from
-//! a queue populated with every file in the scan. That model assumes every
-//! partition runs together inside the same DataSourceExec instance so they
-//! cooperatively drain the queue exactly once. Ballista breaks that
-//! assumption — each task deserialises its own copy of the plan and runs a
-//! single partition — so the partition that does run drains the whole queue
-//! and ends up scanning every file. Concretely, a 6-file scan executed by 6
-//! tasks reads 36 files and returns six copies of the data.
+//! DataFusion 54 added a `SharedWorkSource` to `FileScanConfig`: when any
+//! partition opens its stream, it pulls files from a queue populated with
+//! every file in the scan. That model assumes every partition of the same
+//! `DataSourceExec` instance runs together and cooperatively drains the
+//! queue exactly once. Ballista breaks the assumption — each task
+//! deserialises its own copy of the plan and runs a single partition — so
+//! the partition that does run drains the whole queue and ends up scanning
+//! every file. A 6-file scan executed by 6 tasks reads 36 files and returns
+//! six copies of the data.
 //!
-//! [`restrict_file_scan_to_partition`] rewrites the plan tree just before
-//! execution so that every `FileScanConfig` only contains files for the
-//! partition being executed. The file group count (and therefore the
-//! advertised partitioning) is preserved by replacing the other slots with
-//! empty groups, so partition routing through the rest of the plan is
-//! unaffected.
+//! The fix is to pin every `FileScanConfig` to `preserve_order = true`
+//! before execution. DataFusion's `FileScanConfig::create_sibling_state`
+//! short-circuits to `None` when that flag is set, so no shared queue is
+//! ever installed. Each partition then falls back to its own
+//! `WorkSource::Local(file_groups[partition])` and scans exactly the files
+//! the planner assigned to it.
 //!
-//! See `ballista/client/tests/multi_file_scan.rs` for the end-to-end
-//! regression that motivated this helper.
+//! Notes:
+//! * We can't just narrow `file_groups` per task, because broadcast hash
+//!   joins call `execute(0..K)` on the build-side `DataSourceExec` from
+//!   inside the join, so every partition slot must keep its files. TPC-H
+//!   Q11 hangs if you empty out the build-side slots — see
+//!   `ballista/client/tests/multi_file_scan.rs` for the simpler regression.
+//! * `preserve_order = true` only disables file reordering at scan time;
+//!   it's already implicitly true whenever the config has an output
+//!   ordering, so the runtime path is well-exercised upstream.
 
 use std::sync::Arc;
 
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder,
-};
+use datafusion::datasource::physical_plan::{FileScanConfig, FileScanConfigBuilder};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
 
-/// Narrow every `FileScanConfig` in `plan` so that only `partition`'s file
-/// group has files; all other slots become empty.
+/// Rewrite every `FileScanConfig` in `plan` so its sibling work source is
+/// suppressed, forcing each partition to scan only its own file group.
 ///
-/// This keeps `file_groups.len()` (and therefore the advertised partition
-/// count) unchanged, which means the rest of the plan can still route
-/// `execute(partition)` calls through unmodified operators. The
-/// `SharedWorkSource` that the file scan builds from `file_groups` ends up
-/// containing only the relevant partition's files, so the active partition
-/// reads exactly its assigned slice instead of draining the full set.
+/// The `partition` argument is the index of the partition this task will
+/// execute. It is currently unused — pinning `preserve_order = true` is
+/// enough to disable work stealing for any partition — but kept in the
+/// signature so callers can stay symmetric across writer types and so a
+/// future per-task narrowing scheme can drop in without touching them.
 ///
 /// If the leaf is something other than a `FileScanConfig`-backed
-/// `DataSourceExec`, the node is left alone — there's nothing for the shared
-/// queue to mishandle.
+/// `DataSourceExec`, or the config is single-partition (and so already has
+/// nothing to share), the node is returned unchanged.
 pub fn restrict_file_scan_to_partition(
     plan: Arc<dyn ExecutionPlan>,
-    partition: usize,
+    _partition: usize,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     plan.transform_down(|node| {
         let Some(data_source_exec) = node.downcast_ref::<DataSourceExec>() else {
@@ -75,25 +80,15 @@ pub fn restrict_file_scan_to_partition(
             return Ok(Transformed::no(node));
         };
 
-        // Nothing to do for single-partition scans: the shared queue still
-        // matches what `execute(0)` would consume, so this is already
-        // correct.
-        if file_scan.file_groups.len() <= 1 {
+        // Single-partition scans don't trigger the work-stealing bug
+        // (there's nothing to steal from), and the flag is already set if
+        // the user opted into ordering preservation.
+        if file_scan.file_groups.len() <= 1 || file_scan.preserve_order {
             return Ok(Transformed::no(node));
         }
 
-        let mut new_groups: Vec<FileGroup> =
-            Vec::with_capacity(file_scan.file_groups.len());
-        for (idx, group) in file_scan.file_groups.iter().enumerate() {
-            if idx == partition {
-                new_groups.push(group.clone());
-            } else {
-                new_groups.push(FileGroup::new(Vec::new()));
-            }
-        }
-
         let new_config = FileScanConfigBuilder::from(file_scan.clone())
-            .with_file_groups(new_groups)
+            .with_preserve_order(true)
             .build();
         let new_exec =
             DataSourceExec::from_data_source(new_config) as Arc<dyn ExecutionPlan>;
@@ -107,7 +102,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::ParquetSource;
+    use datafusion::datasource::physical_plan::{FileGroup, ParquetSource};
     use datafusion::execution::object_store::ObjectStoreUrl;
     use std::sync::Arc;
 
@@ -132,48 +127,51 @@ mod tests {
         DataSourceExec::from_data_source(config) as Arc<dyn ExecutionPlan>
     }
 
-    fn file_groups_of(plan: &Arc<dyn ExecutionPlan>) -> Vec<Vec<String>> {
+    fn file_scan(plan: &Arc<dyn ExecutionPlan>) -> FileScanConfig {
         let exec = plan
             .downcast_ref::<DataSourceExec>()
             .expect("DataSourceExec");
-        let scan = exec
-            .data_source()
+        exec.data_source()
             .downcast_ref::<FileScanConfig>()
-            .expect("FileScanConfig");
-        scan.file_groups
-            .iter()
-            .map(|g| g.iter().map(|f| f.path().to_string()).collect())
-            .collect()
+            .expect("FileScanConfig")
+            .clone()
     }
 
     #[test]
-    fn keeps_only_target_partition_files() {
+    fn sets_preserve_order_to_disable_work_stealing() {
         let plan = build_plan(4);
+        assert!(
+            !file_scan(&plan).preserve_order,
+            "test fixture should start with default preserve_order=false"
+        );
         let restricted = restrict_file_scan_to_partition(plan, 2).unwrap();
-        let groups = file_groups_of(&restricted);
-        assert_eq!(
-            groups,
-            vec![
-                vec![] as Vec<String>,
-                vec![],
-                vec!["f2.parquet".to_string()],
-                vec![],
-            ],
-            "only file_groups[2] should keep its file; the others must be empty so \
-             the SharedWorkSource contains only this task's slice"
+        let scan = file_scan(&restricted);
+        assert!(
+            scan.preserve_order,
+            "preserve_order must be set so create_sibling_state returns None and \
+             the SharedWorkSource is never installed"
         );
     }
 
     #[test]
-    fn preserves_partition_count() {
+    fn keeps_all_files_in_their_original_groups() {
         let plan = build_plan(3);
         let restricted = restrict_file_scan_to_partition(plan, 1).unwrap();
-        let groups = file_groups_of(&restricted);
+        let scan = file_scan(&restricted);
+        let groups: Vec<Vec<String>> = scan
+            .file_groups
+            .iter()
+            .map(|g| g.iter().map(|f| f.path().to_string()).collect())
+            .collect();
         assert_eq!(
-            groups.len(),
-            3,
-            "file_groups length must be preserved so DataSourceExec keeps its \
-             advertised partition count"
+            groups,
+            vec![
+                vec!["f0.parquet".to_string()],
+                vec!["f1.parquet".to_string()],
+                vec!["f2.parquet".to_string()],
+            ],
+            "every file_groups slot must keep its files so broadcast hash joins \
+             can still iterate the full set on the build side"
         );
     }
 
@@ -181,8 +179,21 @@ mod tests {
     fn single_partition_scan_is_left_alone() {
         let plan = build_plan(1);
         let restricted = restrict_file_scan_to_partition(Arc::clone(&plan), 0).unwrap();
-        // The transform should detect there's nothing to narrow and return
-        // the original Arc untouched (it's a no-op in that case).
+        // Single-partition scans have nothing to steal; the transform skips
+        // them and returns the original Arc untouched.
         assert!(Arc::ptr_eq(&plan, &restricted));
+    }
+
+    #[test]
+    fn preserves_partition_count() {
+        let plan = build_plan(3);
+        let restricted = restrict_file_scan_to_partition(plan, 1).unwrap();
+        let scan = file_scan(&restricted);
+        assert_eq!(
+            scan.file_groups.len(),
+            3,
+            "file_groups length must be preserved so DataSourceExec keeps its \
+             advertised partition count"
+        );
     }
 }

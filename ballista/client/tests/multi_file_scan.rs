@@ -32,10 +32,13 @@ mod common;
 // drains the whole queue and reads every file, so a 6-file table executed
 // by 6 tasks returns 6x the data.
 //
-// `restrict_file_scan_to_partition` in ballista-core narrows the
-// FileScanConfig to the running partition's files just before execution so
-// the SharedWorkSource only contains the slice this task is supposed to
-// process. These tests would fail without that helper.
+// `restrict_file_scan_to_partition` in ballista-core sets
+// `preserve_order = true` on every FileScanConfig before execution, which
+// short-circuits `FileScanConfig::create_sibling_state` to `None`. Each
+// partition then falls back to `WorkSource::Local(file_groups[partition])`
+// and scans exactly the files the planner assigned to it, so a 6-file scan
+// dispatched as 6 tasks reads 6 files instead of 36. These tests would fail
+// without that helper.
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod work_stealing {
@@ -136,6 +139,64 @@ mod work_stealing {
             value_sum, expected_sum,
             "Ballista returned the wrong column sum; duplicated reads inflate \
              this"
+        );
+
+        Ok(())
+    }
+
+    // Regression for an earlier version of the work-stealing fix that emptied
+    // out file_groups for all partition slots except the running task's. That
+    // broke TPC-H Q11: in a broadcast hash join the build-side
+    // DataSourceExec is read with execute(0..K) by the join itself, so
+    // emptying the other slots starved the hash table and the join hung.
+    // This test joins two multi-file parquet tables under a configuration
+    // that strongly biases the planner toward broadcast hash join, and
+    // checks the join still returns every matched row.
+    #[tokio::test]
+    async fn multi_file_parquet_broadcast_hash_join_returns_full_result() -> Result<()> {
+        let left_dir = TempDir::new().unwrap();
+        let right_dir = TempDir::new().unwrap();
+        // Left side is intentionally larger so the planner picks the small
+        // right side as the broadcast build input.
+        let (left_rows, _) = write_parquet_dataset(left_dir.path(), 5, 8).await?;
+        let (right_rows, _) = write_parquet_dataset(right_dir.path(), 4, 4).await?;
+
+        let ctx = SessionContext::standalone().await?;
+        ctx.register_parquet(
+            "l",
+            left_dir.path().to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await?;
+        ctx.register_parquet(
+            "r",
+            right_dir.path().to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await?;
+
+        let batches = ctx
+            .sql("SELECT COUNT(*) AS matched FROM l JOIN r ON l.value = r.value")
+            .await?
+            .collect()
+            .await?;
+
+        let matched = batches[0]
+            .column_by_name("matched")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        // Both sides use disjoint ranges (left = 0..40, right = 0..16), so
+        // the join must match exactly `right_rows` rows. Anything less means
+        // the build-side scan lost data; anything more would mean the probe
+        // side double-read.
+        assert_eq!(
+            matched, right_rows as i64,
+            "broadcast hash join over multi-file scans must see every \
+             build-side row exactly once; left had {left_rows} rows, right \
+             had {right_rows}"
         );
 
         Ok(())
