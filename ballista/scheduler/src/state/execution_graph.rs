@@ -1881,15 +1881,18 @@ mod test {
         let mut join_graph = test_join_plan(4).await;
 
         // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
-        // unnecessary RepartitionExec can be removed
+        // unnecessary RepartitionExec can be removed. DataFusion 54 took this
+        // a step further and now broadcasts one side of the join, so the
+        // graph has a single leaf stage (the scan of "left") with 2 tasks
+        // instead of the previous Y-shape with two 2-task leaves.
         assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 0);
 
-        // Call revive to move the two leaf Resolved stages to Running
+        // Call revive to move the leaf Resolved stage to Running
         join_graph.revive();
 
         assert_eq!(join_graph.stage_count(), 4);
-        assert_eq!(join_graph.available_tasks(), 4);
+        assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage
         revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor1)?;
@@ -1911,9 +1914,14 @@ mod test {
 
         let reset = join_graph.reset_stages_on_lost_executor(&executor1.id)?;
 
-        // Two stages were reset, 1 Running stage rollback to Unresolved and 1 Completed stage move to Running
-        assert_eq!(reset.0.len(), 2);
-        assert_eq!(join_graph.available_tasks(), 2);
+        // With the new linear plan, the running stage (stage 3) reads from
+        // stage 2 which was completed by executor2, so losing executor1 only
+        // resets the tasks that executor1 itself ran (1 completed + 1
+        // in-flight on stage 3). No upstream stages are rolled back because
+        // their outputs are already consumed. After the reset, stage 3 has
+        // all 4 tasks pending again (2 reset + 2 that hadn't been popped).
+        assert_eq!(reset.0.len(), 1);
+        assert_eq!(join_graph.available_tasks(), 4);
 
         drain_tasks(&mut join_graph)?;
         assert!(join_graph.is_successful(), "Failed to complete join plan");
@@ -1924,36 +1932,31 @@ mod test {
     #[tokio::test]
     async fn test_reset_resolved_stage_executor_lost() -> Result<()> {
         let executor1 = mock_executor("executor-id1".to_string());
-        let executor2 = mock_executor("executor-id2".to_string());
+        let _executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
 
         assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 0);
 
-        // Call revive to move the two leaf Resolved stages to Running
+        // Call revive to move the leaf Resolved stage to Running. See
+        // test_reset_completed_stage_executor_lost for why DataFusion 54
+        // produces a single leaf instead of two.
         join_graph.revive();
 
         assert_eq!(join_graph.stage_count(), 4);
-        assert_eq!(join_graph.available_tasks(), 4);
+        assert_eq!(join_graph.available_tasks(), 2);
 
-        // Complete the first stage
+        // Complete the first stage with executor1. Do NOT complete the second
+        // stage: this leaves stage 2 in Resolved state holding inputs that
+        // live on executor1, which is exactly the scenario this test wants
+        // to exercise.
         assert_eq!(revive_graph_and_complete_next_stage(&mut join_graph)?, 2);
-
-        // Complete the second stage
-        assert_eq!(
-            revive_graph_and_complete_next_stage_with_executor(
-                &mut join_graph,
-                &executor2
-            )?,
-            2
-        );
-
-        // There are 0 tasks pending schedule now
-        assert_eq!(join_graph.available_tasks(), 0);
 
         let reset = join_graph.reset_stages_on_lost_executor(&executor1.id)?;
 
-        // Two stages were reset, 1 Resolved stage rollback to Unresolved and 1 Completed stage move to Running
+        // Stage 2 (Resolved) rolls back to Unresolved because its input came
+        // from executor1, and stage 1 (Successful) is resubmitted so its
+        // output can be recomputed.
         assert_eq!(reset.0.len(), 2);
         assert_eq!(join_graph.available_tasks(), 2);
 

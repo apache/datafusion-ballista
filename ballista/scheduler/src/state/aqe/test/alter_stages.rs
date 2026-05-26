@@ -209,17 +209,17 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
     planner.finalise_stage_internal(1, small_statistics_exchange())?;
 
     // join ordering changes as build side is bigger than probe side
-    // after exchange statistic updated.
+    // after exchange statistic updated. DataFusion 54 fuses the trailing
+    // ProjectionExec into the HashJoinExec via the `projection` field.
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
-      ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
-        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
-            CooperativeExec
-              MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
-            CooperativeExec
-              MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)], projection=[big_col@1, big_col@0]
+        ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
+          CooperativeExec
+            MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
+        ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
+          CooperativeExec
+            MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
     ");
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -227,28 +227,26 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
-      ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
-        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
-            CooperativeExec
-              MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
-            CooperativeExec
-              MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)], projection=[big_col@1, big_col@0]
+        ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
+          CooperativeExec
+            MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
+        ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
+          CooperativeExec
+            MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
     ");
 
     planner.finalise_stage_internal(2, small_statistics_exchange())?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=true
-      ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
-        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
-            CooperativeExec
-              MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
-          ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
-            CooperativeExec
-              MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)], projection=[big_col@1, big_col@0]
+        ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
+          CooperativeExec
+            MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
+        ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
+          CooperativeExec
+            MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
     ");
 
     Ok(())
