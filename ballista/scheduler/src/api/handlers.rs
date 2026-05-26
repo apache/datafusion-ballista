@@ -32,8 +32,8 @@ use ballista_core::serde::scheduler::{
 use ballista_core::utils::get_current_time;
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan, displayable};
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
+use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan, displayable};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 #[cfg(feature = "graphviz-support")]
@@ -717,7 +717,7 @@ fn format_stage_plan_with_metrics(
 
 /// Formatting the node in DFS fashion
 /// It is constructed in the same way it is collected (using in-order traversal)
-/// 
+///
 /// For reference how the metrics are collected on the executor's side - see ballista-core/utils.rs
 fn format_node(
     plan: &dyn ExecutionPlan,
@@ -755,7 +755,12 @@ fn format_node(
     let mut result = format!("{}{}{}\n", prefix, node_line, metric_str);
 
     for child in plan.children() {
-        result.push_str(&format_node(child.as_ref(), stage_metrics, metric_idx, indent + 1));
+        result.push_str(&format_node(
+            child.as_ref(),
+            stage_metrics,
+            metric_idx,
+            indent + 1,
+        ));
     }
 
     result
