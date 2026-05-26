@@ -15,14 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod coalesce_partitions;
-pub mod datafusion_patch;
-pub mod distributed_exchange;
-pub mod optimize_skewed_join;
-pub mod propagate_empty;
+//! AQE optimize-skewed-join helpers (pure-CPU).
+//!
+//! This submodule packages the per-upstream skew detection and shard pairing
+//! helpers `OptimizeSkewedJoinRule` consumes:
+//!
+//! - [`is_skewed`] — per-side detection (factor × median AND absolute threshold).
+//! - [`map_ranges_for_upstream`] — bin-pack one upstream partition's per-mapper
+//!   byte sizes into `(start_map_idx, end_map_idx)` ranges via the shared
+//!   `split_size_list_by_target_size` helper from the coalesce module.
+//! - [`pair_shards`] — cartesian-product the per-upstream left/right ranges
+//!   into the matched K' shard lists Spark's `OptimizeSkewedJoin` produces.
 
-pub use coalesce_partitions::*;
-pub use datafusion_patch::*;
-pub use distributed_exchange::*;
-pub use optimize_skewed_join::*;
-pub use propagate_empty::*;
+pub(crate) mod algorithm;
+pub(crate) use algorithm::*;

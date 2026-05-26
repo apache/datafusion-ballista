@@ -21,6 +21,8 @@ mod alter_stages;
 mod coalesce_rule;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// Functional tests for the OptimizeSkewedJoinRule end-to-end through the planner
+mod skew_join_rule;
 
 use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use ballista_core::extension::SessionConfigExt;
