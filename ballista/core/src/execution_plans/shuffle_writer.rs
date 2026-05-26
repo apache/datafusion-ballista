@@ -782,7 +782,10 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt32Array::from(vec![Some(1), Some(3)])),
+                // 0 and 2 deliberately hash to different partitions under
+                // DataFusion 54's repartition hash seed; bumping the seed
+                // again may require picking new values here.
+                Arc::new(UInt32Array::from(vec![Some(0), Some(2)])),
                 Arc::new(StringArray::from(vec![Some("hello"), Some("world")])),
             ],
         )?;
