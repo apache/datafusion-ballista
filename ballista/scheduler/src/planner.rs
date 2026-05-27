@@ -38,6 +38,7 @@ use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::scalar_subquery::ScalarSubqueryExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
@@ -131,6 +132,23 @@ impl DefaultDistributedPlanner {
     ) -> Result<PartialQueryStageResult> {
         // Apply broadcast-join promotion before recursing.
         let execution_plan = Self::maybe_promote_to_broadcast(execution_plan, config)?;
+
+        // ScalarSubqueryExec must travel with its embedded ScalarSubqueryExpr
+        // nodes in the same serialized plan, otherwise the executor cannot
+        // deserialise them: the proto codec only installs the
+        // ScalarSubqueryResults context while it decodes the input under a
+        // surrounding ScalarSubqueryExec, and a bare ScalarSubqueryExpr
+        // returns "ScalarSubqueryExpr can only be deserialized as part of a
+        // surrounding ScalarSubqueryExec". Treat the whole subtree (main
+        // input + subqueries) as opaque so it stays inside one Ballista
+        // stage; any internal RepartitionExec / SortPreservingMergeExec runs
+        // in-process under the wrapping ScalarSubqueryExec instead of being
+        // hoisted into separate distributed stages. TPC-H Q11 hits this and
+        // would otherwise hang forever as the executor rejects the bad plan
+        // and the scheduler keeps retrying.
+        if execution_plan.is::<ScalarSubqueryExec>() {
+            return Ok((execution_plan, vec![]));
+        }
 
         // recurse down and replace children
         if execution_plan.children().is_empty() {
