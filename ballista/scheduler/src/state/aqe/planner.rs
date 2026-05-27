@@ -489,15 +489,15 @@ impl AdaptivePlanner {
     ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
+
+        // changing plan before other built in optimizers kick in
+        physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
+
         // select actual join implementation based on current runtime information
         physical_optimizers
             .push(Arc::new(SelectJoinRule::new(plan_id_generator.clone())));
         // add default set
         physical_optimizers.extend(PhysicalOptimizer::new().rules);
-
-        // FIXME: we need to be able to disable rule,
-        //        i found it breaking TPCH SF10
-        physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers
