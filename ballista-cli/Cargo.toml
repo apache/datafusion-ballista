@@ -93,7 +93,7 @@ tui = [
 ]
 
 web = [
-    "dep:chrono", "dep:dotparser", "dep:futures", "dep:percent-encoding",
+    "dep:chrono", "dep:config", "dep:dotparser", "dep:futures", "dep:percent-encoding",
     "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tui-big-text",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",

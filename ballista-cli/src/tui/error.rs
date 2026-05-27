@@ -17,7 +17,6 @@
 
 #[cfg(not(feature = "web"))]
 use crate::tui::event::Event;
-#[cfg(feature = "tui")]
 use config::ConfigError;
 #[cfg(not(feature = "web"))]
 use tokio::sync::mpsc::error::SendError;
@@ -30,7 +29,6 @@ pub enum TuiError {
     IO(std::io::Error),
     #[cfg(not(feature = "web"))]
     SendError(Box<SendError<Event>>),
-    #[cfg(feature = "tui")]
     Config(Box<ConfigError>),
     Tracing(Box<ParseError>),
 }
@@ -43,7 +41,6 @@ impl std::fmt::Display for TuiError {
             TuiError::IO(err) => write!(f, "An IO error occurred: {err}"),
             #[cfg(not(feature = "web"))]
             TuiError::SendError(err) => write!(f, "Send error: {err}"),
-            #[cfg(feature = "tui")]
             TuiError::Config(err) => write!(f, "Config error: {err}"),
             TuiError::Tracing(err) => write!(f, "Tracing error: {err}"),
         }
@@ -58,7 +55,6 @@ impl std::error::Error for TuiError {
             TuiError::IO(err) => Some(err),
             #[cfg(not(feature = "web"))]
             TuiError::SendError(err) => Some(err.as_ref()),
-            #[cfg(feature = "tui")]
             TuiError::Config(err) => Some(err.as_ref()),
             TuiError::Tracing(err) => Some(err.as_ref()),
         }
@@ -90,7 +86,6 @@ impl From<std::io::Error> for TuiError {
     }
 }
 
-#[cfg(feature = "tui")]
 impl From<ConfigError> for TuiError {
     fn from(err: ConfigError) -> Self {
         TuiError::Config(Box::new(err))

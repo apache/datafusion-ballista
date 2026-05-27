@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "tui")]
-use config::{Config, ConfigError, Environment, File, FileFormat};
+use config::{Config, ConfigError, File, FileFormat};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +57,6 @@ pub struct Settings {
     pub job: JobSettings,
 }
 
-#[cfg(feature = "tui")]
 const DEFAULT_CONFIG: &str = r#"
 tick_interval_ms: 2000
 
@@ -75,45 +73,34 @@ job:
 "#;
 
 impl Settings {
-    #[cfg(all(feature = "tui", not(feature = "web")))]
     pub(crate) fn new() -> Result<Self, ConfigError> {
-        let config_dir = dirs::config_local_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-            .unwrap_or_else(|| std::path::PathBuf::from(".config"))
-            .join("ballista");
-
-        let s = Config::builder()
+        let builder = Config::builder()
             // Start off by merging in the "default" configuration file
-            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml))
-            // Add in user's config file
-            .add_source(
-                File::with_name(&format!("{}/tui", config_dir.display()))
-                    .format(FileFormat::Yaml)
-                    .required(false),
-            )
-            // Add in settings from the environment (with a prefix of BALLISTA_)
-            // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
-            // would set the scheduler url key
-            .add_source(Environment::with_prefix("BALLISTA").separator("_"))
-            .build()?;
+            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml));
 
-        s.try_deserialize()
-    }
+        #[cfg(all(feature = "tui", not(feature = "web")))]
+        let builder = {
+            use config::Environment;
 
-    /// Returns default settings. Used on WASM where file system and env vars are unavailable.
-    #[cfg(feature = "web")]
-    pub(crate) fn new() -> Result<Self, crate::tui::error::TuiError> {
-        Ok(Self {
-            scheduler: SchedulerSettings {
-                url: "http://localhost:50050".to_string(),
-            },
-            http: HttpSettings { timeout: 2000 },
-            tick_interval_ms: 2000,
-            job: JobSettings {
-                stage: JobStageSettings {
-                    plan: JobPlanSettings { tree: false },
-                },
-            },
-        })
+            let config_dir = dirs::config_local_dir()
+                .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+                .unwrap_or_else(|| std::path::PathBuf::from(".config"))
+                .join("ballista");
+
+            builder // Add in user's config file
+                .add_source(
+                    File::with_name(&format!("{}/tui", config_dir.display()))
+                        .format(FileFormat::Yaml)
+                        .required(false),
+                )
+                // Add in settings from the environment (with a prefix of BALLISTA_)
+                // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
+                // would set the scheduler url key
+                .add_source(Environment::with_prefix("BALLISTA").separator("_"))
+        };
+
+        let config = builder.build()?;
+
+        config.try_deserialize()
     }
 }
