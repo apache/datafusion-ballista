@@ -118,6 +118,46 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
         if !bc.skew_join_enabled() {
             return Ok(plan);
         }
+
+        // Mutual-exclusion guard with DataFusion's HashJoin dynamic-filter
+        // pushdown. The dynamic filter builds a CASE expression keyed on
+        // `hash(join_keys) % K'` that routes each probe row to one
+        // partition's bounds. The skew rewrite intentionally violates the
+        // hash-co-location invariant that routing assumes (the same key
+        // now lives in multiple partitions of the split side), so the
+        // routed CASE would filter out probe rows whose matches live in
+        // a different partition than `hash(key) % K'` selects → silent
+        // wrong results.
+        //
+        // The default for `enable_join_dynamic_filter_pushdown` in DF
+        // 53.1 is `true`, so users wanting skew rewrite must explicitly
+        // set it to `false`. Picked mutual exclusion (option 3 below)
+        // for v1.
+        //
+        // Alternatives considered for future work:
+        //   - **Plan mutation**: walk the subtree and rebuild any
+        //     HashJoinExec with `.with_dynamic_filter(None)` before
+        //     attaching skew_join. Targeted but more invasive — requires
+        //     re-running `with_new_children` up the chain and reasoning
+        //     about Arc identity for the carrier slots.
+        //   - **Upstream DF fix**: add a "skew-compatible" fallback in
+        //     `shared_bounds.rs` that uses union bounds instead of
+        //     partition-routed bounds. Once landed, this guard becomes a
+        //     `pass is_hash_co_located=false` call instead of a bail.
+        //
+        // Placed before the plan walk so we don't pay traversal cost
+        // when the user has both flags on (a real misconfiguration the
+        // log explicitly calls out).
+        if config.optimizer.enable_join_dynamic_filter_pushdown {
+            debug!(
+                "[skew-join-rule] optimizer.enable_join_dynamic_filter_pushdown=true; \
+                 mutually exclusive with skew_join rewrite (DataFusion's per-partition \
+                 dynamic-filter routing is incompatible with split shards). \
+                 Bail. Disable one or the other to proceed."
+            );
+            return Ok(plan);
+        }
+
         let factor = bc.skew_join_skewed_partition_factor();
         let threshold_bytes = bc.skew_join_skewed_partition_threshold_bytes();
         let advisory_bytes = bc.skew_join_advisory_partition_bytes();

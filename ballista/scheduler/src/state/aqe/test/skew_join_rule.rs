@@ -46,6 +46,10 @@ use std::sync::Arc;
 ///   - `threshold_bytes = 100` (vs 256 MiB in prod) — anything >100 may skew
 ///   - `advisory_bytes = 50` (vs 64 MiB in prod) — sub-shard target ≈ 50
 ///   - `small_factor = 0.2` (Spark default)
+///
+/// Also disables `optimizer.enable_join_dynamic_filter_pushdown` — the rule
+/// enforces mutual exclusion with that option (see optimize_skewed_join.rs
+/// for the rationale). Tests that want the rule to fire must keep it off.
 fn skew_join_context(target_partitions: usize, enabled: bool) -> SessionContext {
     let config = SessionConfig::new_with_ballista()
         .with_target_partitions(target_partitions)
@@ -54,7 +58,8 @@ fn skew_join_context(target_partitions: usize, enabled: bool) -> SessionContext 
         .with_ballista_skew_join_skewed_partition_factor(5.0)
         .with_ballista_skew_join_skewed_partition_threshold_bytes(100)
         .with_ballista_skew_join_advisory_partition_bytes(50)
-        .with_ballista_skew_join_small_partition_factor(0.2);
+        .with_ballista_skew_join_small_partition_factor(0.2)
+        .set_bool("datafusion.optimizer.enable_join_dynamic_filter_pushdown", false);
 
     let state = SessionStateBuilder::new()
         .with_config(config)
@@ -335,7 +340,8 @@ async fn should_attach_skew_join_on_hash_join() -> datafusion::error::Result<()>
         .with_ballista_skew_join_skewed_partition_threshold_bytes(100)
         .with_ballista_skew_join_advisory_partition_bytes(50)
         .with_ballista_skew_join_small_partition_factor(0.2)
-        .set_bool("datafusion.optimizer.prefer_hash_join", true);
+        .set_bool("datafusion.optimizer.prefer_hash_join", true)
+        .set_bool("datafusion.optimizer.enable_join_dynamic_filter_pushdown", false);
 
     let state = SessionStateBuilder::new()
         .with_config(config)
@@ -407,17 +413,21 @@ async fn shuffle_readers_use_skew_join_kprime_when_rule_fires()
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
 
-    // The join stage's ShuffleReaderExecs now both expose K'=7 partitions.
-    // The skew-join carrier's decision has flowed through the adapter into
+    // The join stage's ShuffleReaderExecs now both expose K'=7 partitions,
+    // declared as UnknownPartitioning — the skew rewrite is honest about
+    // having broken the per-partition hash invariant. (Inside the stage,
+    // each task still receives properly-paired (left-shard, right-shard)
+    // input bundles, so the join above the reader still works.) The
+    // skew-join carrier's decision has flowed through the adapter into
     // the runnable plan.
     let rendered =
         datafusion::physical_plan::displayable(stages[0].plan.as_ref())
             .indent(true)
             .to_string();
     assert_eq!(
-        rendered.matches("ShuffleReaderExec: partitioning: Hash([c@1], 7)").count(),
+        rendered.matches("ShuffleReaderExec: partitioning: UnknownPartitioning(7)").count(),
         2,
-        "both readers should expose K'=7 partitions, got:\n{rendered}"
+        "both readers should expose K'=7 UnknownPartitioning, got:\n{rendered}"
     );
     assert_eq!(
         rendered.matches("skew_join: 7 of 4").count(),
@@ -427,3 +437,63 @@ async fn shuffle_readers_use_skew_join_kprime_when_rule_fires()
 
     Ok(())
 }
+
+/// Mutual exclusion with `optimizer.enable_join_dynamic_filter_pushdown`:
+/// even when skew_join.enabled=true AND the upstream byte distribution
+/// would otherwise trigger a rewrite, the rule bails because DataFusion
+/// 53.1's per-partition dynamic-filter routing is incompatible with the
+/// split shards (see optimize_skewed_join.rs for the rationale). Neither
+/// leaf gets a skew_join attached.
+#[tokio::test]
+async fn should_bail_when_dynamic_filter_pushdown_enabled()
+-> datafusion::error::Result<()> {
+    // Same setup as the happy-path test, but with the DF dynamic filter
+    // option flipped back on. Skew distribution alone would otherwise
+    // trigger the rule.
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(4)
+        .with_round_robin_repartition(false)
+        .with_ballista_skew_join_enabled(true)
+        .with_ballista_skew_join_skewed_partition_factor(5.0)
+        .with_ballista_skew_join_skewed_partition_threshold_bytes(100)
+        .with_ballista_skew_join_advisory_partition_bytes(50)
+        .with_ballista_skew_join_small_partition_factor(0.2)
+        .set_bool("datafusion.optimizer.enable_join_dynamic_filter_pushdown", true);
+
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_partitioned_table(&ctx, "t1", 4)?;
+    register_partitioned_table(&ctx, "t2", 4)?;
+
+    let plan = ctx
+        .sql("select t1.a, t2.b from t1 join t2 on t1.c = t2.c")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let mut planner =
+        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+
+    let _ = planner.runnable_stages()?.unwrap();
+    planner
+        .finalise_stage_internal(0, partitions_with_one_skewed(4, 0, 4, 150, 10))?;
+    planner.finalise_stage_internal(1, passthrough_partitions(&[10; 4]))?;
+
+    let _ = planner.runnable_stages()?;
+
+    // Neither leaf carries skew_join=… — the mutual-exclusion guard fired.
+    let rendered =
+        datafusion::physical_plan::displayable(planner.current_plan())
+            .indent(true)
+            .to_string();
+    assert_eq!(
+        rendered.matches("skew_join=").count(),
+        0,
+        "rule must not attach skew_join when dynamic filter pushdown is on, got:\n{rendered}"
+    );
+
+    Ok(())
+}
+

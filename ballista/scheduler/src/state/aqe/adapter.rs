@@ -126,16 +126,26 @@ impl BallistaAdapter {
                         };
                         k_shape.push(assigned);
                     }
-                    // Preserve the hash partitioning width at K'; the
-                    // OptimizeSkewedJoinRule's join-side fix (`is_skew_join`
-                    // in C4) is what relaxes the "same key in one partition"
-                    // invariant downstream.
-                    let new_partitioning = match &partitioning {
-                        Partitioning::Hash(keys, _m) => {
-                            Partitioning::Hash(keys.clone(), sp.shards.len())
-                        }
-                        _ => Partitioning::UnknownPartitioning(sp.shards.len()),
-                    };
+                    // Always degrade to UnknownPartitioning at K' for the
+                    // skew-rewritten reader.
+                    //
+                    // The skewed-side rewrite splits one hash bucket across
+                    // multiple downstream partitions (by mapper index), so
+                    // the SAME join key now appears in multiple partitions.
+                    // The data is no longer truly hash-partitioned on the
+                    // join key — claiming Hash(K') would be a lie that
+                    // downstream operators (other joins, hash aggregates,
+                    // DataFusion's per-partition dynamic-filter routing)
+                    // would trust and produce wrong results from.
+                    //
+                    // UnknownPartitioning(K') is the honest declaration:
+                    // "K' partitions, no hash invariant". Inside the
+                    // current stage the join above this reader still works
+                    // because each task receives a properly-paired
+                    // (left-shard, right-shard) bundle — co-location holds
+                    // per-task even though it doesn't hold globally.
+                    let new_partitioning =
+                        Partitioning::UnknownPartitioning(sp.shards.len());
                     ShuffleReaderExec::try_new_skew_join(
                         stage_id,
                         k_shape,
