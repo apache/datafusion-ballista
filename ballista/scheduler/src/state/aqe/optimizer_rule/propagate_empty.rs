@@ -25,11 +25,14 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
 #[allow(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::{HashJoinExec, SortMergeJoinExec};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use std::sync::Arc;
 
 macro_rules! is_empty_exec {
@@ -95,6 +98,20 @@ impl PropagateEmptyExecRule {
             && is_empty_exec!(aggregation.input())
         {
             empty_exec!(aggregation)
+        } else if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>()
+            && is_empty_exec!(repartition.input())
+        {
+            empty_exec!(repartition)
+        } else if let Some(coalesce_partition) =
+            plan.as_any().downcast_ref::<CoalescePartitionsExec>()
+            && is_empty_exec!(coalesce_partition.input())
+        {
+            empty_exec!(coalesce_partition)
+        } else if let Some(sort_preserving_merge) =
+            plan.as_any().downcast_ref::<SortPreservingMergeExec>()
+            && is_empty_exec!(sort_preserving_merge.input())
+        {
+            empty_exec!(sort_preserving_merge)
         } else if let Some(join) = as_join(&plan) {
             let left_empty = is_guaranteed_empty(join.left);
             let right_empty = is_guaranteed_empty(join.right);
