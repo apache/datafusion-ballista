@@ -19,6 +19,7 @@ use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
 use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
@@ -34,6 +35,8 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::execution::context::SessionContext;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
@@ -129,20 +132,32 @@ impl AdaptiveExecutionGraph {
     /// This will use the `DistributedPlanner` to break the plan into stages
     /// and build the DAG structure needed for distributed execution.
     #[allow(clippy::too_many_arguments)]
-    pub fn try_new(
+    pub async fn try_new(
         scheduler_id: &str,
         job_id: &str,
         job_name: &str,
-        session_id: &str,
-        plan: Arc<dyn ExecutionPlan>,
+        ctx: &SessionContext,
+        logical_plan: &LogicalPlan,
         queued_at: u64,
-        session_config: Arc<SessionConfig>,
-        logical_plan: Option<String>,
     ) -> ballista_core::error::Result<Self> {
-        let mut planner =
-            AdaptivePlanner::try_new(&session_config, plan.clone(), job_name.to_owned())?;
+        let session_id = ctx.session_id();
 
-        //let stages = HashMap::new();
+        // TODO: this is to be changed, we do not run default optimizers comming with the state at this
+        //       point.
+        let plan = ctx.state().create_physical_plan(logical_plan).await?;
+
+        // TODO: explain plan will probably return wrong explanation
+        //       do we handle it now or just ignore it?
+        let physical_plan = handle_explain_plan(job_id, ctx, logical_plan, plan).await?;
+        let logical_plan = Some(logical_plan.display_indent().to_string());
+        let session_config = Arc::new(ctx.copied_config());
+        // TODO: run planner set of optimizers in try_new
+        let mut planner = AdaptivePlanner::try_new(
+            &session_config,
+            physical_plan.clone(),
+            job_name.to_owned(),
+        )?;
+
         let started_at = timestamp_millis();
 
         // initial plans should have at least one stage to run,
@@ -192,7 +207,7 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            physical_plan: plan,
+            physical_plan,
         })
     }
 }

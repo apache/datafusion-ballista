@@ -16,7 +16,30 @@
 # under the License.
 
 name: Docker
-on: [ pull_request, push ]
+on:
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
+      - ".github/workflows/docker.yml"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -45,7 +68,7 @@ jobs:
       - name: Run script
         run: |
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
-          
+
           ./dev/build-ballista-docker.sh
 
           docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
@@ -79,4 +102,3 @@ jobs:
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
-

@@ -143,7 +143,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
     ShuffleWriterExec: partitioning: None
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
-          ShuffleReaderExec: partitioning: Hash([c@0], 2)
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2)
     ");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
 

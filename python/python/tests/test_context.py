@@ -16,7 +16,7 @@
 # under the License.
 
 from ballista import BallistaSessionContext, setup_test_cluster
-from datafusion import col, lit, InsertOp, DataFrameWriteOptions
+from datafusion import col, lit
 import pytest
 import pyarrow as pa
 
@@ -114,6 +114,7 @@ def test_cluster_config_accepts_ballista_namespaced_keys():
     df = ctx.sql("SELECT 1")
     assert df.cluster_config == overrides
     assert len(df.collect()) == 1
+
 
 def test_write_csv(ctx, tmp_path):
     df = ctx.read_csv("testdata/test.csv", has_header=True)

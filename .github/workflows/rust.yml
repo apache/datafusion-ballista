@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Rust
+name: Ballista Rust
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -23,17 +23,36 @@ concurrency:
 
 on:
   push:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
+    branches: ["main"]
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "ci/scripts/**"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-macos-builder/**"
+      - ".github/actions/setup-windows-builder/**"
+      - ".github/actions/setup-rust-runtime/**"
+      - ".github/workflows/rust.yml"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "ci/scripts/**"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-macos-builder/**"
+      - ".github/actions/setup-windows-builder/**"
+      - ".github/actions/setup-rust-runtime/**"
+      - ".github/workflows/rust.yml"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -219,8 +238,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [ amd64 ]
-        rust: [ stable ]
+        arch: [amd64]
+        rust: [stable]
     container:
       image: ${{ matrix.arch }}/rust
       env:
@@ -248,8 +267,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [ amd64 ]
-        rust: [ stable ]
+        arch: [amd64]
+        rust: [stable]
     container:
       image: ${{ matrix.arch }}/rust
       env:

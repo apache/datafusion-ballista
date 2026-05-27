@@ -21,8 +21,10 @@
 
 Ballista support for datafusion python.
 
-This project is versioned and released independently from the main Ballista project and is intentionally not
-part of the default Cargo workspace so that it doesn't cause overhead for maintainers of the main Ballista codebase.
+This project is tracked under its own `Cargo.toml` and is intentionally not part of the default Cargo workspace so
+that it doesn't cause overhead for maintainers of the main Ballista codebase. Its version is bumped in lockstep with
+the workspace crates by `dev/update_ballista_versions.py`, and the wheels are built against the in-repo ballista
+crates via `path` dependencies (not crates.io), so an RC can produce wheels for an unpublished version.
 
 ## Creating a SessionContext
 

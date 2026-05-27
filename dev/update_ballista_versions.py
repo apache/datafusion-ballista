@@ -35,7 +35,7 @@ def update_cargo_toml(cargo_toml: str, new_version: str):
         data = f.read()
 
     doc = tomlkit.parse(data)
-    if "ballista/" in cargo_toml or "ballista-cli/" in cargo_toml:
+    if "ballista/" in cargo_toml or "ballista-cli/" in cargo_toml or "python/Cargo.toml" in cargo_toml:
         doc.get('package')['version'] = new_version
 
     # ballista crates also depend on each other
@@ -85,6 +85,7 @@ def main():
             'ballista/client',
             'benchmarks',
             'examples',
+            'python',
         ]
     ])
     new_version = args.new_version
