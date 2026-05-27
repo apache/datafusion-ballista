@@ -44,6 +44,7 @@ use graphviz_rust::{
 };
 use http::{StatusCode, header::CONTENT_TYPE};
 use serde::Serialize;
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -204,8 +205,20 @@ pub struct QueryStageSummary {
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct JobQueryParams {
-    /// Flag to tree-style render for physical plan
-    pub render_tree: Option<bool>,
+    /// Controls plan format
+    pub plan_format: Option<PlanFormat>,
+}
+
+#[derive(Debug, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFormat {
+    /// ?plan_format=default => plain indent, no metrics
+    #[default]
+    Default,
+    /// ?plan_format=tree => tree render, no metrics
+    Tree,
+    /// ?plan_format=metrics => indent with aggregated metrics   
+    Metrics,
 }
 
 pub async fn get_scheduler_state<
@@ -382,16 +395,17 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or(PlanFormat::Default);
 
-    let physical_plan = if render_tree {
-        displayable(job.physical_plan().as_ref())
+    let physical_plan = match plan_format {
+        PlanFormat::Default | PlanFormat::Metrics => {
+            DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+                .indent(false)
+                .to_string()
+        }
+        PlanFormat::Tree => displayable(job.physical_plan().as_ref())
             .tree_render()
-            .to_string()
-    } else {
-        DisplayableExecutionPlan::new(job.physical_plan().as_ref())
-            .indent(false)
-            .to_string()
+            .to_string(),
     };
 
     Ok(Json(JobResponse {
@@ -490,7 +504,7 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or(PlanFormat::Default);
 
     if let Some(graph) = data_server
         .state
@@ -523,15 +537,11 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = running_stage.stage_metrics.as_deref().map(|m| {
-                            format_stage_plan_with_metrics(running_stage.plan.as_ref(), m, render_tree)
-                        }).or_else(|| {
-                            // no metrics yet
-                            Some(if render_tree {
-                                displayable(running_stage.plan.as_ref()).tree_render().to_string()
-                            } else {
-                                displayable(running_stage.plan.as_ref()).indent(false).to_string()
-                            })
+                        let metrics = running_stage.stage_metrics.as_deref().unwrap_or(&[]);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(running_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree    => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_plan_with_metrics(running_stage.plan.as_ref(), metrics),
                         });
                         summary.input_rows = running_stage
                             .stage_metrics
@@ -582,11 +592,11 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = Some(format_stage_plan_with_metrics(
-                            completed_stage.plan.as_ref(),
-                            &completed_stage.stage_metrics,
-                            render_tree,
-                        ));
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(completed_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree    => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_plan_with_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
+                        });
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -690,33 +700,17 @@ fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentile
 fn format_stage_plan_with_metrics(
     plan: &dyn ExecutionPlan,
     stage_metrics: &[MetricsSet],
-    render_tree: bool,
 ) -> String {
-    // If it is empty - fall back to render_tree
-    if stage_metrics.is_empty() {
-        return if render_tree {
-            displayable(plan).tree_render().to_string()
-        } else {
-            displayable(plan).indent(false).to_string()
-        };
-    }
-
+    let mut output = String::new();
     let mut metric_idx = 0;
-    let result = format_node(plan, stage_metrics, &mut metric_idx, 0);
+    format_node(plan, stage_metrics, &mut metric_idx, 0, &mut output);
 
-    debug_assert_eq!(
-        metric_idx,
-        stage_metrics.len(),
-        "metric count mismatch: consumed {} but stage_metrics has {}",
-        metric_idx,
-        stage_metrics.len()
-    );
-
-    result
+    debug_assert_eq!(metric_idx, stage_metrics.len());
+    output
 }
 
 /// Formatting the node in DFS fashion
-/// It is constructed in the same way it is collected (using in-order traversal)
+/// It is constructed in the same way it is collected (using pre-order traversal)
 ///
 /// For reference how the metrics are collected on the executor's side - see ballista-core/utils.rs
 fn format_node(
@@ -724,8 +718,12 @@ fn format_node(
     stage_metrics: &[MetricsSet],
     metric_idx: &mut usize,
     indent: usize,
-) -> String {
+    output: &mut String,
+) {
     let metrics_set = if plan.metrics().is_some() {
+        // Only advance the index when the plan node has metrics,
+        // here we are mirroring collect_plan_metrics() which only pushes Some metrics.
+        // Vec has no gap entries for metric-less nodes.
         let m = stage_metrics.get(*metric_idx);
         *metric_idx += 1;
         m
@@ -733,14 +731,7 @@ fn format_node(
         None
     };
 
-    let metric_str = metrics_set
-        .map(|m| {
-            let aggregated = m.aggregate_by_name();
-            format!(", metrics=[{}]", aggregated)
-        })
-        .unwrap_or_else(|| ", metrics=[]".to_string());
-
-    // Single-node display without children
+    let prefix = "  ".repeat(indent);
     let node_line = {
         struct SingleNode<'a>(&'a dyn ExecutionPlan);
         impl std::fmt::Display for SingleNode<'_> {
@@ -751,19 +742,30 @@ fn format_node(
         SingleNode(plan).to_string()
     };
 
-    let prefix = "  ".repeat(indent);
-    let mut result = format!("{}{}{}\n", prefix, node_line, metric_str);
+    if let Some(m) = metrics_set {
+        let aggregated = m
+            .aggregate_by_name()
+            .sorted_for_display()
+            .timestamps_removed();
+        writeln!(
+            output,
+            "{}{}, metrics=[{}]",
+            prefix, node_line, aggregated
+        )
+        .unwrap();
+    } else {
+        writeln!(output, "{}{}, metrics=[]", prefix, node_line).unwrap();
+    }
 
     for child in plan.children() {
-        result.push_str(&format_node(
+        format_node(
             child.as_ref(),
             stage_metrics,
             metric_idx,
             indent + 1,
-        ));
+            output,
+        );
     }
-
-    result
 }
 
 /// Returns elapsed wall time in milliseconds for API formatting.
