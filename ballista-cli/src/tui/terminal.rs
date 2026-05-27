@@ -17,7 +17,7 @@
 
 // Native (crossterm) terminal backend
 #[cfg(not(feature = "web"))]
-mod native {
+mod tui {
     use crate::tui::TuiResult;
     use crossterm::{
         execute,
@@ -114,7 +114,7 @@ mod web {
 }
 
 #[cfg(not(feature = "web"))]
-pub use native::TuiWrapper;
+pub use tui::TuiWrapper;
 
 #[cfg(feature = "web")]
 pub use web::TuiWrapper;
