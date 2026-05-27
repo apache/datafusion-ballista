@@ -152,17 +152,17 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    SortShuffleWriterExec: partitioning=Hash([c0@0], 2)
+    ShuffleWriterExec: partitioning: None
       EmptyExec
     ");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics_no_data())?;
 
     let stages = planner.runnable_stages()?;
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=2, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1, stage_resolved=true
       EmptyExec
     ");
-    assert!(stages.is_some());
+    assert!(stages.is_none());
 
     Ok(())
 }
