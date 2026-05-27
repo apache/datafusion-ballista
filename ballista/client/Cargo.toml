@@ -30,8 +30,8 @@ rust-version = { workspace = true }
 [dependencies]
 async-trait = { workspace = true }
 ballista-core = { path = "../core", version = "53.0.0" }
-ballista-executor = { path = "../executor", version = "53.0.0", optional = true }
-ballista-scheduler = { path = "../scheduler", version = "53.0.0", optional = true }
+ballista-executor = { path = "../executor", version = "53.0.0", optional = true, default-features = false, features = ["arrow-ipc-optimizations"] }
+ballista-scheduler = { path = "../scheduler", version = "53.0.0", optional = true, default-features = false }
 datafusion = { workspace = true }
 log = { workspace = true }
 
