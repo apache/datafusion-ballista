@@ -46,7 +46,10 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
-    let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
+    let header_style = Style::default()
+        .fg(Color::LightYellow)
+        .bg(Color::Black)
+        .bold();
 
     let sort_column = &app.executors_data.sort_column;
     let sort_order = &app.executors_data.sort_order;

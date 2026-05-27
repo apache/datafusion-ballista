@@ -131,7 +131,10 @@ fn render_metrics_table(
     metrics: &[&Metric],
     state: &mut TableState,
 ) {
-    let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
+    let header_style = Style::default()
+        .fg(Color::LightYellow)
+        .bg(Color::Black)
+        .bold();
 
     let sort_column = &app.metrics_data.sort_column;
     let sort_order = &app.metrics_data.sort_order;
