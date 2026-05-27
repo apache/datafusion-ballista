@@ -82,8 +82,9 @@ pub struct ExchangeExec {
     /// stage run decisions.
     pub(crate) inactive_stage: bool,
 
-    // TODO: make decent description here
-    /// collect left type of thing
+    /// Indicates that this exchange is broadcast exchange,
+    /// usually used in broadcast joins.
+    /// CollectLeft HashJoin equivalent in datafusion
     pub(crate) broadcast: bool,
 }
 
