@@ -767,11 +767,11 @@ impl SessionConfigHelperExt for SessionConfig {
             // has been disabled until fixed
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                10 * 1024 * 1024,
+                0,
             )
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-                100_000,
+                0,
             )
             //
             // DataFusion's hash join has no spill support, so each parallel
