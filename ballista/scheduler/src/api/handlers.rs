@@ -747,12 +747,7 @@ fn format_node(
             .aggregate_by_name()
             .sorted_for_display()
             .timestamps_removed();
-        writeln!(
-            output,
-            "{}{}, metrics=[{}]",
-            prefix, node_line, aggregated
-        )
-        .unwrap();
+        writeln!(output, "{}{}, metrics=[{}]", prefix, node_line, aggregated).unwrap();
     } else {
         writeln!(output, "{}{}, metrics=[]", prefix, node_line).unwrap();
     }
