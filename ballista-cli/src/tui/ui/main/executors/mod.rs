@@ -29,9 +29,10 @@ use ratatui::{
 
 use crate::tui::{
     TuiResult,
+    app::App,
+    domain::executors::Executor,
     event::{Event, UiData},
 };
-use crate::tui::{app::App, domain::executors::Executor};
 
 pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
     let executor = app.http_client.get_executor(executor_id).await?;
@@ -59,7 +60,6 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub async fn load_executors_data(app: &App) -> TuiResult<()> {
-    tracing::info!("Loading executors data");
     let (scheduler_result, executors_result, jobs_result) = tokio::join!(
         app.http_client.get_scheduler_state(),
         app.http_client.get_executors(),
