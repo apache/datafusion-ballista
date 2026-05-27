@@ -20,7 +20,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-#[cfg(feature = "tui")]
+#[cfg(all(not(feature = "web"), feature = "tui"))]
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -46,7 +46,7 @@ pub enum Command {
     SearchFunctions(String),
     QuietMode(Option<bool>),
     OutputFormat(Option<String>),
-    #[cfg(feature = "tui")]
+    #[cfg(all(not(feature = "web"), feature = "tui"))]
     OpenTui,
 }
 
@@ -135,7 +135,7 @@ impl Command {
                 "Unexpected change output format, this should be handled outside"
                     .to_string(),
             )),
-            #[cfg(feature = "tui")]
+            #[cfg(all(not(feature = "web"), feature = "tui"))]
             Self::OpenTui => {
                 /// RAII guard to reset tui mode back to false when exiting the TUI mode.
                 struct TuiModeGuard(Arc<AtomicBool>);
@@ -168,7 +168,7 @@ impl Command {
             Self::OutputFormat(_) => {
                 ("\\pset [NAME [VALUE]]", "set table output option\n(format)")
             }
-            #[cfg(feature = "tui")]
+            #[cfg(all(not(feature = "web"), feature = "tui"))]
             Self::OpenTui => ("\\tui", "open tui"),
         }
     }
@@ -183,7 +183,7 @@ const ALL_COMMANDS: &[Command] = &[
     Command::SearchFunctions(String::new()),
     Command::QuietMode(None),
     Command::OutputFormat(None),
-    #[cfg(feature = "tui")]
+    #[cfg(all(not(feature = "web"), feature = "tui"))]
     Command::OpenTui,
 ];
 
@@ -233,7 +233,7 @@ impl FromStr for Command {
                 Self::OutputFormat(Some(subcommand.to_string()))
             }
             ("pset", None) => Self::OutputFormat(None),
-            #[cfg(feature = "tui")]
+            #[cfg(all(not(feature = "web"), feature = "tui"))]
             ("tui", None) => Self::OpenTui,
             _ => return Err(()),
         })

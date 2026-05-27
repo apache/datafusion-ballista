@@ -30,7 +30,6 @@ use event::Event;
 use event::tui::EventHandler;
 #[cfg(feature = "web")]
 use event::web::EventHandler;
-use futures::SinkExt;
 #[cfg(not(feature = "web"))]
 use std::sync::Arc;
 #[cfg(not(feature = "web"))]

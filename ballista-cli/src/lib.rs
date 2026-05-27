@@ -16,6 +16,10 @@
 // under the License.
 
 #![doc = include_str!("../README.md")]
+
+#[cfg(all(feature = "tui", feature = "web"))]
+compile_error!("'tui' and 'web' features cannot be enabled at the same time!");
+
 pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(feature = "cli")]
