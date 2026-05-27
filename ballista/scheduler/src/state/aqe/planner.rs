@@ -495,6 +495,8 @@ impl AdaptivePlanner {
         // add default set
         physical_optimizers.extend(PhysicalOptimizer::new().rules);
 
+        // FIXME: we need to be able to disable rule,
+        //        i found it breaking TPCH SF10
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain

@@ -301,7 +301,8 @@ impl DynamicJoinSelectionExec {
             self.null_equality,
         )?))
     }
-
+    // this method has been taken from datafusion
+    // join selection optimizer rule
     fn supports_collect_by_thresholds(
         plan: &dyn ExecutionPlan,
         threshold_byte_size: usize,
@@ -353,28 +354,27 @@ impl DynamicJoinSelectionExec {
     }
 
     pub(crate) fn children_resolved(&self) -> bool {
-        fn has_dynamic_join(plan: &Arc<dyn ExecutionPlan>) -> bool {
+        fn has_join_or_unresolved_exchange(plan: &Arc<dyn ExecutionPlan>) -> bool {
+            if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+                // this should be fine, once we find first resolved
+                // exchange it should not have any unresolved shuffles later
+                // nor dynamic joins
+                return !exchange.shuffle_created();
+            };
+
             plan.as_any()
                 .downcast_ref::<DynamicJoinSelectionExec>()
                 .is_some()
-                || plan.children().iter().any(|c| has_dynamic_join(c))
+                || plan
+                    .children()
+                    .iter()
+                    .any(|c| has_join_or_unresolved_exchange(c))
         }
 
-        fn has_unresolved_exchange(plan: &Arc<dyn ExecutionPlan>) -> bool {
-            if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>()
-                && !exchange.shuffle_created()
-            {
-                true
-            } else {
-                plan.children().iter().any(|c| has_unresolved_exchange(c))
-            }
-        }
-        let left_has_join = has_dynamic_join(&self.left);
-        let right_has_join = has_dynamic_join(&self.right);
-        let left_has_exchange = has_unresolved_exchange(&self.left);
-        let right_has_exchange = has_unresolved_exchange(&self.right);
+        let left_has_join = has_join_or_unresolved_exchange(&self.left);
+        let right_has_join = has_join_or_unresolved_exchange(&self.right);
 
-        !(left_has_join || left_has_exchange || right_has_join || right_has_exchange)
+        !(left_has_join || right_has_join)
     }
 
     pub(crate) fn from_sort_join(
@@ -391,5 +391,147 @@ impl DynamicJoinSelectionExec {
             properties: Arc::clone(merge_join.properties()),
             selection_state: ChildrenState::Unknown,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::aqe::execution_plan::ExchangeExec;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    fn test_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+    }
+
+    /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.
+    /// Properties are borrowed from the left child — correct enough for unit tests
+    /// that only exercise `children_resolved`.
+    fn make_dynamic_join(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+    ) -> DynamicJoinSelectionExec {
+        DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on: vec![],
+            filter: None,
+            join_type: JoinType::Inner,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: ChildrenState::Unknown,
+        }
+    }
+
+    // ── 1. Both sides are simple leaf plans ────────────────────────────────────
+
+    #[test]
+    fn children_resolved_returns_true_for_simple_leaves() {
+        let schema = test_schema();
+        let left = Arc::new(EmptyExec::new(schema.clone())) as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+
+        let dj = make_dynamic_join(left, right);
+
+        assert!(
+            dj.children_resolved(),
+            "plain EmptyExec children carry no exchange or nested join — must be resolved"
+        );
+    }
+
+    // ── 2 & 3. Unresolved ExchangeExec on each side ────────────────────────────
+
+    #[test]
+    fn children_resolved_returns_false_for_unresolved_left_exchange() {
+        let schema = test_schema();
+        let leaf = Arc::new(EmptyExec::new(schema.clone())) as Arc<dyn ExecutionPlan>;
+        // ExchangeExec::new starts with shuffle_partitions = None → not resolved
+        let unresolved_exchange =
+            Arc::new(ExchangeExec::new(leaf.clone(), None, 0)) as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+
+        let dj = make_dynamic_join(unresolved_exchange, right);
+
+        assert!(
+            !dj.children_resolved(),
+            "an unresolved ExchangeExec on the left must block resolution"
+        );
+    }
+
+    #[test]
+    fn children_resolved_returns_false_for_unresolved_right_exchange() {
+        let schema = test_schema();
+        let leaf = Arc::new(EmptyExec::new(schema.clone())) as Arc<dyn ExecutionPlan>;
+        let left = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let unresolved_exchange =
+            Arc::new(ExchangeExec::new(leaf, None, 0)) as Arc<dyn ExecutionPlan>;
+
+        let dj = make_dynamic_join(left, unresolved_exchange);
+
+        assert!(
+            !dj.children_resolved(),
+            "an unresolved ExchangeExec on the right must block resolution"
+        );
+    }
+
+    // ── 4. Both ExchangeExecs resolved ────────────────────────────────────────
+
+    #[test]
+    fn children_resolved_returns_true_when_both_exchanges_resolved() {
+        let schema = test_schema();
+        let leaf = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+
+        let left_exchange = ExchangeExec::new(leaf.clone(), None, 0);
+        left_exchange.resolve_shuffle_partitions(vec![]);
+
+        let right_exchange = ExchangeExec::new(leaf, None, 1);
+        right_exchange.resolve_shuffle_partitions(vec![]);
+
+        let dj = make_dynamic_join(
+            Arc::new(left_exchange) as Arc<dyn ExecutionPlan>,
+            Arc::new(right_exchange) as Arc<dyn ExecutionPlan>,
+        );
+
+        assert!(
+            dj.children_resolved(),
+            "exchanges with resolved shuffle partitions must not block resolution"
+        );
+    }
+
+    // ── 5 & 6. Nested DynamicJoinSelectionExec on each side ───────────────────
+
+    #[test]
+    fn children_resolved_returns_false_when_left_child_is_dynamic_join() {
+        let schema = test_schema();
+        let leaf = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+
+        // Inner join whose children are plain leaves — still blocks the outer one
+        let inner = Arc::new(make_dynamic_join(leaf.clone(), leaf.clone()))
+            as Arc<dyn ExecutionPlan>;
+
+        let outer = make_dynamic_join(inner, leaf);
+
+        assert!(
+            !outer.children_resolved(),
+            "a DynamicJoinSelectionExec nested in the left child must block resolution"
+        );
+    }
+
+    #[test]
+    fn children_resolved_returns_false_when_right_child_is_dynamic_join() {
+        let schema = test_schema();
+        let leaf = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+
+        let inner = Arc::new(make_dynamic_join(leaf.clone(), leaf.clone()))
+            as Arc<dyn ExecutionPlan>;
+
+        let outer = make_dynamic_join(leaf, inner);
+
+        assert!(
+            !outer.children_resolved(),
+            "a DynamicJoinSelectionExec nested in the right child must block resolution"
+        );
     }
 }

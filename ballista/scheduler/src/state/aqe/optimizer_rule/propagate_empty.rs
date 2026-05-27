@@ -40,7 +40,10 @@ macro_rules! is_empty_exec {
 
 macro_rules! empty_exec {
     ($e:expr) => {
-        Ok(Transformed::yes(Arc::new(EmptyExec::new($e.schema()))))
+        Ok(Transformed::yes(Arc::new(
+            EmptyExec::new($e.schema())
+                .with_partitions($e.properties().output_partitioning().partition_count()),
+        )))
     };
 }
 

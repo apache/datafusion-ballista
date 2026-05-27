@@ -71,7 +71,7 @@ impl PhysicalOptimizerRule for DelayJoinSelectionRule {
             })?;
             Ok(result.data)
         } else {
-            return Ok(plan);
+            Ok(plan)
         }
     }
 
