@@ -15,42 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::JobStatusSubscriber;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
-use datafusion::datasource::source_as_provider;
-use datafusion::error::DataFusionError;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use std::any::type_name;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
-
+use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
+use crate::config::SchedulerConfig;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-
-use crate::state::distributed_explain::{
-    construct_distributed_explain_exec, extract_logical_and_physical_plans,
-    generate_distributed_explain_plan,
-};
+use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
-
-use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
-use crate::config::SchedulerConfig;
-use crate::state::execution_graph::TaskDescription;
+use ballista_core::JobStatusSubscriber;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::empty::EmptyExec;
-use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use prost::Message;
+use std::any::type_name;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 
 mod aqe;
 mod distributed_explain;
@@ -380,120 +366,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         job_id: &str,
         job_name: &str,
         session_ctx: Arc<SessionContext>,
-        plan: &LogicalPlan,
+        logical_plan: &LogicalPlan,
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let start = Instant::now();
-        let session_config = Arc::new(session_ctx.copied_config());
-        if log::max_level() >= log::Level::Debug {
-            // optimizing the plan here is redundant because the physical planner will do this again
-            // but it is helpful to see what the optimized plan will be
-            let optimized_plan = session_ctx.state().optimize(plan)?;
-            debug!("Optimized plan: {}", optimized_plan.display_indent());
-        }
-
-        let mut explain_inner_logical_plan: Option<Arc<LogicalPlan>> = None;
-        plan.apply(&mut |plan: &LogicalPlan| {
-            if let LogicalPlan::TableScan(scan) = plan {
-                let provider = source_as_provider(&scan.source)?;
-                if let Some(table) = provider.as_any().downcast_ref::<ListingTable>() {
-                    let local_paths: Vec<&ListingTableUrl> = table
-                        .table_paths()
-                        .iter()
-                        .filter(|url| url.as_str().starts_with("file:///"))
-                        .collect();
-                    if !local_paths.is_empty() {
-                        // These are local files rather than remote object stores, so we
-                        // need to check that they are accessible on the scheduler (the client
-                        // may not be on the same host, or the data path may not be correctly
-                        // mounted in the container). There could be thousands of files so we
-                        // just check the first one.
-                        let url = &local_paths[0].as_str();
-                        // the unwraps are safe here because we checked that the url starts with file:///
-                        // we need to check both versions here to support Linux & Windows
-                        ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
-                            .or_else(|_| {
-                                ListingTableUrl::parse(
-                                    url.strip_prefix("file:///").unwrap(),
-                                )
-                            })
-                            .map_err(|e| {
-                                DataFusionError::External(
-                                    format!(
-                                        "logical plan refers to path on local file system \
-                                that is not accessible in the scheduler: {url}: {e:?}"
-                                    )
-                                        .into(),
-                                )
-                            })?;
-                    }
-                }
-            } else if let LogicalPlan::Explain(explain_plan) = plan {
-                explain_inner_logical_plan = Some(explain_plan.plan.clone());
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-
-        let explain_distributed_plan = if let Some(inner_lp) = explain_inner_logical_plan
-        {
-            Some(
-                generate_distributed_explain_plan(job_id, session_ctx.clone(), inner_lp)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        let logical_plan_str = plan.display_indent().to_string();
-
-        let plan = session_ctx.state().create_physical_plan(plan).await?;
-        debug!(
-            "Physical plan: {}",
-            DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-        );
-
-        let plan = plan.transform_down(&|node: Arc<dyn ExecutionPlan>| {
-            if node.output_partitioning().partition_count() == 0 {
-                let empty: Arc<dyn ExecutionPlan> =
-                    Arc::new(EmptyExec::new(node.schema()));
-                Ok(Transformed::yes(empty))
-            } else if let (Some(explain), Some(explain_distributed_plan)) = (
-                node.as_any()
-                    .downcast_ref::<datafusion::physical_plan::explain::ExplainExec>(),
-                &explain_distributed_plan,
-            ) {
-                let plans = explain.stringified_plans();
-                let (logical_txt, physical_txt) =
-                    extract_logical_and_physical_plans(plans);
-                let distributed_txt = explain_distributed_plan.clone();
-
-                let replaced: Arc<dyn ExecutionPlan> =
-                    construct_distributed_explain_exec(
-                        logical_txt,
-                        physical_txt,
-                        distributed_txt,
-                    )
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                Ok(Transformed::yes(replaced))
-            } else {
-                Ok(Transformed::no(node))
-            }
-        })?;
-        debug!(
-            "Transformed physical plan: {}",
-            DisplayableExecutionPlan::new(plan.data.as_ref()).indent(false)
-        );
 
         self.task_manager
             .submit_job(
                 job_id,
                 job_name,
-                &session_ctx.session_id(),
-                plan.data,
+                session_ctx,
+                logical_plan,
                 queued_at,
-                session_config,
                 subscriber,
-                Some(logical_plan_str),
             )
             .await?;
 

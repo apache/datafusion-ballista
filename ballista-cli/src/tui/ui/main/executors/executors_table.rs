@@ -17,6 +17,7 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::executors::{Executor, SortColumn};
+use crate::tui::ui::vertical_scrollbar;
 use crate::tui::ui::vertical_scrollbar::render_scrollbar;
 use ratatui::layout::Constraint;
 use ratatui::prelude::{Color, Text};
@@ -34,8 +35,9 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     match &app.executors_data.executors {
         executors if !executors.is_empty() => {
             let mut scroll_state = app.executors_data.scrollbar_state;
-            render_executors_table(f, area, app);
-            render_scrollbar(f, area, &mut scroll_state);
+            let rects = vertical_scrollbar::split_area(area);
+            render_executors_table(f, rects[0], app);
+            render_scrollbar(f, rects[1], &mut scroll_state);
         }
         _no_executors => {
             f.render_widget(no_live_executors(block), area);

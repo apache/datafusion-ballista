@@ -331,7 +331,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
       ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
         CrossJoinExec
           CoalescePartitionsExec
-            ShuffleReaderExec: partitioning: UnknownPartitioning(2)
+            ShuffleReaderExec: upstream_stage: 0, partitioning: UnknownPartitioning(2)
           CooperativeExec
             StatisticsExec: col_count=1, row_count=Exact(262144)
     ");

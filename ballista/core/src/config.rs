@@ -86,6 +86,21 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
+/// Configuration key to enable AQE coalesce-shuffle-partitions rule.
+/// Disabled by default — opt in when the workload benefits from larger
+/// downstream tasks more than from preserved parallelism.
+pub const BALLISTA_COALESCE_ENABLED: &str = "ballista.planner.coalesce.enabled";
+/// Configuration key for the target post-coalesce partition byte size (bytes).
+/// Mirrors Spark's `spark.sql.adaptive.advisoryPartitionSizeInBytes`.
+pub const BALLISTA_COALESCE_TARGET_PARTITION_BYTES: &str =
+    "ballista.planner.coalesce.target_partition_bytes";
+/// Configuration key for the small-partition merge factor (Spark legacy semantics).
+pub const BALLISTA_COALESCE_SMALL_PARTITION_FACTOR: &str =
+    "ballista.planner.coalesce.small_partition_factor";
+/// Configuration key for the merged-partition early-flush factor (Spark legacy semantics).
+pub const BALLISTA_COALESCE_MERGED_PARTITION_FACTOR: &str =
+    "ballista.planner.coalesce.merged_partition_factor";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -178,7 +193,33 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS.to_string(),
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
-                         Some(3000.to_string()))
+                         Some(3000.to_string())),
+        ConfigEntry::new(BALLISTA_COALESCE_ENABLED.to_string(),
+                         "Enables the AQE coalesce-shuffle-partitions rule. \
+                          Disabled by default — opt in when fewer/larger \
+                          downstream tasks matter more than parallelism.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
+            "Target post-coalesce partition byte size in bytes. Mirrors Spark's \
+             advisoryPartitionSizeInBytes."
+                .to_string(),
+            DataType::UInt64,
+            Some((64 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_SMALL_PARTITION_FACTOR.to_string(),
+            "Small-partition merge factor (Spark legacy).".to_string(),
+            DataType::Float64,
+            Some("0.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_MERGED_PARTITION_FACTOR.to_string(),
+            "Merged-partition early-flush factor (Spark legacy).".to_string(),
+            DataType::Float64,
+            Some("1.2".to_string()),
+        ),
     ];
     entries
         .into_iter()
@@ -271,6 +312,11 @@ impl BallistaConfig {
             }
             DataType::Utf8 => {
                 val.to_string();
+            }
+            DataType::Float64 => {
+                val.to_string()
+                    .parse::<f64>()
+                    .map_err(|e| format!("{e:?}"))?;
             }
             _ => {
                 return Err(format!("not support data type: {data_type}"));
@@ -383,6 +429,27 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
+    /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
+    pub fn coalesce_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_COALESCE_ENABLED)
+    }
+
+    /// Returns the target post-coalesce partition byte size in bytes
+    /// (Spark's `advisoryPartitionSizeInBytes`).
+    pub fn coalesce_target_partition_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES) as u64
+    }
+
+    /// Returns the small-partition merge factor (Spark legacy).
+    pub fn coalesce_small_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR)
+    }
+
+    /// Returns the merged-partition early-flush factor (Spark legacy).
+    pub fn coalesce_merged_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR)
+    }
+
     /// Should client employ pull or push job tracking strategy
     pub fn client_pull(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_PULL)
@@ -437,6 +504,19 @@ impl BallistaConfig {
             // infallible because we validate all configs in the constructor
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.to_string()
+        }
+    }
+
+    #[allow(dead_code)]
+    fn get_float_setting(&self, key: &str) -> f64 {
+        if let Some(v) = self.settings.get(key) {
+            // infallible because we validate all configs in the constructor
+            v.parse::<f64>().unwrap()
+        } else {
+            let entries = Self::valid_entries();
+            // infallible because we validate all configs in the constructor
+            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
+            v.parse::<f64>().unwrap()
         }
     }
 }

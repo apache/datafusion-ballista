@@ -17,7 +17,9 @@
 
 use crate::config::{
     BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
-    BALLISTA_CLIENT_USE_TLS, BALLISTA_JOB_NAME,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
+    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
+    BALLISTA_COALESCE_TARGET_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
@@ -245,6 +247,26 @@ pub trait SessionConfigExt {
 
     /// Is short shuffle used
     fn ballista_sort_shuffle_enabled(&self) -> bool;
+
+    /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
+    fn ballista_coalesce_enabled(&self) -> bool;
+    /// Sets whether the AQE coalesce-shuffle-partitions rule is enabled.
+    fn with_ballista_coalesce_enabled(self, enabled: bool) -> Self;
+
+    /// Returns the target post-coalesce partition byte size in bytes.
+    fn ballista_coalesce_target_partition_bytes(&self) -> u64;
+    /// Sets the target post-coalesce partition byte size in bytes.
+    fn with_ballista_coalesce_target_partition_bytes(self, bytes: u64) -> Self;
+
+    /// Returns the small-partition merge factor (Spark legacy).
+    fn ballista_coalesce_small_partition_factor(&self) -> f64;
+    /// Sets the small-partition merge factor (Spark legacy).
+    fn with_ballista_coalesce_small_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns the merged-partition early-flush factor (Spark legacy).
+    fn ballista_coalesce_merged_partition_factor(&self) -> f64;
+    /// Sets the merged-partition early-flush factor (Spark legacy).
+    fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -580,6 +602,85 @@ impl SessionConfigExt for SessionConfig {
             .get::<BallistaConfig>()
             .map(|c| c.client_use_tls())
             .unwrap_or_else(|| BallistaConfig::default().client_use_tls())
+    }
+
+    fn ballista_coalesce_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.coalesce_enabled())
+            .unwrap_or_else(|| BallistaConfig::default().coalesce_enabled())
+    }
+
+    fn with_ballista_coalesce_enabled(self, enabled: bool) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_COALESCE_ENABLED, enabled)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_COALESCE_ENABLED, enabled)
+        }
+    }
+
+    fn ballista_coalesce_target_partition_bytes(&self) -> u64 {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.coalesce_target_partition_bytes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().coalesce_target_partition_bytes()
+            })
+    }
+
+    fn with_ballista_coalesce_target_partition_bytes(self, bytes: u64) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_COALESCE_TARGET_PARTITION_BYTES, bytes as usize)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_COALESCE_TARGET_PARTITION_BYTES, bytes as usize)
+        }
+    }
+
+    fn ballista_coalesce_small_partition_factor(&self) -> f64 {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.coalesce_small_partition_factor())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().coalesce_small_partition_factor()
+            })
+    }
+
+    // f64 setter — uses set_str because SessionConfig has no set_f64 in this
+    // workspace; the stored string is round-tripped via f64::to_string() /
+    // f64::from_str(), mirroring the `with_ballista_job_name` set_str pattern.
+    fn with_ballista_coalesce_small_partition_factor(self, factor: f64) -> Self {
+        let s = factor.to_string();
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, &s)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, &s)
+        }
+    }
+
+    fn ballista_coalesce_merged_partition_factor(&self) -> f64 {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.coalesce_merged_partition_factor())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().coalesce_merged_partition_factor()
+            })
+    }
+
+    fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self {
+        let s = factor.to_string();
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, &s)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, &s)
+        }
     }
 }
 
