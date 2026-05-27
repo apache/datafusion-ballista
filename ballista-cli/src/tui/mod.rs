@@ -25,7 +25,11 @@ mod terminal;
 mod ui;
 
 use app::App;
-use event::{Event, EventHandler};
+use event::Event;
+#[cfg(not(feature = "web"))]
+use event::tui::EventHandler;
+#[cfg(feature = "web")]
+use event::web::EventHandler;
 #[cfg(not(feature = "web"))]
 use std::sync::Arc;
 #[cfg(not(feature = "web"))]
@@ -34,6 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use terminal::TuiWrapper;
 
+#[cfg(not(feature = "web"))]
 use crate::tui::event::UiData;
 use crate::tui::{error::TuiError, infrastructure::Settings};
 
@@ -233,7 +238,7 @@ async fn load_tick_data_for_view(
 #[cfg(feature = "web")]
 async fn execute_web_async_action(
     http_client: std::sync::Arc<http_client::HttpClient>,
-    tx: event::Sender<Event>,
+    tx: event::web::Sender<Event>,
     is_executors: bool,
     is_jobs: bool,
     action: app::WebKeyAsyncAction,

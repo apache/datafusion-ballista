@@ -19,7 +19,7 @@ use crate::tui::TuiError;
 use crate::tui::TuiResult;
 use crate::tui::event::Event;
 #[cfg(feature = "web")]
-use crate::tui::event::Sender;
+use crate::tui::event::web::Sender;
 use crate::tui::{
     domain::{
         SortOrder,

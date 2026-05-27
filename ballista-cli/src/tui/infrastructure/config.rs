@@ -23,6 +23,7 @@ pub struct SchedulerSettings {
     pub url: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 pub struct HttpSettings {
     /// Connection timeout. In millis
@@ -50,6 +51,7 @@ pub struct JobPlanSettings {
 #[derive(Debug, Deserialize)]
 pub struct Settings {
     pub scheduler: SchedulerSettings,
+    #[cfg(not(target_arch = "wasm32"))]
     pub http: HttpSettings,
     /// How often to refresh the UI. In millis.
     pub tick_interval_ms: u64,
