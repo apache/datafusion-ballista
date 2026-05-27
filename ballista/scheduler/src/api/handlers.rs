@@ -395,7 +395,7 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let plan_format = query.plan_format.clone().unwrap_or(PlanFormat::Default);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
     let physical_plan = match plan_format {
         PlanFormat::Default | PlanFormat::Metrics => {
@@ -504,7 +504,7 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let plan_format = query.plan_format.clone().unwrap_or(PlanFormat::Default);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
     if let Some(graph) = data_server
         .state

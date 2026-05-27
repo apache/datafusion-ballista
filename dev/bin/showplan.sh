@@ -114,8 +114,8 @@
 # }
 # ```
 #
-# Job and stages endpoint accept `render_tree=true` parameter which 
-# renders plans as tree.
+# Job and stages endpoint accept `plan_format` optional parameter which 
+# can render plan as a tree or a stages' metrics (i.e plan_format=tree)
 #
 # Command actions and options
 #
@@ -133,6 +133,7 @@
 #    (from stages info; combinable with other mode flags)
 # -w  displays result with no word wrap, horizontal scroll)
 # -t  display plans as tree render (where applicable)
+# -m  display stage metrics (if available)
 #
 # Multiple mode flags can be combined and each will be printed in order.
 # Example: -p -l  prints physical plan followed by logical plan.
@@ -146,6 +147,7 @@ DISPLAY_MODE=()          # modes accumulate via flags; defaults to (physical) if
 STAGE_ID=""
 USE_PAGER=false
 RENDER_TREE=false
+RENDER_METRICS=false
 
 usage() {
     echo "Usage: $(basename "$0") [job_id] [-a address] [-p] [-l] [-e] [-s stage_id]"
@@ -157,6 +159,7 @@ usage() {
     echo "  -s [STAGE_ID]  display stage_plan for the given stage, or all stages if omitted (combinable)"
     echo "  -w             displays result with no word wrap (horizontal scroll)"
     echo "  -t             display plans as tree render (where applicable)"
+    echp "  -m             display stage metrics (if available)"
     echo ""
     echo "  Mode flags are cumulative — each selected mode is printed in order."
     echo "  Example: $(basename "$0") -p -l   prints physical plan then logical plan."
@@ -208,6 +211,10 @@ while [[ $# -gt 0 ]]; do
             RENDER_TREE=true
             shift
             ;;
+        -m)
+            RENDER_METRICS=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             usage
@@ -218,6 +225,12 @@ done
 # Default to physical if no mode flag was provided
 if [[ ${#DISPLAY_MODE[@]} -eq 0 ]]; then
     DISPLAY_MODE=("physical")
+fi
+
+# Checking for mutually exclusive params
+if [[ "$RENDER_TREE" == "true" && "$RENDER_METRICS" == "true" ]]; then
+    echo "Error: -t and -m are mutually exclusive" >&2
+    usage
 fi
 
 # Check dependencies
@@ -240,10 +253,13 @@ if [[ -z "$JOB_ID" ]]; then
     fi
 fi
 
-# Build job info and stages URLs (optionally with render_tree query param)
+# Build job info and stages URLs (optionally with plan_format query param)
 if [[ "$RENDER_TREE" == "true" ]]; then
-    JOB_URL="${API_BASE}api/job/${JOB_ID}?render_tree=true"
-    STAGES_URL="${API_BASE}api/job/${JOB_ID}/stages?render_tree=true"
+    JOB_URL="${API_BASE}api/job/${JOB_ID}?plan_format=tree"
+    STAGES_URL="${API_BASE}api/job/${JOB_ID}/stages?plan_format=tree"
+elif [[ "$RENDER_METRICS" == "true" ]]; then
+    JOB_URL="${API_BASE}api/job/${JOB_ID}?plan_format=metrics"
+    STAGES_URL="${API_BASE}api/job/${JOB_ID}/stages?plan_format=metrics"
 else
     JOB_URL="${API_BASE}api/job/${JOB_ID}"
     STAGES_URL="${API_BASE}api/job/${JOB_ID}/stages"
