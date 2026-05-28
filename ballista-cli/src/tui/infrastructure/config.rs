@@ -113,7 +113,6 @@ impl Settings {
 #[cfg(feature = "web")]
 mod web {
     use config::{File, FileFormat, FileSourceString};
-    use url::Url;
 
     #[derive(Debug, Clone)]
     pub(super) struct QueryString;
