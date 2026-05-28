@@ -16,6 +16,7 @@
 // under the License.
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
     PropagateEmptyExecRule, SelectJoinRule, WarnOnDuplicateExecRule,
@@ -514,7 +515,10 @@ impl AdaptivePlanner {
     /// set of rules which will be executed ONCE before
     /// running standard set of physical optimizers
     fn plan_preparation_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
-        vec![Arc::new(DelayJoinSelectionRule::default())]
+        vec![
+            Arc::new(DelayJoinSelectionRule::default()),
+            Arc::new(ChaosCreatingRule::default()),
+        ]
     }
 
     /// Creates a session state with the given configuration and optimizer rules.
