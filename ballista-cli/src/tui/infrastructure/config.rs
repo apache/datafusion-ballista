@@ -80,6 +80,9 @@ impl Settings {
             // Start off by merging in the "default" configuration file
             .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml));
 
+        #[cfg(all(feature = "web", not(feature = "tui")))]
+        let builder = builder.add_source(web::QueryString::parse());
+
         #[cfg(all(feature = "tui", not(feature = "web")))]
         let builder = {
             use config::Environment;
@@ -104,5 +107,71 @@ impl Settings {
         let config = builder.build()?;
 
         config.try_deserialize()
+    }
+}
+
+#[cfg(feature = "web")]
+mod web {
+    use config::{File, FileFormat, FileSourceString};
+    use url::Url;
+
+    #[derive(Debug, Clone)]
+    pub(super) struct QueryString;
+
+    impl QueryString {
+        pub(super) fn parse() -> File<FileSourceString, FileFormat> {
+            let mut tick_interval_ms = 2000;
+            let mut scheduler_url = "http://localhost:50050";
+            let mut http_timeout_ms = 2000;
+            let mut format_tree = false;
+
+            let query_string = Self::decode_request();
+            query_string.split('&').for_each(|setting| {
+                let mut pair = setting.split('=');
+                match (pair.next(), pair.next()) {
+                    (Some(key), Some(value)) => match key {
+                        "ballista_tick_interval" => {
+                            tick_interval_ms = value.parse::<u64>().unwrap_or(2000)
+                        }
+                        "ballista_scheduler_url" => scheduler_url = value,
+                        "ballista_http_timeout" => {
+                            http_timeout_ms = value.parse::<u64>().unwrap_or(2000)
+                        }
+                        "ballista_job_stage_plan_tree" => {
+                            format_tree = value.parse::<bool>().unwrap_or(false)
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            });
+            let config = format!(
+                r#"
+tick_interval_ms: {tick_interval_ms}
+
+scheduler:
+  url: {scheduler_url}
+
+http:
+  timeout: {http_timeout_ms}
+
+job:
+  stage:
+    plan:
+      tree: {format_tree}
+"#
+            );
+            tracing::info!("Using query string: {}", config);
+            File::from_str(&config, FileFormat::Yaml)
+        }
+
+        fn decode_request() -> std::string::String {
+            let window = web_sys::window().expect("no global `window` exists");
+            let document = window.document().expect("no global document exist");
+            let location = document.location().expect("no location exists");
+            let raw_search = location.search().expect("no search exists");
+            let search_str = raw_search.trim_start_matches("?");
+            format!("{}", search_str)
+        }
     }
 }
