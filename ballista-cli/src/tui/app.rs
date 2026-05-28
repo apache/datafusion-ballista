@@ -549,14 +549,14 @@ impl App {
                     error: e.to_string(),
                 },
             };
-            let _ = self
+            if let Err(err) = self
                 .send_event(Event::DataLoaded {
                     data: UiData::CancelJobResult(cancel_job_result),
                 })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to send CancelJobResult event: {e:?}")
-                });
+            {
+                tracing::error!("Failed to send CancelJobResult event: {err:?}")
+            };
         }
     }
 
