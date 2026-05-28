@@ -34,8 +34,11 @@ use crate::state::aqe::execution_plan::ExchangeExec;
 /// has children of this join been
 /// repartitioned
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChildrenState {
+pub enum JoinInputState {
+    /// All inputs has been repartitioned
+    /// which means this join can be resolved
     Repartitioned,
+    /// State on join inputs is unknown
     Unknown,
 }
 
@@ -51,7 +54,7 @@ pub struct DynamicJoinSelectionExec {
     pub projection: Option<Vec<usize>>,
     pub null_equality: NullEquality,
     pub properties: Arc<PlanProperties>,
-    pub selection_state: ChildrenState,
+    pub selection_state: JoinInputState,
     pub null_aware: bool,
 }
 
@@ -143,7 +146,7 @@ impl DisplayAs for DynamicJoinSelectionExec {
                 write!(
                     f,
                     " repartitioned={}",
-                    matches!(self.selection_state, ChildrenState::Repartitioned)
+                    matches!(self.selection_state, JoinInputState::Repartitioned)
                 )?;
 
                 Ok(())
@@ -170,7 +173,7 @@ impl DisplayAs for DynamicJoinSelectionExec {
                 writeln!(
                     f,
                     " repartitioned={}",
-                    matches!(self.selection_state, ChildrenState::Repartitioned)
+                    matches!(self.selection_state, JoinInputState::Repartitioned)
                 )?;
 
                 Ok(())
@@ -227,36 +230,26 @@ impl DynamicJoinSelectionExec {
             PartitionMode::Partitioned
         };
         match (&self.selection_state, partition_mode) {
-            (ChildrenState::Unknown, PartitionMode::CollectLeft) => self
+            (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
-            //
-            //
-            (ChildrenState::Repartitioned, PartitionMode::Partitioned)
+            (JoinInputState::Repartitioned, PartitionMode::Partitioned)
                 if prefer_hash_join =>
             {
                 self.to_hash_join(PartitionMode::Partitioned)
                     .map(JoinSelectionAction::Hash)
             }
-            //
-            //
-            (ChildrenState::Repartitioned, PartitionMode::Partitioned) => {
+            (JoinInputState::Repartitioned, PartitionMode::Partitioned) => {
                 self.to_sort_merge_join().map(JoinSelectionAction::Sort)
             }
-            //
-            //
-            (ChildrenState::Repartitioned, PartitionMode::CollectLeft) => self
+            (JoinInputState::Repartitioned, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::LateCollectLeft),
-            //(ChildrenState::Repartitioned, PartitionMode::CollectLeft) =>
-            // self
-            //     .to_hash_join(PartitionMode::Partitioned)
-            //     .map(JoinSelectionAction::Hash),
-            (ChildrenState::Unknown, PartitionMode::Partitioned) => Ok(
+            (JoinInputState::Unknown, PartitionMode::Partitioned) => Ok(
                 JoinSelectionAction::Repartition(Arc::new(self.to_partitioned())),
             ),
-            //
-            //
+            // this method calculates partition mode, and at the moment it
+            // can't calculate it as PartitionMode::Auto
             (_, PartitionMode::Auto) => internal_err!("this case should not be possible"),
         }
     }
@@ -326,7 +319,7 @@ impl DynamicJoinSelectionExec {
             projection: self.projection.clone(),
             null_equality: self.null_equality,
             properties: self.properties.clone(),
-            selection_state: ChildrenState::Repartitioned,
+            selection_state: JoinInputState::Repartitioned,
             null_aware: self.null_aware,
         }
     }
@@ -343,12 +336,17 @@ impl DynamicJoinSelectionExec {
             projection: hash_join.projection.as_deref().map(|p| p.to_vec()),
             null_equality: hash_join.null_equality,
             properties: Arc::clone(hash_join.properties()),
-            selection_state: ChildrenState::Unknown,
+            selection_state: JoinInputState::Unknown,
             null_aware: hash_join.null_aware,
         }))
     }
-
-    pub(crate) fn children_resolved(&self) -> bool {
+    /// will return true if all upstream [ExchangeExec] has been resolved
+    /// and all other [DynamicJoinSelectionExec].
+    ///
+    /// Method will short circuit on first resolved [ExchangeExec],
+    /// as there must not be any unresolved [ExchangeExec], in any if
+    /// its children.
+    pub(crate) fn upstream_resolved(&self) -> bool {
         fn has_join_or_unresolved_exchange(plan: &Arc<dyn ExecutionPlan>) -> bool {
             if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
                 // this should be fine, once we find first resolved
@@ -384,7 +382,7 @@ impl DynamicJoinSelectionExec {
             projection: None,
             null_equality: merge_join.null_equality,
             properties: Arc::clone(merge_join.properties()),
-            selection_state: ChildrenState::Unknown,
+            selection_state: JoinInputState::Unknown,
             null_aware: false,
         }))
     }
@@ -417,12 +415,10 @@ mod tests {
             join_type: JoinType::Inner,
             projection: None,
             null_equality: NullEquality::NullEqualsNothing,
-            selection_state: ChildrenState::Unknown,
+            selection_state: JoinInputState::Unknown,
             null_aware: false,
         }
     }
-
-    // ── 1. Both sides are simple leaf plans ────────────────────────────────────
 
     #[test]
     fn children_resolved_returns_true_for_simple_leaves() {
@@ -433,12 +429,10 @@ mod tests {
         let dj = make_dynamic_join(left, right);
 
         assert!(
-            dj.children_resolved(),
+            dj.upstream_resolved(),
             "plain EmptyExec children carry no exchange or nested join — must be resolved"
         );
     }
-
-    // ── 2 & 3. Unresolved ExchangeExec on each side ────────────────────────────
 
     #[test]
     fn children_resolved_returns_false_for_unresolved_left_exchange() {
@@ -452,7 +446,7 @@ mod tests {
         let dj = make_dynamic_join(unresolved_exchange, right);
 
         assert!(
-            !dj.children_resolved(),
+            !dj.upstream_resolved(),
             "an unresolved ExchangeExec on the left must block resolution"
         );
     }
@@ -468,12 +462,10 @@ mod tests {
         let dj = make_dynamic_join(left, unresolved_exchange);
 
         assert!(
-            !dj.children_resolved(),
+            !dj.upstream_resolved(),
             "an unresolved ExchangeExec on the right must block resolution"
         );
     }
-
-    // ── 4. Both ExchangeExecs resolved ────────────────────────────────────────
 
     #[test]
     fn children_resolved_returns_true_when_both_exchanges_resolved() {
@@ -492,12 +484,10 @@ mod tests {
         );
 
         assert!(
-            dj.children_resolved(),
+            dj.upstream_resolved(),
             "exchanges with resolved shuffle partitions must not block resolution"
         );
     }
-
-    // ── 5 & 6. Nested DynamicJoinSelectionExec on each side ───────────────────
 
     #[test]
     fn children_resolved_returns_false_when_left_child_is_dynamic_join() {
@@ -511,7 +501,7 @@ mod tests {
         let outer = make_dynamic_join(inner, leaf);
 
         assert!(
-            !outer.children_resolved(),
+            !outer.upstream_resolved(),
             "a DynamicJoinSelectionExec nested in the left child must block resolution"
         );
     }
@@ -527,7 +517,7 @@ mod tests {
         let outer = make_dynamic_join(leaf, inner);
 
         assert!(
-            !outer.children_resolved(),
+            !outer.upstream_resolved(),
             "a DynamicJoinSelectionExec nested in the right child must block resolution"
         );
     }

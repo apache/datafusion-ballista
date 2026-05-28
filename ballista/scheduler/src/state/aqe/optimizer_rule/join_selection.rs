@@ -133,7 +133,7 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                 if let Some(dynamic_join) =
                     node.as_any().downcast_ref::<DynamicJoinSelectionExec>()
                 {
-                    if dynamic_join.children_resolved() {
+                    if dynamic_join.upstream_resolved() {
                         match dynamic_join.to_actual_join(config)? {
                             // at this point we know there are two exchanges
                             // as we added them beforehand
