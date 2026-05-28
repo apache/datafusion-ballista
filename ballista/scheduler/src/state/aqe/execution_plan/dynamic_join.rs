@@ -52,6 +52,7 @@ pub struct DynamicJoinSelectionExec {
     pub null_equality: NullEquality,
     pub properties: Arc<PlanProperties>,
     pub selection_state: ChildrenState,
+    pub null_aware: bool,
 }
 
 impl ExecutionPlan for DynamicJoinSelectionExec {
@@ -91,6 +92,7 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
             null_equality: self.null_equality,
             properties: Arc::clone(&self.properties),
             selection_state: self.selection_state.clone(),
+            null_aware: self.null_aware,
         }))
     }
 
@@ -217,7 +219,7 @@ impl DynamicJoinSelectionExec {
             threshold_collect_left_join_rows,
         ) || Self::supports_collect_by_thresholds(
             self.right.as_ref(),
-            threshold_collect_left_join_rows,
+            threshold_collect_left_join_bytes,
             threshold_collect_left_join_rows,
         ) {
             PartitionMode::CollectLeft
@@ -273,7 +275,7 @@ impl DynamicJoinSelectionExec {
         .with_projection(self.projection.clone())
         .with_partition_mode(partition_mode)
         .with_null_equality(self.null_equality)
-        .with_null_aware(false)
+        .with_null_aware(self.null_aware)
         .build()?;
 
         Ok(Arc::new(hash_join_exec))
@@ -325,6 +327,7 @@ impl DynamicJoinSelectionExec {
             null_equality: self.null_equality,
             properties: self.properties.clone(),
             selection_state: ChildrenState::Repartitioned,
+            null_aware: self.null_aware,
         }
     }
 
@@ -341,6 +344,7 @@ impl DynamicJoinSelectionExec {
             null_equality: hash_join.null_equality,
             properties: Arc::clone(hash_join.properties()),
             selection_state: ChildrenState::Unknown,
+            null_aware: hash_join.null_aware,
         }))
     }
 
@@ -381,6 +385,7 @@ impl DynamicJoinSelectionExec {
             null_equality: merge_join.null_equality,
             properties: Arc::clone(merge_join.properties()),
             selection_state: ChildrenState::Unknown,
+            null_aware: false,
         }))
     }
 }
@@ -413,6 +418,7 @@ mod tests {
             projection: None,
             null_equality: NullEquality::NullEqualsNothing,
             selection_state: ChildrenState::Unknown,
+            null_aware: false,
         }
     }
 

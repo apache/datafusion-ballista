@@ -103,6 +103,8 @@ impl ExchangeExec {
             plan_id,
             Arc::new(AtomicI64::new(-1)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            false,
             false,
         )
     }
@@ -118,34 +120,38 @@ impl ExchangeExec {
             plan_id,
             Arc::new(AtomicI64::new(-1)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             true,
+            false,
         )
     }
 
     pub fn to_broadcast(&self, plan_id: usize) -> Self {
-        Self {
-            input: self.input.clone(),
-            properties: self.properties.clone(),
-            partitioning: None,
+        Self::new_with_details(
+            self.input.clone(),
+            None,
             plan_id,
-            stage_id: self.stage_id.clone(),
-            shuffle_partitions: self.shuffle_partitions.clone(),
-            coalesce: self.coalesce.clone(),
-            inactive_stage: self.inactive_stage,
-            broadcast: true,
-        }
+            self.stage_id.clone(),
+            self.shuffle_partitions.clone(),
+            self.coalesce.clone(),
+            true,
+            self.inactive_stage,
+        )
     }
 
     /// Creates a new `ExchangeExec` with explicitly-provided stage ID and
     /// partition storage. Used by the AQE rule infrastructure to construct
     /// exchanges that share atomic state with the enclosing `AdaptivePlanner`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_details(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Option<Partitioning>,
         plan_id: usize,
         stage_id: Arc<AtomicI64>,
         stage_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+        coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
         broadcast: bool,
+        inactive_stage: bool,
     ) -> Self {
         let plan_partitioning = match (partitioning.as_ref(), broadcast) {
             (Some(partitioning), false) => partitioning.clone(),
@@ -167,8 +173,8 @@ impl ExchangeExec {
             stage_id,
             shuffle_partitions: stage_partitions,
             partitioning,
-            coalesce: Arc::new(Mutex::new(None)),
-            inactive_stage: false,
+            coalesce,
+            inactive_stage,
             broadcast,
         }
     }
@@ -344,18 +350,18 @@ impl ExecutionPlan for ExchangeExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() == 1 {
-            let mut new_exec = Self::new_with_details(
+            let new_exec = Self::new_with_details(
                 children[0].clone(),
                 self.partitioning.clone(),
                 self.plan_id,
                 self.stage_id.clone(),
+                // Carry the coalesce slot so a transform-rebuilt parent chain
+                // doesn't lose the rule's decision.
                 self.shuffle_partitions.clone(),
+                self.coalesce.clone(),
                 self.broadcast,
+                self.inactive_stage,
             );
-            new_exec.inactive_stage = self.inactive_stage;
-            // Carry the coalesce slot so a transform-rebuilt parent chain
-            // doesn't lose the rule's decision.
-            new_exec.coalesce = self.coalesce.clone();
 
             Ok(Arc::new(new_exec))
         } else {
