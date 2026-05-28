@@ -25,8 +25,8 @@ ignore = []
 [[hooks]]
 stage = "build"
 command = "sh"
-command_arguments = ["-c", "cp -f ./src/tui/ui/header/ballista-logo.svg $TRUNK_STAGING_DIR/"]
+command_arguments = ["-c", "cp -f ./src/tui/ui/header/ballista-logo.svg \"$TRUNK_STAGING_DIR/ballista-logo.svg\""]
 
 [hooks.windows]
 command = "cmd"
-command_arguments = ["/c", "copy .\\src\\tui\\ui\\header\\ballista-logo.svg %TRUNK_STAGING_DIR%"]
+command_arguments = ["/c", "copy .\\src\\tui\\ui\\header\\ballista-logo.svg \"%TRUNK_STAGING_DIR%\\ballista-logo.svg\""]
