@@ -109,7 +109,7 @@ pub async fn tui_web_main() -> TuiResult<()> {
     use wasm_bindgen_futures::spawn_local;
 
     let config = Settings::new()?;
-    let tick_ms = config.tick_interval_ms as u32;
+    let tick_ms = u32::try_from(config.tick_interval_ms).unwrap_or(u32::MAX);
 
     let wrapper = TuiWrapper::new()?;
     let app = Rc::new(RefCell::new(App::new(config)?));
