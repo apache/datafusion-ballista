@@ -113,6 +113,14 @@ pub async fn tui_web_main() -> TuiResult<()> {
 
     let wrapper = TuiWrapper::new()?;
     let app = Rc::new(RefCell::new(App::new(config)?));
+
+    /// Reset the tick in flight flag on tick event handler drop.
+    struct ResetOnDrop(Rc<Cell<bool>>);
+    impl Drop for ResetOnDrop {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
     let tick_in_flight = Rc::new(Cell::new(false));
 
     let (tx, mut rx) = EventHandler::new(tick_ms, &wrapper.terminal);
@@ -154,13 +162,12 @@ pub async fn tui_web_main() -> TuiResult<()> {
                     let is_executors = app.borrow().is_executors_view();
                     let is_jobs = app.borrow().is_jobs_view();
                     let tx = tx.clone();
-                    let tick_in_flight_done = Rc::clone(&tick_in_flight);
+                    let _tick_in_flight_done = ResetOnDrop(Rc::clone(&tick_in_flight));
                     spawn_local(async move {
                         let data =
                             load_tick_data_for_view(&http_client, is_executors, is_jobs)
                                 .await;
                         tx.send(Event::DataLoaded { data }).await.ok();
-                        tick_in_flight_done.set(false);
                     });
                 }
                 Event::Key(key_event) => {
