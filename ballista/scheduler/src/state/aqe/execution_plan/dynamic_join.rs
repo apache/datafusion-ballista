@@ -242,6 +242,19 @@ impl DynamicJoinSelectionExec {
             (JoinInputState::Repartitioned, PartitionMode::Partitioned) => {
                 self.to_sort_merge_join().map(JoinSelectionAction::Sort)
             }
+            // TODO: not sure about this point
+            // at this point, both inputs has been repartitioned
+            // making it collect left may not make sense, perhaps only
+            // valid strategy at this point is to check if both sides
+            // are small enough to make it single partitioned join.
+            // if single partition join is possibility should we leave it
+            // to coalesce shuffle to make this decision? (if thats the
+            // case we should remove LateCollectLeft )
+            //
+            // would it be better if we try to shuffle build side first
+            // and then if build side is small enough make decision if
+            // this is CollectLeft or Partitioned join. The issue is
+            // we have flip coin chances to pick side which to run first
             (JoinInputState::Repartitioned, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::LateCollectLeft),
