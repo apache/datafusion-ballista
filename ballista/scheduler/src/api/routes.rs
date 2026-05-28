@@ -58,9 +58,21 @@ pub fn get_routes<
         get(handlers::get_job_svg_graph::<T, U>),
     );
 
-    let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::exact("http://localhost:8080".parse().unwrap()))
-        .allow_methods([http::Method::GET, http::Method::PATCH]);
+    router.with_state(scheduler_server).layer(cors())
+}
 
-    router.with_state(scheduler_server).layer(cors)
+fn cors() -> CorsLayer {
+    let allowed_origins = std::env::var("BALLISTA_CORS_ALLOWED_ORIGINS")
+        .ok()
+        .and_then(|origins| {
+            origins
+                .split(',')
+                .map(|origin| origin.trim().parse().ok())
+                .collect::<Option<Vec<_>>>()
+        })
+        .unwrap_or_else(|| vec!["http://localhost:8080".parse().unwrap()]);
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_methods([http::Method::GET, http::Method::PATCH])
 }
