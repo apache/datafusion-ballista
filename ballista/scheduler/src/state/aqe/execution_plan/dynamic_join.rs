@@ -15,15 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Functional tests for [`CoalescePartitionsRule`]: drive a query through
-//! `AdaptivePlanner`, finalize the upstream stage with synthetic per-partition
-//! byte stats, and snapshot the displayed plan tree so the rule's effect on
-//! the leaf `ExchangeExec` is visible at the `coalesce=K of M` field.
-//!
-//! Each test uses small synthetic byte sizes paired with a small
-//! `coalesce_target_partition_bytes` so the bin-pack outcome is hand-traceable
-//! against `split_size_list_by_target_size`.
-
 use datafusion::{
     arrow::compute::SortOptions,
     common::{JoinType, NullEquality, Result, exec_err, internal_err},
