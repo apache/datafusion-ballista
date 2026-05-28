@@ -74,14 +74,9 @@ jobs:
           trunk build --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
 
-      - name: Tarball
-        run: |
-          tar -czvf ballista-web-tui.tar.gz target/web-tui/
-
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
         with:
           name: ballista-web-tui
           retention-days: 7
-          path: |
-            ballista-web-tui.tar.gz
+          path: target/web-tui/
