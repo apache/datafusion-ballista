@@ -705,12 +705,12 @@ impl App {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(feature = "web"))]
     pub(crate) fn now() -> DateTime<Utc> {
         Utc::now()
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "web")]
     pub(crate) fn now() -> DateTime<Utc> {
         let timestamp = js_sys::Date::now();
         DateTime::from_timestamp_millis(timestamp as i64).unwrap_or_else(|| {

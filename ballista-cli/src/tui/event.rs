@@ -117,7 +117,6 @@ pub(crate) mod web {
         events: Rc<RefCell<VecDeque<Event>>>,
     }
 
-    #[cfg(feature = "web")]
     impl EventHandler {
         /// Returns a `(Sender, EventHandler)` pair. The `Sender` can be cloned and distributed
         /// to any code that needs to push events; the `EventHandler` drains the queue each frame.
@@ -139,7 +138,7 @@ pub(crate) mod web {
 
             let key_sender = sender.clone();
             terminal.on_key_event(move |key_event| {
-                tracing::info!("on key event: {key_event:?}");
+                tracing::debug!("on key event: {key_event:?}");
                 key_sender
                     .queue
                     .borrow_mut()
@@ -154,20 +153,17 @@ pub(crate) mod web {
         }
     }
 
-    #[cfg(feature = "web")]
     #[derive(Clone)]
     pub struct Sender<E> {
         queue: Rc<RefCell<VecDeque<E>>>,
     }
 
-    #[cfg(feature = "web")]
     impl Debug for Sender<Event> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "Sender")
         }
     }
 
-    #[cfg(feature = "web")]
     impl Sender<Event> {
         pub async fn send(&self, event: Event) -> TuiResult<()> {
             self.queue.borrow_mut().push_back(event);
