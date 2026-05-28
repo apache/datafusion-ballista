@@ -16,7 +16,7 @@ use axum::{Router, routing::get};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use std::sync::Arc;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 
 /// All routes configured for rest-api.
 pub fn get_routes<
@@ -72,7 +72,18 @@ fn cors() -> CorsLayer {
         })
         .unwrap_or_else(|| vec!["http://localhost:8080".parse().unwrap()]);
 
+    let allowed_methods = std::env::var("BALLISTA_CORS_ALLOWED_METHODS")
+        .ok()
+        .and_then(|methods| {
+            methods
+                .split(',')
+                .map(|method| method.trim().parse().ok())
+                .collect::<Option<Vec<_>>>()
+        })
+        .unwrap_or_else(|| vec![http::Method::GET, http::Method::PATCH]);
+
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(allowed_origins))
-        .allow_methods([http::Method::GET, http::Method::PATCH])
+        .allow_methods(allowed_methods)
+        .allow_headers(AllowHeaders::any())
 }
