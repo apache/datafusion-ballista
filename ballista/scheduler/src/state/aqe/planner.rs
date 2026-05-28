@@ -27,6 +27,7 @@ use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
@@ -56,9 +57,6 @@ pub struct AdaptivePlanner {
     /// Generates the next stage ID.
     /// Stage IDs are incremental and unique for each job.
     stage_id_generator: usize,
-    /// plan id generator
-    #[allow(dead_code)] // TODO: keep it for now until we refactor it
-    pub plan_id_generator: Arc<AtomicUsize>,
     /// The session state needed for optimizer calls.
     /// This also freezes the session configuration for a given job.
     session_state: SessionState,
@@ -97,7 +95,6 @@ impl AdaptivePlanner {
     pub fn try_new_with_optimizers(
         session_config: &SessionConfig,
         plan: Arc<dyn ExecutionPlan>,
-        plan_id_generator: Arc<AtomicUsize>,
         job_name: String,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
@@ -108,7 +105,6 @@ impl AdaptivePlanner {
 
         Ok(Self {
             stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
-            plan_id_generator,
             session_state,
             physical_planner: planner.into(),
             plan,
@@ -137,7 +133,6 @@ impl AdaptivePlanner {
         Self::try_new_with_optimizers(
             session_config,
             plan,
-            plan_id_generator.clone(),
             job_name,
             Self::default_optimizers(plan_id_generator),
         )
@@ -158,23 +153,25 @@ impl AdaptivePlanner {
         logical_plan: &LogicalPlan,
         job_name: String,
     ) -> common::Result<Self> {
-        let state = SessionStateBuilder::new_from_existing(ctx.state())
-            .with_physical_optimizer_rules(vec![Arc::new(
-                DelayJoinSelectionRule::default(),
-            )])
-            .build();
+        // session state with very limited set of optimizers.
+        // this optimizer set will be executed only once, before
+        // running standard set of optimizers, which will
+        // after each stage.
+        let state = Self::create_session_state(
+            ctx.state().config(),
+            Self::plan_preparation_optimizers(),
+        );
 
         let plan = state.create_physical_plan(logical_plan).await?;
         let plan = handle_explain_plan(&job_name, ctx, logical_plan, plan)
             .await
-            .unwrap(); // FIXME
-        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
         Self::try_new_with_optimizers(
             ctx.state().config(),
             plan,
-            plan_id_generator.clone(),
             job_name,
-            Self::default_optimizers(plan_id_generator),
+            Self::default_optimizers(Arc::new(AtomicUsize::new(0))),
         )
     }
     /// Cancels a stage by its ID.
@@ -513,6 +510,13 @@ impl AdaptivePlanner {
 
         physical_optimizers
     }
+
+    /// set of rules which will be executed ONCE before
+    /// running standard set of physical optimizers
+    fn plan_preparation_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
+        vec![Arc::new(DelayJoinSelectionRule::default())]
+    }
+
     /// Creates a session state with the given configuration and optimizer rules.
     ///
     /// # Arguments
