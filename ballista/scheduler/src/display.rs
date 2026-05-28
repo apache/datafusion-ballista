@@ -108,6 +108,26 @@ impl<'a> DisplayableBallistaExecutionPlan<'a> {
             metrics: self.metrics,
         }
     }
+
+    /// Return a `format`able structure that produces a single line
+    /// per node without metrics.
+    pub fn concise(&self) -> impl fmt::Display + 'a {
+        struct Wrapper<'a> {
+            plan: &'a dyn ExecutionPlan,
+        }
+        impl fmt::Display for Wrapper<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                let t = DisplayFormatType::Default;
+                let mut visitor = ConciseVisitor {
+                    t,
+                    f,
+                    indent: 0,
+                };
+                accept(self.plan, &mut visitor)
+            }
+        }
+        Wrapper { plan: self.inner }
+    }
 }
 
 /// Formats plans with a single line per node.
@@ -144,6 +164,32 @@ impl ExecutionPlanVisitor for IndentVisitor<'_, '_> {
         writeln!(self.f)?;
         self.indent += 1;
         self.metric_index += 1;
+        Ok(true)
+    }
+
+    fn post_visit(&mut self, _plan: &dyn ExecutionPlan) -> Result<bool, Self::Error> {
+        self.indent -= 1;
+        Ok(true)
+    }
+}
+
+/// Formats plans with a single line per node (no metrics).
+struct ConciseVisitor<'a, 'b> {
+    t: DisplayFormatType,
+    f: &'a mut fmt::Formatter<'b>,
+    indent: usize,
+}
+
+impl ExecutionPlanVisitor for ConciseVisitor<'_, '_> {
+    type Error = fmt::Error;
+    fn pre_visit(
+        &mut self,
+        plan: &dyn ExecutionPlan,
+    ) -> std::result::Result<bool, Self::Error> {
+        write!(self.f, "{:indent$}", "", indent = self.indent * 2)?;
+        plan.fmt_as(self.t, self.f)?;
+        writeln!(self.f)?;
+        self.indent += 1;
         Ok(true)
     }
 

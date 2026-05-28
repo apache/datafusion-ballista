@@ -10,11 +10,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::state::execution_graph::ExecutionStage;
-use crate::state::execution_graph_dot::ExecutionGraphDot;
-use crate::state::execution_stage::TaskInfo;
-use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
+use crate::{
+    api::SchedulerErrorResponse, display::DisplayableBallistaExecutionPlan,
+    scheduler_server::event::QueryStageSchedulerEvent,
+    scheduler_server::SchedulerServer, state::execution_graph::ExecutionStage,
+    state::execution_graph_dot::ExecutionGraphDot, state::execution_stage::TaskInfo,
+};
 use axum::extract::Query;
 use axum::{
     Json,
@@ -370,7 +371,39 @@ pub async fn get_job<
             SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}'"))
         })?
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
-    let stage_plan = format!("{:?}", graph);
+    let stage_plan = {
+        let plans: Vec<String> = graph
+            .as_ref()
+            .stages()
+            .iter()
+            .filter_map(|(id, stage)| {
+                match stage {
+                    ExecutionStage::Successful(completed) => {
+                        let displayable = DisplayableBallistaExecutionPlan::new(
+                            completed.plan.as_ref(),
+                            &completed.stage_metrics,
+                        );
+                        Some(format!("Stage {}: {}", id, displayable.concise()))
+                    }
+                    ExecutionStage::Failed(failed) => {
+                        let empty_metrics = Vec::new();
+                        let displayable = DisplayableBallistaExecutionPlan::new(
+                            failed.plan.as_ref(),
+                            &empty_metrics,
+                        );
+                        Some(format!(
+                            "Stage {}: {} [Error: {}]",
+                            id,
+                            displayable.concise(),
+                            failed.error_message
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        plans.join("\n")
+    };
     let job = graph.as_ref();
     let (plain_status, job_status) = format_job_status(
         &job.status().status,
@@ -490,7 +523,7 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let render_tree = query.render_tree.unwrap_or(false);
+    let _render_tree = query.render_tree.unwrap_or(false);
 
     if let Some(graph) = data_server
         .state
@@ -523,11 +556,19 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(running_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(running_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        let empty_metrics = Vec::new();
+                        let stage_metrics = running_stage
+                            .stage_metrics
+                            .as_ref()
+                            .unwrap_or(&empty_metrics);
+                        summary.stage_plan = Some(
+                            DisplayableBallistaExecutionPlan::new(
+                                running_stage.plan.as_ref(),
+                                stage_metrics,
+                            )
+                            .concise()
+                            .to_string(),
+                        );
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -577,11 +618,12 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(completed_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        summary.stage_plan = Some(DisplayableBallistaExecutionPlan::new(
+                            completed_stage.plan.as_ref(),
+                            &completed_stage.stage_metrics,
+                        )
+                        .concise()
+                        .to_string());
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -621,6 +663,19 @@ pub async fn get_query_stages<
                                 })
                             })
                             .collect();
+                    }
+                    ExecutionStage::Failed(failed) => {
+                        let empty_metrics = Vec::new();
+                        summary.stage_plan = Some(format!(
+                            "Stage {}: {} [Error: {}]",
+                            id,
+                            DisplayableBallistaExecutionPlan::new(
+                                failed.plan.as_ref(),
+                                &empty_metrics,
+                            )
+                            .concise(),
+                            failed.error_message
+                        ));
                     }
                     _ => {}
                 }
