@@ -53,7 +53,7 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    CoalescePlan, PartitionGroup, ShuffleReaderExec, ShuffleWriterExec,
+    ChaosExec, CoalescePlan, PartitionGroup, ShuffleReaderExec, ShuffleWriterExec,
     SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
@@ -532,6 +532,15 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 };
                 Ok(Arc::new(exec))
             }
+            PhysicalPlanType::ChaosExec(chaos_exec) => {
+                let input = inputs[0].clone();
+                Ok(Arc::new(ChaosExec::new(
+                    input,
+                    chaos_exec.failure_probability,
+                    &chaos_exec.fault_type,
+                    chaos_exec.seed,
+                )?))
+            }
         }
     }
 
@@ -690,6 +699,22 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 ))
             })?;
 
+            Ok(())
+        } else if let Some(exec) = node.as_any().downcast_ref::<ChaosExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::ChaosExec(
+                    protobuf::ChaosExecNode {
+                        failure_probability: exec.failure_probability(),
+                        fault_type: exec.fault_type().to_string(),
+                        seed: exec.seed(),
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode chaos monkey execution plan: {e:?}"
+                ))
+            })?;
             Ok(())
         } else {
             Err(DataFusionError::Internal(format!(
