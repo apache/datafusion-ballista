@@ -23,8 +23,7 @@ concurrency:
 
 on:
   push:
-    branches-ignore:
-      - "gh-readonly-queue/**"
+    branches: [ "main" ]
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
