@@ -20,6 +20,7 @@
 use crate::execution_engine::DefaultExecutionEngine;
 use crate::execution_engine::ExecutionEngine;
 use crate::execution_engine::QueryStageExecutor;
+use crate::execution_loop::any_to_string;
 use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
 use ballista_core::ConfigProducer;
@@ -30,10 +31,13 @@ use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
 use dashmap::DashMap;
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
+use futures::FutureExt;
 use futures::future::AbortHandle;
+use log::error;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -197,7 +201,19 @@ impl Executor {
         self.abort_handles
             .insert((task_id, partition.clone()), abort_handle);
 
-        let partitions = task.await??;
+        let partitions = match std::panic::AssertUnwindSafe(task).catch_unwind().await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                let error_msg = "Task has been aborted!";
+                error!("{}", error_msg);
+                Err(DataFusionError::Internal(error_msg.to_string()))
+            }
+            Err(p) => {
+                let error_msg = format!("Task panicked: {}", any_to_string(&p));
+                error!("{}", error_msg);
+                Err(DataFusionError::Internal(error_msg))
+            }
+        };
 
         self.abort_handles.remove(&(task_id, partition.clone()));
 
@@ -208,7 +224,7 @@ impl Executor {
             query_stage_exec,
         );
 
-        Ok(partitions)
+        partitions.map_err(|e| BallistaError::DataFusionError(Box::new(e)))
     }
 
     /// Cancels a running task by aborting its execution.
