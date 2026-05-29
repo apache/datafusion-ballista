@@ -938,7 +938,7 @@ pub async fn get_job_config<
         .task_manager
         .get_job_config(&job_id)
         .await
-        .map(Json)
+        .map(|e| Json(e.to_props()))
         .map_err(|_| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
 }
 
