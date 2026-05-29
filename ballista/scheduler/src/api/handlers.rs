@@ -926,6 +926,22 @@ pub async fn get_scheduler_metrics<
     }
 }
 
+pub async fn get_job_config<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
+    data_server
+        .state
+        .task_manager
+        .get_job_config(&job_id)
+        .await
+        .map(|e| Json(e.to_props()))
+        .map_err(|_| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
