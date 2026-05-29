@@ -205,8 +205,20 @@ pub struct QueryStageSummary {
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct JobQueryParams {
-    /// Flag to tree-style render for physical plan
-    pub render_tree: Option<bool>,
+    /// Controls plan format
+    pub plan_format: Option<PlanFormat>,
+}
+
+#[derive(Debug, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFormat {
+    /// ?plan_format=default => plain indent, no metrics
+    #[default]
+    Default,
+    /// ?plan_format=tree => tree render, no metrics
+    Tree,
+    /// ?plan_format=metrics => indent with aggregated metrics
+    Metrics,
 }
 
 pub async fn get_scheduler_state<
@@ -371,39 +383,7 @@ pub async fn get_job<
             SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}'"))
         })?
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
-    let stage_plan = {
-        let plans: Vec<String> = graph
-            .as_ref()
-            .stages()
-            .iter()
-            .filter_map(|(id, stage)| {
-                match stage {
-                    ExecutionStage::Successful(completed) => {
-                        let displayable = DisplayableBallistaExecutionPlan::new(
-                            completed.plan.as_ref(),
-                            &completed.stage_metrics,
-                        );
-                        Some(format!("Stage {}: {}", id, displayable.concise()))
-                    }
-                    ExecutionStage::Failed(failed) => {
-                        let empty_metrics = Vec::new();
-                        let displayable = DisplayableBallistaExecutionPlan::new(
-                            failed.plan.as_ref(),
-                            &empty_metrics,
-                        );
-                        Some(format!(
-                            "Stage {}: {} [Error: {}]",
-                            id,
-                            displayable.concise(),
-                            failed.error_message
-                        ))
-                    }
-                    _ => None,
-                }
-            })
-            .collect();
-        plans.join("\n")
-    };
+    let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
     let (plain_status, job_status) = format_job_status(
         &job.status().status,
@@ -415,16 +395,17 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
-    let physical_plan = if render_tree {
-        displayable(job.physical_plan().as_ref())
+    let physical_plan = match plan_format {
+        PlanFormat::Default | PlanFormat::Metrics => {
+            DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+                .indent(false)
+                .to_string()
+        }
+        PlanFormat::Tree => displayable(job.physical_plan().as_ref())
             .tree_render()
-            .to_string()
-    } else {
-        DisplayableExecutionPlan::new(job.physical_plan().as_ref())
-            .indent(false)
-            .to_string()
+            .to_string(),
     };
 
     Ok(Json(JobResponse {
@@ -523,7 +504,7 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let _render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
     if let Some(graph) = data_server
         .state
@@ -557,18 +538,24 @@ pub async fn get_query_stages<
                 match stage {
                     ExecutionStage::Running(running_stage) => {
                         let empty_metrics = Vec::new();
-                        let stage_metrics = running_stage
-                            .stage_metrics
-                            .as_ref()
-                            .unwrap_or(&empty_metrics);
-                        summary.stage_plan = Some(
-                            DisplayableBallistaExecutionPlan::new(
-                                running_stage.plan.as_ref(),
-                                stage_metrics,
-                            )
-                            .concise()
-                            .to_string(),
-                        );
+                        let metrics = running_stage.stage_metrics.as_ref().unwrap_or(&empty_metrics);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => DisplayableBallistaExecutionPlan::new(
+                                    running_stage.plan.as_ref(),
+                                    &empty_metrics,
+                                )
+                                .concise()
+                                .to_string(),
+                            PlanFormat::Tree => displayable(running_stage.plan.as_ref())
+                                .tree_render()
+                                .to_string(),
+                            PlanFormat::Metrics => DisplayableBallistaExecutionPlan::new(
+                                    running_stage.plan.as_ref(),
+                                    metrics,
+                                )
+                                .indent()
+                                .to_string(),
+                        });
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -587,13 +574,10 @@ pub async fn get_query_stages<
                             .enumerate()
                             .map(|(partition_id, task_info)| {
                                 task_info.as_ref().map(|info| {
-                                    let (input_rows, output_rows) = running_stage
-                                        .stage_metrics
-                                        .as_deref()
-                                        .map(|metrics| {
-                                            get_partition_counts(metrics, partition_id)
-                                        })
-                                        .unwrap_or((0, 0));
+                                    let (input_rows, output_rows) = get_partition_counts(
+                                        running_stage.stage_metrics.as_ref().unwrap_or(&empty_metrics),
+                                        partition_id,
+                                    );
 
                                     let start_exec_time = info.start_exec_time as u64;
                                     let end_exec_time = info.end_exec_time as u64;
@@ -618,12 +602,23 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = Some(DisplayableBallistaExecutionPlan::new(
-                            completed_stage.plan.as_ref(),
-                            &completed_stage.stage_metrics,
-                        )
-                        .concise()
-                        .to_string());
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => DisplayableBallistaExecutionPlan::new(
+                                    completed_stage.plan.as_ref(),
+                                    &completed_stage.stage_metrics,
+                                )
+                                .concise()
+                                .to_string(),
+                            PlanFormat::Tree => displayable(completed_stage.plan.as_ref())
+                                .tree_render()
+                                .to_string(),
+                            PlanFormat::Metrics => DisplayableBallistaExecutionPlan::new(
+                                    completed_stage.plan.as_ref(),
+                                    &completed_stage.stage_metrics,
+                                )
+                                .indent()
+                                .to_string(),
+                        });
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -664,20 +659,73 @@ pub async fn get_query_stages<
                             })
                             .collect();
                     }
-                    ExecutionStage::Failed(failed) => {
+                   ExecutionStage::Failed(failed_stage) => {
                         let empty_metrics = Vec::new();
-                        summary.stage_plan = Some(format!(
-                            "Stage {}: {} [Error: {}]",
-                            id,
-                            DisplayableBallistaExecutionPlan::new(
-                                failed.plan.as_ref(),
-                                &empty_metrics,
-                            )
-                            .concise(),
-                            failed.error_message
-                        ));
+                        let metrics = failed_stage.stage_metrics.as_ref().unwrap_or(&empty_metrics);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => DisplayableBallistaExecutionPlan::new(
+                                    failed_stage.plan.as_ref(),
+                                    &empty_metrics,
+                                )
+                                .concise()
+                                .to_string(),
+                            PlanFormat::Tree => displayable(failed_stage.plan.as_ref())
+                                .tree_render()
+                                .to_string(),
+                            PlanFormat::Metrics => DisplayableBallistaExecutionPlan::new(
+                                    failed_stage.plan.as_ref(),
+                                    metrics,
+                                )
+                                .indent()
+                                .to_string(),
+                        });
+                        summary.input_rows = failed_stage
+                            .stage_metrics
+                            .as_ref()
+                            .map(|m| get_combined_count(m.as_slice(), "input_rows"))
+                            .unwrap_or(0);
+                        summary.output_rows = failed_stage
+                            .stage_metrics
+                            .as_ref()
+                            .map(|m| get_combined_count(m.as_slice(), "output_rows"))
+                            .unwrap_or(0);
+                        summary.elapsed_compute =
+                            get_finished_stage_time_from_optional(&failed_stage.task_infos);
+
+                        summary.tasks = failed_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                task_info.as_ref().map(|info| {
+                                    let (input_rows, output_rows) = get_partition_counts(
+                                        failed_stage.stage_metrics.as_ref().unwrap_or(&empty_metrics),
+                                        partition_id,
+                                    );
+
+                                    let start_exec_time = info.start_exec_time as u64;
+                                    let end_exec_time = info.end_exec_time as u64;
+
+                                    let task_status: TaskStatus = (&info.task_status).into();
+
+                                    TaskSummary {
+                                        id: info.task_id,
+                                        partition_id: partition_id as u32,
+                                        scheduled_time: info.scheduled_time as u64,
+                                        launch_time: info.launch_time as u64,
+                                        start_exec_time,
+                                        end_exec_time,
+                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                        finish_time: info.finish_time as u64,
+                                        input_rows,
+                                        output_rows,
+                                        status: task_status
+                                    }
+                                })
+                            })
+                            .collect();
                     }
-                    _ => {}
+                    ExecutionStage::UnResolved(_) | ExecutionStage::Resolved(_) => {}
                 }
                 summary.task_duration_percentiles = task_duration_percentiles(&summary.tasks);
                 summary.task_input_percentiles = task_input_percentiles(&summary.tasks);
@@ -811,6 +859,31 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
     let max_end = task_infos
         .iter()
         .map(|t| t.end_exec_time)
+        .filter(|t| *t > 0)
+        .max();
+
+    match (min_start, max_end) {
+        (Some(start), Some(end)) if end >= start => {
+            let time = Time::new();
+            time.add_duration(Duration::from_millis((end - start) as u64));
+            Some(time.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn get_finished_stage_time_from_optional(
+    task_infos: &[Option<TaskInfo>],
+) -> Option<String> {
+    let min_start = task_infos
+        .iter()
+        .filter_map(|t| t.as_ref().map(|info| info.start_exec_time))
+        .filter(|t| *t > 0)
+        .min();
+
+    let max_end = task_infos
+        .iter()
+        .filter_map(|t| t.as_ref().map(|info| info.end_exec_time))
         .filter(|t| *t > 0)
         .max();
 
