@@ -440,6 +440,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
+    /// Get the session configuration for a job.
+    pub async fn get_job_config(&self, job_id: &str) -> Result<HashMap<String, String>> {
+        let graph = self
+            .get_job_execution_graph(job_id)
+            .await?
+            .ok_or_else(|| BallistaError::General(format!("Job {job_id} not found")))?;
+
+        Ok(graph.session_config().to_props())
+    }
+
     /// Update given task statuses in the respective job and return a tuple containing:
     /// 1. A list of QueryStageSchedulerEvent to publish.
     /// 2. A list of reservations that can now be offered.

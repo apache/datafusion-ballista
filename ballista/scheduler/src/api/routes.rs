@@ -38,6 +38,10 @@ pub fn get_routes<
             get(handlers::get_job::<T, U>).patch(handlers::cancel_job::<T, U>),
         )
         .route(
+            "/api/job/{job_id}/config",
+            get(handlers::get_job_config::<T, U>),
+        )
+        .route(
             "/api/job/{job_id}/stages",
             get(handlers::get_query_stages::<T, U>),
         )

@@ -32,5 +32,6 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 | /api/job/{job_id}/dot                | GET    | Produce a query plan in DOT (graphviz) format.                    |
 | /api/job/:job_id/dot_svg             | GET    | Produce a query plan in SVG format. (`graphviz-support` required) |
 | /api/job/{job_id}                    | PATCH  | Cancel a currently running job                                    |
+| /api/job/{job_id}/config             | GET    | Get session configuration for a job.                             |
 | /api/job/:job_id/stage/:stage_id/dot | GET    | Produces stage plan in DOT (graphviz) format                      |
 | /api/metrics                         | GET    | Return current scheduler metric set                               |
