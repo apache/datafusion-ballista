@@ -129,7 +129,7 @@ impl HttpClient {
             "job/{}/stages{}",
             self.url_encode(job_id),
             if self.config.job.stage.plan.tree {
-                "?render_tree=true"
+                "?plan_format=tree"
             } else {
                 ""
             }

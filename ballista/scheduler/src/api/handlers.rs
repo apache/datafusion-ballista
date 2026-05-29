@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::display::format_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
@@ -204,8 +205,20 @@ pub struct QueryStageSummary {
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct JobQueryParams {
-    /// Flag to tree-style render for physical plan
-    pub render_tree: Option<bool>,
+    /// Controls plan format
+    pub plan_format: Option<PlanFormat>,
+}
+
+#[derive(Debug, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFormat {
+    /// ?plan_format=default => plain indent, no metrics
+    #[default]
+    Default,
+    /// ?plan_format=tree => tree render, no metrics
+    Tree,
+    /// ?plan_format=metrics => indent with aggregated metrics   
+    Metrics,
 }
 
 pub async fn get_scheduler_state<
@@ -382,16 +395,17 @@ pub async fn get_job<
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
-    let physical_plan = if render_tree {
-        displayable(job.physical_plan().as_ref())
+    let physical_plan = match plan_format {
+        PlanFormat::Default | PlanFormat::Metrics => {
+            DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+                .indent(false)
+                .to_string()
+        }
+        PlanFormat::Tree => displayable(job.physical_plan().as_ref())
             .tree_render()
-            .to_string()
-    } else {
-        DisplayableExecutionPlan::new(job.physical_plan().as_ref())
-            .indent(false)
-            .to_string()
+            .to_string(),
     };
 
     Ok(Json(JobResponse {
@@ -490,7 +504,7 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
     if let Some(graph) = data_server
         .state
@@ -523,11 +537,12 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(running_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(running_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        let metrics = running_stage.stage_metrics.as_deref().unwrap_or(&[]);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(running_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree    => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(running_stage.plan.as_ref(), metrics),
+                        });
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -577,11 +592,11 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(completed_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(completed_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree    => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
+                        });
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
