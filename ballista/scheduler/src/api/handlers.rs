@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::display::format_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
@@ -32,8 +33,8 @@ use ballista_core::serde::scheduler::{
 use ballista_core::utils::get_current_time;
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
-use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan, displayable};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 #[cfg(feature = "graphviz-support")]
@@ -44,7 +45,6 @@ use graphviz_rust::{
 };
 use http::{StatusCode, header::CONTENT_TYPE};
 use serde::Serialize;
-use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -541,7 +541,7 @@ pub async fn get_query_stages<
                         summary.stage_plan = Some(match plan_format {
                             PlanFormat::Default => displayable(running_stage.plan.as_ref()).indent(false).to_string(),
                             PlanFormat::Tree    => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
-                            PlanFormat::Metrics => format_stage_plan_with_metrics(running_stage.plan.as_ref(), metrics),
+                            PlanFormat::Metrics => format_stage_metrics(running_stage.plan.as_ref(), metrics),
                         });
                         summary.input_rows = running_stage
                             .stage_metrics
@@ -595,7 +595,7 @@ pub async fn get_query_stages<
                         summary.stage_plan = Some(match plan_format {
                             PlanFormat::Default => displayable(completed_stage.plan.as_ref()).indent(false).to_string(),
                             PlanFormat::Tree    => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
-                            PlanFormat::Metrics => format_stage_plan_with_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
+                            PlanFormat::Metrics => format_stage_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
                         });
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
@@ -695,72 +695,6 @@ fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentile
         p75: percentile_duration(&durations, 75.0),
         max: *durations.last().unwrap(),
     })
-}
-
-fn format_stage_plan_with_metrics(
-    plan: &dyn ExecutionPlan,
-    stage_metrics: &[MetricsSet],
-) -> String {
-    let mut output = String::new();
-    let mut metric_idx = 0;
-    format_node(plan, stage_metrics, &mut metric_idx, 0, &mut output);
-
-    debug_assert_eq!(metric_idx, stage_metrics.len());
-    output
-}
-
-/// Formatting the node in DFS fashion
-/// It is constructed in the same way it is collected (using pre-order traversal)
-///
-/// For reference how the metrics are collected on the executor's side - see ballista-core/utils.rs
-fn format_node(
-    plan: &dyn ExecutionPlan,
-    stage_metrics: &[MetricsSet],
-    metric_idx: &mut usize,
-    indent: usize,
-    output: &mut String,
-) {
-    let metrics_set = if plan.metrics().is_some() {
-        // Only advance the index when the plan node has metrics,
-        // here we are mirroring collect_plan_metrics() which only pushes Some metrics.
-        // Vec has no gap entries for metric-less nodes.
-        let m = stage_metrics.get(*metric_idx);
-        *metric_idx += 1;
-        m
-    } else {
-        None
-    };
-
-    let prefix = "  ".repeat(indent);
-    let node_line = {
-        struct SingleNode<'a>(&'a dyn ExecutionPlan);
-        impl std::fmt::Display for SingleNode<'_> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.0.fmt_as(DisplayFormatType::Default, f)
-            }
-        }
-        SingleNode(plan).to_string()
-    };
-
-    if let Some(m) = metrics_set {
-        let aggregated = m
-            .aggregate_by_name()
-            .sorted_for_display()
-            .timestamps_removed();
-        writeln!(output, "{}{}, metrics=[{}]", prefix, node_line, aggregated).unwrap();
-    } else {
-        writeln!(output, "{}{}, metrics=[]", prefix, node_line).unwrap();
-    }
-
-    for child in plan.children() {
-        format_node(
-            child.as_ref(),
-            stage_metrics,
-            metric_idx,
-            indent + 1,
-            output,
-        );
-    }
 }
 
 /// Returns elapsed wall time in milliseconds for API formatting.
