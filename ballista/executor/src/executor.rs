@@ -31,13 +31,13 @@ use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
 use dashmap::DashMap;
-use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::AbortHandle;
 use log::error;
+use log::warn;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -202,16 +202,17 @@ impl Executor {
             .insert((task_id, partition.clone()), abort_handle);
 
         let partitions = match std::panic::AssertUnwindSafe(task).catch_unwind().await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                result.map_err(|e| BallistaError::DataFusionError(Box::new(e)))
+            }
             Ok(Err(_)) => {
-                let error_msg = "Task has been aborted!";
-                error!("{}", error_msg);
-                Err(DataFusionError::Internal(error_msg.to_string()))
+                warn!("Task has been aborted!");
+                Err(BallistaError::Cancelled)
             }
             Err(p) => {
-                let error_msg = format!("Task panicked: {}", any_to_string(&p));
-                error!("{}", error_msg);
-                Err(DataFusionError::Internal(error_msg))
+                let error_msg = format!("{:#?}", any_to_string(&p));
+                error!("{error_msg}");
+                Err(BallistaError::Internal(error_msg))
             }
         };
 
@@ -224,7 +225,7 @@ impl Executor {
             query_stage_exec,
         );
 
-        partitions.map_err(|e| BallistaError::DataFusionError(Box::new(e)))
+        partitions
     }
 
     /// Cancels a running task by aborting its execution.
