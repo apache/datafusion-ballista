@@ -17,6 +17,7 @@
 
 use crate::config::BallistaConfig;
 use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
+use crate::scheduler_client::SchedulerChannelCache;
 use crate::serde::BallistaLogicalExtensionCodec;
 
 use async_trait::async_trait;
@@ -31,6 +32,7 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// [BallistaQueryPlanner] planner takes logical plan
 /// and executes it remotely on on scheduler.
@@ -43,6 +45,11 @@ pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
     config: BallistaConfig,
     extension_codec: Arc<dyn LogicalExtensionCodec>,
     local_planner: DefaultPhysicalPlanner,
+    /// Shared cache for the scheduler gRPC `Channel`. Constructed once
+    /// per planner (≈ once per `SessionContext`) and cloned into each
+    /// `DistributedQueryExec` so all queries on a session share one
+    /// HTTP/2 connection.
+    scheduler_channel_cache: SchedulerChannelCache,
     _plan_type: PhantomData<T>,
 }
 
@@ -60,11 +67,13 @@ impl<T: AsLogicalPlan> std::fmt::Debug for BallistaQueryPlanner<T> {
 impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
     /// Creates a new Ballista query planner with the specified scheduler URL and configuration.
     pub fn new(scheduler_url: String, config: BallistaConfig) -> Self {
+        let scheduler_channel_cache = scheduler_channel_cache_from_config(&config);
         Self {
             scheduler_url,
             config,
             extension_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
             local_planner: DefaultPhysicalPlanner::default(),
+            scheduler_channel_cache,
             _plan_type: PhantomData,
         }
     }
@@ -75,12 +84,14 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         config: BallistaConfig,
         extension_codec: Arc<dyn LogicalExtensionCodec>,
     ) -> Self {
+        let scheduler_channel_cache = scheduler_channel_cache_from_config(&config);
         Self {
             scheduler_url,
             config,
             extension_codec,
             local_planner: DefaultPhysicalPlanner::default(),
             _plan_type: PhantomData,
+            scheduler_channel_cache,
         }
     }
 
@@ -91,14 +102,22 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         local_planner: DefaultPhysicalPlanner,
     ) -> Self {
+        let scheduler_channel_cache = scheduler_channel_cache_from_config(&config);
         Self {
             scheduler_url,
             config,
             extension_codec,
             _plan_type: PhantomData,
             local_planner,
+            scheduler_channel_cache,
         }
     }
+}
+
+fn scheduler_channel_cache_from_config(config: &BallistaConfig) -> SchedulerChannelCache {
+    SchedulerChannelCache::new(Duration::from_secs(
+        config.scheduler_channel_idle_timeout_seconds() as u64,
+    ))
 }
 
 #[async_trait]
@@ -140,6 +159,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                             inner_plan,
                             self.extension_codec.clone(),
                             session_state.session_id().to_string(),
+                            self.scheduler_channel_cache.clone(),
                         ));
 
                     Ok(Arc::new(DistributedExplainAnalyzeExec::new(
@@ -158,6 +178,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                         logical_plan.clone(),
                         self.extension_codec.clone(),
                         session_state.session_id().to_string(),
+                        self.scheduler_channel_cache.clone(),
                     )))
                 }
             }
@@ -316,6 +337,50 @@ mod test {
                 .as_any()
                 .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
                 .is_some()
+        );
+        Ok(())
+    }
+
+    /// Verifies that the planner's `SchedulerChannelCache` is **shared**
+    /// across every `DistributedQueryExec` it builds. This is the
+    /// invariant that makes connection reuse work end-to-end: if two
+    /// consecutive `create_physical_plan` calls produced execs with
+    /// distinct caches, each query would open its own scheduler
+    /// connection and the feature would be silently broken.
+    #[tokio::test]
+    async fn planner_shares_scheduler_channel_cache_across_queries() -> Result<()> {
+        let ctx = context();
+        ctx.sql("CREATE TABLE tt (c0 INT)").await?.show().await?;
+        let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
+            "http://localhost:50050".to_string(),
+            BallistaConfig::default(),
+        );
+
+        let df1 = ctx.sql("SELECT * FROM tt").await?;
+        let df2 = ctx.sql("SELECT c0 FROM tt").await?;
+
+        let plan1 = planner
+            .create_physical_plan(df1.logical_plan(), &ctx.state())
+            .await?;
+        let plan2 = planner
+            .create_physical_plan(df2.logical_plan(), &ctx.state())
+            .await?;
+
+        let exec1 = plan1
+            .as_any()
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .expect("plan1 should be a DistributedQueryExec");
+        let exec2 = plan2
+            .as_any()
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .expect("plan2 should be a DistributedQueryExec");
+
+        assert!(
+            exec1
+                .scheduler_channel_cache()
+                .shares_inner_with(exec2.scheduler_channel_cache()),
+            "two queries on the same planner must share one cache so they \
+             reuse a single scheduler gRPC connection"
         );
         Ok(())
     }

@@ -56,6 +56,11 @@ pub const BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS: &str =
 /// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
 pub const BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.client.grpc_http2_keepalive_interval_seconds";
+/// Configuration key for the idle timeout, in seconds, after which the
+/// client-side cached scheduler `Channel` is closed and the next query
+/// will reconnect.
+pub const BALLISTA_CLIENT_SCHEDULER_CHANNEL_IDLE_TIMEOUT_SECONDS: &str =
+    "ballista.client.scheduler_channel_idle_timeout_seconds";
 /// Should client employ pull or push job tracking strategy
 pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
 /// Should client use tls connection
@@ -147,6 +152,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          Some((3600).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
+                         DataType::UInt64,
+                         Some((300).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_SCHEDULER_CHANNEL_IDLE_TIMEOUT_SECONDS.to_string(),
+                         "Idle timeout in seconds for the client-side cached scheduler gRPC channel. After \
+                          this many seconds with no query activity, the underlying TCP connection is closed \
+                          and the next query reconnects.".to_string(),
                          DataType::UInt64,
                          Some((300).to_string())),
         ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
@@ -364,6 +375,14 @@ impl BallistaConfig {
     /// Returns the HTTP/2 keep-alive interval for gRPC clients in seconds.
     pub fn grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
+    }
+
+    /// Returns the idle timeout for the client-side cached scheduler
+    /// `Channel`, in seconds. When the cached channel goes unused for
+    /// this many seconds, the underlying TCP connection is closed and
+    /// the next query reconnects.
+    pub fn scheduler_channel_idle_timeout_seconds(&self) -> usize {
+        self.get_usize_setting(BALLISTA_CLIENT_SCHEDULER_CHANNEL_IDLE_TIMEOUT_SECONDS)
     }
 
     /// Returns the maximum message size for gRPC clients in bytes.

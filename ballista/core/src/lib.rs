@@ -54,6 +54,9 @@ pub mod object_store;
 pub mod planner;
 /// Runtime registry for codec and function registration.
 pub mod registry;
+/// Scheduler `Channel` cache used by the client to reuse the gRPC
+/// connection across queries on the same session.
+pub mod scheduler_client;
 /// Serialization and deserialization for Ballista messages and plans.
 pub mod serde;
 /// General utility functions for Ballista operations.
