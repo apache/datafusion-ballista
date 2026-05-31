@@ -1075,8 +1075,7 @@ pub enum WebKeyAsyncAction {
 
 #[cfg(test)]
 mod tests {
-    use crate::tui::App;
-    use crate::tui::Settings;
+    use crate::tui::app::App;
     use crate::tui::app::{
         ExecutorsSortColumn, INVALID_DATE, JobsSortColumn, MetricsSortColumn,
     };
@@ -1086,6 +1085,7 @@ mod tests {
         jobs::Job,
         jobs::stages::{JobStagesPopup, JobStagesResponse},
     };
+    use crate::tui::infrastructure::Settings;
 
     fn make_app() -> App {
         let settings =

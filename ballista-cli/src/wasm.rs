@@ -32,7 +32,7 @@ pub fn wasm_start() {
 
     spawn_local(async move {
         tracing::info!("Starting the Ballista WASM application");
-        if let Err(e) = crate::tui::tui_web_main().await {
+        if let Err(e) = crate::tui::main().await {
             // unwrap_throw produces a JS exception visible in the browser console
             wasm_bindgen::throw_str(&format!("Ballista TUI failed to start: {e}"));
         }

@@ -146,7 +146,7 @@ impl Command {
                 }
                 let _tui_mode_guard = TuiModeGuard(tui_mode.clone());
 
-                match crate::tui::tui_main(tui_mode.clone()).await {
+                match crate::tui::main(tui_mode.clone()).await {
                     Ok(()) => Ok(()),
                     Err(e) => Err(DataFusionError::Internal(format!(
                         "Error opening TUI: {e}",
