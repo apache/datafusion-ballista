@@ -15,17 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
+    event::{Event, UiData},
+};
+use crate::tui::{
     app::App,
     domain::{
         SortOrder,
         metrics::{Metric, SortColumn},
     },
-    event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
 };
+
 use prometheus_parse::HistogramCount;
 
 use crate::tui::ui::vertical_scrollbar;
@@ -40,6 +44,7 @@ use ratatui::{
     },
 };
 
+#[cfg(not(feature = "web"))]
 pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
     let metrics = app.http_client.get_metrics().await.unwrap_or_else(|e| {
         tracing::error!("Failed to load the metrics: {e:?}");

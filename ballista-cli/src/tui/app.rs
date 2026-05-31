@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "web"))]
 use crate::tui::TuiError;
 use crate::tui::TuiResult;
 use crate::tui::event::Event;
@@ -48,6 +49,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
+#[cfg(not(feature = "web"))]
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
     load_job_stages_popup, load_jobs_data, load_metrics_data,
@@ -149,6 +151,7 @@ impl App {
         self.event_tx = Some(tx);
     }
 
+    #[cfg(not(feature = "web"))]
     pub async fn send_event(&self, event: Event) -> TuiResult<()> {
         if let Some(tx) = &self.event_tx {
             tx.send(event)
@@ -183,6 +186,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
         if self.is_edit_mode() {
@@ -419,6 +423,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(not(feature = "web"))]
     async fn update_selected_job_details(&mut self) {
         self.job_details = None;
         if let Some(job_id) = self
@@ -430,12 +435,14 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_selected_job_details(&self, job_id: &str) {
         if let Err(e) = load_job_details(self, job_id).await {
             tracing::error!("Failed to load job details: {e:?}");
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_job_dot_data(&self) {
         if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
             if selected_job.status == "Completed"
@@ -448,6 +455,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_job_stages_popup_data(&self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
             let job_id = job.job_id.clone();
@@ -457,6 +465,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_executor_details_popup_data(&self) {
         if let Some(executor) = self.executors_data.selected_executor()
             && let Err(e) = load_executor_details_popup(self, &executor.id).await
@@ -468,18 +477,21 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_executors_data(&mut self) {
         if let Err(e) = load_executors_data(self).await {
             tracing::error!("Failed to load executors data on tick: {e:?}");
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_jobs_data(&mut self) {
         if let Err(e) = load_jobs_data(self).await {
             tracing::error!("Failed to load jobs data on tick: {e:?}");
         }
     }
 
+    #[cfg(not(feature = "web"))]
     async fn load_metrics_data(&mut self) {
         if let Err(e) = load_metrics_data(self).await {
             tracing::error!("Failed to load metrics data on tick: {e:?}");
@@ -536,6 +548,7 @@ impl App {
         self.metrics_data.sort();
     }
 
+    #[cfg(not(feature = "web"))]
     async fn cancel_selected_job(&mut self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term)
             && (job.status == "Running" || job.status == "Queued")
@@ -914,14 +927,14 @@ impl App {
                     .jobs_data
                     .selected_job(&self.search_term)
                     .map(|j| j.job_id.clone());
-                job_id.map(|id| WebKeyAsyncAction::LoadJobStages(id))
+                job_id.map(WebKeyAsyncAction::LoadJobStages)
             }
             KeyCode::Enter if self.is_executors_view() => {
                 let executor_id = self
                     .executors_data
                     .selected_executor()
                     .map(|e| e.id.clone());
-                executor_id.map(|id| WebKeyAsyncAction::LoadExecutorDetails(id))
+                executor_id.map(WebKeyAsyncAction::LoadExecutorDetails)
             }
             KeyCode::Char('g') if self.is_jobs_view() => {
                 let job_id = self
@@ -929,7 +942,7 @@ impl App {
                     .selected_job(&self.search_term)
                     .filter(|j| j.status == "Completed")
                     .map(|j| j.job_id.clone());
-                job_id.map(|id| WebKeyAsyncAction::LoadJobDot(id))
+                job_id.map(WebKeyAsyncAction::LoadJobDot)
             }
             KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
@@ -1017,7 +1030,7 @@ impl App {
                     .selected_job(&self.search_term)
                     .filter(|j| j.status == "Running" || j.status == "Queued")
                     .map(|j| j.job_id.clone());
-                job_id.map(|id| WebKeyAsyncAction::CancelJob(id))
+                job_id.map(WebKeyAsyncAction::CancelJob)
             }
             KeyCode::Down => {
                 if self.is_jobs_view() {

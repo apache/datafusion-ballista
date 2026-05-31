@@ -218,7 +218,7 @@ pub(crate) mod web {
             }
 
             let app = app_render.borrow();
-            ui::render(f, &*app);
+            ui::render(f, &app);
         });
 
         Ok(())

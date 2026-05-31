@@ -101,10 +101,7 @@ mod web {
     impl TuiWrapper {
         pub fn new() -> TuiResult<Self> {
             let backend = WebGl2Backend::new().map_err(|e| {
-                crate::tui::error::TuiError::IO(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
+                crate::tui::error::TuiError::IO(std::io::Error::other(e.to_string()))
             })?;
             Ok(Self {
                 terminal: Terminal::new(backend)?,

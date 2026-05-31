@@ -127,8 +127,9 @@ mod web {
             let query_string = Self::decode_request();
             query_string.split('&').for_each(|setting| {
                 let mut pair = setting.split('=');
-                match (pair.next(), pair.next()) {
-                    (Some(key), Some(value)) => match key {
+
+                if let (Some(key), Some(value)) = (pair.next(), pair.next()) {
+                    match key {
                         "ballista_tick_interval" => {
                             tick_interval_ms = value.parse::<u64>().unwrap_or(2000)
                         }
@@ -140,8 +141,7 @@ mod web {
                             format_tree = value.parse::<bool>().unwrap_or(false)
                         }
                         _ => {}
-                    },
-                    _ => {}
+                    }
                 }
             });
             let config = format!(
@@ -169,8 +169,7 @@ job:
             let document = window.document().expect("no global document exist");
             let location = document.location().expect("no location exists");
             let raw_search = location.search().expect("no search exists");
-            let search_str = raw_search.trim_start_matches("?");
-            format!("{}", search_str)
+            raw_search.trim_start_matches("?").to_string()
         }
     }
 }

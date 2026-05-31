@@ -23,6 +23,6 @@ cargo clippy --all-targets --package ballista-scheduler --all-features -- -D war
 cargo clippy --all-targets --package ballista-executor --all-features -- -D warnings
 cargo clippy --all-targets --package ballista --all-features -- -D warnings
 cargo clippy --all-targets --package ballista-cli --no-default-features --features cli,tui -- -D warnings
-#cargo clippy --all-targets --package ballista-cli --no-default-features --features web -- -D warnings
+cargo clippy --all-targets --package ballista-cli --no-default-features --features web -- -D warnings
 cargo clippy --all-targets --package ballista-examples --all-features -- -D warnings
 cargo clippy --all-targets --package ballista-benchmarks --all-features -- -D warnings
