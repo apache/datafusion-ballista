@@ -35,6 +35,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
+use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
@@ -438,6 +439,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             Ok(graph)
         }
+    }
+
+    /// Get the session configuration for a job.
+    pub async fn get_job_config(&self, job_id: &str) -> Result<Arc<SessionConfig>> {
+        let graph = self
+            .get_job_execution_graph(job_id)
+            .await?
+            .ok_or_else(|| BallistaError::General(format!("Job {job_id} not found")))?;
+
+        Ok(graph.session_config())
     }
 
     /// Update given task statuses in the respective job and return a tuple containing:

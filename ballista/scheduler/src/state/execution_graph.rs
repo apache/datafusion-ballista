@@ -109,7 +109,10 @@ pub trait ExecutionGraph: Debug {
     /// Returns the session ID associated with this job.
     fn session_id(&self) -> &str;
 
-    /// Returns the current job status.
+    /// Returns the session config associated with this job.
+    fn session_config(&self) -> Arc<SessionConfig>;
+
+    /// Returns the current status of the job.
     fn status(&self) -> &JobStatus;
 
     /// Returns the logical plan as a string, if captured at submission time.
@@ -641,6 +644,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     fn session_id(&self) -> &str {
         self.session_id.as_str()
+    }
+
+    fn session_config(&self) -> Arc<SessionConfig> {
+        self.session_config.clone()
     }
 
     fn status(&self) -> &JobStatus {

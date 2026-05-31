@@ -529,6 +529,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.session_id.as_str()
     }
 
+    fn session_config(&self) -> Arc<SessionConfig> {
+        self.session_config.clone()
+    }
+
     fn status(&self) -> &JobStatus {
         &self.status
     }
