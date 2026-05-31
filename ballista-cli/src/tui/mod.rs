@@ -160,6 +160,7 @@ pub(crate) mod web {
                     }
                 };
                 tx.send(Event::DataLoaded { data }).await.ok();
+                tx.send(Event::Tick).await.ok();
             });
         }
 
