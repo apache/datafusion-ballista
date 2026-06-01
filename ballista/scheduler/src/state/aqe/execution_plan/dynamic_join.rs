@@ -18,6 +18,8 @@
 use datafusion::{
     arrow::compute::SortOptions,
     common::{JoinType, NullEquality, Result, exec_err, internal_err},
+    config::ConfigOptions,
+    execution::{SendableRecordBatchStream, TaskContext},
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
         DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
@@ -27,6 +29,7 @@ use datafusion::{
         },
     },
 };
+use log::debug;
 use std::sync::Arc;
 
 use crate::state::aqe::execution_plan::ExchangeExec;
@@ -42,8 +45,6 @@ pub enum JoinInputState {
     Unknown,
 }
 
-// SortMergeJoinExec::try_new(left, right, on, filter, join_type, sort_options,               null_equality )
-// HashJoinExec::try_new     (left, right, on, filter, join_type, projection, partition_mode, null_equality, null_aware )
 #[derive(Debug)]
 pub struct DynamicJoinSelectionExec {
     pub left: Arc<dyn ExecutionPlan>,
@@ -67,18 +68,18 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
         self
     }
 
-    fn properties(&self) -> &std::sync::Arc<datafusion::physical_plan::PlanProperties> {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
-    fn children(&self) -> Vec<&std::sync::Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.left, &self.right]
     }
 
     fn with_new_children(
-        self: std::sync::Arc<Self>,
-        children: Vec<std::sync::Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::error::Result<std::sync::Arc<dyn ExecutionPlan>> {
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() != 2 {
             return internal_err!(
                 "DynamicJoinSelectionExec expects 2 children, got {}",
@@ -102,8 +103,8 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
     fn execute(
         &self,
         _partition: usize,
-        _context: std::sync::Arc<datafusion::execution::TaskContext>,
-    ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
+        _context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         exec_err!(
             "Operator should not be executed; it should have been replaced by an optimizer rule."
         )
@@ -113,7 +114,7 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
 impl DisplayAs for DynamicJoinSelectionExec {
     fn fmt_as(
         &self,
-        t: datafusion::physical_plan::DisplayFormatType,
+        t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         match t {
@@ -208,7 +209,7 @@ impl DynamicJoinSelectionExec {
 
     pub(crate) fn to_actual_join(
         &self,
-        config: &datafusion::config::ConfigOptions,
+        config: &ConfigOptions,
     ) -> Result<JoinSelectionAction> {
         let prefer_hash_join = config.optimizer.prefer_hash_join;
         let threshold_collect_left_join_bytes =
@@ -229,6 +230,19 @@ impl DynamicJoinSelectionExec {
         } else {
             PartitionMode::Partitioned
         };
+
+        let stats_left = self.left.partition_statistics(None)?;
+        let stats_right = self.right.partition_statistics(None)?;
+
+        debug!(
+            "to_actual_join: decision: {:?} left: ({:?} | {:?}), right: ({:?} | {:?})",
+            partition_mode,
+            stats_left.num_rows,
+            stats_left.total_byte_size,
+            stats_right.num_rows,
+            stats_right.total_byte_size
+        );
+
         match (&self.selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)

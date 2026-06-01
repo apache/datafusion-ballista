@@ -255,15 +255,6 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                 Ok(Transformed::yes(exec.data))
                             }
                             JoinSelectionAction::Repartition(dynamic_join) => {
-                                // initial idea to use:
-                                //
-                                // let partition_count = dynamic_join
-                                //     .properties()
-                                //     .output_partitioning()
-                                //     .partition_count();
-                                //
-                                // failed as new exchange nodes will be added due to
-                                // miss match between expected and actual partitioning
                                 let partition_count = config.execution.target_partitions;
                                 let partitioning = dynamic_join
                                     ._required_input_distribution()
