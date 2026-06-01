@@ -77,7 +77,7 @@ jobs:
             -p ballista-benchmarks
 
       - name: Install tpchgen-cli
-        uses: taiki-e/install-action@15413b256f995d819248ea62704771a959284285 # v2.79.13
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: tpchgen-cli@2.0.2
 
