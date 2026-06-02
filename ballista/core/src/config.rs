@@ -256,7 +256,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ),
         ConfigEntry::new(
             BALLISTA_CHAOS_EXECUTION_PROBABILITY.to_string(),
-            "Failure probability (0.0–1.0) passed to ChaosMonkeyExec when \
+            "Failure probability (0.0–1.0) passed to ChaosExec when \
              chaos execution is enabled.".to_string(),
             DataType::Float64,
             Some("0.25".to_string()),
