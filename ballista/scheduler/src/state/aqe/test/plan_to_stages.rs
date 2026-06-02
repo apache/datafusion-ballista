@@ -40,8 +40,11 @@ async fn should_add_exchanges() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -66,8 +69,11 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -115,8 +121,11 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -171,8 +180,11 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     // plan has only two exchanges after initial planning
     // other stages will be added as stages get resolved
@@ -218,8 +230,11 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -285,8 +300,11 @@ async fn should_split_stages_resolve_left_branch() -> datafusion::error::Result<
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -357,8 +375,11 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -414,7 +435,7 @@ async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
     let exchange_exec = Arc::new(exchange_exec);
     let ctx = mock_context();
 
-    let mut planner = AdaptivePlanner::try_new(
+    let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         exchange_exec,
         "test_job".to_string(),
@@ -443,8 +464,11 @@ async fn should_use_sort_shuffle_when_enabled() -> datafusion::error::Result<()>
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
@@ -470,8 +494,11 @@ async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());

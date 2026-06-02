@@ -222,6 +222,13 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             return Ok(plan);
         }
 
+        // this is temporary fix until we figure it out how to
+        // make this work with broadcast
+        if leaves.iter().any(|arc| as_exchange(arc).broadcast) {
+            debug!("[coalesce-rule] broadcast leaf present; bail entire group");
+            return Ok(plan);
+        }
+
         // The alignment-group invariant assumes a shared `M`. In every plan
         // shape we currently produce, all leaves of one stage subtree are
         // hash-partitioned by the same target_partitions setting upstream,

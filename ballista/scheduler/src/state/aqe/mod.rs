@@ -19,7 +19,6 @@ use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
@@ -122,8 +121,6 @@ pub(crate) struct AdaptiveExecutionGraph {
     session_config: Arc<SessionConfig>,
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
-    /// Physical plan, captured at submission time.
-    physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl AdaptiveExecutionGraph {
@@ -142,22 +139,12 @@ impl AdaptiveExecutionGraph {
     ) -> ballista_core::error::Result<Self> {
         let session_id = ctx.session_id();
 
-        // TODO: this is to be changed, we do not run default optimizers comming with the state at this
-        //       point.
-        let plan = ctx.state().create_physical_plan(logical_plan).await?;
+        let mut planner =
+            AdaptivePlanner::try_new(ctx, logical_plan, job_name.to_owned()).await?;
 
-        // TODO: explain plan will probably return wrong explanation
-        //       do we handle it now or just ignore it?
-        let physical_plan = handle_explain_plan(job_id, ctx, logical_plan, plan).await?;
         let logical_plan = Some(logical_plan.display_indent().to_string());
-        let session_config = Arc::new(ctx.copied_config());
-        // TODO: run planner set of optimizers in try_new
-        let mut planner = AdaptivePlanner::try_new(
-            &session_config,
-            physical_plan.clone(),
-            job_name.to_owned(),
-        )?;
 
+        let session_config = Arc::new(ctx.copied_config());
         let started_at = timestamp_millis();
 
         // initial plans should have at least one stage to run,
@@ -207,7 +194,6 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            physical_plan,
         })
     }
 }
@@ -542,7 +528,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
     }
 
     fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
-        self.physical_plan.clone()
+        self.planner.plan.clone()
     }
 
     fn start_time(&self) -> u64 {
