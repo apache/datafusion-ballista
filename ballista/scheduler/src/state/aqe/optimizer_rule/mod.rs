@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod chaos_exec;
 pub mod coalesce_partitions;
 pub mod distributed_exchange;
 pub mod join_selection;
