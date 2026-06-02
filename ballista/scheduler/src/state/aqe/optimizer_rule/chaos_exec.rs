@@ -87,7 +87,7 @@ impl PhysicalOptimizerRule for ChaosCreatingRule {
                 let chaos =
                     Arc::new(ChaosExec::new(node, failure_probability, &fault_type, seed)?)
                         as Arc<dyn ExecutionPlan>;
-                log::warn!("A ChaosExec node has been injected in your execution plan, making execution undeterministic");
+                log::warn!("A ChaosExec node has been injected in your execution plan, making execution non-deterministic");
                 Ok(Transformed::yes(chaos))
             } else {
                 Ok(Transformed::no(node))
