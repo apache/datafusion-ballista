@@ -171,7 +171,7 @@ impl ExecutionPlan for ChaosExec {
         // Wrap the child stream. For error/panic modes, inject on the first batch (idx == 0)
         // to mirror how real IO failures surface in production. For "delay", sleep every batch.
         let wrapped = input_stream.enumerate().map(move |(idx, batch_result)| {
-            match fault_type.to_lowercase().as_str() {
+            match fault_type.as_str() {
                 ft if ft.starts_with("delay") => {
                     std::thread::sleep(std::time::Duration::from_millis(parse_delay_ms(ft)));
                     batch_result
