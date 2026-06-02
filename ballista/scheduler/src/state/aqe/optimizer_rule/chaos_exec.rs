@@ -130,14 +130,16 @@ mod tests {
         Arc::new(StatisticsExec::new(stats, schema))
     }
 
-    fn chaos_config(probability: f64) -> ConfigOptions {
+    fn chaos_config(probability: f64, seed: u64) -> ConfigOptions {
         let mut bc = BallistaConfig::default();
-        bc.set("ballista.testing.chaos_execution.enabled", "true").unwrap();
+        bc.set("testing.chaos_execution.enabled", "true").unwrap();
         bc.set(
             "testing.chaos_execution.probability",
             &probability.to_string(),
         )
         .unwrap();
+        bc.set("testing.chaos_execution.seed", &seed.to_string())
+            .unwrap();
         let mut config = ConfigOptions::default();
         config.extensions.insert(bc);
         config
@@ -156,9 +158,9 @@ mod tests {
     fn chaos_rule_wraps_single_node() {
         let rule = ChaosCreatingRule::default();
         let plan = leaf_exec();
-        let result = rule.optimize(plan, &chaos_config(1.0)).unwrap();
+        let result = rule.optimize(plan, &chaos_config(1.0, 442)).unwrap();
         assert_plan!(result.as_ref(), @ r"
-        ChaosExec: failure_probability=1, fault_type=transient
+        ChaosExec: failure_probability=1, fault_type=transient, seed=442
           StatisticsExec: col_count=1, row_count=Absent
         ");
     }
@@ -171,7 +173,7 @@ mod tests {
             Arc::new(CoalescePartitionsExec::new(leaf_exec())) as Arc<dyn ExecutionPlan>;
 
         for _ in 0..20 {
-            let result = rule.optimize(plan.clone(), &chaos_config(0.5)).unwrap();
+            let result = rule.optimize(plan.clone(), &chaos_config(0.5, 12)).unwrap();
             let mut count = 0usize;
             result
                 .apply(|node| {
@@ -189,7 +191,7 @@ mod tests {
     fn chaos_rule_probability_is_passed_through() {
         let rule = ChaosCreatingRule::default();
         let plan = leaf_exec();
-        let result = rule.optimize(plan, &chaos_config(0.42)).unwrap();
+        let result = rule.optimize(plan, &chaos_config(0.42, 42)).unwrap();
         let chaos = result
             .as_any()
             .downcast_ref::<ChaosExec>()

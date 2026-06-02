@@ -57,7 +57,7 @@ message BallistaPhysicalPlanNode {
 message ChaosExecNode {
   double failure_probability = 1;
   string fault_type = 2;
-  optional uint64 seed = 3;
+  uint64 seed = 3;
 }
 
 message ShuffleWriterExecNode {

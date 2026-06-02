@@ -546,7 +546,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     input,
                     chaos_exec.failure_probability,
                     &chaos_exec.fault_type,
-                    chaos_exec.seed,
+                    Some(chaos_exec.seed),
                 )?))
             }
         }

@@ -53,8 +53,8 @@ pub struct ChaosExec {
     failure_probability: f64,
     // controls what kind of fault is injected: "transient", "fatal", "panic", or "delay"
     fault_type: String,
-    // optional RNG seed; None means thread-local non-deterministic RNG
-    seed: Option<u64>,
+    // seed used for execution
+    seed: u64,
 }
 
 impl ChaosExec {
@@ -69,6 +69,10 @@ impl ChaosExec {
         fault_type: &str,
         seed: Option<u64>,
     ) -> Result<Self> {
+        let seed = match seed {
+            Some(seed) => seed,
+            None => rand::random::<u64>(),
+        };
         if !(0.0..=1.0).contains(&failure_probability) {
             return internal_err!(
                 "ChaosExec failure_probability must be in [0.0, 1.0], got {failure_probability}"
@@ -99,8 +103,8 @@ impl ChaosExec {
         })
     }
 
-    /// Returns the configured RNG seed, if any.
-    pub fn seed(&self) -> Option<u64> {
+    /// Returns the configured RNG seed.
+    pub fn seed(&self) -> u64 {
         self.seed
     }
 
@@ -144,7 +148,7 @@ impl ExecutionPlan for ChaosExec {
             new_input,
             self.failure_probability,
             &self.fault_type,
-            self.seed,
+            Some(self.seed),
         )?))
     }
 
@@ -161,11 +165,9 @@ impl ExecutionPlan for ChaosExec {
         // Decide once per partition execution whether to inject a fault on the first batch.
         // With a seed, mix in the partition index so each partition has an independent but
         // deterministic sequence; without a seed, fall back to the thread-local RNG.
-        let should_fail = if let Some(s) = self.seed {
-            let mut rng = StdRng::seed_from_u64(s.wrapping_add(partition as u64));
+        let should_fail = {
+            let mut rng = StdRng::seed_from_u64(self.seed.wrapping_add(partition as u64));
             rng.random::<f64>() < failure_probability
-        } else {
-            rand::random::<f64>() < failure_probability
         };
 
         // Wrap the child stream. For error/panic modes, inject on the first batch (idx == 0)
@@ -239,7 +241,7 @@ impl ExecutionPlan for ChaosExec {
                 new_input,
                 self.failure_probability,
                 &self.fault_type,
-                self.seed,
+                Some(self.seed),
             )
             .ok()?,
         ))
@@ -255,7 +257,7 @@ impl ExecutionPlan for ChaosExec {
                 new_input,
                 self.failure_probability,
                 &self.fault_type,
-                self.seed,
+                Some(self.seed),
             )?)))
         } else {
             Ok(None)
@@ -272,7 +274,7 @@ impl ExecutionPlan for ChaosExec {
                 new_input,
                 self.failure_probability,
                 &self.fault_type,
-                self.seed,
+                Some(self.seed),
             )
             .ok()?,
         ))
@@ -292,23 +294,19 @@ impl DisplayAs for ChaosExec {
         t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        let seed_str = match self.seed {
-            Some(s) => format!(", seed={s}"),
-            None => String::new(),
-        };
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "ChaosExec: failure_probability={}, fault_type={}{}",
-                    self.failure_probability, self.fault_type, seed_str
+                    "ChaosExec: failure_probability={}, fault_type={}, seed={}",
+                    self.failure_probability, self.fault_type, self.seed
                 )
             }
             DisplayFormatType::TreeRender => {
                 writeln!(
                     f,
-                    "failure_probability={}, fault_type={}{}",
-                    self.failure_probability, self.fault_type, seed_str
+                    "failure_probability={}, fault_type={}, seed={}",
+                    self.failure_probability, self.fault_type, self.seed
                 )
             }
         }

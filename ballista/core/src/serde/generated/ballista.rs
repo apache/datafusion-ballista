@@ -59,8 +59,8 @@ pub struct ChaosExecNode {
     pub failure_probability: f64,
     #[prost(string, tag = "2")]
     pub fault_type: ::prost::alloc::string::String,
-    #[prost(uint64, optional, tag = "3")]
-    pub seed: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "3")]
+    pub seed: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWriterExecNode {
