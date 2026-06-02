@@ -155,7 +155,7 @@ impl ExecutionPlan for ChaosExec {
     ) -> Result<SendableRecordBatchStream> {
         let input_stream = self.input.execute(partition, context)?;
         let failure_probability = self.failure_probability;
-        let fault_type = self.fault_type.clone();
+        let fault_type = self.fault_type.to_lowercase();
         let schema = self.input.schema();
 
         // Decide once per partition execution whether to inject a fault on the first batch.
