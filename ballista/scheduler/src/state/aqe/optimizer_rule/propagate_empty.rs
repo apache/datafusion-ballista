@@ -105,25 +105,6 @@ impl PropagateEmptyExecRule {
             empty_exec!(aggregation)
         } else if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>()
             && is_empty_exec!(repartition.input())
-<<<<<<< HEAD
-=======
-        {
-            empty_exec!(repartition)
-        } else if let Some(coalesce_partition) =
-            plan.as_any().downcast_ref::<CoalescePartitionsExec>()
-            && is_empty_exec!(coalesce_partition.input())
-        {
-            empty_exec!(coalesce_partition)
-        } else if let Some(sort_preserving_merge) =
-            plan.as_any().downcast_ref::<SortPreservingMergeExec>()
-            && is_empty_exec!(sort_preserving_merge.input())
-        {
-            empty_exec!(sort_preserving_merge)
-        } else if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>()
-            // TODO: - we need other joins, this one is used for testing cancellation
-            && hash_join.join_type == Inner
-            && (is_empty_exec!(hash_join.left) || is_empty_exec!(hash_join.right))
->>>>>>> upstream/main
         {
             empty_exec!(repartition)
         } else if let Some(coalesce_partition) =
