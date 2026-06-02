@@ -29,7 +29,7 @@
 //!    passing a [`ChildPushdownResult`] containing the aggregated pushdown outcomes. The parent decides
 //!    how to handle filters that couldn't be pushed down (e.g., keep them as FilterExec nodes).
 //!
-//! [`FilterDescription`]: datafusion_physical_plan::filter_pushdown::FilterDescription
+//! [`FilterDescription`]: datafusion::physical_plan::filter_pushdown::FilterDescription
 
 //
 // This is temporary workaround until datafusion 55 is released
@@ -379,11 +379,11 @@ use itertools::{Itertools, izip};
 /// This is not yet implemented in DataFusion. See
 /// <https://github.com/apache/datafusion/issues/15037>
 ///
-/// [`PhysicalExpr`]: datafusion_physical_plan::PhysicalExpr
-/// [`PhysicalExpr::snapshot`]: datafusion_physical_plan::PhysicalExpr::snapshot
-/// [`FilterExec`]: datafusion_physical_plan::filter::FilterExec
-/// [`ProjectionExec`]: datafusion_physical_plan::projection::ProjectionExec
-/// [`AggregateExec`]: datafusion_physical_plan::aggregates::AggregateExec
+/// [`PhysicalExpr`]: datafusion::physical_plan::PhysicalExpr
+/// [`PhysicalExpr::snapshot`]: datafusion::physical_plan::PhysicalExpr::snapshot
+/// [`FilterExec`]: datafusion::physical_plan::filter::FilterExec
+/// [`ProjectionExec`]: datafusion::physical_plan::projection::ProjectionExec
+/// [`AggregateExec`]: datafusion::physical_plan::aggregates::AggregateExec
 #[derive(Debug)]
 pub struct FilterPushdown {
     phase: FilterPushdownPhase,
