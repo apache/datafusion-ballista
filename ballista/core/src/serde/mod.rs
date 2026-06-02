@@ -533,7 +533,15 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 Ok(Arc::new(exec))
             }
             PhysicalPlanType::ChaosExec(chaos_exec) => {
-                let input = inputs[0].clone();
+                let input = match inputs {
+                    [input] => input.clone(),
+                    _ => {
+                        return Err(DataFusionError::Internal(format!(
+                            "ChaosExec expects exactly 1 input, got {}",
+                            inputs.len()
+                        )));
+                    }
+                };
                 Ok(Arc::new(ChaosExec::new(
                     input,
                     chaos_exec.failure_probability,
