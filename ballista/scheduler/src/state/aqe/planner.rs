@@ -1,3 +1,5 @@
+use crate::physical_optimizer::filter_pushdown::FilterPushdown;
+use crate::physical_optimizer::output_requirements::OutputRequirements;
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -33,7 +35,20 @@ use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
+use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
+use datafusion::physical_optimizer::combine_partial_final_agg::CombinePartialFinalAggregate;
+use datafusion::physical_optimizer::enforce_distribution::EnforceDistribution;
+use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
+use datafusion::physical_optimizer::ensure_coop::EnsureCooperative;
+use datafusion::physical_optimizer::join_selection::JoinSelection;
+use datafusion::physical_optimizer::limit_pushdown::LimitPushdown;
+use datafusion::physical_optimizer::limit_pushdown_past_window::LimitPushPastWindows;
+use datafusion::physical_optimizer::limited_distinct_aggregation::LimitedDistinctAggregation;
+use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
+use datafusion::physical_optimizer::pushdown_sort::PushdownSort;
+use datafusion::physical_optimizer::sanity_checker::SanityCheckPlan;
+use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
+use datafusion::physical_optimizer::update_aggr_exprs::OptimizeAggregateOrder;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::prelude::SessionConfig;
@@ -494,14 +509,46 @@ impl AdaptivePlanner {
         // select actual join implementation based on current runtime information
         physical_optimizers
             .push(Arc::new(SelectJoinRule::new(plan_id_generator.clone())));
-        // add default set
-        physical_optimizers.extend(PhysicalOptimizer::new().rules);
+
+        // add default datafusion set of optimizers
+        // physical_optimizers.extend(PhysicalOptimizer::new().rules);
+        //
+        physical_optimizers.extend(Self::datafusion_optimizers());
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers
             .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
 
         physical_optimizers
+    }
+
+    // at the moment we create default set of optimizers
+    // ```
+    // physical_optimizers.extend(PhysicalOptimizer::new().rules);
+    // ```
+    // as there are issues with some of them
+    fn datafusion_optimizers() -> Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> {
+        vec![
+            Arc::new(OutputRequirements::new_add_mode()), // temporary fix
+            Arc::new(AggregateStatistics::new()),
+            Arc::new(JoinSelection::new()),
+            Arc::new(LimitedDistinctAggregation::new()),
+            Arc::new(FilterPushdown::new()), // temporary fix
+            Arc::new(EnforceDistribution::new()),
+            Arc::new(CombinePartialFinalAggregate::new()),
+            Arc::new(EnforceSorting::new()),
+            Arc::new(OptimizeAggregateOrder::new()),
+            Arc::new(ProjectionPushdown::new()),
+            Arc::new(OutputRequirements::new_remove_mode()),
+            Arc::new(TopKAggregation::new()),
+            Arc::new(LimitPushPastWindows::new()),
+            Arc::new(LimitPushdown::new()),
+            Arc::new(ProjectionPushdown::new()),
+            Arc::new(PushdownSort::new()),
+            Arc::new(EnsureCooperative::new()),
+            Arc::new(FilterPushdown::new_post_optimization()),
+            Arc::new(SanityCheckPlan::new()),
+        ]
     }
 
     /// set of rules which will be executed ONCE before

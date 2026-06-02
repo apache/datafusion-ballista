@@ -60,6 +60,7 @@ futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
 insta = { workspace = true }
+itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
 once_cell = { version = "1.21.4", optional = true }

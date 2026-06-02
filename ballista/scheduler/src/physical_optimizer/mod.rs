@@ -15,4 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod filter_pushdown;
 pub mod join_selection;
+pub mod output_requirements;

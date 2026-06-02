@@ -1177,6 +1177,7 @@ dependencies = [
  "graphviz-rust",
  "http 1.4.1",
  "insta",
+ "itertools 0.14.0",
  "log",
  "object_store",
  "once_cell",
