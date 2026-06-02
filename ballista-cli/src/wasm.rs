@@ -15,6 +15,38 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! # Ballista Web TUI application
+//!
+//! By using [`Ratzilla`](https://github.com/ratatui/ratzilla) the terminal user interface (TUI)
+//! application is built as a web application (a WASM32 module).
+//!
+//! ## Running the application
+//!
+//! Prerequisites:
+//!
+//! ```text
+//! cargo binstall trunk
+//! ```
+//!
+//! ### Local
+//!
+//! For local development, run the following command:
+//! ```text
+//! trunk serve --no-default-features --features web
+//! ```
+//! Then open [http://localhost:8080](http://localhost:8080) in your browser.
+//!
+//! ### Production
+//!
+//! To build the application for production, run the following command:
+//! ```text
+//! trunk build --cargo-profile release --minify --locked \
+//!             --no-default-features --features web
+//! ```
+//!
+//! See [`Trunk.toml`](https://github.com/apache/datafusion-ballista/blob/main/ballista-cli/Trunk.toml)
+//! for the build configuration.
+
 #![cfg(feature = "web")]
 
 use tracing_subscriber::fmt::format::Pretty;

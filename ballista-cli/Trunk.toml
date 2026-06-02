@@ -15,6 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
+# Configuration file for Trunk - a Rust WASM builder & bundler for web applications
+# See all possible options and their meaning at https://github.com/trunk-rs/trunk/blob/main/Trunk.toml
+# Trunk is used to build ballista-cli's TUI application as a web application by using Ratzilla
+
+# Install trunk with: cargo binstall trunk
+# Build the web application with `dev` profile: 
+# 1) cd ballista-cli
+# 2) trunk serve --no-default-features --features web
+# 3) open http://localhost:8080
+
 [build]
 target = "ballista-web-tui.html"
 dist = "../target/web-tui"
