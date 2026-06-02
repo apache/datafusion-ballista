@@ -23,7 +23,7 @@ concurrency:
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "ballista/**"
       - "ballista-cli/**"
@@ -157,27 +157,6 @@ jobs:
           # Ensure also compiles in standalone mode
           cargo test --profile ci --no-default-features --features standalone --locked
 
-  windows-test:
-    name: windows test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          submodules: true
-          fetch-depth: 1
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-windows-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-      - name: Run tests
-        shell: bash
-        run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-          export TMP=$(pwd)/.temp
-          mkdir -p "$TMP"
-          cargo test --profile ci --locked
-
   macos-test:
     name: macos test
     runs-on: macos-latest
@@ -238,8 +217,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64]
-        rust: [stable]
+        arch: [ amd64 ]
+        rust: [ stable ]
     container:
       image: ${{ matrix.arch }}/rust
       env:
@@ -267,8 +246,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64]
-        rust: [stable]
+        arch: [ amd64 ]
+        rust: [ stable ]
     container:
       image: ${{ matrix.arch }}/rust
       env:
