@@ -48,6 +48,7 @@ mod cpu_bound_executor;
 mod standalone;
 
 use ballista_core::error::BallistaError;
+use log::debug;
 use std::net::SocketAddr;
 
 pub use standalone::new_standalone_executor;
@@ -110,7 +111,7 @@ pub fn as_task_status(
     let metrics = operator_metrics.unwrap_or_default();
     match execution_result {
         Ok(partitions) => {
-            info!(
+            debug!(
                 "Task {:?} finished with operator_metrics array size {}",
                 task_id,
                 metrics.len()

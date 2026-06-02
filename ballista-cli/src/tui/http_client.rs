@@ -18,6 +18,7 @@
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use crate::tui::{
@@ -39,10 +40,11 @@ pub struct HttpClient {
 
 impl HttpClient {
     pub fn new(config: Settings) -> TuiResult<Self> {
+        let builder = Client::builder();
+        #[cfg(not(target_arch = "wasm32"))]
+        let builder = builder.timeout(Duration::from_millis(config.http.timeout));
         Ok(Self {
-            client: Client::builder()
-                .timeout(Duration::from_millis(config.http.timeout))
-                .build()?,
+            client: builder.build()?,
             config,
         })
     }
@@ -129,7 +131,7 @@ impl HttpClient {
             "job/{}/stages{}",
             self.url_encode(job_id),
             if self.config.job.stage.plan.tree {
-                "?render_tree=true"
+                "?plan_format=tree"
             } else {
                 ""
             }

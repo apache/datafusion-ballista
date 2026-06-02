@@ -17,14 +17,13 @@
 
 use crate::state::aqe::execution_plan::ExchangeExec;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::physical_expr::expressions::{Column, Literal};
-use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::common::JoinType;
 use datafusion::common::ScalarValue;
-use datafusion::common::{JoinType};
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
@@ -35,6 +34,7 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::{HashJoinExec, SortMergeJoinExec};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use std::sync::Arc;
@@ -154,15 +154,15 @@ impl PropagateEmptyExecRule {
                 JoinType::LeftAnti if right_empty => {
                     Ok(Transformed::yes((*join.left).clone()))
                 }
+                JoinType::RightAnti if right_empty => empty_exec!(plan),
                 JoinType::RightAnti if left_empty => {
                     Ok(Transformed::yes((*join.right).clone()))
                 }
-                JoinType::RightAnti if right_empty => empty_exec!(plan),
                 // Return empty if both sides are empty
                 JoinType::Full if left_empty && right_empty => empty_exec!(plan),
                 // For Full Join, if one side is empty, replace with a
                 // Projection that null-pads the empty side's columns.
-                JoinType::Full if right_empty => {
+                JoinType::Full if right_empty && is_guaranteed_non_empty(join.left) => {
                     Ok(Transformed::yes(build_null_padded_projection(
                         Arc::clone(&join.left),
                         join.schema.clone(),
@@ -170,7 +170,7 @@ impl PropagateEmptyExecRule {
                         true,
                     )?))
                 }
-                JoinType::Full if left_empty => {
+                JoinType::Full if left_empty && is_guaranteed_non_empty(join.right) => {
                     Ok(Transformed::yes(build_null_padded_projection(
                         Arc::clone(&join.right),
                         join.schema.clone(),
@@ -250,6 +250,20 @@ pub fn is_guaranteed_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
     }
 }
 
+/// Compagnion function for branching
+/// Returns true only when we have exact stats confirming the plan is non-empty.
+/// Precision::Absent means we know nothing — we cannot claim non-empty.
+pub fn is_guaranteed_non_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let Ok(stats) = plan.partition_statistics(None) else {
+        return false;
+    };
+
+    match stats.num_rows {
+        Precision::Exact(n) => n > 0,
+        _ => false,
+    }
+}
+
 pub fn build_null_padded_projection(
     surviving_exec: Arc<dyn ExecutionPlan>,
     join_schema: SchemaRef,
@@ -258,7 +272,7 @@ pub fn build_null_padded_projection(
 ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
     let surviving_schema = surviving_exec.schema();
 
-    let exprs: Vec<(Arc<dyn PhysicalExpr>, String)>= join_schema
+    let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = join_schema
         .fields()
         .iter()
         .enumerate()
@@ -269,7 +283,7 @@ pub fn build_null_padded_projection(
                 i < left_field_count
             };
 
-            let expr: Arc<dyn PhysicalExpr>= if on_empty_side {
+            let expr: Arc<dyn PhysicalExpr> = if on_empty_side {
                 // Replace empty side with a typed NULL literal
                 Arc::new(Literal::new(ScalarValue::try_from(field.data_type())?))
             } else {
@@ -282,10 +296,7 @@ pub fn build_null_padded_projection(
                 } else {
                     i - left_field_count
                 };
-                Arc::new(Column::new(
-                    surviving_schema.field(col_idx).name(),
-                    col_idx,
-                ))
+                Arc::new(Column::new(surviving_schema.field(col_idx).name(), col_idx))
             };
 
             Ok((expr, field.name().clone()))
@@ -453,7 +464,11 @@ mod tests {
 
     #[test]
     fn as_join_recognises_hash_join() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Inner,
+        );
         let info = as_join(&plan);
         assert!(info.is_some());
         assert_eq!(info.unwrap().join_type, JoinType::Inner);
@@ -461,7 +476,11 @@ mod tests {
 
     #[test]
     fn as_join_recognises_sort_merge_join() {
-        let plan = sort_merge_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Left);
+        let plan = sort_merge_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Left,
+        );
         let info = as_join(&plan);
         assert!(info.is_some());
         assert_eq!(info.unwrap().join_type, JoinType::Left);
@@ -494,7 +513,11 @@ mod tests {
 
     #[test]
     fn inner_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Inner,
+        );
         assert_untouched(&transform(plan));
     }
 
@@ -523,7 +546,11 @@ mod tests {
 
     #[test]
     fn left_join_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Left);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Left,
+        );
         assert_untouched(&transform(plan));
     }
 
@@ -552,7 +579,11 @@ mod tests {
 
     #[test]
     fn right_join_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Right);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Right,
+        );
         assert_untouched(&transform(plan));
     }
 
@@ -596,7 +627,11 @@ mod tests {
 
     #[test]
     fn full_join_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Full);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Full,
+        );
         assert_untouched(&transform(plan));
     }
 
@@ -604,37 +639,61 @@ mod tests {
 
     #[test]
     fn left_semi_left_empty_eliminated() {
-        let plan = hash_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::LeftSemi);
+        let plan = hash_join(
+            empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::LeftSemi,
+        );
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn left_semi_right_empty_eliminated() {
-        let plan = hash_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::LeftSemi);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            empty_stats_exec(),
+            JoinType::LeftSemi,
+        );
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn left_semi_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::LeftSemi);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::LeftSemi,
+        );
         assert_untouched(&transform(plan));
     }
 
     #[test]
     fn right_semi_left_empty_eliminated() {
-        let plan = hash_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::RightSemi);
+        let plan = hash_join(
+            empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::RightSemi,
+        );
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn right_semi_right_empty_eliminated() {
-        let plan = hash_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::RightSemi);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            empty_stats_exec(),
+            JoinType::RightSemi,
+        );
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn right_semi_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::RightSemi);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::RightSemi,
+        );
         assert_untouched(&transform(plan));
     }
 
@@ -642,7 +701,11 @@ mod tests {
 
     #[test]
     fn left_anti_left_empty_eliminated() {
-        let plan = hash_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::LeftAnti);
+        let plan = hash_join(
+            empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::LeftAnti,
+        );
         assert_empty(&transform(plan));
     }
 
@@ -658,13 +721,21 @@ mod tests {
 
     #[test]
     fn left_anti_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::LeftAnti);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::LeftAnti,
+        );
         assert_untouched(&transform(plan));
     }
 
     #[test]
     fn right_anti_right_empty_eliminated() {
-        let plan = hash_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::RightAnti);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            empty_stats_exec(),
+            JoinType::RightAnti,
+        );
         assert_empty(&transform(plan));
     }
 
@@ -679,7 +750,11 @@ mod tests {
 
     #[test]
     fn right_anti_neither_empty_untouched() {
-        let plan = hash_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::RightAnti);
+        let plan = hash_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::RightAnti,
+        );
         assert_untouched(&transform(plan));
     }
 
@@ -687,74 +762,95 @@ mod tests {
 
     #[test]
     fn smj_inner_left_empty_eliminated() {
-        let plan = sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
+        let plan =
+            sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn smj_inner_right_empty_eliminated() {
-        let plan = sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Inner);
+        let plan =
+            sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Inner);
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn smj_left_join_left_empty_eliminated() {
-        let plan = sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Left);
+        let plan =
+            sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Left);
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn smj_left_join_right_empty_produces_null_padded_projection() {
-        let plan = sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Left);
+        let plan =
+            sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Left);
         assert_projection(&transform(plan));
     }
 
     #[test]
     fn smj_right_join_right_empty_eliminated() {
-        let plan = sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Right);
+        let plan =
+            sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Right);
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn smj_right_join_left_empty_produces_null_padded_projection() {
-        let plan = sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Right);
+        let plan =
+            sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Right);
         assert_projection(&transform(plan));
     }
 
     #[test]
     fn smj_full_both_empty_eliminated() {
-        let plan = sort_merge_join(empty_stats_exec(), empty_stats_exec(), JoinType::Full);
+        let plan =
+            sort_merge_join(empty_stats_exec(), empty_stats_exec(), JoinType::Full);
         assert_empty(&transform(plan));
     }
 
     #[test]
     fn smj_full_right_empty_produces_null_padded_projection() {
-        let plan = sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Full);
+        let plan =
+            sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::Full);
         assert_projection(&transform(plan));
     }
 
     #[test]
     fn smj_full_left_empty_produces_null_padded_projection() {
-        let plan = sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Full);
+        let plan =
+            sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::Full);
         assert_projection(&transform(plan));
     }
 
     #[test]
     fn smj_full_neither_empty_untouched() {
-        let plan = sort_merge_join(non_empty_stats_exec(), non_empty_stats_exec(), JoinType::Full);
+        let plan = sort_merge_join(
+            non_empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Full,
+        );
         assert_untouched(&transform(plan));
     }
 
     #[test]
     fn smj_left_anti_right_empty_returns_left_child() {
-        let plan = sort_merge_join(non_empty_stats_exec(), empty_stats_exec(), JoinType::LeftAnti);
+        let plan = sort_merge_join(
+            non_empty_stats_exec(),
+            empty_stats_exec(),
+            JoinType::LeftAnti,
+        );
         let result = transform(plan);
         assert!(result.as_any().downcast_ref::<StatisticsExec>().is_some());
     }
 
     #[test]
     fn smj_right_anti_left_empty_returns_right_child() {
-        let plan = sort_merge_join(empty_stats_exec(), non_empty_stats_exec(), JoinType::RightAnti);
+        let plan = sort_merge_join(
+            empty_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::RightAnti,
+        );
         let result = transform(plan);
         assert!(result.as_any().downcast_ref::<StatisticsExec>().is_some());
     }
@@ -764,13 +860,85 @@ mod tests {
     #[test]
     fn unknown_stats_inner_join_untouched() {
         // Precision::Absent on either side must not trigger elimination
-        let plan = hash_join(unknown_stats_exec(), non_empty_stats_exec(), JoinType::Inner);
+        let plan = hash_join(
+            unknown_stats_exec(),
+            non_empty_stats_exec(),
+            JoinType::Inner,
+        );
         assert_untouched(&transform(plan));
     }
 
     #[test]
-    fn unknown_stats_left_join_untouched() {
-        let plan = hash_join(unknown_stats_exec(), empty_stats_exec(), JoinType::Left);
+    fn left_join_left_exact_zero_right_absent_eliminated() {
+        // Left is confirmed empty, right stats unknown — Left join result is still empty
+        let plan = hash_join(empty_stats_exec(), unknown_stats_exec(), JoinType::Left);
+        assert_empty(&transform(plan));
+    }
+
+    #[test]
+    fn right_join_right_exact_zero_left_absent_eliminated() {
+        // Right is confirmed empty, left stats unknown — Right join result is still empty
+        let plan = hash_join(unknown_stats_exec(), empty_stats_exec(), JoinType::Right);
+        assert_empty(&transform(plan));
+    }
+
+    #[test]
+    fn inner_join_left_exact_zero_right_absent_eliminated() {
+        // Inner: left empty is sufficient, right stats don't matter
+        let plan = hash_join(empty_stats_exec(), unknown_stats_exec(), JoinType::Inner);
+        assert_empty(&transform(plan));
+    }
+
+    #[test]
+    fn inner_join_right_exact_zero_left_absent_eliminated() {
+        let plan = hash_join(unknown_stats_exec(), empty_stats_exec(), JoinType::Inner);
+        assert_empty(&transform(plan));
+    }
+
+    #[test]
+    fn full_join_one_side_absent_untouched() {
+        // Full needs BOTH sides empty — if one is unknown, can't eliminate
+        let plan = hash_join(empty_stats_exec(), unknown_stats_exec(), JoinType::Full);
         assert_untouched(&transform(plan));
+    }
+
+    #[test]
+    fn left_anti_empty_left_under_partitioned_exchange_preserves_partition_count() {
+        // Simulates: ExchangeExec(Hash, 16) → EmptyExec
+        // After propagation the Exchange becomes empty.
+        // The LeftAnti join above must produce an EmptyExec with the
+        // join's partition count, NOT the Exchange's input partition count.
+        use datafusion::physical_plan::Partitioning;
+        use datafusion::physical_plan::repartition::RepartitionExec;
+
+        // Build: LeftAnti join where left = RepartitionExec(16) over EmptyExec
+        let empty = Arc::new(EmptyExec::new(schema()).with_partitions(1));
+        let repartitioned = Arc::new(
+            RepartitionExec::try_new(
+                empty,
+                Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let plan = hash_join(repartitioned, non_empty_stats_exec(), JoinType::LeftAnti);
+
+        // The rule should fire (left is empty via RepartitionExec over EmptyExec)
+        // and produce an EmptyExec with the join's partition count
+        let result = PropagateEmptyExecRule {}
+            .optimize(plan.clone(), &ConfigOptions::default())
+            .unwrap();
+
+        let empty_exec = result.as_any().downcast_ref::<EmptyExec>();
+        assert!(empty_exec.is_some(), "expected EmptyExec");
+        assert_eq!(
+            empty_exec
+                .unwrap()
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            plan.properties().output_partitioning().partition_count(),
+            "EmptyExec partition count must match the original join's partition count"
+        );
     }
 }

@@ -54,8 +54,11 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
@@ -114,8 +117,11 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -180,8 +186,11 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
         MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(262144), Bytes=Exact(2097152), [(Col[0]:)]]
     ");
 
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), join, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        join,
+        "test_job".to_string(),
+    )?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
@@ -277,8 +286,11 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
       MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(1024), Bytes=Exact(8192), [(Col[0]:)]]
     ");
 
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), join, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        join,
+        "test_job".to_string(),
+    )?;
 
     //
     // plan after AQE, note the join has already been re-ordered
@@ -380,8 +392,11 @@ async fn should_cancel_the_stage() -> datafusion::error::Result<()> {
         .create_physical_plan()
         .await?;
 
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), join, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        join,
+        "test_job".to_string(),
+    )?;
 
     let (stages, cancellable) = planner.actionable_stages()?;
     assert_eq!(2, stages.unwrap().len());

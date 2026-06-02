@@ -35,6 +35,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
+use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
@@ -97,7 +98,7 @@ impl TaskLauncher for DefaultTaskLauncher {
                     format!("{}/{}/{:?}", task.job_id, task.stage_id, task_ids)
                 })
                 .collect();
-            info!(
+            debug!(
                 "Launching multi task on executor {:?} for {:?}",
                 executor.id, tasks_ids
             );
@@ -319,8 +320,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 Some(logical_plan.display_indent().to_string()),
             )?) as ExecutionGraphBox
         };
+        let string_plan =
+            datafusion::physical_plan::displayable(graph.physical_plan().as_ref())
+                .indent(false)
+                .to_string();
 
-        info!("Submitting execution graph:\n\n{graph:?}");
+        info!("Submitting execution graph for job_id: {job_id}:\n\n{string_plan}");
 
         self.state
             .submit_job(job_id.to_string(), &graph, subscriber)
@@ -438,6 +443,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             Ok(graph)
         }
+    }
+
+    /// Get the session configuration for a job.
+    pub async fn get_job_config(&self, job_id: &str) -> Result<Arc<SessionConfig>> {
+        let graph = self
+            .get_job_execution_graph(job_id)
+            .await?
+            .ok_or_else(|| BallistaError::General(format!("Job {job_id} not found")))?;
+
+        Ok(graph.session_config())
     }
 
     /// Update given task statuses in the respective job and return a tuple containing:

@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4"
+        tags = "1, 2, 3, 4, 5"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -49,7 +49,18 @@ pub mod ballista_physical_plan_node {
         UnresolvedShuffle(super::UnresolvedShuffleExecNode),
         #[prost(message, tag = "4")]
         SortShuffleWriter(super::SortShuffleWriterExecNode),
+        #[prost(message, tag = "5")]
+        ChaosExec(super::ChaosExecNode),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChaosExecNode {
+    #[prost(double, tag = "1")]
+    pub failure_probability: f64,
+    #[prost(string, tag = "2")]
+    pub fault_type: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub seed: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWriterExecNode {

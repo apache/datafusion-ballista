@@ -81,6 +81,11 @@ pub struct ExchangeExec {
     /// stage execution logic, and to support making more complex
     /// stage run decisions.
     pub(crate) inactive_stage: bool,
+
+    /// Indicates that this exchange is broadcast exchange,
+    /// usually used in broadcast joins.
+    /// CollectLeft HashJoin equivalent in datafusion
+    pub(crate) broadcast: bool,
 }
 
 impl ExchangeExec {
@@ -98,22 +103,60 @@ impl ExchangeExec {
             plan_id,
             Arc::new(AtomicI64::new(-1)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            false,
+            false,
+        )
+    }
+    /// new broadcast exchange
+    pub fn new_broadcast(
+        input: Arc<dyn ExecutionPlan>,
+        partitioning: Option<Partitioning>,
+        plan_id: usize,
+    ) -> Self {
+        Self::new_with_details(
+            input,
+            partitioning,
+            plan_id,
+            Arc::new(AtomicI64::new(-1)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            true,
+            false,
+        )
+    }
+
+    pub fn to_broadcast(&self, plan_id: usize) -> Self {
+        Self::new_with_details(
+            self.input.clone(),
+            None,
+            plan_id,
+            self.stage_id.clone(),
+            self.shuffle_partitions.clone(),
+            self.coalesce.clone(),
+            true,
+            self.inactive_stage,
         )
     }
 
     /// Creates a new `ExchangeExec` with explicitly-provided stage ID and
     /// partition storage. Used by the AQE rule infrastructure to construct
     /// exchanges that share atomic state with the enclosing `AdaptivePlanner`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_details(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Option<Partitioning>,
         plan_id: usize,
         stage_id: Arc<AtomicI64>,
         stage_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+        coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
+        broadcast: bool,
+        inactive_stage: bool,
     ) -> Self {
-        let plan_partitioning = match partitioning.as_ref() {
-            Some(partitioning) => partitioning.clone(),
-            None => input.output_partitioning().clone(),
+        let plan_partitioning = match (partitioning.as_ref(), broadcast) {
+            (Some(partitioning), false) => partitioning.clone(),
+            (None, false) => input.output_partitioning().clone(),
+            (_, true) => Partitioning::UnknownPartitioning(1),
         };
         let eq_properties = input.properties().eq_properties.clone();
         let properties = Arc::new(PlanProperties::new(
@@ -130,8 +173,9 @@ impl ExchangeExec {
             stage_id,
             shuffle_partitions: stage_partitions,
             partitioning,
-            coalesce: Arc::new(Mutex::new(None)),
-            inactive_stage: false,
+            coalesce,
+            inactive_stage,
+            broadcast,
         }
     }
 
@@ -169,6 +213,14 @@ impl ExchangeExec {
     /// `true` if `shuffle_partitions` contains a value, `false` otherwise.
     pub fn shuffle_partitions(&self) -> Option<Vec<Vec<PartitionLocation>>> {
         self.shuffle_partitions.lock().clone()
+    }
+
+    /// Flattens partition locations into single vector,
+    /// this method is usually used when we want to collect partitions
+    /// to form a broadcast join
+    pub(crate) fn shuffle_partitions_flattened(&self) -> Vec<PartitionLocation> {
+        let partitions = self.shuffle_partitions.lock().clone().unwrap_or_default();
+        partitions.into_iter().flatten().collect()
     }
 
     /// sets the stage id running this exchange
@@ -237,6 +289,9 @@ impl DisplayAs for ExchangeExec {
                         cp.upstream_partition_count,
                     )?;
                 }
+                if self.broadcast {
+                    write!(f, ", broadcast=true",)?
+                }
                 Ok(())
             }
             DisplayFormatType::TreeRender => {
@@ -256,7 +311,11 @@ impl DisplayAs for ExchangeExec {
                         .map(|stage_id| format!("({})", stage_id))
                         .unwrap_or_else(|| "pending".to_string()),
                 )?;
-                writeln!(f, "stage_resolved={}", self.shuffle_created())
+                writeln!(f, "stage_resolved={}", self.shuffle_created())?;
+                if self.broadcast {
+                    writeln!(f, "broadcast=true")?;
+                }
+                Ok(())
             }
         }
     }
@@ -291,17 +350,18 @@ impl ExecutionPlan for ExchangeExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() == 1 {
-            let mut new_exec = Self::new_with_details(
+            let new_exec = Self::new_with_details(
                 children[0].clone(),
                 self.partitioning.clone(),
                 self.plan_id,
                 self.stage_id.clone(),
+                // Carry the coalesce slot so a transform-rebuilt parent chain
+                // doesn't lose the rule's decision.
                 self.shuffle_partitions.clone(),
+                self.coalesce.clone(),
+                self.broadcast,
+                self.inactive_stage,
             );
-            new_exec.inactive_stage = self.inactive_stage;
-            // Carry the coalesce slot so a transform-rebuilt parent chain
-            // doesn't lose the rule's decision.
-            new_exec.coalesce = self.coalesce.clone();
 
             Ok(Arc::new(new_exec))
         } else {

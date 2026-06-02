@@ -35,7 +35,9 @@
 //!   shuffle metadata.
 
 mod adaptive;
+mod dynamic_join;
 mod exchange;
 
 pub use adaptive::*;
+pub use dynamic_join::*;
 pub use exchange::*;
