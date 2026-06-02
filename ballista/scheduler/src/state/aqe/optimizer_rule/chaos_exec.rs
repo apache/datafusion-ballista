@@ -132,7 +132,7 @@ mod tests {
 
     fn chaos_config(probability: f64) -> ConfigOptions {
         let mut bc = BallistaConfig::default();
-        bc.set("testing.chaos_execution.enabled", "true").unwrap();
+        bc.set("ballista.testing.chaos_execution.enabled", "true").unwrap();
         bc.set(
             "testing.chaos_execution.probability",
             &probability.to_string(),
