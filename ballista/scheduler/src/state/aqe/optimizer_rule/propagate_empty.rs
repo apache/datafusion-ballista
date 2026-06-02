@@ -251,7 +251,7 @@ pub fn is_guaranteed_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
 }
 
 /// Companion function for branching
-/// 
+///
 /// Returns true only when we have exact stats confirming the plan is non-empty.
 /// Precision::Absent means we know nothing — we cannot claim non-empty.
 pub fn is_guaranteed_non_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
@@ -265,13 +265,12 @@ pub fn is_guaranteed_non_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
     }
 }
 
-
 /// Building a projection out of the other part of join
 /// Casting all of it's non-matching columns to NULL
 /// Thus keeping the schema in tact
-/// 
+///
 /// Inspired by logcal plan null-padded projection in DataFusion
-/// 
+///
 /// # Example
 ///
 /// For a `LEFT JOIN` where the right side is empty:
