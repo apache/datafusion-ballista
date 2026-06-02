@@ -46,7 +46,16 @@ fn coalesce_context(target_partitions: usize, enabled: bool) -> SessionContext {
         .with_target_partitions(target_partitions)
         .with_round_robin_repartition(false)
         .with_ballista_coalesce_enabled(enabled)
-        .with_ballista_coalesce_target_partition_bytes(200);
+        .with_ballista_coalesce_target_partition_bytes(200)
+        .set_bool("datafusion.optimizer.prefer_hash_join", false)
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        )
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+            0,
+        );
 
     let state = SessionStateBuilder::new()
         .with_config(config)
@@ -126,12 +135,15 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     // Before any stage finalizes the leaves are unresolved, so the rule
     // no-ops: `coalesce=none`.
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
@@ -151,7 +163,7 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
     // `CoalescePlan` to plan_id=0.
     let _ = planner.runnable_stages()?;
 
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
@@ -176,13 +188,16 @@ async fn should_skip_coalesce_when_rule_disabled() -> datafusion::error::Result<
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let _ = planner.runnable_stages()?.unwrap();
     planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
 
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
@@ -210,13 +225,16 @@ async fn should_skip_coalesce_when_partitions_are_full() -> datafusion::error::R
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let _ = planner.runnable_stages()?.unwrap();
     planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[300; 8]))?;
 
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
@@ -246,8 +264,11 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
@@ -259,7 +280,7 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
     // attaches the shared `CoalescePlan` to both leaf Exchanges.
     let _ = planner.runnable_stages()?;
 
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
       ProjectionExec: expr=[a@0 as a, b@2 as b]
         SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
@@ -296,8 +317,11 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(3, stages.len());
@@ -310,7 +334,7 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
     // attaches the same `CoalescePlan` to all three leaf Exchanges.
     let _ = planner.runnable_stages()?;
 
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=3, stage_resolved=false
       ProjectionExec: expr=[a@0 as a, b@2 as b, c@3 as c]
         SortMergeJoinExec: join_type=Inner, on=[(c@1, c@0)]
@@ -358,8 +382,11 @@ async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
@@ -370,7 +397,7 @@ async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
     // Surface the join stage so `CoalescePartitionsRule` fires per-stage.
     let _ = planner.runnable_stages()?;
 
-    assert_plan!(planner.current_plan(),  @ "
+    assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
       ProjectionExec: expr=[a@0 as a, b@2 as b]
         SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
@@ -402,8 +429,11 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner =
-        AdaptivePlanner::try_new(ctx.state().config(), plan, "test_job".to_string())?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan,
+        "test_job".to_string(),
+    )?;
 
     // Stage 0 is the upstream shuffle writer, partitioning by `c` into M=8.
     let stages = planner.runnable_stages()?.unwrap();

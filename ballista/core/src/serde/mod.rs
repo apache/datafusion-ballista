@@ -693,7 +693,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             Ok(())
         } else {
             Err(DataFusionError::Internal(format!(
-                "unsupported plan type: {node:?}"
+                "Unsupported plan node, name: [{}] ",
+                node.name()
             )))
         }
     }

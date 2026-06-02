@@ -100,6 +100,10 @@ pub const BALLISTA_COALESCE_SMALL_PARTITION_FACTOR: &str =
 /// Configuration key for the merged-partition early-flush factor (Spark legacy semantics).
 pub const BALLISTA_COALESCE_MERGED_PARTITION_FACTOR: &str =
     "ballista.planner.coalesce.merged_partition_factor";
+/// Configuration key for enabling the AQE dynamic join-selection rule.
+/// When disabled, `SelectJoinRule` is a no-op and `DynamicJoinSelectionExec`
+/// nodes are left in the plan (which will fail at execution — disable only for debugging).
+pub const BALLISTA_ADAPTIVE_JOIN_ENABLED: &str = "ballista.planner.adaptive_join.enabled";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -219,6 +223,15 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             "Merged-partition early-flush factor (Spark legacy).".to_string(),
             DataType::Float64,
             Some("1.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_ADAPTIVE_JOIN_ENABLED.to_string(),
+            "Enables the AQE dynamic join-selection rule (SelectJoinRule). \
+             When true (default), DynamicJoinSelectionExec nodes are resolved to \
+             concrete HashJoin or CollectLeft join implementations at runtime. \
+             Disable only for debugging.".to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
         ),
     ];
     entries
@@ -448,6 +461,11 @@ impl BallistaConfig {
     /// Returns the merged-partition early-flush factor (Spark legacy).
     pub fn coalesce_merged_partition_factor(&self) -> f64 {
         self.get_float_setting(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR)
+    }
+
+    /// Returns whether the AQE dynamic join-selection rule is enabled.
+    pub fn adaptive_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_ADAPTIVE_JOIN_ENABLED)
     }
 
     /// Should client employ pull or push job tracking strategy
