@@ -51,6 +51,7 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
     render_navbar(f, chunks[1], app);
 }
 
+#[cfg(not(feature = "web"))]
 fn render_banner(f: &mut Frame, area: Rect) {
     use tui_big_text::{BigText, PixelSize};
 
@@ -63,9 +64,17 @@ fn render_banner(f: &mut Frame, area: Rect) {
     let big_text = BigText::builder()
         .pixel_size(banner_size)
         .style(Style::new().yellow())
-        .lines(vec![" Apache".into(), " DataFusion".into()])
+        .lines(vec![" DataFusion".into(), " Ballista".into()])
         .build();
     f.render_widget(big_text, area);
+}
+
+// Web: logo is displayed as a DOM <img> element overlaid on the Ratzilla canvas.
+// Halfblock characters are not reliably present in Ratzilla's WebGL2 glyph atlas,
+// so we leave this area blank and rely on setup_logo_dom() in wasm.rs.
+#[cfg(feature = "web")]
+fn render_banner(f: &mut Frame, area: Rect) {
+    f.render_widget(Block::default(), area);
 }
 
 fn render_navbar(f: &mut Frame, area: Rect, app: &App) {

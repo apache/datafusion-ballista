@@ -1,0 +1,82 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Ballista Web TUI
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/web-tui.yml"
+      - ".github/actions/setup-builder/**"
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/web-tui.yml"
+      - ".github/actions/setup-builder/**"
+  workflow_dispatch:
+
+jobs:
+  web-tui:
+    name: Build Web TUI WASM32 application
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "stable"
+          targets: "wasm32-unknown-unknown"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@8f531eaecd1898bc3da7d104ad91bee98d1b97bd # v2.79.9
+        with:
+          tool: trunk@0.21.14
+
+      - name: Build
+        working-directory: ballista-cli
+        run: |
+          trunk build --cargo-profile release-nonlto --minify --locked \
+            --no-default-features --features web
+
+      - name: Upload WASM32 application
+        uses: actions/upload-artifact@v7
+        with:
+          name: ballista-web-tui
+          retention-days: 7
+          path: target/web-tui/
