@@ -15,6 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// filter pushdown has been copied over
+// from datafusion to patch non idempotent
+// behavior.
+// TODO: remove when updated to datafusion 55
 pub mod filter_pushdown;
+// join selection has been copied over from
+// datafusion and patched to support ballista
+// specific cases. it has been used in static
+// execution graph only.
 pub mod join_selection;
+// output requirements has been copied over
+// from datafusion to patch non idempotent
+// behavior.
+// TODO: remove when updated to datafusion 55
 pub mod output_requirements;
