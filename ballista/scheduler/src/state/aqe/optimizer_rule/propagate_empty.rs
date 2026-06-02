@@ -131,7 +131,7 @@ impl PropagateEmptyExecRule {
                 // with NULLs for right columns.
                 JoinType::Left if right_empty => {
                     Ok(Transformed::yes(build_null_padded_projection(
-                        Arc::clone(&join.left),
+                        Arc::clone(join.left),
                         join.schema,
                         left_field_count,
                         true,
@@ -142,7 +142,7 @@ impl PropagateEmptyExecRule {
                 // with NULLs for left columns.
                 JoinType::Right if left_empty => {
                     Ok(Transformed::yes(build_null_padded_projection(
-                        Arc::clone(&join.right),
+                        Arc::clone(join.right),
                         join.schema,
                         left_field_count,
                         false,
@@ -164,7 +164,7 @@ impl PropagateEmptyExecRule {
                 // Projection that null-pads the empty side's columns.
                 JoinType::Full if right_empty && is_guaranteed_non_empty(join.left) => {
                     Ok(Transformed::yes(build_null_padded_projection(
-                        Arc::clone(&join.left),
+                        Arc::clone(join.left),
                         join.schema.clone(),
                         left_field_count,
                         true,
@@ -172,7 +172,7 @@ impl PropagateEmptyExecRule {
                 }
                 JoinType::Full if left_empty && is_guaranteed_non_empty(join.right) => {
                     Ok(Transformed::yes(build_null_padded_projection(
-                        Arc::clone(&join.right),
+                        Arc::clone(join.right),
                         join.schema.clone(),
                         left_field_count,
                         false,
@@ -250,7 +250,7 @@ pub fn is_guaranteed_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
     }
 }
 
-/// Compagnion function for branching
+/// Companion function for branching
 /// Returns true only when we have exact stats confirming the plan is non-empty.
 /// Precision::Absent means we know nothing — we cannot claim non-empty.
 pub fn is_guaranteed_non_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
