@@ -18,7 +18,7 @@ use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
-    PropagateEmptyExecRule, SelectJoinRule, WarnOnDuplicateExecRule,
+    PropagateEmptyExecRule, SelectJoinRule,
 };
 
 use crate::state::distributed_explain::handle_explain_plan;
@@ -499,14 +499,6 @@ impl AdaptivePlanner {
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers
             .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
-        // we should remove it at the later stage this is just temporary
-        // to detect possible duplicate execs.
-        // rule does not mutate plan hance it can go after `DistributedExchangeRule`
-        physical_optimizers.push(Arc::new(WarnOnDuplicateExecRule::default()));
-
-        // `CoalescePartitionsRule` is invoked per-stage in `actionable_stages()`
-        // rather than registered here, so each invocation sees only one stage's
-        // plan and forms an alignment group scoped to that stage's inputs.
 
         physical_optimizers
     }

@@ -410,7 +410,7 @@ impl StaticExecutionGraph {
             });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
-            info!("Job {job_id} is success, finalizing output partitions");
+            debug!("Job {job_id} is success, finalizing job output ...");
             self.succeed_job()?;
             events.push(QueryStageSchedulerEvent::JobFinished {
                 job_id,
