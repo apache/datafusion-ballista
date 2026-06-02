@@ -249,7 +249,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(
             BALLISTA_CHAOS_EXECUTION_ENABLED.to_string(),
             "Enables chaos-monkey execution injection for robustness testing. \
-             When true, ChaosMonkeyExec is inserted at a random point in the plan \
+             When true, ChaosExec is inserted at a random point in the plan \
              once per optimize call.".to_string(),
             DataType::Boolean,
             Some(false.to_string()),
