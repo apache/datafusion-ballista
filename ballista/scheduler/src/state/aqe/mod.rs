@@ -279,7 +279,7 @@ impl AdaptiveExecutionGraph {
             });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
-            info!("Job {job_id} is success, finalizing output partitions");
+            debug!("Job {job_id} is success, finalizing output partitions ...");
             self.succeed_job()?;
             events.push(QueryStageSchedulerEvent::JobFinished {
                 job_id,

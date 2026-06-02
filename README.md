@@ -156,7 +156,7 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | Feature                    | Default | Description                                      |
 | -------------------------- | ------- | ------------------------------------------------ |
 | `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging |
-| `substrait`                | Yes     | Enables Substrait plan support                   |
+| `substrait`                | No      | Enables Substrait plan support                   |
 | `prometheus-metrics`       | No      | Enables Prometheus metrics collection            |
 | `graphviz-support`         | No      | Enables execution graph visualization            |
 | `spark-compat`             | No      | Enables Spark compatibility mode                 |

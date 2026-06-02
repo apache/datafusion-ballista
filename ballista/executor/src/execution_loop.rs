@@ -307,8 +307,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             }
         };
 
-        info!("Done with task {task_identity}");
-        debug!("Statistics: {execution_result:?}");
+        info!("Finished task : [{task_identity}]");
+        debug!("Task statistics: [{task_identity}] {execution_result:?}");
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics

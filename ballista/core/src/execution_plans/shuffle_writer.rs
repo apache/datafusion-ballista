@@ -63,7 +63,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, error, info};
+use log::{debug, error};
 
 use super::shuffle_writer_trait::ShuffleWriter;
 
@@ -250,7 +250,7 @@ impl ShuffleWriterExec {
                         .output_rows
                         .add(stats.num_rows.unwrap_or(0) as usize);
 
-                    info!(
+                    debug!(
                         "Executed partition {} in {} seconds. Statistics: {}",
                         input_partition,
                         now.elapsed().as_secs(),
