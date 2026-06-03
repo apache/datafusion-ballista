@@ -239,7 +239,8 @@ impl DynamicJoinSelectionExec {
         let stats_right = self.right.partition_statistics(None)?;
 
         debug!(
-            "to_actual_join: decision: {:?} left: ({:?} | {:?}), right: ({:?} | {:?})",
+            "to_actual_join - plan_id: {}, decision: {:?} left: ({:?} | {:?}), right: ({:?} | {:?})",
+            self.plan_id,
             partition_mode,
             stats_left.num_rows,
             stats_left.total_byte_size,
