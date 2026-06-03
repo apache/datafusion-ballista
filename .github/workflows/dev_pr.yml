@@ -31,7 +31,7 @@ on:
 jobs:
   process:
     name: Process
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - name: Assign GitHub labels
         if: |

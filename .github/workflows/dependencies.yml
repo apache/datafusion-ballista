@@ -39,13 +39,10 @@ on:
 jobs:
   depcheck:
     name: msrv dependency check
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder

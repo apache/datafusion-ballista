@@ -23,7 +23,7 @@ concurrency:
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "ballista/**"
       - "ballista-cli/**"
@@ -136,7 +136,7 @@ jobs:
           cargo check --profile ci -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features --locked
 
   ballista-test:
-    name: test linux balista
+    name: test linux ballista
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -219,9 +219,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6.0.2
       - name: Setup toolchain
@@ -235,26 +233,19 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ${{ matrix.arch }}/rust
-      env:
-        # Disable full debug symbol generation to speed up CI build and keep memory down
-        # "1" means line tables only, which is useful for panic tracebacks.
-        RUSTFLAGS: "-C debuginfo=1"
+    runs-on: macos-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      # "1" means line tables only, which is useful for panic tracebacks.
+      RUSTFLAGS: "-C debuginfo=1"
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install Clippy
         run: |
@@ -264,30 +255,25 @@ jobs:
 
   cargo-toml-formatting-checks:
     name: Check Cargo.toml formatting
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ${{ matrix.arch }}/rust
-      env:
-        # Disable full debug symbol generation to speed up CI build and keep memory down
-        # "1" means line tables only, which is useful for panic tracebacks.
-        RUSTFLAGS: "-C debuginfo=1"
+    runs-on: macos-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      # "1" means line tables only, which is useful for panic tracebacks.
+      RUSTFLAGS: "-C debuginfo=1"
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        run: |
-          which cargo-tomlfmt || cargo install cargo-tomlfmt
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-tomlfmt@0.2.1
+
       - name: Check Cargo.toml formatting
         run: |
           # if you encounter error, try rerun the command below, finally run 'git diff' to
