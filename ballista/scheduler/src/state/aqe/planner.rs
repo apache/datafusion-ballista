@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
@@ -21,7 +22,6 @@ use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
     PropagateEmptyExecRule, SelectJoinRule,
 };
-
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::execution_plans::ShuffleWriter;
@@ -33,7 +33,6 @@ use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::prelude::SessionConfig;
@@ -494,14 +493,36 @@ impl AdaptivePlanner {
         // select actual join implementation based on current runtime information
         physical_optimizers
             .push(Arc::new(SelectJoinRule::new(plan_id_generator.clone())));
-        // add default set
-        physical_optimizers.extend(PhysicalOptimizer::new().rules);
+
+        // add default datafusion set of optimizers
+        // physical_optimizers.extend(
+        //     datafusion::physical_optimizer::optimizer::PhysicalOptimizer::new().rules,
+        // );
+        //
+        physical_optimizers.extend(Self::datafusion_optimizers());
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers
             .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
 
         physical_optimizers
+    }
+
+    // at the moment we create default set of optimizers
+    // ```
+    // physical_optimizers.extend(PhysicalOptimizer::new().rules);
+    // ```
+    // as there are issues with some of them
+    // TODO: replace this once we update to datafusion 55
+    fn datafusion_optimizers() -> Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> {
+        datafusion::physical_optimizer::optimizer::PhysicalOptimizer::new()
+            .rules
+            .into_iter()
+            .map(|r| match r.name() {
+                "FilterPushdown" => Arc::new(FilterPushdown::new()),
+                _ => r,
+            })
+            .collect()
     }
 
     /// set of rules which will be executed ONCE before
