@@ -87,23 +87,23 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
     let stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().as_ref(),  @ r"
-    ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=1, stage_resolved=false
+    ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=0, stage_resolved=false
       AggregateExec: mode=Partial, gby=[c@2 as c], aggr=[min(t.a), max(t.b)]
         DataSourceExec: partitions=1, partition_sizes=[1]
     ");
-    planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
+    planner.finalise_stage_internal(0, mock_partitions_with_statistics())?;
 
     let stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().as_ref(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=2, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
-          ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=1, stage_resolved=true
+          ExchangeExec: partitioning=Hash([c@0], 2), plan_id=0, stage_id=0, stage_resolved=true
             AggregateExec: mode=Partial, gby=[c@2 as c], aggr=[min(t.a), max(t.b)]
               DataSourceExec: partitions=1, partition_sizes=[1]
     ");
-    planner.finalise_stage_internal(2, mock_partitions_with_statistics())?;
+    planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
 
     let stages = planner.identify_runnable_stages()?;
     assert!(stages.is_none());
@@ -144,7 +144,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
         DataSourceExec: partitions=1, partition_sizes=[1]
     ");
 
-    planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
+    planner.finalise_stage_internal(0, mock_partitions_with_statistics())?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
@@ -152,9 +152,9 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
     ShuffleWriterExec: partitioning: None
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
-          ShuffleReaderExec: upstream_stage: 1, partitioning: Hash([c@0], 2)
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2)
     ");
-    planner.finalise_stage_internal(2, mock_partitions_with_statistics())?;
+    planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
 
     let stages = planner.runnable_stages()?;
     assert!(stages.is_none());
@@ -240,11 +240,11 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
     assert_eq!(2, runnable_stages.len());
 
     assert_eq!(
-        HashSet::from_iter(vec![1, 2].into_iter()),
+        HashSet::from_iter(vec![0, 1].into_iter()),
         planner.inspect_runnable_stages()?
     );
 
-    planner.finalise_stage_internal(2, partition_locations.clone())?;
+    planner.finalise_stage_internal(1, partition_locations.clone())?;
 
     //
     // we finish one of them
@@ -253,15 +253,15 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
 
     assert_eq!(1, runnable_stages.len());
 
-    planner.finalise_stage_internal(1, partition_locations.clone())?;
+    planner.finalise_stage_internal(0, partition_locations.clone())?;
     //
-    // we should find the number 3
+    // we should find the number 2
     //
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, runnable_stages.len());
 
-    planner.finalise_stage_internal(3, partition_locations.clone())?;
+    planner.finalise_stage_internal(2, partition_locations.clone())?;
 
     //
     // the other one should be returned again
@@ -269,12 +269,12 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, runnable_stages.len());
-    planner.finalise_stage_internal(4, partition_locations.clone())?;
+    planner.finalise_stage_internal(3, partition_locations.clone())?;
 
     let runnable_stages = planner.identify_runnable_stages()?;
     assert_eq!(1, runnable_stages.unwrap().len());
 
-    planner.finalise_stage_internal(5, partition_locations.clone())?;
+    planner.finalise_stage_internal(4, partition_locations.clone())?;
     let runnable_stages = planner.identify_runnable_stages()?;
     assert!(runnable_stages.is_none());
 
@@ -312,42 +312,42 @@ async fn should_split_stages_resolve_left_branch() -> datafusion::error::Result<
     // we run one of them setting partition location
 
     assert_eq!(
-        HashSet::from_iter(vec![1, 2].into_iter()),
+        HashSet::from_iter(vec![0, 1].into_iter()),
         planner.inspect_runnable_stages()?
     );
 
-    planner.finalise_stage_internal(1, partition_locations.clone())?;
+    planner.finalise_stage_internal(0, partition_locations.clone())?;
     //
     // we finish one of them
     //
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
     assert_eq!(
-        HashSet::from_iter(vec![3, 2].into_iter()),
+        HashSet::from_iter(vec![2, 1].into_iter()),
         planner.inspect_runnable_stages()?
     );
 
-    planner.finalise_stage_internal(2, partition_locations.clone())?;
+    planner.finalise_stage_internal(1, partition_locations.clone())?;
     //
-    // we should find the number 3
+    // we should find the number 2
     //
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, runnable_stages.len());
 
-    planner.finalise_stage_internal(3, partition_locations.clone())?;
+    planner.finalise_stage_internal(2, partition_locations.clone())?;
     //
     // the other one should be returned again
     //
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, runnable_stages.len());
-    planner.finalise_stage_internal(4, partition_locations.clone())?;
+    planner.finalise_stage_internal(3, partition_locations.clone())?;
 
     let runnable_stages = planner.identify_runnable_stages()?;
     assert_eq!(1, runnable_stages.unwrap().len());
 
-    planner.finalise_stage_internal(5, partition_locations.clone())?;
+    planner.finalise_stage_internal(4, partition_locations.clone())?;
     let runnable_stages = planner.identify_runnable_stages()?;
     assert!(runnable_stages.is_none());
 
@@ -385,24 +385,24 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
     assert_eq!(2, runnable_stages.len());
 
     assert_eq!(
-        HashSet::from_iter(vec![1, 2].into_iter()),
+        HashSet::from_iter(vec![0, 1].into_iter()),
         planner.inspect_runnable_stages()?
     );
 
     // resolve both of them
+    planner.finalise_stage_internal(0, partition_locations.clone())?;
     planner.finalise_stage_internal(1, partition_locations.clone())?;
-    planner.finalise_stage_internal(2, partition_locations.clone())?;
     //
     // we finish one of them
     //
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, runnable_stages.len());
 
-    planner.finalise_stage_internal(3, partition_locations.clone())?;
+    planner.finalise_stage_internal(2, partition_locations.clone())?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(1, runnable_stages.len());
-    planner.finalise_stage_internal(4, partition_locations.clone())?;
+    planner.finalise_stage_internal(3, partition_locations.clone())?;
     //
     // the other one should be returned again
     //
@@ -410,7 +410,7 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
     let runnable_stages = planner.identify_runnable_stages()?;
     assert_eq!(1, runnable_stages.unwrap().len());
 
-    planner.finalise_stage_internal(5, partition_locations.clone())?;
+    planner.finalise_stage_internal(4, partition_locations.clone())?;
     let runnable_stages = planner.identify_runnable_stages()?;
     assert!(runnable_stages.is_none());
 

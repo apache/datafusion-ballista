@@ -155,8 +155,8 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
     // Surface the runnable stage so its id is registered before we finalize.
     let _ = planner.runnable_stages()?.unwrap();
 
-    // Finalize stage 1 with 8 partitions of 50 bytes each (total = 400, target = 200).
-    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[50; 8]))?;
+    // Finalize stage 0 with 8 partitions of 50 bytes each (total = 400, target = 200).
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
 
     // Surface the next runnable stage — this is where `CoalescePartitionsRule`
     // fires per-stage on the downstream consumer and attaches the
@@ -164,10 +164,10 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
     let _ = planner.runnable_stages()?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=2, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
-          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=1, stage_resolved=true, coalesce=2 of 8
+          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
             AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
               DataSourceExec: partitions=1, partition_sizes=[1]
     ");
@@ -195,13 +195,13 @@ async fn should_skip_coalesce_when_rule_disabled() -> datafusion::error::Result<
     )?;
 
     let _ = planner.runnable_stages()?.unwrap();
-    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[50; 8]))?;
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
-          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=1, stage_resolved=true
+          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=0, stage_resolved=true
             AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
               DataSourceExec: partitions=1, partition_sizes=[1]
     ");
@@ -232,13 +232,13 @@ async fn should_skip_coalesce_when_partitions_are_full() -> datafusion::error::R
     )?;
 
     let _ = planner.runnable_stages()?.unwrap();
-    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[300; 8]))?;
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[300; 8]))?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
-          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=1, stage_resolved=true
+          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=0, stage_resolved=true
             AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
               DataSourceExec: partitions=1, partition_sizes=[1]
     ");
@@ -273,22 +273,22 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
 
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
     planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[25; 8]))?;
-    planner.finalise_stage_internal(2, partitions_with_byte_sizes(&[25; 8]))?;
 
     // Surface the join stage so `CoalescePartitionsRule` fires per-stage and
     // attaches the shared `CoalescePlan` to both leaf Exchanges.
     let _ = planner.runnable_stages()?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=3, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
       ProjectionExec: expr=[a@0 as a, b@2 as b]
         SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
           SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=1, stage_resolved=true, coalesce=2 of 8
+            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
               DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
           SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=2, stage_resolved=true, coalesce=2 of 8
+            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
               DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
@@ -326,28 +326,28 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(3, stages.len());
 
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[16; 8]))?;
     planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[16; 8]))?;
     planner.finalise_stage_internal(2, partitions_with_byte_sizes(&[16; 8]))?;
-    planner.finalise_stage_internal(3, partitions_with_byte_sizes(&[16; 8]))?;
 
     // Surface the join stage so `CoalescePartitionsRule` fires per-stage and
     // attaches the same `CoalescePlan` to all three leaf Exchanges.
     let _ = planner.runnable_stages()?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=4, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=3, stage_resolved=false
       ProjectionExec: expr=[a@0 as a, b@2 as b, c@3 as c]
         SortMergeJoinExec: join_type=Inner, on=[(c@1, c@0)]
           ProjectionExec: expr=[a@0 as a, c@1 as c, b@2 as b]
             SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
               SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-                ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=1, stage_resolved=true, coalesce=2 of 8
+                ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
                   DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
               SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-                ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=2, stage_resolved=true, coalesce=2 of 8
+                ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
                   DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
           SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@0], 8), plan_id=2, stage_id=3, stage_resolved=true, coalesce=2 of 8
+            ExchangeExec: partitioning=Hash([c@0], 8), plan_id=2, stage_id=2, stage_resolved=true, coalesce=2 of 8
               DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
@@ -391,21 +391,21 @@ async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
 
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
     planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[25; 8]))?;
-    planner.finalise_stage_internal(2, partitions_with_byte_sizes(&[25; 8]))?;
 
     // Surface the join stage so `CoalescePartitionsRule` fires per-stage.
     let _ = planner.runnable_stages()?;
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=3, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
       ProjectionExec: expr=[a@0 as a, b@2 as b]
         SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
           SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=1, stage_resolved=true, coalesce=2 of 8
+            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
               DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
           SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=2, stage_resolved=true, coalesce=2 of 8
+            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
               DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
@@ -444,11 +444,11 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
         DataSourceExec: partitions=1, partition_sizes=[1]
     ");
 
-    // Finalize stage 1 with 8 partitions × 50 bytes. Bin-pack at target=200
+    // Finalize stage 0 with 8 partitions × 50 bytes. Bin-pack at target=200
     // yields K=2 (same trace as the happy-path test).
-    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[50; 8]))?;
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
 
-    // Stage 2 is the final stage. Its `ShuffleReaderExec` exposes K=2
+    // Stage 1 is the final stage. Its `ShuffleReaderExec` exposes K=2
     // partitions — the rule's coalesce decision is now baked into the
     // adapter's reader-construction path.
     let stages = planner.runnable_stages()?.unwrap();
@@ -457,7 +457,7 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
     ShuffleWriterExec: partitioning: None
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
-          ShuffleReaderExec: upstream_stage: 1, partitioning: Hash([c@0], 2), coalesce: 2 of 8
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2), coalesce: 2 of 8
     ");
 
     Ok(())
