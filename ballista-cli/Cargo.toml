@@ -55,6 +55,7 @@ serde_json = { version = "1", optional = true }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tui-big-text = { version = "0.8.4", optional = true }
+tui-shimmer = { version = "0.1", optional = true }
 
 # Native-only TUI deps
 crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
@@ -88,14 +89,14 @@ tui = [
     "dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures",
     "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text",
-    "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
+    "dep:tui-shimmer", "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
     "ratatui/layout-cache", "ratatui/underline-color",
 ]
 
 web = [
     "dep:chrono", "dep:config", "dep:dotparser", "dep:futures", "dep:percent-encoding",
     "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
-    "dep:serde", "dep:serde_json", "dep:tui-big-text",
+    "dep:serde", "dep:serde_json", "dep:tui-big-text", "dep:tui-shimmer",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
     "dep:gloo-timers", "dep:console_error_panic_hook",
     "dep:tracing-web", "dep:web-sys", "dep:js-sys",

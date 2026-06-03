@@ -53,14 +53,17 @@ pub struct Settings {
     pub scheduler: SchedulerSettings,
     #[cfg(not(target_arch = "wasm32"))]
     pub http: HttpSettings,
+    /// How often to poll the scheduler for state. In millis.
+    pub data_reload_interval_ms: u64,
     /// How often to refresh the UI. In millis.
-    pub tick_interval_ms: u64,
+    pub repaint_interval_ms: u64,
 
     pub job: JobSettings,
 }
 
 const DEFAULT_CONFIG: &str = r#"
-tick_interval_ms: 2000
+data_reload_interval_ms: 2000
+repaint_interval_ms: 50
 
 scheduler:
   url: http://localhost:50050
@@ -119,7 +122,8 @@ mod web {
 
     impl QueryString {
         pub(super) fn parse() -> File<FileSourceString, FileFormat> {
-            let mut tick_interval_ms = 2000;
+            let mut data_reload_interval_ms = 2000;
+            let mut repaint_interval_ms = 50;
             let mut scheduler_url = "http://localhost:50050";
             let mut http_timeout_ms = 2000;
             let mut format_tree = false;
@@ -131,7 +135,10 @@ mod web {
                 if let (Some(key), Some(value)) = (pair.next(), pair.next()) {
                     match key {
                         "ballista_tick_interval" => {
-                            tick_interval_ms = value.parse::<u64>().unwrap_or(2000)
+                            data_reload_interval_ms = value.parse::<u64>().unwrap_or(2000)
+                        }
+                        "ballista_repaint_interval" => {
+                            repaint_interval_ms = value.parse::<u64>().unwrap_or(50)
                         }
                         "ballista_scheduler_url" => scheduler_url = value,
                         "ballista_http_timeout" => {
@@ -146,7 +153,8 @@ mod web {
             });
             let config = format!(
                 r#"
-tick_interval_ms: {tick_interval_ms}
+data_reload_interval_ms: {data_reload_interval_ms}
+repaint_interval_ms: {repaint_interval_ms}
 
 scheduler:
   url: {scheduler_url}

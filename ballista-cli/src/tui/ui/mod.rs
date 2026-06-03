@@ -16,6 +16,7 @@
 // under the License.
 
 mod cancel_result_popup;
+mod components;
 mod footer;
 mod header;
 mod help_overlay;

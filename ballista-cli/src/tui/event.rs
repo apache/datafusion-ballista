@@ -46,8 +46,17 @@ pub enum UiData {
 #[expect(clippy::large_enum_variant)]
 pub enum Event {
     Key(KeyEvent),
-    Tick,
-    DataLoaded { data: UiData },
+    /// Refresh the data from the scheduler at a given interval.
+    /// Reloads the jobs/executors/metrics
+    DataReload,
+    /// Repaint the UI without refreshing the data.
+    /// It is helpful for doing animations
+    Repaint,
+    /// An event sent after an interaction with the UI,
+    /// for example, a Key event that led to an HTTP request.
+    DataLoaded {
+        data: UiData,
+    },
 }
 
 #[cfg(not(feature = "web"))]
@@ -64,20 +73,30 @@ pub(crate) mod tui {
     }
 
     impl EventHandler {
-        pub fn new(tick_rate: Duration) -> Self {
+        pub fn new(data_reload_duration: Duration, repaint_duration: Duration) -> Self {
             let (tx, rx) = mpsc::unbounded_channel();
 
             tokio::spawn(async move {
                 let mut reader = EventStream::new();
-                let mut interval = tokio::time::interval(tick_rate);
+                let mut data_reload_interval =
+                    tokio::time::interval(data_reload_duration);
+                let mut repaint_interval = tokio::time::interval(repaint_duration);
 
                 loop {
-                    let interval_delay = interval.tick();
+                    let data_reload_tick = data_reload_interval.tick();
+                    let repaint_tick = repaint_interval.tick();
                     let crossterm_event = reader.next().fuse();
 
                     tokio::select! {
-                        _ = interval_delay => {
-                            if tx.send(Event::Tick).is_err() {
+                        _ = data_reload_tick => {
+                            if let Err(err) = tx.send(Event::DataReload) {
+                                tracing::error!("Failed to send DataReload event: {err:?}");
+                                break;
+                            }
+                        }
+                        _ = repaint_tick => {
+                            if let Err(err) = tx.send(Event::Repaint) {
+                                tracing::error!("Failed to send Repaint event: {err:?}");
                                 break;
                             }
                         }
@@ -121,7 +140,8 @@ pub(crate) mod web {
         /// Returns a `(Sender, EventHandler)` pair. The `Sender` can be cloned and distributed
         /// to any code that needs to push events; the `EventHandler` drains the queue each frame.
         pub fn new(
-            tick_rate: u32,
+            data_reload_interval_ms: u32,
+            repaint_interval_ms: u32,
             terminal: &ratatui::Terminal<ratzilla::WebGl2Backend>,
         ) -> (Sender<Event>, Self) {
             let queue = Rc::new(RefCell::new(VecDeque::new()));
@@ -129,10 +149,24 @@ pub(crate) mod web {
                 queue: Rc::clone(&queue),
             };
 
-            tracing::info!("Setting up tick timer: refresh data every {tick_rate}ms");
-            let tick_sender = sender.clone();
-            gloo_timers::callback::Interval::new(tick_rate, move || {
-                tick_sender.queue.borrow_mut().push_back(Event::Tick);
+            tracing::info!(
+                "Setting up tick timer: repaint UI every {repaint_interval_ms}ms"
+            );
+            let repaint_sender = sender.clone();
+            gloo_timers::callback::Interval::new(repaint_interval_ms, move || {
+                repaint_sender.queue.borrow_mut().push_back(Event::Repaint);
+            })
+            .forget();
+
+            tracing::info!(
+                "Setting up tick timer: refresh data every {data_reload_interval_ms}ms"
+            );
+            let data_reload_sender = sender.clone();
+            gloo_timers::callback::Interval::new(data_reload_interval_ms, move || {
+                data_reload_sender
+                    .queue
+                    .borrow_mut()
+                    .push_back(Event::DataReload);
             })
             .forget();
 
