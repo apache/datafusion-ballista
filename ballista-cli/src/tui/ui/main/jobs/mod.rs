@@ -39,6 +39,7 @@ use crate::tui::{
 
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::style::Color;
+use ratatui::text::Line;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -300,15 +301,27 @@ fn render_job_stage_completion_cell(job: &Job) -> Cell<'_> {
 }
 
 fn render_job_status_cell(job: &Job) -> Cell<'_> {
-    let color = match job.status.as_str() {
-        "Running" => Color::LightBlue,
-        "Queued" => Color::LightMagenta,
-        "Failed" => Color::LightRed,
-        "Completed" => Color::LightGreen,
-        _ => Color::Gray,
+    fn content_wo_animation(text: &str, color: Color) -> Text<'_> {
+        Text::from(text).style(Style::default().fg(color).bold())
+    }
+
+    fn content_with_animation(text: &str, color: Color) -> Text<'_> {
+        let text = tui_shimmer::shimmer_spans_with_style(
+            text,
+            Style::default().fg(color).bold(),
+        );
+        Line::from(text).into()
+    }
+
+    let content = match job.status.as_str() {
+        "Running" => content_with_animation("Running", Color::LightBlue),
+        "Queued" => content_with_animation("Queued", Color::LightMagenta),
+        "Failed" => content_wo_animation("Failed", Color::LightRed),
+        "Completed" => content_wo_animation("Completed", Color::LightGreen),
+        other => content_wo_animation(other, Color::Gray),
     };
-    let text = Text::from(job.status.clone()).style(Style::default().fg(color).bold());
-    Cell::from(text.centered())
+
+    Cell::from(content.centered())
 }
 
 #[cfg(test)]

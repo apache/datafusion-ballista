@@ -57,8 +57,10 @@ mod _tui {
         tracing::debug!("TUI configuration: {:?}", config);
 
         let mut tui_wrapper = TuiWrapper::new()?;
-        let mut events =
-            EventHandler::new(Duration::from_millis(config.tick_interval_ms));
+        let mut events = EventHandler::new(
+            Duration::from_millis(config.tick_interval_ms),
+            Duration::from_millis(config.repaint_interval_ms),
+        );
         let mut app = App::new(config)?;
 
         let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
@@ -80,7 +82,8 @@ mod _tui {
                 maybe_event = events.next() => {
                     match maybe_event {
                         Some(Event::Key(key)) => app.on_key(key).await?,
-                        Some(Event::Tick) => app.on_tick().await,
+                        Some(Event::Repaint) => {},
+                        Some(Event::DataReload) => app.on_tick().await,
                         Some(evt) => tracing::warn!("Unexpected event: {evt:?}"),
                         None => break,
                     }
@@ -129,7 +132,10 @@ pub(crate) mod web {
         use wasm_bindgen_futures::spawn_local;
 
         let config = Settings::new()?;
-        let tick_ms = u32::try_from(config.tick_interval_ms).unwrap_or(u32::MAX);
+        let data_reload_interval_ms =
+            u32::try_from(config.tick_interval_ms).unwrap_or(u32::MAX);
+        let repaint_interval_ms =
+            u32::try_from(config.repaint_interval_ms).unwrap_or(u32::MAX);
 
         let wrapper = TuiWrapper::new()?;
         let app = Rc::new(RefCell::new(App::new(config)?));
@@ -143,7 +149,11 @@ pub(crate) mod web {
         }
         let tick_in_flight = Rc::new(Cell::new(false));
 
-        let (tx, mut rx) = EventHandler::new(tick_ms, &wrapper.terminal);
+        let (tx, mut rx) = EventHandler::new(
+            data_reload_interval_ms,
+            repaint_interval_ms,
+            &wrapper.terminal,
+        );
         app.borrow_mut().set_event_tx(tx.clone());
 
         // Initial data load — http_client extracted with a brief borrow, no borrow held across await
@@ -160,7 +170,7 @@ pub(crate) mod web {
                     }
                 };
                 tx.send(Event::DataLoaded { data }).await.ok();
-                tx.send(Event::Tick).await.ok();
+                tx.send(Event::DataReload).await.ok();
             });
         }
 
@@ -173,7 +183,10 @@ pub(crate) mod web {
                         // Brief synchronous borrow — safe, no await held
                         app.borrow_mut().apply_ui_data(data);
                     }
-                    Event::Tick => {
+                    Event::Repaint => {
+                        // just repaint
+                    }
+                    Event::DataReload => {
                         if tick_in_flight.get() {
                             continue;
                         }
