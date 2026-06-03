@@ -90,6 +90,10 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
 pub const BALLISTA_COALESCE_ENABLED: &str = "ballista.planner.coalesce.enabled";
+/// Configuration key to enable AQE propagate empty exec rule.
+/// This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)
+pub const BALLISTA_PROPAGATE_EMPTY_ENABLED: &str =
+    "ballista.planner.propagate_empty.enabled";
 /// Configuration key for the target post-coalesce partition byte size (bytes).
 /// Mirrors Spark's `spark.sql.adaptive.advisoryPartitionSizeInBytes`.
 pub const BALLISTA_COALESCE_TARGET_PARTITION_BYTES: &str =
@@ -217,6 +221,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           downstream tasks matter more than parallelism.".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_PROPAGATE_EMPTY_ENABLED.to_string(),
+                        "Configuration key to enable AQE propagate empty exec rule. \
+                        This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)".to_string(),
+                        DataType::Boolean,
+                        Some(true.to_string())),
         ConfigEntry::new(
             BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
             "Target post-coalesce partition byte size in bytes. Mirrors Spark's \
@@ -490,6 +499,11 @@ impl BallistaConfig {
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
     pub fn coalesce_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_COALESCE_ENABLED)
+    }
+
+    /// Returns whether the AQE propagate empty rule is enabled.
+    pub fn propagate_empty_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_PROPAGATE_EMPTY_ENABLED)
     }
 
     /// Returns the target post-coalesce partition byte size in bytes
