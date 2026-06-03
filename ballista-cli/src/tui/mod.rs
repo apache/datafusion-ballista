@@ -58,7 +58,7 @@ mod _tui {
 
         let mut tui_wrapper = TuiWrapper::new()?;
         let mut events = EventHandler::new(
-            Duration::from_millis(config.tick_interval_ms),
+            Duration::from_millis(config.data_reload_interval_ms),
             Duration::from_millis(config.repaint_interval_ms),
         );
         let mut app = App::new(config)?;
@@ -133,7 +133,7 @@ pub(crate) mod web {
 
         let config = Settings::new()?;
         let data_reload_interval_ms =
-            u32::try_from(config.tick_interval_ms).unwrap_or(u32::MAX);
+            u32::try_from(config.data_reload_interval_ms).unwrap_or(u32::MAX);
         let repaint_interval_ms =
             u32::try_from(config.repaint_interval_ms).unwrap_or(u32::MAX);
 

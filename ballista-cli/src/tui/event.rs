@@ -73,13 +73,14 @@ pub(crate) mod tui {
     }
 
     impl EventHandler {
-        pub fn new(data_reload_rate: Duration, repaint_rate: Duration) -> Self {
+        pub fn new(data_reload_duration: Duration, repaint_duration: Duration) -> Self {
             let (tx, rx) = mpsc::unbounded_channel();
 
             tokio::spawn(async move {
                 let mut reader = EventStream::new();
-                let mut data_reload_interval = tokio::time::interval(data_reload_rate);
-                let mut repaint_interval = tokio::time::interval(repaint_rate);
+                let mut data_reload_interval =
+                    tokio::time::interval(data_reload_duration);
+                let mut repaint_interval = tokio::time::interval(repaint_duration);
 
                 loop {
                     let data_reload_tick = data_reload_interval.tick();
