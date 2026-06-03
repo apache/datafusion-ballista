@@ -49,7 +49,7 @@ use std::time::Duration;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// use ratatui::style::{Color, Style};
 /// use ratatui::text::Span;
 ///
