@@ -132,12 +132,12 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
     let plan = planner.current_plan();
     // TODO: we could probably push datasource to read single partition
     assert_plan!(plan, @ r"
-        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
-          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0, val@2]
-            ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false, broadcast=true
-              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-        ");
+    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0, val@2]
+        ExchangeExec: partitioning=None, plan_id=1, stage_id=pending, stage_resolved=false, broadcast=true
+          DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+        DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
     Ok(())
 }
 
@@ -157,12 +157,12 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id, val@2 as val]
-        DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=true
-          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=pending, stage_resolved=false
-            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+        DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=true
           ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
             DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -176,11 +176,11 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(id@0, id@0)], projection=[id@0, val@2]
-        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=0, stage_resolved=true
+        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=1, stage_resolved=true
+        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -191,11 +191,11 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=2, stage_resolved=false
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(id@0, id@0)], projection=[id@0, val@2]
-        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=0, stage_resolved=true
+        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=1, stage_resolved=true
+        ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -218,12 +218,12 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id, val@2 as val]
-        DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=true
-          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=pending, stage_resolved=false
-            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+        DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=true
           ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
             DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -237,14 +237,14 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id, val@2 as val]
         SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)]
           SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=0, stage_resolved=true
+            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
           SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=1, stage_resolved=true
+            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -255,14 +255,14 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=2, stage_resolved=false
       ProjectionExec: expr=[id@0 as id, val@2 as val]
         SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)]
           SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=0, stage_resolved=true
+            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
           SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=1, stage_resolved=true
+            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -284,11 +284,11 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id]
-        DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+        DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-            ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false, broadcast=true
+            ExchangeExec: partitioning=None, plan_id=2, stage_id=pending, stage_resolved=false, broadcast=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
             DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
@@ -301,11 +301,11 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id]
-        DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+        DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-            ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=false, broadcast=true
+            ExchangeExec: partitioning=None, plan_id=2, stage_id=0, stage_resolved=false, broadcast=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
             DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
@@ -327,11 +327,11 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
     assert_eq!(0, cancellable.len());
 
     assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-        ExchangeExec: partitioning=None, plan_id=2, stage_id=1, stage_resolved=false, broadcast=true
+        ExchangeExec: partitioning=None, plan_id=4, stage_id=1, stage_resolved=false, broadcast=true
           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-            ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=true, broadcast=true
+            ExchangeExec: partitioning=None, plan_id=2, stage_id=0, stage_resolved=true, broadcast=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
             DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
         DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
@@ -355,14 +355,14 @@ async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=4, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id]
-        DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+        DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
           ProjectionExec: expr=[id@0 as id]
-            DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=true
-              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=pending, stage_resolved=false
+            DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=true
+              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
                 DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
+              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=3, stage_id=pending, stage_resolved=false
                 DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
@@ -386,14 +386,14 @@ async fn test_sort_merge_join_three_tables_repartition() -> datafusion::common::
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
-    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+    AdaptiveDatafusionExec: is_final=false, plan_id=4, stage_id=pending, stage_resolved=false
       ProjectionExec: expr=[id@0 as id]
-        DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+        DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
           ProjectionExec: expr=[id@0 as id]
-            DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=true
-              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=0, stage_id=pending, stage_resolved=false
+            DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=true
+              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
                 DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
+              ExchangeExec: partitioning=Hash([id@0], 4), plan_id=3, stage_id=pending, stage_resolved=false
                 DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");

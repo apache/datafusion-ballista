@@ -33,7 +33,20 @@ use crate::state::aqe::execution_plan::{
 };
 
 #[derive(Debug, Default)]
-pub struct DelayJoinSelectionRule {}
+pub struct DelayJoinSelectionRule {
+    plan_id_generator: Arc<AtomicUsize>,
+}
+
+impl DelayJoinSelectionRule {
+    pub(crate) fn new(plan_id_generator: Arc<AtomicUsize>) -> Self {
+        DelayJoinSelectionRule { plan_id_generator }
+    }
+
+    fn plan_id(&self) -> usize {
+        self.plan_id_generator
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 impl PhysicalOptimizerRule for DelayJoinSelectionRule {
     fn optimize(
@@ -49,12 +62,14 @@ impl PhysicalOptimizerRule for DelayJoinSelectionRule {
         if bc.adaptive_join_enabled() {
             let result = plan.transform_up(|node| {
                 if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
-                    let dynamic = DynamicJoinSelectionExec::from_hash_join(hj)?;
+                    let dynamic =
+                        DynamicJoinSelectionExec::from_hash_join(hj, self.plan_id())?;
                     Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
                 } else if let Some(smj) =
                     node.as_any().downcast_ref::<SortMergeJoinExec>()
                 {
-                    let dynamic = DynamicJoinSelectionExec::from_sort_join(smj)?;
+                    let dynamic =
+                        DynamicJoinSelectionExec::from_sort_join(smj, self.plan_id())?;
                     Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
                 } else {
                     Ok(Transformed::no(node))
@@ -413,7 +428,7 @@ mod tests {
 
         assert_plan!(optimized.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -453,7 +468,7 @@ mod tests {
 
         assert_plan!(optimized.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -485,7 +500,7 @@ mod tests {
 
         assert_plan!(dynamic_plan.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -531,9 +546,9 @@ mod tests {
 
         assert_plan!(dynamic_plan.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             ProjectionExec: expr=[id@0 as id]
-              DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+              DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
                 DataSourceExec: partitions=1, partition_sizes=[1]
                 DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
@@ -631,7 +646,7 @@ mod tests {
 
         assert_plan!(dynamic_plan.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
@@ -661,7 +676,7 @@ mod tests {
 
         assert_plan!(resolve_plan.as_ref(), @ r"
         ProjectionExec: expr=[id@0 as id, val@2 as val]
-          DynamicJoinSelectionExec: join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
