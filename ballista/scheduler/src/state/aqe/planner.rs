@@ -158,9 +158,10 @@ impl AdaptivePlanner {
         // this optimizer set will be executed only once, before
         // running standard set of optimizers, which will
         // after each stage.
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
         let state = Self::create_session_state(
             ctx.state().config(),
-            Self::plan_preparation_optimizers(),
+            Self::plan_preparation_optimizers(plan_id_generator.clone()),
         );
 
         let plan = state.create_physical_plan(logical_plan).await?;
@@ -172,7 +173,7 @@ impl AdaptivePlanner {
             ctx.state().config(),
             plan,
             job_name,
-            Self::default_optimizers(Arc::new(AtomicUsize::new(0))),
+            Self::default_optimizers(plan_id_generator),
         )
     }
     /// Cancels a stage by its ID.
@@ -528,9 +529,11 @@ impl AdaptivePlanner {
 
     /// set of rules which will be executed ONCE before
     /// running standard set of physical optimizers
-    fn plan_preparation_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
+    fn plan_preparation_optimizers(
+        plan_id_generator: Arc<AtomicUsize>,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
         vec![
-            Arc::new(DelayJoinSelectionRule::default()),
+            Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
         ]
     }

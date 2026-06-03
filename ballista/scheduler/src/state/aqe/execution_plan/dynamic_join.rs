@@ -57,6 +57,7 @@ pub struct DynamicJoinSelectionExec {
     pub properties: Arc<PlanProperties>,
     pub selection_state: JoinInputState,
     pub null_aware: bool,
+    pub(crate) plan_id: usize,
 }
 
 impl ExecutionPlan for DynamicJoinSelectionExec {
@@ -97,6 +98,7 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
             properties: Arc::clone(&self.properties),
             selection_state: self.selection_state.clone(),
             null_aware: self.null_aware,
+            plan_id: self.plan_id,
         }))
     }
 
@@ -133,8 +135,9 @@ impl DisplayAs for DynamicJoinSelectionExec {
                     };
                 write!(
                     f,
-                    "{}: join_type={:?}, on=[{}]{}{}",
+                    "{}: plan_id={}, join_type={:?}, on=[{}]{}{}",
                     Self::static_name(),
+                    self.plan_id,
                     self.join_type,
                     on,
                     self.filter.as_ref().map_or_else(
@@ -162,6 +165,7 @@ impl DisplayAs for DynamicJoinSelectionExec {
                     .collect::<Vec<String>>()
                     .join(", ");
 
+                writeln!(f, "plan_id={}", self.plan_id)?;
                 if self.join_type != JoinType::Inner {
                     writeln!(f, "join_type={:?}", self.join_type)?;
                 }
@@ -348,11 +352,13 @@ impl DynamicJoinSelectionExec {
             properties: self.properties.clone(),
             selection_state: JoinInputState::Repartitioned,
             null_aware: self.null_aware,
+            plan_id: self.plan_id,
         }
     }
 
     pub(crate) fn from_hash_join(
         hash_join: &HashJoinExec,
+        plan_id: usize,
     ) -> Result<Arc<DynamicJoinSelectionExec>> {
         Ok(Arc::new(DynamicJoinSelectionExec {
             left: Arc::clone(hash_join.left()),
@@ -365,6 +371,7 @@ impl DynamicJoinSelectionExec {
             properties: Arc::clone(hash_join.properties()),
             selection_state: JoinInputState::Unknown,
             null_aware: hash_join.null_aware,
+            plan_id,
         }))
     }
     /// will return true if all upstream [ExchangeExec] has been resolved
@@ -399,6 +406,7 @@ impl DynamicJoinSelectionExec {
 
     pub(crate) fn from_sort_join(
         merge_join: &SortMergeJoinExec,
+        plan_id: usize,
     ) -> Result<Arc<DynamicJoinSelectionExec>> {
         Ok(Arc::new(DynamicJoinSelectionExec {
             left: Arc::clone(merge_join.left()),
@@ -411,6 +419,7 @@ impl DynamicJoinSelectionExec {
             properties: Arc::clone(merge_join.properties()),
             selection_state: JoinInputState::Unknown,
             null_aware: false,
+            plan_id,
         }))
     }
 }
@@ -444,6 +453,7 @@ mod tests {
             null_equality: NullEquality::NullEqualsNothing,
             selection_state: JoinInputState::Unknown,
             null_aware: false,
+            plan_id: 0,
         }
     }
 
