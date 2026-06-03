@@ -36,6 +36,8 @@ use crate::tui::{
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
 };
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::style::Color;
@@ -305,10 +307,34 @@ fn render_job_status_cell(job: &Job) -> Cell<'_> {
         Text::from(text).style(Style::default().fg(color).bold())
     }
 
+    #[cfg(not(feature = "web"))]
+    fn elapsed_since_start() -> Duration {
+        use std::time::Instant;
+        static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+        let start = PROCESS_START.get_or_init(Instant::now);
+        start.elapsed()
+    }
+
+    #[cfg(feature = "web")]
+    fn elapsed_since_start() -> Duration {
+        static PROCESS_START: OnceLock<f64> = OnceLock::new();
+        let start = PROCESS_START.get_or_init(js_sys::Date::now);
+        let millis = js_sys::Date::now() - start;
+        Duration::from_millis(millis as u64)
+    }
+
+    // copied from tui-shimmer and adapted for WASM32 build to use
+    // js_sys::Date::now() instead of std::time::Instant::now()
+    fn shimmer_phase_from_elapsed() -> f32 {
+        let elapsed = elapsed_since_start().as_secs_f32() / 2.0;
+        elapsed.rem_euclid(1.0)
+    }
+
     fn content_with_animation(text: &str, color: Color) -> Text<'_> {
-        let text = tui_shimmer::shimmer_spans_with_style(
+        let text = tui_shimmer::shimmer_spans_with_style_at_phase(
             text,
             Style::default().fg(color).bold(),
+            shimmer_phase_from_elapsed(),
         );
         Line::from(text).into()
     }
