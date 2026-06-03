@@ -56,6 +56,7 @@ type CancellableStageIds = HashSet<usize>;
 pub struct AdaptivePlanner {
     /// Generates the next stage ID.
     /// Stage IDs are incremental and unique for each job.
+    /// Stage ID start from 1
     stage_id_generator: usize,
     /// The session state needed for optimizer calls.
     /// This also freezes the session configuration for a given job.
@@ -104,7 +105,7 @@ impl AdaptivePlanner {
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
         Ok(Self {
-            stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
+            stage_id_generator: 1, // 1 to keep compatible with static planner
             session_state,
             physical_planner: planner.into(),
             plan,
