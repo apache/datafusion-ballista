@@ -70,6 +70,19 @@ pub fn get_routes<
 }
 
 fn cors(config: Arc<SchedulerConfig>) -> CorsLayer {
+    let allowed_origins = allowed_origins(config.clone());
+    let allowed_methods = allowed_methods(config.clone());
+
+    tracing::debug!("CORS allowed origins: {allowed_origins:?}");
+    tracing::debug!("CORS allowed methods: {allowed_methods:?}");
+
+    CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods(allowed_methods)
+        .allow_headers(AllowHeaders::any())
+}
+
+fn allowed_origins(config: Arc<SchedulerConfig>) -> AllowOrigin {
     let default_origins = || {
         vec![
             HeaderValue::from_static("http://localhost:8080"),
@@ -77,7 +90,7 @@ fn cors(config: Arc<SchedulerConfig>) -> CorsLayer {
         ]
     };
 
-    let allowed_origins = match config.cors_allowed_origins.trim() {
+    match config.cors_allowed_origins.trim() {
         origins if origins.is_empty() => AllowOrigin::list(default_origins()),
         origins if origins == "*" => AllowOrigin::any(),
         origins => {
@@ -92,8 +105,10 @@ fn cors(config: Arc<SchedulerConfig>) -> CorsLayer {
             }
             AllowOrigin::list(header_values)
         }
-    };
+    }
+}
 
+fn allowed_methods(config: Arc<SchedulerConfig>) -> AllowMethods {
     let default_methods = || {
         vec![
             http::Method::GET,
@@ -102,7 +117,7 @@ fn cors(config: Arc<SchedulerConfig>) -> CorsLayer {
         ]
     };
 
-    let allowed_methods = match config.cors_allowed_methods.trim() {
+    match config.cors_allowed_methods.trim() {
         methods if methods.is_empty() || methods == "*" => AllowMethods::any(),
         methods => {
             let mut allowed_methods = methods
@@ -116,10 +131,5 @@ fn cors(config: Arc<SchedulerConfig>) -> CorsLayer {
             }
             AllowMethods::list(allowed_methods)
         }
-    };
-
-    CorsLayer::new()
-        .allow_origin(allowed_origins)
-        .allow_methods(allowed_methods)
-        .allow_headers(AllowHeaders::any())
+    }
 }
