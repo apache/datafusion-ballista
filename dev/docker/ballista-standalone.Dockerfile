@@ -36,12 +36,6 @@ COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
 RUN chmod a+x /root/ballista-scheduler && \
     chmod a+x /root/ballista-executor
 
-# populate some sample data for ListingSchemaProvider
-RUN mkdir -p /data && \
-    wget -q https://nightlies.apache.org/datafusion/ballista/yellow_tripdata_2022-01.parquet -P /data/
-ENV DATAFUSION_CATALOG_LOCATION=/data
-ENV DATAFUSION_CATALOG_TYPE=csv
-
 # Expose Ballista Scheduler gRPC port
 EXPOSE 50050
 
