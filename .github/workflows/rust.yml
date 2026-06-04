@@ -247,6 +247,8 @@ jobs:
           rustup toolchain install stable
           rustup default stable
           rustup component add clippy
+      - name: Install protoc
+        run: brew install protobuf
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
@@ -266,7 +268,6 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-          rustup component add clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
