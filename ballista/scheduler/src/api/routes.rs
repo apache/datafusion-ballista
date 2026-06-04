@@ -65,7 +65,7 @@ pub fn get_routes<
     );
 
     router
-        .layer(cors(scheduler_server.clone().state.config.clone()))
+        .layer(cors(scheduler_server.state.config.clone()))
         .with_state(scheduler_server)
 }
 
@@ -94,12 +94,22 @@ fn allowed_origins(config: Arc<SchedulerConfig>) -> AllowOrigin {
         origins if origins.is_empty() => AllowOrigin::list(default_origins()),
         origins if origins == "*" => AllowOrigin::any(),
         origins => {
-            let mut header_values = origins
-                .split(',')
-                .filter(|method| !method.trim().is_empty())
-                .map(|origin| origin.trim().parse().ok())
-                .collect::<Option<Vec<_>>>()
-                .unwrap_or_else(default_origins);
+            let mut header_values = Vec::new();
+            for origin in origins.split(',') {
+                let origin = origin.trim();
+                if !origin.is_empty() {
+                    match origin.parse::<HeaderValue>() {
+                        Ok(val) => header_values.push(val),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to parse CORS allowed origin '{}': {}",
+                                origin,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
             if header_values.is_empty() {
                 header_values = default_origins();
             }
@@ -118,14 +128,23 @@ fn allowed_methods(config: Arc<SchedulerConfig>) -> AllowMethods {
     };
 
     match config.cors_allowed_methods.trim() {
-        methods if methods.is_empty() || methods == "*" => AllowMethods::any(),
+        methods if methods.is_empty() => AllowMethods::list(default_methods()),
+        methods if methods == "*" => AllowMethods::any(),
         methods => {
-            let mut allowed_methods = methods
-                .split(',')
-                .filter(|method| !method.trim().is_empty())
-                .map(|method| method.trim().parse().ok())
-                .collect::<Option<Vec<_>>>()
-                .unwrap_or_else(default_methods);
+            let mut allowed_methods = Vec::new();
+            for method in methods.split(',') {
+                let method = method.trim();
+                if !method.is_empty() {
+                    match method.parse::<http::Method>() {
+                        Ok(val) => allowed_methods.push(val),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to parse CORS allowed method '{method}': {e}"
+                            );
+                        }
+                    }
+                }
+            }
             if allowed_methods.is_empty() {
                 allowed_methods = default_methods();
             }
