@@ -91,8 +91,8 @@ fn allowed_origins(config: Arc<SchedulerConfig>) -> AllowOrigin {
     };
 
     match config.cors_allowed_origins.trim() {
-        origins if origins.is_empty() => AllowOrigin::list(default_origins()),
-        origins if origins == "*" => AllowOrigin::any(),
+        "" => AllowOrigin::list(default_origins()),
+        "*" => AllowOrigin::any(),
         origins => {
             let mut header_values = Vec::new();
             for origin in origins.split(',') {
@@ -128,8 +128,8 @@ fn allowed_methods(config: Arc<SchedulerConfig>) -> AllowMethods {
     };
 
     match config.cors_allowed_methods.trim() {
-        methods if methods.is_empty() => AllowMethods::list(default_methods()),
-        methods if methods == "*" => AllowMethods::any(),
+        "" => AllowMethods::list(default_methods()),
+        "*" => AllowMethods::any(),
         methods => {
             let mut allowed_methods = Vec::new();
             for method in methods.split(',') {
