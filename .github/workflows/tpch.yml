@@ -58,7 +58,7 @@ jobs:
           apt-get update
           apt-get install -y netcat-traditional
 
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
 
