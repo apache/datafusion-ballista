@@ -38,7 +38,7 @@ RUN chmod a+x /root/ballista-scheduler && \
 
 # populate some sample data for ListingSchemaProvider
 RUN mkdir -p /data && \
-    wget -q https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P /data/
+    wget -q https://nightlies.apache.org/datafusion/ballista/yellow_tripdata_2022-01.parquet -P /data/
 ENV DATAFUSION_CATALOG_LOCATION=/data
 ENV DATAFUSION_CATALOG_TYPE=csv
 
