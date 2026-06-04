@@ -11,12 +11,14 @@
 // limitations under the License.
 
 use crate::api::handlers;
+use crate::config::SchedulerConfig;
 use crate::scheduler_server::SchedulerServer;
 use axum::{Router, routing::get};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use http::HeaderValue;
 use std::sync::Arc;
-use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 /// All routes configured for rest-api.
 pub fn get_routes<
@@ -62,32 +64,62 @@ pub fn get_routes<
         get(handlers::get_job_svg_graph::<T, U>),
     );
 
-    router.with_state(scheduler_server).layer(cors())
+    router
+        .layer(cors(scheduler_server.clone().state.config.clone()))
+        .with_state(scheduler_server)
 }
 
-fn cors() -> CorsLayer {
-    let allowed_origins = std::env::var("BALLISTA_CORS_ALLOWED_ORIGINS")
-        .ok()
-        .and_then(|origins| {
-            origins
+fn cors(config: Arc<SchedulerConfig>) -> CorsLayer {
+    let default_origins = || {
+        vec![
+            HeaderValue::from_static("http://localhost:8080"),
+            HeaderValue::from_static("https://nightlies.apache.org"),
+        ]
+    };
+
+    let allowed_origins = match config.cors_allowed_origins.trim() {
+        origins if origins.is_empty() => AllowOrigin::list(default_origins()),
+        origins if origins == "*" => AllowOrigin::any(),
+        origins => {
+            let mut header_values = origins
                 .split(',')
+                .filter(|method| !method.trim().is_empty())
                 .map(|origin| origin.trim().parse().ok())
                 .collect::<Option<Vec<_>>>()
-        })
-        .unwrap_or_else(|| vec!["http://localhost:8080".parse().unwrap()]);
+                .unwrap_or_else(default_origins);
+            if header_values.is_empty() {
+                header_values = default_origins();
+            }
+            AllowOrigin::list(header_values)
+        }
+    };
 
-    let allowed_methods = std::env::var("BALLISTA_CORS_ALLOWED_METHODS")
-        .ok()
-        .and_then(|methods| {
-            methods
+    let default_methods = || {
+        vec![
+            http::Method::GET,
+            http::Method::OPTIONS,
+            http::Method::PATCH,
+        ]
+    };
+
+    let allowed_methods = match config.cors_allowed_methods.trim() {
+        methods if methods.is_empty() || methods == "*" => AllowMethods::any(),
+        methods => {
+            let mut allowed_methods = methods
                 .split(',')
+                .filter(|method| !method.trim().is_empty())
                 .map(|method| method.trim().parse().ok())
                 .collect::<Option<Vec<_>>>()
-        })
-        .unwrap_or_else(|| vec![http::Method::GET, http::Method::PATCH]);
+                .unwrap_or_else(default_methods);
+            if allowed_methods.is_empty() {
+                allowed_methods = default_methods();
+            }
+            AllowMethods::list(allowed_methods)
+        }
+    };
 
     CorsLayer::new()
-        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_origin(allowed_origins)
         .allow_methods(allowed_methods)
         .allow_headers(AllowHeaders::any())
 }
