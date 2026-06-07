@@ -57,6 +57,7 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             "  1/2/... Sort by first/second/... column",
             style,
         )),
+        Line::from(Span::styled("  C       Show job config items", style)),
         Line::from(Span::styled(
             "  g       Dot graph if a completed job is selected",
             style,

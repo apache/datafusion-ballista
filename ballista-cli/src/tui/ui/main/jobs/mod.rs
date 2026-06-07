@@ -16,6 +16,7 @@
 // under the License.
 
 pub(crate) mod dot_parser;
+pub mod job_config_popup;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
 pub mod job_stages_popup;
@@ -31,7 +32,7 @@ use crate::tui::{
     app::App,
     domain::{
         SortOrder,
-        jobs::{Job, SortColumn},
+        jobs::{Job, JobConfigEntry, JobConfigPopup, SortColumn},
     },
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
@@ -79,6 +80,27 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
             Ok(())
         }
     }
+}
+
+#[cfg(not(feature = "web"))]
+pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
+    let config = match app.http_client.get_job_config(job_id).await {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!("Failed to load job config for {job_id}: {e:?}");
+            return Ok(());
+        }
+    };
+
+    let entries = config
+        .into_iter()
+        .map(|(key, value)| JobConfigEntry { key, value })
+        .collect();
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobConfig(JobConfigPopup::new(job_id.to_string(), entries)),
+    })
+    .await
 }
 
 #[cfg(not(feature = "web"))]

@@ -28,8 +28,8 @@ use crate::tui::{
             ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
         },
         jobs::{
-            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
-            SortColumn as JobsSortColumn,
+            CancelJobResult, JobConfigPopup, JobDetails, JobPlansPopup, JobsData,
+            PlanTab, SortColumn as JobsSortColumn,
             stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
@@ -51,8 +51,9 @@ use tokio::sync::mpsc::Sender;
 use crate::tui::http_client::HttpClient;
 #[cfg(not(feature = "web"))]
 use crate::tui::ui::{
-    load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
-    load_job_stages_popup, load_jobs_data, load_metrics_data,
+    load_executor_details_popup, load_executors_data, load_job_config_popup,
+    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
+    load_metrics_data,
 };
 
 const INVALID_DATE: &str = "Invalid date";
@@ -93,6 +94,7 @@ pub(crate) struct App {
     pub show_scheduler_info: bool,
     pub job_dot_popup: Option<StagesGraph>,
     pub job_plan_popup: Option<JobPlansPopup>,
+    pub job_config_popup: Option<JobConfigPopup>,
     pub job_stages_popup: Option<JobStagesPopup>,
     pub executor_details_popup: Option<ExecutorDetailsPopup>,
 
@@ -113,6 +115,7 @@ impl App {
             job_details: None,
             job_dot_popup: None,
             job_plan_popup: None,
+            job_config_popup: None,
             job_stages_popup: None,
             executor_details_popup: None,
             executors_data: ExecutorsData::new(),
@@ -140,6 +143,14 @@ impl App {
 
     pub fn is_edit_mode(&self) -> bool {
         self.input_mode == InputMode::Edit
+    }
+
+    pub fn is_main_search_edit_mode(&self) -> bool {
+        self.is_edit_mode() && self.job_config_popup.is_none()
+    }
+
+    pub fn is_job_config_search_edit_mode(&self) -> bool {
+        self.is_edit_mode() && self.job_config_popup.is_some()
     }
 
     #[cfg(not(feature = "web"))]
@@ -190,6 +201,23 @@ impl App {
     pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
         if self.is_edit_mode() {
+            if let Some(popup) = &mut self.job_config_popup {
+                match key.code {
+                    KeyCode::Esc => {
+                        popup.clear_search();
+                        self.input_mode = InputMode::View;
+                    }
+                    KeyCode::Backspace => {
+                        popup.pop_search_char();
+                    }
+                    KeyCode::Char(c) => {
+                        popup.push_search_char(c);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     self.search_term.clear();
@@ -287,6 +315,17 @@ impl App {
             return Ok(());
         }
 
+        if let Some(ref mut config_popup) = self.job_config_popup {
+            match key.code {
+                KeyCode::Up => config_popup.scroll_up(),
+                KeyCode::Down => config_popup.scroll_down(),
+                KeyCode::Char('/') => self.input_mode = InputMode::Edit,
+                KeyCode::Esc => self.job_config_popup = None,
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Some(ref mut executor_popup) = self.executor_details_popup {
             match key.code {
                 KeyCode::Up => executor_popup.scroll_up(),
@@ -326,6 +365,9 @@ impl App {
             }
             KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
+            }
+            KeyCode::Char('C') if self.is_jobs_view() => {
+                self.load_job_config_popup_data().await;
             }
             KeyCode::Char('e') if self.is_scheduler_up() => {
                 self.current_view = Views::Executors;
@@ -461,6 +503,16 @@ impl App {
             let job_id = job.job_id.clone();
             if let Err(e) = load_job_stages_popup(self, &job_id).await {
                 tracing::error!("Failed to load job stages popup for '{job_id}': {e:?}");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "web"))]
+    async fn load_job_config_popup_data(&self) {
+        if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
+            let job_id = job.job_id.clone();
+            if let Err(e) = load_job_config_popup(self, &job_id).await {
+                tracing::error!("Failed to load job config popup for '{job_id}': {e:?}");
             }
         }
     }
@@ -621,6 +673,10 @@ impl App {
         self.job_stages_popup
             .as_ref()
             .is_some_and(|popup| popup.is_plan_view())
+    }
+
+    pub fn is_job_config_popup_open(&self) -> bool {
+        self.job_config_popup.is_some()
     }
 
     fn open_job_plan_popup(&mut self) {
@@ -791,6 +847,9 @@ impl App {
             UiData::JobDetails(details) => {
                 self.job_details = Some(details);
             }
+            UiData::JobConfig(popup) => {
+                self.job_config_popup = Some(popup);
+            }
             UiData::JobStagesGraph(graph) => {
                 self.job_dot_popup = Some(graph);
             }
@@ -811,6 +870,19 @@ impl App {
     #[cfg(feature = "web")]
     pub fn on_key_sync(&mut self, key: &KeyEvent) -> Option<WebKeyAsyncAction> {
         if self.is_edit_mode() {
+            if let Some(popup) = &mut self.job_config_popup {
+                match key.code {
+                    KeyCode::Esc => {
+                        popup.clear_search();
+                        self.input_mode = InputMode::View;
+                    }
+                    KeyCode::Backspace => popup.pop_search_char(),
+                    KeyCode::Char(c) => popup.push_search_char(c),
+                    _ => {}
+                }
+                return None;
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     self.search_term.clear();
@@ -893,6 +965,17 @@ impl App {
             return None;
         }
 
+        if let Some(ref mut config_popup) = self.job_config_popup {
+            match key.code {
+                KeyCode::Up => config_popup.scroll_up(),
+                KeyCode::Down => config_popup.scroll_down(),
+                KeyCode::Char('/') => self.input_mode = InputMode::Edit,
+                KeyCode::Esc => self.job_config_popup = None,
+                _ => {}
+            }
+            return None;
+        }
+
         if let Some(ref mut executor_popup) = self.executor_details_popup {
             match key.code {
                 KeyCode::Up => executor_popup.scroll_up(),
@@ -947,6 +1030,13 @@ impl App {
             KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
                 None
+            }
+            KeyCode::Char('C') if self.is_jobs_view() => {
+                let job_id = self
+                    .jobs_data
+                    .selected_job(&self.search_term)
+                    .map(|j| j.job_id.clone());
+                job_id.map(WebKeyAsyncAction::LoadJobConfig)
             }
             KeyCode::Char('e') if self.is_scheduler_up() => {
                 self.current_view = Views::Executors;
@@ -1081,6 +1171,7 @@ pub enum WebKeyAsyncAction {
     LoadJobStages(String),
     LoadExecutorDetails(String),
     LoadJobDot(String),
+    LoadJobConfig(String),
     CancelJob(String),
     UpdateJobDetails(Option<String>),
     ReloadView,
@@ -1095,8 +1186,8 @@ mod tests {
     use crate::tui::domain::{
         SchedulerState, SortOrder,
         executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification},
-        jobs::Job,
         jobs::stages::{JobStagesPopup, JobStagesResponse},
+        jobs::{Job, JobConfigEntry, JobConfigPopup},
     };
     use crate::tui::infrastructure::Settings;
 
@@ -1201,6 +1292,22 @@ mod tests {
             physical_plan: Some("physical".to_string()),
             stage_plan: Some("stage".to_string()),
         }
+    }
+
+    fn make_job_config_popup() -> JobConfigPopup {
+        JobConfigPopup::new(
+            "j1".to_string(),
+            vec![
+                JobConfigEntry {
+                    key: "ballista.job.name".to_string(),
+                    value: "Remote SQL Example".to_string(),
+                },
+                JobConfigEntry {
+                    key: "datafusion.execution.batch_size".to_string(),
+                    value: "8192".to_string(),
+                },
+            ],
+        )
     }
 
     #[test]
@@ -1426,6 +1533,26 @@ mod tests {
         let mut app = make_app();
         app.executor_details_popup = Some(ExecutorDetailsPopup::new(make_executor("e1")));
         assert!(app.is_executor_details_popup_open());
+    }
+
+    #[test]
+    fn is_job_config_popup_open_false_when_none() {
+        let app = make_app();
+        assert!(!app.is_job_config_popup_open());
+    }
+
+    #[test]
+    fn is_job_config_popup_open_true_when_some() {
+        let mut app = make_app();
+        app.job_config_popup = Some(make_job_config_popup());
+        assert!(app.is_job_config_popup_open());
+    }
+
+    #[test]
+    fn apply_ui_data_sets_job_config_popup() {
+        let mut app = make_app();
+        app.apply_ui_data(crate::tui::event::UiData::JobConfig(make_job_config_popup()));
+        assert!(app.job_config_popup.is_some());
     }
 
     // --- format_size tests ---

@@ -46,6 +46,10 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                     current_view_key_bindings.push(Span::from("[p] Physical plan, "));
                     current_view_key_bindings.push(Span::from("[l] Logical plan, "));
                     current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
+                } else if app.is_job_config_popup_open() {
+                    current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
+                    current_view_key_bindings.push(Span::from("[/] Search config, "));
+                    current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
                 } else {
                     if app.has_more_than_one_job() {
                         current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
@@ -60,6 +64,8 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                                 .push(Span::from("[Enter] View stages, "));
                             current_view_key_bindings
                                 .push(Span::from("[g] View job stages graph, "));
+                            current_view_key_bindings
+                                .push(Span::from("[C] View job config, "));
 
                             if app.is_selected_job_cancelable() {
                                 current_view_key_bindings

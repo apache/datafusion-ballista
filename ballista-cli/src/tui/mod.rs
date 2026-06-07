@@ -112,7 +112,7 @@ pub(crate) mod web {
     use crate::tui::{
         TuiResult,
         app::{App, WebKeyAsyncAction},
-        domain::jobs::CancelJobResult,
+        domain::jobs::{CancelJobResult, JobConfigEntry, JobConfigPopup},
         event::{
             Event, UiData,
             web::{EventHandler, Sender},
@@ -319,6 +319,24 @@ pub(crate) mod web {
                 }
                 Err(e) => tracing::error!("Failed to load job dot for '{id}': {e:?}"),
             },
+            WebKeyAsyncAction::LoadJobConfig(id) => {
+                match http_client.get_job_config(&id).await {
+                    Ok(config) => {
+                        let entries = config
+                            .into_iter()
+                            .map(|(key, value)| JobConfigEntry { key, value })
+                            .collect();
+                        send_data(
+                            UiData::JobConfig(JobConfigPopup::new(id, entries)),
+                            tx,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load job config for '{id}': {e:?}")
+                    }
+                }
+            }
             WebKeyAsyncAction::CancelJob(id) => {
                 let result = match http_client.cancel_job(&id).await {
                     Ok(resp) if resp.canceled => CancelJobResult::Success { job_id: id },
