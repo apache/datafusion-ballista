@@ -131,7 +131,7 @@ impl HttpClient {
         job_id: &str,
         plan_format: Option<&str>,
     ) -> TuiResult<JobStagesResponse> {
-        let fmt = plan_format.unwrap_or_else(|| {
+        let fmt = plan_format.unwrap_or({
             if self.config.job.stage.plan.tree {
                 "tree"
             } else {

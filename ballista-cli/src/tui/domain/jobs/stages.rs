@@ -14,7 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-
+#![allow(unfulfilled_lint_expectations)]
 use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 
@@ -81,6 +81,7 @@ pub enum StageDetailsView {
     Plan(StagePlanTab),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum StagePlanTab {
     Default,
@@ -104,13 +105,14 @@ pub struct JobStagesPopup {
 
 impl JobStagesPopup {
     pub fn new(job_id: String, stages: JobStagesResponse) -> Self {
-        let mut cache = PlanCache::default();
-        cache.default = Some(stages.clone());
         Self {
             job_id,
             scrollbar_state: ScrollbarState::new(stages.stages.len()),
+            plan_cache: PlanCache {
+                default: Some(stages.clone()),
+                ..Default::default()
+            },
             stages,
-            plan_cache: cache,
             table_state: TableState::default(),
             tasks_table_state: TableState::default(),
             tasks_scrollbar_state: ScrollbarState::new(0),
@@ -134,6 +136,7 @@ impl JobStagesPopup {
         }
     }
 
+    #[allow(dead_code)]
     pub fn cached_response(&self, tab: &StagePlanTab) -> Option<JobStagesResponse> {
         match tab {
             StagePlanTab::Default => self.plan_cache.default.clone(),
@@ -185,6 +188,7 @@ impl JobStagesPopup {
         matches!(self.details_view, StageDetailsView::Plan(_))
     }
 
+    #[allow(dead_code)]
     pub fn set_tab(&mut self, tab: StagePlanTab) -> Option<StagePlanTab> {
         self.details_view = StageDetailsView::Plan(tab.clone());
         self.plan_vertical_scroll_position = 0;

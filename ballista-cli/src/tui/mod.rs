@@ -291,7 +291,7 @@ pub(crate) mod web {
 
         match action {
             WebKeyAsyncAction::LoadJobStages(id) => {
-                match http_client.get_job_stages(&id).await {
+                match http_client.get_job_stages(&id, None).await {
                     Ok(mut stages) => {
                         stages
                             .stages

@@ -258,10 +258,10 @@ impl App {
                     _ => None,
                 };
 
-                if let Some((job_id, tab)) = fetch {
-                    if let Err(e) = load_stage_plan(self, &job_id, tab).await {
-                        tracing::error!("Failed to load stage plan: {e:?}");
-                    }
+                if let Some((job_id, tab)) = fetch
+                    && let Err(e) = load_stage_plan(self, &job_id, tab).await
+                {
+                    tracing::error!("Failed to load stage plan: {e:?}");
                 }
             } else if popup.is_no_details_view() {
                 match key.code {
