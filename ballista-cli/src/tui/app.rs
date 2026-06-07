@@ -52,8 +52,7 @@ use crate::tui::http_client::HttpClient;
 #[cfg(not(feature = "web"))]
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
-    load_job_stages_popup, load_jobs_data, load_metrics_data,
-    load_stage_plan,
+    load_job_stages_popup, load_jobs_data, load_metrics_data, load_stage_plan,
 };
 
 const INVALID_DATE: &str = "Invalid date";
@@ -236,11 +235,26 @@ impl App {
                     KeyCode::Char('m') => popup
                         .set_tab(StagePlanTab::Metrics)
                         .map(|tab| (popup.job_id.clone(), tab)),
-                    KeyCode::Esc => { popup.set_no_details_view(); None }
-                    KeyCode::Up => { popup.scroll_up();    None }
-                    KeyCode::Down => { popup.scroll_down();  None }
-                    KeyCode::Left => { popup.scroll_left();  None }
-                    KeyCode::Right => { popup.scroll_right(); None }
+                    KeyCode::Esc => {
+                        popup.set_no_details_view();
+                        None
+                    }
+                    KeyCode::Up => {
+                        popup.scroll_up();
+                        None
+                    }
+                    KeyCode::Down => {
+                        popup.scroll_down();
+                        None
+                    }
+                    KeyCode::Left => {
+                        popup.scroll_left();
+                        None
+                    }
+                    KeyCode::Right => {
+                        popup.scroll_right();
+                        None
+                    }
                     _ => None,
                 };
 

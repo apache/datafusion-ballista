@@ -132,7 +132,11 @@ impl HttpClient {
         plan_format: Option<&str>,
     ) -> TuiResult<JobStagesResponse> {
         let fmt = plan_format.unwrap_or_else(|| {
-            if self.config.job.stage.plan.tree { "tree" } else { "" }
+            if self.config.job.stage.plan.tree {
+                "tree"
+            } else {
+                ""
+            }
         });
 
         let url = self.url(&format!(
