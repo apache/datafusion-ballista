@@ -98,7 +98,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
 }
 
 fn row_for_entry<'a>(i: usize, entry: &&'a JobConfigEntry) -> Row<'a> {
-    let color = if i % 2 == 0 {
+    let color = if i.is_multiple_of(2) {
         Color::DarkGray
     } else {
         Color::Black
