@@ -81,6 +81,12 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                             current_view_key_bindings
                                 .push(Span::from("[↑↓] Scroll up/down, "));
                             current_view_key_bindings
+                                .push(Span::from("[d] Default format, "));
+                            current_view_key_bindings
+                                .push(Span::from("[t] Tree format, "));
+                            current_view_key_bindings
+                                .push(Span::from("[m] Show metrics, "));
+                            current_view_key_bindings
                                 .push(Span::from("[Esc] Close popup, "));
                         } else if app.is_job_stage_tasks_popup_open() {
                             current_view_key_bindings

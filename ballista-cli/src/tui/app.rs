@@ -53,6 +53,7 @@ use crate::tui::http_client::HttpClient;
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
     load_job_stages_popup, load_jobs_data, load_metrics_data,
+    load_stage_plan,
 };
 
 const INVALID_DATE: &str = "Invalid date";
@@ -221,13 +222,32 @@ impl App {
                     _ => {}
                 }
             } else if popup.is_plan_view() {
-                match key.code {
-                    KeyCode::Esc => popup.set_no_details_view(),
-                    KeyCode::Up => popup.scroll_up(),
-                    KeyCode::Down => popup.scroll_down(),
-                    KeyCode::Left => popup.scroll_left(),
-                    KeyCode::Right => popup.scroll_right(),
-                    _ => {}
+                use crate::tui::domain::jobs::stages::StagePlanTab;
+
+                // Collect job_id + tab to fetch while popup is still borrowed,
+                // then drop the borrow before the async call.
+                let fetch = match key.code {
+                    KeyCode::Char('d') => popup
+                        .set_tab(StagePlanTab::Default)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('t') => popup
+                        .set_tab(StagePlanTab::Tree)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('m') => popup
+                        .set_tab(StagePlanTab::Metrics)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Esc => { popup.set_no_details_view(); None }
+                    KeyCode::Up => { popup.scroll_up();    None }
+                    KeyCode::Down => { popup.scroll_down();  None }
+                    KeyCode::Left => { popup.scroll_left();  None }
+                    KeyCode::Right => { popup.scroll_right(); None }
+                    _ => None,
+                };
+
+                if let Some((job_id, tab)) = fetch {
+                    if let Err(e) = load_stage_plan(self, &job_id, tab).await {
+                        tracing::error!("Failed to load stage plan: {e:?}");
+                    }
                 }
             } else if popup.is_no_details_view() {
                 match key.code {
@@ -796,6 +816,11 @@ impl App {
             }
             UiData::JobStagesData(job_id, stages) => {
                 self.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
+            }
+            UiData::JobStagesPlanData(_job_id, tab, stages) => {
+                if let Some(popup) = &mut self.job_stages_popup {
+                    popup.cache_plan_response(tab, stages);
+                }
             }
             UiData::ExecutorDetails(executor) => {
                 self.executor_details_popup = Some(ExecutorDetailsPopup::new(executor));

@@ -126,14 +126,22 @@ impl HttpClient {
         self.text(&url).await
     }
 
-    pub async fn get_job_stages(&self, job_id: &str) -> TuiResult<JobStagesResponse> {
+    pub async fn get_job_stages(
+        &self,
+        job_id: &str,
+        plan_format: Option<&str>,
+    ) -> TuiResult<JobStagesResponse> {
+        let fmt = plan_format.unwrap_or_else(|| {
+            if self.config.job.stage.plan.tree { "tree" } else { "" }
+        });
+
         let url = self.url(&format!(
             "job/{}/stages{}",
             self.url_encode(job_id),
-            if self.config.job.stage.plan.tree {
-                "?plan_format=tree"
+            if fmt.is_empty() {
+                String::new()
             } else {
-                ""
+                format!("?plan_format={fmt}")
             }
         ));
         self.json::<JobStagesResponse>(&url).await
