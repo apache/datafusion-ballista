@@ -32,7 +32,7 @@ use crate::tui::{
     app::App,
     domain::{
         SortOrder,
-        jobs::{Job, JobConfigEntry, JobConfigPopup, SortColumn},
+        jobs::{Job, SortColumn},
     },
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
