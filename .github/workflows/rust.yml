@@ -23,7 +23,7 @@ concurrency:
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "ballista/**"
       - "ballista-cli/**"
@@ -65,7 +65,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -84,7 +84,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           submodules: true
           fetch-depth: 1
@@ -106,7 +106,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -121,7 +121,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           submodules: true
           fetch-depth: 1
@@ -136,12 +136,12 @@ jobs:
           cargo check --profile ci -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features --locked
 
   ballista-test:
-    name: test linux balista
+    name: test linux ballista
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           submodules: true
           fetch-depth: 1
@@ -157,32 +157,11 @@ jobs:
           # Ensure also compiles in standalone mode
           cargo test --profile ci --no-default-features --features standalone --locked
 
-  windows-test:
-    name: windows test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          submodules: true
-          fetch-depth: 1
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-windows-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-      - name: Run tests
-        shell: bash
-        run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-          export TMP=$(pwd)/.temp
-          mkdir -p "$TMP"
-          cargo test --profile ci --locked
-
   macos-test:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           submodules: true
           fetch-depth: 1
@@ -207,7 +186,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -219,11 +198,9 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -235,59 +212,42 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ${{ matrix.arch }}/rust
-      env:
-        # Disable full debug symbol generation to speed up CI build and keep memory down
-        # "1" means line tables only, which is useful for panic tracebacks.
-        RUSTFLAGS: "-C debuginfo=1"
+    runs-on: macos-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      # "1" means line tables only, which is useful for panic tracebacks.
+      RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ matrix.rust }}
+        uses: ./.github/actions/setup-macos-builder
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-      - name: Install Clippy
-        run: |
-          rustup component add clippy
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
 
   cargo-toml-formatting-checks:
     name: Check Cargo.toml formatting
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ${{ matrix.arch }}/rust
-      env:
-        # Disable full debug symbol generation to speed up CI build and keep memory down
-        # "1" means line tables only, which is useful for panic tracebacks.
-        RUSTFLAGS: "-C debuginfo=1"
+    runs-on: macos-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      # "1" means line tables only, which is useful for panic tracebacks.
+      RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ matrix.rust }}
+        run: |
+          rustup toolchain install stable
+          rustup default stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        run: |
-          which cargo-tomlfmt || cargo install cargo-tomlfmt
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        with:
+          tool: cargo-tomlfmt@0.2.1
+
       - name: Check Cargo.toml formatting
         run: |
           # if you encounter error, try rerun the command below, finally run 'git diff' to
@@ -310,7 +270,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v6.0.2
+#     - uses: actions/checkout@v6.0.3
 #       with:
 #         submodules: true
 #     - name: Cache Cargo
