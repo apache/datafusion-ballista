@@ -39,8 +39,8 @@ github:
     rebase: false
   features:
     issues: true
-# publishes the content of the `asf-site` branch to
-# https://datafusion.apache.org/ballista/
+  # publishes the content of the `asf-site` branch to
+  # https://datafusion.apache.org/ballista/
   rulesets:
     - name: "Default Branch Protection"
       type: branch
@@ -49,11 +49,17 @@ github:
           - "~DEFAULT_BRANCH"
           - "release/*"
           - "rel/*"
-        excludes: []
+        excludes: [ ]
       bypass_teams:
         - root
       restrict_deletion: true
       restrict_force_push: true
+  pull_requests:
+    # enable updating head branches of pull requests
+    allow_update_branch: true
+    allow_auto_merge: true
+    # auto-delete head branches after being merged
+    del_branch_on_merge: true
 publish:
   whoami: asf-site
   subdir: ballista
