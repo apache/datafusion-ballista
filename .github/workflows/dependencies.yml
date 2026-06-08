@@ -45,7 +45,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
+        uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
