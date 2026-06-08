@@ -26,6 +26,7 @@ pub mod stage_tasks_popup;
 #[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
+    domain::jobs::{JobConfigEntry, JobConfigPopup},
     event::{Event, UiData},
 };
 use crate::tui::{
