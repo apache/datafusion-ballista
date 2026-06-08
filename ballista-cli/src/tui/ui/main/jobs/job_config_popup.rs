@@ -105,8 +105,8 @@ fn row_for_entry<'a>(i: usize, entry: &&'a JobConfigEntry) -> Row<'a> {
     };
 
     Row::new(vec![
-        Cell::from(entry.key.clone()),
-        Cell::from(entry.value.clone()),
+        Cell::from(entry.key.as_str()),
+        Cell::from(entry.value.as_str()),
     ])
     .style(Style::default().bg(color))
 }

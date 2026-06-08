@@ -46,11 +46,11 @@ pub(crate) fn render_search_input(
     };
 
     let display_text = if is_edit_mode {
-        let search_term = Span::from(search_term.to_string());
+        let search_term = Span::from(search_term);
         let cursor = Span::from("_").style(Style::default().bold().yellow());
         Line::from(vec![search_term, cursor])
     } else {
-        Line::from(Span::from(search_term.to_string()))
+        Line::from(Span::from(search_term))
     };
 
     let block = Block::default()
