@@ -313,7 +313,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs:
-      - build-python-mac-win
+      - build-python-mac
       - build-manylinux-x86_64
       - build-manylinux-aarch64
       - build-sdist
