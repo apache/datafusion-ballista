@@ -31,24 +31,6 @@ pub struct HttpSettings {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct JobSettings {
-    /// The job stages' settings
-    pub stage: JobStageSettings,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct JobStageSettings {
-    /// The job plan's settings
-    pub plan: JobPlanSettings,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct JobPlanSettings {
-    /// Whether to render the plan as a tree.
-    pub tree: bool,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct Settings {
     pub scheduler: SchedulerSettings,
     #[cfg(not(target_arch = "wasm32"))]
@@ -57,8 +39,6 @@ pub struct Settings {
     pub data_reload_interval_ms: u64,
     /// How often to refresh the UI. In millis.
     pub repaint_interval_ms: u64,
-
-    pub job: JobSettings,
 }
 
 const DEFAULT_CONFIG: &str = r#"

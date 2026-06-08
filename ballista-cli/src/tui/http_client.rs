@@ -103,7 +103,11 @@ impl HttpClient {
             })
     }
 
-    pub async fn get_job_details(&self, job_id: &str) -> TuiResult<JobDetails> {
+    pub async fn get_job_details(
+        &self,
+        job_id: &str,
+        plan_format: Option<&str>,
+    ) -> TuiResult<JobDetails> {
         #[derive(serde::Deserialize, Debug)]
         struct JobDetailResponse {
             logical_plan: Option<String>,
@@ -111,12 +115,20 @@ impl HttpClient {
             stage_plan: Option<String>,
         }
 
-        let url = self.url(&format!("job/{}", self.url_encode(job_id)));
+        let url = self.url(&format!(
+            "job/{}{}",
+            self.url_encode(job_id),
+            match plan_format {
+                Some(fmt) => format!("?plan_format={fmt}"),
+                None => String::new(),
+            }
+        ));
         let resp = self.json::<JobDetailResponse>(&url).await?;
         Ok(JobDetails {
             job_id: job_id.to_string(),
             logical_plan: resp.logical_plan,
             physical_plan: resp.physical_plan,
+            physical_plan_tree: None,
             stage_plan: resp.stage_plan,
         })
     }
@@ -131,22 +143,13 @@ impl HttpClient {
         job_id: &str,
         plan_format: Option<&str>,
     ) -> TuiResult<JobStagesResponse> {
-        let fmt = plan_format.unwrap_or({
-            if self.config.job.stage.plan.tree {
-                "tree"
-            } else {
-                ""
-            }
-        });
-
         let url = self.url(&format!(
             "job/{}/stages{}",
             self.url_encode(job_id),
-            if fmt.is_empty() {
-                String::new()
-            } else {
-                format!("?plan_format={fmt}")
-            }
+            match plan_format {
+                Some(fmt) => format!("?plan_format={}", fmt),
+                None => String::new(),
+            },
         ));
         self.json::<JobStagesResponse>(&url).await
     }

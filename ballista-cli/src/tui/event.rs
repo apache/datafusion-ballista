@@ -39,7 +39,7 @@ pub enum UiData {
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
     #[allow(dead_code)]
-    JobStagesPlanData(String, StagePlanTab, JobStagesResponse),
+    JobStagesPlanData(StagePlanTab, JobStagesResponse),
     ExecutorDetails(Executor),
     CancelJobResult(CancelJobResult),
 }

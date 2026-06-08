@@ -123,25 +123,22 @@ impl JobStagesPopup {
     }
 
     pub fn cache_plan_response(&mut self, fmt: StagePlanTab, resp: JobStagesResponse) {
-        match fmt {
-            StagePlanTab::Default => self.plan_cache.default = Some(resp.clone()),
-            StagePlanTab::Tree => self.plan_cache.tree = Some(resp.clone()),
-            StagePlanTab::Metrics => self.plan_cache.metrics = Some(resp.clone()),
-        }
-        // If we're currently on that tab, update the live stages too so the
-        // selection / scroll state is preserved.
         let active_fmt = self.active_plan_format();
-        if active_fmt == Some(fmt) {
-            self.stages = resp;
+        if active_fmt.as_ref() == Some(&fmt) {
+            self.stages = resp.clone();
+        }
+        match fmt {
+            StagePlanTab::Default => self.plan_cache.default = Some(resp),
+            StagePlanTab::Tree => self.plan_cache.tree = Some(resp),
+            StagePlanTab::Metrics => self.plan_cache.metrics = Some(resp),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn cached_response(&self, tab: &StagePlanTab) -> Option<JobStagesResponse> {
+    pub fn cached_response(&self, tab: &StagePlanTab) -> Option<&JobStagesResponse> {
         match tab {
-            StagePlanTab::Default => self.plan_cache.default.clone(),
-            StagePlanTab::Tree => self.plan_cache.tree.clone(),
-            StagePlanTab::Metrics => self.plan_cache.metrics.clone(),
+            StagePlanTab::Default => self.plan_cache.default.as_ref(),
+            StagePlanTab::Tree => self.plan_cache.tree.as_ref(),
+            StagePlanTab::Metrics => self.plan_cache.metrics.as_ref(),
         }
     }
 
@@ -195,7 +192,7 @@ impl JobStagesPopup {
         self.plan_horizontal_scroll_position = 0;
 
         if let Some(cached) = self.cached_response(&tab) {
-            self.stages = cached;
+            self.stages = cached.clone();
             None
         } else {
             Some(tab)

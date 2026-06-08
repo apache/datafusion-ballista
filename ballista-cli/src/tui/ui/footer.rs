@@ -38,24 +38,26 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
             if app.is_jobs_view() {
                 if app.job_dot_popup.is_some() {
-                    current_view_key_bindings.push(Span::from("[↑↓] Scroll up/down, "));
+                    current_view_key_bindings.push(Span::from("[↑↓←→] Scroll, "));
                     current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
                 } else if app.job_plan_popup.is_some() {
-                    current_view_key_bindings.push(Span::from("[↑↓] Scroll up/down, "));
+                    current_view_key_bindings.push(Span::from("[↑↓←→] Scroll, "));
                     current_view_key_bindings.push(Span::from("[s] Stage plan, "));
                     current_view_key_bindings.push(Span::from("[p] Physical plan, "));
                     current_view_key_bindings.push(Span::from("[l] Logical plan, "));
                     current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
                 } else {
-                    if app.has_more_than_one_job() {
-                        current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
-                        current_view_key_bindings.push(Span::from("[/] Search jobs, "));
-                        current_view_key_bindings.push(Span::from(
-                            "[1,2,3] Sort by first/second/third/... column, ",
-                        ));
-                    }
                     if app.has_selected_job() {
                         if !app.is_job_stages_popup_open() {
+                            if app.has_more_than_one_job() {
+                                current_view_key_bindings
+                                    .push(Span::from("[↑↓] Navigate, "));
+                                current_view_key_bindings
+                                    .push(Span::from("[/] Search jobs, "));
+                                current_view_key_bindings.push(Span::from(
+                                    "[1,2,3] Sort by first/second/third/... column, ",
+                                ));
+                            }
                             current_view_key_bindings
                                 .push(Span::from("[Enter] View stages, "));
                             current_view_key_bindings
@@ -78,8 +80,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                             current_view_key_bindings
                                 .push(Span::from("[Esc] Close popup, "));
                         } else if app.is_job_stage_plan_popup_open() {
-                            current_view_key_bindings
-                                .push(Span::from("[↑↓] Scroll up/down, "));
+                            current_view_key_bindings.push(Span::from("[↑↓←→] Scroll, "));
                             current_view_key_bindings
                                 .push(Span::from("[d] Default format, "));
                             current_view_key_bindings
@@ -89,9 +90,16 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                             current_view_key_bindings
                                 .push(Span::from("[Esc] Close popup, "));
                         } else if app.is_job_stage_tasks_popup_open() {
+                            current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
                             current_view_key_bindings
                                 .push(Span::from("[Esc] Close popup, "));
                         }
+                    } else if app.has_more_than_one_job() {
+                        current_view_key_bindings.push(Span::from("[↑↓] Navigate, "));
+                        current_view_key_bindings.push(Span::from("[/] Search jobs, "));
+                        current_view_key_bindings.push(Span::from(
+                            "[1,2,3] Sort by first/second/third/... column, ",
+                        ));
                     }
                 }
                 if !current_view_key_bindings.is_empty() {

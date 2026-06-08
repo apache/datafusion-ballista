@@ -332,7 +332,7 @@ pub(crate) mod web {
             }
             WebKeyAsyncAction::UpdateJobDetails(job_id) => {
                 if let Some(id) = job_id {
-                    match http_client.get_job_details(&id).await {
+                    match http_client.get_job_details(&id, None).await {
                         Ok(details) => {
                             send_data(UiData::JobDetails(details), tx).await;
                         }
@@ -341,6 +341,36 @@ pub(crate) mod web {
                                 "Failed to load job details for '{id}': {e:?}"
                             )
                         }
+                    }
+                }
+            }
+            WebKeyAsyncAction::LoadJobPlanTree(id) => {
+                match http_client.get_job_details(&id, Some("tree")).await {
+                    Ok(mut details) => {
+                        details.physical_plan_tree = details.physical_plan.take();
+                        send_data(UiData::JobDetails(details), tx).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load tree plan for '{id}': {e:?}")
+                    }
+                }
+            }
+            WebKeyAsyncAction::LoadStagePlan(job_id, tab) => {
+                use crate::tui::domain::jobs::stages::StagePlanTab;
+                let fmt = match tab {
+                    StagePlanTab::Default => Some(""),
+                    StagePlanTab::Tree => Some("tree"),
+                    StagePlanTab::Metrics => Some("metrics"),
+                };
+                match http_client.get_job_stages(&job_id, fmt).await {
+                    Ok(mut stages) => {
+                        stages
+                            .stages
+                            .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+                        send_data(UiData::JobStagesPlanData(tab, stages), tx).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load stage plan for '{job_id}': {e:?}")
                     }
                 }
             }

@@ -113,7 +113,7 @@ pub async fn load_stage_plan(
     use crate::tui::domain::jobs::stages::StagePlanTab;
 
     let fmt = match tab {
-        StagePlanTab::Default => None,
+        StagePlanTab::Default => Some(""),
         StagePlanTab::Tree => Some("tree"),
         StagePlanTab::Metrics => Some("metrics"),
     };
@@ -132,14 +132,14 @@ pub async fn load_stage_plan(
         .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
 
     app.send_event(Event::DataLoaded {
-        data: UiData::JobStagesPlanData(job_id.to_owned(), tab, stages),
+        data: UiData::JobStagesPlanData(tab, stages),
     })
     .await
 }
 
 #[cfg(not(feature = "web"))]
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
-    let details = match app.http_client.get_job_details(job_id).await {
+    let details = match app.http_client.get_job_details(job_id, None).await {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("Failed to load job details for {job_id}: {e:?}");

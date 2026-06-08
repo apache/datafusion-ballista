@@ -18,6 +18,8 @@
 #[cfg(not(feature = "web"))]
 use crate::tui::TuiError;
 use crate::tui::TuiResult;
+#[cfg(feature = "web")]
+use crate::tui::domain::jobs::stages::StagePlanTab;
 use crate::tui::event::Event;
 #[cfg(feature = "web")]
 use crate::tui::event::web::Sender;
@@ -28,8 +30,8 @@ use crate::tui::{
             ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
         },
         jobs::{
-            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
-            SortColumn as JobsSortColumn,
+            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PhysicalFormat,
+            PlanTab, SortColumn as JobsSortColumn,
             stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
@@ -299,25 +301,55 @@ impl App {
         }
 
         if let Some(ref mut plans_popup) = self.job_plan_popup {
-            match key.code {
-                KeyCode::Up => plans_popup.scroll_up(),
-                KeyCode::Down => plans_popup.scroll_down(),
-                KeyCode::Left => plans_popup.scroll_left(),
-                KeyCode::Right => plans_popup.scroll_right(),
-                KeyCode::Char('s') => {
-                    plans_popup.set_tab(PlanTab::Stage);
+            let fetch_tree = if key.code == KeyCode::Char('t')
+                && plans_popup.get_tab() == &PlanTab::Physical
+            {
+                plans_popup
+                    .set_physical_format(PhysicalFormat::Tree)
+                    .map(|_| plans_popup.details.job_id.clone())
+            } else {
+                match key.code {
+                    KeyCode::Up => {
+                        plans_popup.scroll_up();
+                    }
+                    KeyCode::Down => {
+                        plans_popup.scroll_down();
+                    }
+                    KeyCode::Left => {
+                        plans_popup.scroll_left();
+                    }
+                    KeyCode::Right => {
+                        plans_popup.scroll_right();
+                    }
+                    KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
+                    KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
+                    KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
+                    KeyCode::Char('d') if plans_popup.get_tab() == &PlanTab::Physical => {
+                        plans_popup.set_physical_format(PhysicalFormat::Default);
+                    }
+                    KeyCode::Esc => {
+                        self.job_plan_popup = None;
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('p') => {
-                    plans_popup.set_tab(PlanTab::Physical);
+                None
+            };
+
+            if let Some(job_id) = fetch_tree {
+                match self
+                    .http_client
+                    .get_job_details(&job_id, Some("tree"))
+                    .await
+                {
+                    Ok(details) => {
+                        if let Some(p) = &mut self.job_plan_popup {
+                            p.details.physical_plan_tree = details.physical_plan;
+                        }
+                    }
+                    Err(e) => tracing::error!("Failed to load tree physical plan: {e:?}"),
                 }
-                KeyCode::Char('l') => {
-                    plans_popup.set_tab(PlanTab::Logical);
-                }
-                KeyCode::Esc => {
-                    self.job_plan_popup = None;
-                }
-                _ => {}
             }
+
             return Ok(());
         }
 
@@ -823,7 +855,13 @@ impl App {
                 };
             }
             UiData::JobDetails(details) => {
-                self.job_details = Some(details);
+                if details.physical_plan_tree.is_some() {
+                    if let Some(popup) = &mut self.job_plan_popup {
+                        popup.details.physical_plan_tree = details.physical_plan_tree;
+                    }
+                } else {
+                    self.job_details = Some(details);
+                }
             }
             UiData::JobStagesGraph(graph) => {
                 self.job_dot_popup = Some(graph);
@@ -831,7 +869,7 @@ impl App {
             UiData::JobStagesData(job_id, stages) => {
                 self.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
             }
-            UiData::JobStagesPlanData(_job_id, tab, stages) => {
+            UiData::JobStagesPlanData(tab, stages) => {
                 if let Some(popup) = &mut self.job_stages_popup {
                     popup.cache_plan_response(tab, stages);
                 }
@@ -880,14 +918,43 @@ impl App {
                     _ => {}
                 }
             } else if popup.is_plan_view() {
-                match key.code {
-                    KeyCode::Esc => popup.set_no_details_view(),
-                    KeyCode::Up => popup.scroll_up(),
-                    KeyCode::Down => popup.scroll_down(),
-                    KeyCode::Left => popup.scroll_left(),
-                    KeyCode::Right => popup.scroll_right(),
-                    _ => {}
-                }
+                use crate::tui::domain::jobs::stages::StagePlanTab;
+
+                let fetch = match key.code {
+                    KeyCode::Char('d') => popup
+                        .set_tab(StagePlanTab::Default)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('t') => popup
+                        .set_tab(StagePlanTab::Tree)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('m') => popup
+                        .set_tab(StagePlanTab::Metrics)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Esc => {
+                        popup.set_no_details_view();
+                        None
+                    }
+                    KeyCode::Up => {
+                        popup.scroll_up();
+                        None
+                    }
+                    KeyCode::Down => {
+                        popup.scroll_down();
+                        None
+                    }
+                    KeyCode::Left => {
+                        popup.scroll_left();
+                        None
+                    }
+                    KeyCode::Right => {
+                        popup.scroll_right();
+                        None
+                    }
+                    _ => None,
+                };
+
+                return fetch
+                    .map(|(job_id, tab)| WebKeyAsyncAction::LoadStagePlan(job_id, tab));
             } else if popup.is_no_details_view() {
                 match key.code {
                     KeyCode::Up => popup.scroll_up(),
@@ -918,18 +985,39 @@ impl App {
         }
 
         if let Some(ref mut plans_popup) = self.job_plan_popup {
-            match key.code {
-                KeyCode::Up => plans_popup.scroll_up(),
-                KeyCode::Down => plans_popup.scroll_down(),
-                KeyCode::Left => plans_popup.scroll_left(),
-                KeyCode::Right => plans_popup.scroll_right(),
-                KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
-                KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
-                KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
-                KeyCode::Esc => self.job_plan_popup = None,
-                _ => {}
-            }
-            return None;
+            let fetch_tree = if key.code == KeyCode::Char('t')
+                && plans_popup.get_tab() == &PlanTab::Physical
+            {
+                plans_popup
+                    .set_physical_format(PhysicalFormat::Tree)
+                    .map(|_| plans_popup.details.job_id.clone())
+            } else {
+                match key.code {
+                    KeyCode::Up => {
+                        plans_popup.scroll_up();
+                    }
+                    KeyCode::Down => {
+                        plans_popup.scroll_down();
+                    }
+                    KeyCode::Left => {
+                        plans_popup.scroll_left();
+                    }
+                    KeyCode::Right => {
+                        plans_popup.scroll_right();
+                    }
+                    KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
+                    KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
+                    KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
+                    KeyCode::Char('d') if plans_popup.get_tab() == &PlanTab::Physical => {
+                        plans_popup.set_physical_format(PhysicalFormat::Default);
+                    }
+                    KeyCode::Esc => self.job_plan_popup = None,
+                    _ => {}
+                }
+                None
+            };
+
+            return fetch_tree.map(WebKeyAsyncAction::LoadJobPlanTree);
         }
 
         if let Some(ref mut executor_popup) = self.executor_details_popup {
@@ -1123,6 +1211,8 @@ pub enum WebKeyAsyncAction {
     CancelJob(String),
     UpdateJobDetails(Option<String>),
     ReloadView,
+    LoadJobPlanTree(String),
+    LoadStagePlan(String, StagePlanTab),
 }
 
 #[cfg(test)]
@@ -1238,6 +1328,7 @@ mod tests {
             job_id: job_id.to_string(),
             logical_plan: Some("logical".to_string()),
             physical_plan: Some("physical".to_string()),
+            physical_plan_tree: Some("tree".to_string()),
             stage_plan: Some("stage".to_string()),
         }
     }
