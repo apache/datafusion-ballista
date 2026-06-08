@@ -25,7 +25,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor, accept, displayable,
 };
-use log::{error, info};
+use log::{debug, error};
 use std::fmt;
 
 /// Merges executor-collected stage metrics into the plan's metric slots.
@@ -59,7 +59,7 @@ pub fn print_stage_metrics(
     // The plan_metrics collected here is a snapshot clone from the plan metrics.
     // They are all empty now and need to combine with the stage metrics in the ExecutionStages
     match merge_stage_metrics(plan, stage_metrics) {
-        Some(plan_metrics) => info!(
+        Some(plan_metrics) => debug!(
             "\n=== [{}/{}] Stage finished, physical plan with metrics ===\n{}",
             job_id,
             stage_id,

@@ -50,7 +50,14 @@ message BallistaPhysicalPlanNode {
     ShuffleReaderExecNode shuffle_reader = 2;
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
+    ChaosExecNode chaos_exec = 5;
   }
+}
+
+message ChaosExecNode {
+  double failure_probability = 1;
+  string fault_type = 2;
+  uint64 seed = 3;
 }
 
 message ShuffleWriterExecNode {

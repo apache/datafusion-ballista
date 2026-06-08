@@ -118,7 +118,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "tui")]
     if args.tui {
-        return tui::tui_main(tui_mode.clone())
+        return tui::main(tui_mode.clone())
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
     }

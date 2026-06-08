@@ -15,7 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Dependencies
+name: Ballista Web TUI
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -25,31 +28,55 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/web-tui.yml"
+      - ".github/actions/setup-builder/**"
   pull_request:
     paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-  merge_group:
-  # manual trigger
-  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/web-tui.yml"
+      - ".github/actions/setup-builder/**"
   workflow_dispatch:
 
 jobs:
-  depcheck:
-    name: msrv dependency check
+  web-tui:
+    name: Build Web TUI WASM32 application
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
+
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-macos-builder
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          rust-version: stable
+          toolchain: "stable"
+          targets: "wasm32-unknown-unknown"
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-      - name: Check dependencies
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        with:
+          tool: trunk@0.21.14
+
+      - name: Build
+        working-directory: ballista-cli
         run: |
-          cd dev/msrvcheck
-          cargo run
+          trunk build --cargo-profile release-nonlto --minify --locked \
+            --no-default-features --features web
+
+      - name: Upload WASM32 application
+        uses: actions/upload-artifact@v7
+        with:
+          name: ballista-web-tui
+          retention-days: 7
+          path: target/web-tui/

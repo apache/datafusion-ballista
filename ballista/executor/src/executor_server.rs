@@ -361,7 +361,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        info!("Start to run task {task_identity}");
+        debug!("Start to run task {task_identity}");
         let task = curator_task.task;
 
         let task_id = task.task_id;
@@ -404,7 +404,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     ))
                 };
 
-                info!("Execute task: {task_identity}");
+                info!("Execute task  : [{task_identity}]");
 
                 let execution_result = self
                     .executor
@@ -415,8 +415,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task_context,
                     )
                     .await;
-                info!("Done with task {task_identity}");
-                debug!("Task {task_identity} statistics: {execution_result:?}");
+                info!("Finished task : [{task_identity}]");
+                debug!(
+                    "Task [{task_identity}], execution statistics: {execution_result:?}"
+                );
 
                 let plan_metrics = exec.collect_plan_metrics();
                 let operator_metrics = plan_metrics
@@ -706,7 +708,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             fetched_task_num += 1;
                         }
                         Err(TryRecvError::Empty) => {
-                            info!("Fetched {fetched_task_num} tasks status to report");
+                            debug!("Fetched {fetched_task_num} tasks status to report");
                             break;
                         }
                         Err(TryRecvError::Disconnected) => {
@@ -782,7 +784,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         &curator_task.task.partition_id,
                         &curator_task.task.task_attempt_num,
                     );
-                    info!("Received task {:?}", &task_identity);
+                    debug!("Received task {:?}", &task_identity);
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {

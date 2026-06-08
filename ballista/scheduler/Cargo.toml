@@ -34,7 +34,7 @@ required-features = ["build-binary"]
 
 [features]
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
-default = ["build-binary", "substrait", "rest-api"]
+default = ["build-binary", "rest-api"]
 # job info can cache stage plans, in some cases where
 # task plans can be re-computed, cache behavior may need to be disabled.
 disable-stage-plan-cache = []
@@ -49,6 +49,7 @@ substrait = ["dep:datafusion-substrait"]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.9"
+tower-http = { version = "0.6", features = ["cors"] }
 ballista-core = { path = "../core", version = "53.0.0" }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
@@ -59,6 +60,7 @@ futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
 insta = { workspace = true }
+itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
 once_cell = { version = "1.21.4", optional = true }

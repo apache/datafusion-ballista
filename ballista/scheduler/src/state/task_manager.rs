@@ -98,7 +98,7 @@ impl TaskLauncher for DefaultTaskLauncher {
                     format!("{}/{}/{:?}", task.job_id, task.stage_id, task_ids)
                 })
                 .collect();
-            info!(
+            debug!(
                 "Launching multi task on executor {:?} for {:?}",
                 executor.id, tasks_ids
             );
@@ -320,8 +320,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 Some(logical_plan.display_indent().to_string()),
             )?) as ExecutionGraphBox
         };
+        let string_plan =
+            datafusion::physical_plan::displayable(graph.physical_plan().as_ref())
+                .indent(false)
+                .to_string();
 
-        info!("Submitting execution graph:\n\n{graph:?}");
+        info!("Submitting execution graph for job_id: {job_id}:\n\n{string_plan}");
 
         self.state
             .submit_job(job_id.to_string(), &graph, subscriber)

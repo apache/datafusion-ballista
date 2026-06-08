@@ -212,6 +212,7 @@ pub struct CancelJobResponse {
     pub canceled: bool,
 }
 
+#[derive(Clone, Debug)]
 pub enum CancelJobResult {
     Success { job_id: String },
     NotCanceled { job_id: String },

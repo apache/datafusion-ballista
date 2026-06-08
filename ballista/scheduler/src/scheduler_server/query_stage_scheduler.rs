@@ -174,7 +174,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_submitted(&job_id, queued_at, submitted_at);
 
-                info!("Job {job_id} submitted");
+                info!("Job submitted: [{job_id}]");
 
                 if self.state.config.is_push_staged_scheduling() {
                     event_sender
@@ -211,7 +211,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_completed(&job_id, queued_at, completed_at);
 
-                info!("Job {job_id} success");
+                info!("Job finished successfully: [{job_id}]");
                 if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
                     error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
                 }
