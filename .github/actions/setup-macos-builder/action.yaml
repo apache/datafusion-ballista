@@ -27,11 +27,13 @@ runs:
   steps:
     - name: Install protobuf compiler
       shell: bash
+      env:
+        PROTOBUF_VERSION: 29.1
       run: |
         mkdir -p $HOME/d/protoc
         cd $HOME/d/protoc
-        export PROTO_ZIP="protoc-29.1-osx-x86_64.zip"
-        curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v29.1/$PROTO_ZIP
+        export PROTO_ZIP="protoc-${PROTOBUF_VERSION}-osx-aarch_64.zip"
+        curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/${PROTO_ZIP}
         unzip $PROTO_ZIP
         echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
         export PATH=$PATH:$HOME/d/protoc/bin
