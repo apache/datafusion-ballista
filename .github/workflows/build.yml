@@ -29,7 +29,7 @@ on:
     paths:
       - "python/**"
   push:
-    tags: ["*-rc*"]
+    tags: [ "*-rc*" ]
 
 jobs:
   test-release:
@@ -110,16 +110,16 @@ jobs:
           name: python-wheel-license
           path: LICENSE.txt
 
-  build-python-mac-win:
+  build-python-mac:
     if: github.event_name != 'pull_request'
-    needs: [generate-license, build, test-release]
+    needs: [ generate-license, build, test-release ]
     name: Mac/Win
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10"]
-        os: [macos-latest, windows-2022]
+        python-version: [ "3.10" ]
+        os: [ macos-latest ]
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -158,15 +158,8 @@ jobs:
           uv sync --dev --no-install-package ballista
           uv run --no-project maturin build --release --strip
 
-      - name: List Windows wheels
-        if: matrix.os == 'windows-2022'
-        run: dir python\target\wheels\
-        # since the runner is dynamic shellcheck (from actionlint) can't infer this is powershell
-        # so we specify it explicitly
-        shell: powershell
-
       - name: List Mac wheels
-        if: matrix.os != 'windows-2022'
+        if: matrix.os == 'macos-latest'
         run: find python/target/wheels/
 
       - name: Archive wheels
@@ -177,7 +170,7 @@ jobs:
 
   build-manylinux-x86_64:
     if: github.event_name != 'pull_request'
-    needs: [generate-license, build, test-release]
+    needs: [ generate-license, build, test-release ]
     name: Manylinux x86_64
     runs-on: ubuntu-latest
     steps:
@@ -219,7 +212,7 @@ jobs:
 
   build-manylinux-aarch64:
     if: github.event_name != 'pull_request'
-    needs: [generate-license, build, test-release]
+    needs: [ generate-license, build, test-release ]
     name: Manylinux arm64
     runs-on: ubuntu-24.04-arm
     steps:
@@ -261,7 +254,7 @@ jobs:
 
   build-sdist:
     if: github.event_name != 'pull_request'
-    needs: [generate-license, build, test-release]
+    needs: [ generate-license, build, test-release ]
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
