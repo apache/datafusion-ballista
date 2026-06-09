@@ -18,8 +18,6 @@
 #[cfg(not(feature = "web"))]
 use crate::tui::TuiError;
 use crate::tui::TuiResult;
-#[cfg(feature = "web")]
-use crate::tui::domain::jobs::stages::StagePlanTab;
 use crate::tui::event::Event;
 #[cfg(feature = "web")]
 use crate::tui::event::web::Sender;
