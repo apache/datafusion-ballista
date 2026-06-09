@@ -65,7 +65,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
 {

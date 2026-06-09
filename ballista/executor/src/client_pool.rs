@@ -146,7 +146,7 @@ fn evict(idle: &IdleMap, timeout: Duration) {
     });
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl BallistaClientPool for DefaultBallistaClientPool {
     async fn acquire(
         &self,

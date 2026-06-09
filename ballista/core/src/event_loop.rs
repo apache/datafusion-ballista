@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use crate::error::{BallistaError, Result};
 
 /// Trait defining actions to be performed in response to events in an event loop.
-#[async_trait]
+#[async_trait::async_trait]
 pub trait EventAction<E>: Send + Sync {
     /// Called when the event loop starts.
     fn on_start(&self);

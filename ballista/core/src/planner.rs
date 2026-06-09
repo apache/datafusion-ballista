@@ -101,7 +101,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     async fn create_physical_plan(
         &self,

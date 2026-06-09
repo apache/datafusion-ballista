@@ -1695,7 +1695,7 @@ pub mod scheduler_grpc_server {
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with SchedulerGrpcServer.
-    #[async_trait]
+    #[async_trait::async_trait]
     pub trait SchedulerGrpc: std::marker::Send + std::marker::Sync + 'static {
         /// Executors must poll the scheduler for heartbeat and to receive tasks
         async fn poll_work(
@@ -2733,7 +2733,7 @@ pub mod executor_grpc_server {
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ExecutorGrpcServer.
-    #[async_trait]
+    #[async_trait::async_trait]
     pub trait ExecutorGrpc: std::marker::Send + std::marker::Sync + 'static {
         async fn launch_task(
             &self,

@@ -63,7 +63,7 @@ pub struct InMemoryClusterState {
     cluster_event_sender: ClusterEventSender<ClusterStateEvent>,
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl ClusterState for InMemoryClusterState {
     async fn bind_schedulable_tasks(
         &self,
@@ -320,7 +320,7 @@ impl ExtendedJobStatus {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl JobState for InMemoryJobState {
     async fn submit_job(
         &self,
