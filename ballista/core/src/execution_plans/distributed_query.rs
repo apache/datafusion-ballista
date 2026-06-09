@@ -18,6 +18,7 @@
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::scheduler_client::SchedulerChannelCache;
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
@@ -85,10 +86,19 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     metrics: ExecutionPlanMetricsSet,
     /// The scheduler job id after the query has been accepted.
     job_id: Arc<Mutex<Option<String>>>,
+    /// Shared cache for the scheduler `Channel`. Cloned in from the
+    /// `BallistaQueryPlanner` so all queries on the same session share one
+    /// HTTP/2 connection to the scheduler.
+    scheduler_channel_cache: SchedulerChannelCache,
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     /// Creates a new distributed query execution plan.
+    ///
+    /// Builds a fresh [`SchedulerChannelCache`] with the default idle
+    /// timeout. In production the planner constructs the cache and
+    /// shares it across queries via [`with_extension`](Self::with_extension);
+    /// this constructor is convenient for tests and single-query callers.
     pub fn new(
         scheduler_url: String,
         config: BallistaConfig,
@@ -108,6 +118,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             job_id: Arc::new(Mutex::new(None)),
+            scheduler_channel_cache: SchedulerChannelCache::with_default_timeout(),
         }
     }
 
@@ -118,6 +129,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         plan: LogicalPlan,
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         session_id: String,
+        scheduler_channel_cache: SchedulerChannelCache,
     ) -> Self {
         let properties = Arc::new(Self::compute_properties(
             plan.schema().as_arrow().clone().into(),
@@ -132,12 +144,19 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             job_id: Arc::new(Mutex::new(None)),
+            scheduler_channel_cache,
         }
     }
 
     /// Returns the scheduler job id after the query has been accepted.
     pub fn job_id(&self) -> Option<String> {
         self.job_id.lock().clone()
+    }
+
+    /// Returns the cache used by this exec to share a scheduler `Channel`
+    /// with sibling execs on the same session.
+    pub fn scheduler_channel_cache(&self) -> &SchedulerChannelCache {
+        &self.scheduler_channel_cache
     }
 
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
@@ -208,6 +227,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             )),
             metrics: ExecutionPlanMetricsSet::new(),
             job_id: Arc::clone(&self.job_id),
+            scheduler_channel_cache: self.scheduler_channel_cache.clone(),
         }))
     }
 
@@ -272,6 +292,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                     Arc::clone(&self.job_id),
                     partition,
                     session_config,
+                    self.scheduler_channel_cache.clone(),
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -300,6 +321,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                     Arc::clone(&self.job_id),
                     partition,
                     session_config,
+                    self.scheduler_channel_cache.clone(),
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -339,6 +361,7 @@ async fn execute_query_pull(
     job_id_handle: Arc<Mutex<Option<String>>>,
     partition: usize,
     session_config: SessionConfig,
+    scheduler_channel_cache: SchedulerChannelCache,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
@@ -350,34 +373,28 @@ async fn execute_query_pull(
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
 
-    info!("Connecting to Ballista scheduler at {scheduler_url}");
-    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let mut endpoint =
-        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-    if let Some(ref customize) = customize_endpoint {
-        endpoint = customize
-            .configure_endpoint(endpoint)
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    }
-
-    let connection = endpoint
-        .connect()
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-    let mut scheduler = SchedulerGrpcClient::with_interceptor(
-        connection,
-        grpc_interceptor.as_ref().clone(),
+    let channel = build_scheduler_channel(
+        &scheduler_channel_cache,
+        &scheduler_url,
+        &grpc_config,
+        customize_endpoint.clone(),
     )
-    .max_encoding_message_size(max_message_size)
-    .max_decoding_message_size(max_message_size);
+    .await?;
+
+    let mut scheduler =
+        SchedulerGrpcClient::with_interceptor(channel, grpc_interceptor.as_ref().clone())
+            .max_encoding_message_size(max_message_size)
+            .max_decoding_message_size(max_message_size);
 
     let query_result = scheduler
         .execute_query(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        .map_err(|status| {
+            if crate::scheduler_client::is_transport_error(&status) {
+                scheduler_channel_cache.invalidate();
+            }
+            DataFusionError::Execution(format!("{status:?}"))
+        })?
         .into_inner();
 
     let query_result = match query_result.result.unwrap() {
@@ -407,7 +424,12 @@ async fn execute_query_pull(
                 job_id: job_id.clone(),
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+            .map_err(|status| {
+                if crate::scheduler_client::is_transport_error(&status) {
+                    scheduler_channel_cache.invalidate();
+                }
+                DataFusionError::Execution(format!("{status:?}"))
+            })?
             .into_inner();
         let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(50));
@@ -512,6 +534,7 @@ async fn execute_query_push(
     job_id_handle: Arc<Mutex<Option<String>>>,
     partition: usize,
     session_config: SessionConfig,
+    scheduler_channel_cache: SchedulerChannelCache,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
@@ -523,34 +546,28 @@ async fn execute_query_push(
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
 
-    info!("Connecting to Ballista scheduler at {scheduler_url}");
-    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let mut endpoint =
-        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-    if let Some(ref customize) = customize_endpoint {
-        endpoint = customize
-            .configure_endpoint(endpoint)
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    }
-
-    let connection = endpoint
-        .connect()
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-    let mut scheduler = SchedulerGrpcClient::with_interceptor(
-        connection,
-        grpc_interceptor.as_ref().clone(),
+    let channel = build_scheduler_channel(
+        &scheduler_channel_cache,
+        &scheduler_url,
+        &grpc_config,
+        customize_endpoint.clone(),
     )
-    .max_encoding_message_size(max_message_size)
-    .max_decoding_message_size(max_message_size);
+    .await?;
+
+    let mut scheduler =
+        SchedulerGrpcClient::with_interceptor(channel, grpc_interceptor.as_ref().clone())
+            .max_encoding_message_size(max_message_size)
+            .max_decoding_message_size(max_message_size);
 
     let mut query_status_stream = scheduler
         .execute_query_push(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        .map_err(|status| {
+            if crate::scheduler_client::is_transport_error(&status) {
+                scheduler_channel_cache.invalidate();
+            }
+            DataFusionError::Execution(format!("{status:?}"))
+        })?
         .into_inner();
 
     let mut prev_status: Option<job_status::Status> = None;
@@ -562,7 +579,12 @@ async fn execute_query_push(
             .ok_or(DataFusionError::Execution(
                 "Stream closed without job completing".to_string(),
             ))?
-            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+            .map_err(|status| {
+                if crate::scheduler_client::is_transport_error(&status) {
+                    scheduler_channel_cache.invalidate();
+                }
+                DataFusionError::Execution(status.to_string())
+            })?;
 
         let GetJobStatusResult {
             status,
@@ -663,6 +685,38 @@ async fn execute_query_push(
             }
         };
     }
+}
+
+/// Returns a `Channel` to the scheduler, building one through `cache` if
+/// none is currently cached. The build closure logs "Connecting to ..."
+/// so the message fires once per actual connect (not per query).
+async fn build_scheduler_channel(
+    cache: &SchedulerChannelCache,
+    scheduler_url: &str,
+    grpc_config: &GrpcClientConfig,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+) -> Result<tonic::transport::Channel> {
+    let scheduler_url = scheduler_url.to_string();
+    let grpc_config = grpc_config.clone();
+    cache
+        .get_or_init(|| async move {
+            info!("Connecting to Ballista scheduler at {scheduler_url}");
+            let mut endpoint =
+                create_grpc_client_endpoint(scheduler_url, Some(&grpc_config))
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+            if let Some(ref customize) = customize_endpoint {
+                endpoint = customize
+                    .configure_endpoint(endpoint)
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            }
+
+            endpoint
+                .connect()
+                .await
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
+        })
+        .await
 }
 
 fn get_client_host_port(
