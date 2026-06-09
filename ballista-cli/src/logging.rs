@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::time::LocalTime;
 
 #[cfg(feature = "tui")]
 mod tui {
@@ -107,6 +108,7 @@ pub fn init_logging(
     let writer = std::io::stderr;
 
     match tracing_subscriber::fmt()
+        .with_timer(LocalTime::rfc_3339())
         .with_env_filter(env_filter)
         .with_writer(writer)
         .with_ansi(true)
