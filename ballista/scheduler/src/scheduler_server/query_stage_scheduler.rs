@@ -370,7 +370,7 @@ mod tests {
     use crate::config::SchedulerConfig;
     use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
     use ballista_core::JobName;
-use ballista_core::config::TaskSchedulingPolicy;
+    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;

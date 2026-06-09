@@ -128,7 +128,8 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
         .into_optimized_plan()
         .unwrap();
 
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
+    let planner =
+        AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
     let plan = planner.current_plan();
     // TODO: we could probably push datasource to read single partition
     assert_plan!(plan, @ r"
@@ -153,7 +154,8 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
         .into_optimized_plan()
         .unwrap();
 
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
+    let mut planner =
+        AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
@@ -214,7 +216,8 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
         .into_optimized_plan()
         .unwrap();
 
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
+    let mut planner =
+        AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
@@ -280,7 +283,8 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
+    let mut planner =
+        AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -351,7 +355,8 @@ async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
+    let planner =
+        AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -382,7 +387,8 @@ async fn test_sort_merge_join_three_tables_repartition() -> datafusion::common::
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
+    let planner =
+        AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned().into()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"

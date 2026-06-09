@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
+use ballista_core::{JobName, JobStatusSubscriber};
 use datafusion::catalog::Session;
 use std::any::Any;
 use std::collections::HashMap;
@@ -499,7 +499,11 @@ impl SchedulerTest {
     }
 
     /// Submits a job and returns its ID.
-    pub async fn submit(&mut self, job_name: &JobName, plan: &LogicalPlan) -> Result<String> {
+    pub async fn submit(
+        &mut self,
+        job_name: &JobName,
+        plan: &LogicalPlan,
+    ) -> Result<String> {
         println!("{:?}", self.session_config);
         let ctx = self
             .scheduler

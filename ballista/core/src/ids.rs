@@ -46,7 +46,6 @@
 //! requires_job_id(JobName::new("oops"));
 //! ```
 
-
 /// Defines a transparent newtype wrapping a [`String`], with the full set of
 /// conversions and trait impls Ballista needs for an identifier.
 macro_rules! string_id {
@@ -131,7 +130,6 @@ string_id! {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-
 
     #[test]
     fn borrow_enables_str_keyed_lookup() {

@@ -22,7 +22,6 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use ballista_core::{BALLISTA_VERSION, JobName};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     ExecutorMetric, executor_metric::Metric, task_status,
@@ -31,6 +30,7 @@ use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
 use ballista_core::utils::get_current_time;
+use ballista_core::{BALLISTA_VERSION, JobName};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;

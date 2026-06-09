@@ -25,7 +25,6 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
-use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
@@ -34,6 +33,7 @@ use ballista_core::serde::protobuf::{
     JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
+use ballista_core::{JobName, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
@@ -254,7 +254,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Enqueue a job for scheduling
-    pub fn queue_job(&self, job_id: &str, job_name: &JobName, queued_at: u64) -> Result<()> {
+    pub fn queue_job(
+        &self,
+        job_id: &str,
+        job_name: &JobName,
+        queued_at: u64,
+    ) -> Result<()> {
         self.state.accept_job(job_id, job_name, queued_at)
     }
 
