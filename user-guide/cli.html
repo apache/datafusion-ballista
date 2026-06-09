@@ -851,12 +851,8 @@ stage execution plan.</p></li>
 </tbody>
 </table>
 <p>Create the file manually if it does not exist. The following settings are available:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">tick_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
-
-<span class="nt">job</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">stage</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">plan</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">tree</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">data_reload_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
+<span class="nt">repaint_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
 
 <span class="nt">scheduler</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:50050</span>
@@ -866,8 +862,8 @@ stage execution plan.</p></li>
 </pre></div>
 </div>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">tick_interval_ms</span></code>: How often the TUI refreshes data from the scheduler (milliseconds).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">job.stage.plan.tree</span></code>: Whether to show the stage execution plan as a tree.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">data_reload_interval_ms</span></code>: How often the TUI refreshes data from the scheduler (milliseconds).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">repaint_interval_ms</span></code>: How often the TUI repaints the screen (milliseconds).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">scheduler.url</span></code>: The Ballista scheduler HTTP endpoint.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">http.timeout</span></code>: HTTP request timeout in milliseconds.</p></li>
 </ul>
