@@ -18,7 +18,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus};
 use log::{error, info, trace, warn};
 
@@ -65,7 +64,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
 {

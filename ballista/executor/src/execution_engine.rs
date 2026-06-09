@@ -21,7 +21,6 @@
 //! query stages in a distributed setting. The execution engine is responsible
 //! for creating query stage executors from physical plans.
 
-use async_trait::async_trait;
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
@@ -64,7 +63,7 @@ pub trait ExecutionEngine: Sync + Send {
 /// and can be executed as one unit with each partition running in parallel.
 /// The output of each partition is re-partitioned and written to disk in
 /// Arrow IPC format. Subsequent stages read these results via ShuffleReaderExec.
-#[async_trait]
+#[async_trait::async_trait]
 pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     /// Executes a single partition of this query stage.
     ///
@@ -230,7 +229,7 @@ impl Display for DefaultQueryStageExec {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl QueryStageExecutor for DefaultQueryStageExec {
     async fn execute_query_stage(
         &self,

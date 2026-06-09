@@ -21,7 +21,6 @@ use crate::client::BallistaClient;
 use crate::error::Result;
 use crate::extension::BallistaConfigGrpcEndpoint;
 use crate::utils::GrpcClientConfig;
-use async_trait::async_trait;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -31,7 +30,7 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 /// Manages a pool of reusable [BallistaClient] connections.
-#[async_trait]
+#[async_trait::async_trait]
 pub trait BallistaClientPool: Send + Sync + Debug {
     /// Acquire an idle client for `(host, port, config)`, or create a new one if the
     /// pool is empty for that key. The returned [PooledClient] returns itself
