@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use ballista_core::JobId;
 use ballista_core::error::Result;
 use datafusion::arrow::array::{ListArray, ListBuilder, StringBuilder};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};

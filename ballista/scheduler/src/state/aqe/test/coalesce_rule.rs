@@ -97,7 +97,7 @@ fn partitions_with_byte_sizes(
             vec![PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "".to_string(),
+                    job_id: "".to_owned().into(),
                     stage_id: 0,
                     partition_id: idx,
                 },

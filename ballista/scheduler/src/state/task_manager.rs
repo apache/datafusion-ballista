@@ -52,7 +52,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
-type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
+type ActiveJobCache = Arc<DashMap<JobId, JobInfoCache>>;
 
 /// Trait for launching tasks on executors.
 ///
@@ -333,7 +333,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         info!("Submitting execution graph for job_id: {job_id}:\n\n{string_plan}");
 
         self.state
-            .submit_job(job_id.to_string(), &graph, subscriber)
+            .submit_job(job_id.to_owned(), &graph, subscriber)
             .await?;
         graph.revive();
         self.active_job_cache
@@ -343,7 +343,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Returns a snapshot of currently running jobs from the cache.
-    pub fn get_running_job_cache(&self) -> Arc<HashMap<String, JobInfoCache>> {
+    pub fn get_running_job_cache(&self) -> Arc<HashMap<JobId, JobInfoCache>> {
         let ret = self
             .active_job_cache
             .iter()
@@ -404,7 +404,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     _ => (0, 0),
                 };
                 jobs.push(JobOverview {
-                    job_id: job_status.job_id.clone(),
+                    job_id: job_status.job_id.clone().into(),
                     job_name: job_status.job_name.clone().into(),
                     status: job_status,
                     start_time,
@@ -483,7 +483,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             // let graph = self.get_active_execution_graph(&job_id).await;
             let job_events = if let Some(cached) =
-                self.get_active_execution_graph(&job_id)
+                self.get_active_execution_graph(&job_id.clone().into())
             {
                 let mut graph = cached.write().await;
                 graph.update_task_status(
@@ -663,7 +663,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let task_definition = TaskDefinition {
                 task_id: task.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
-                job_id,
+                job_id: job_id.into(),
                 stage_id: stage_id as u32,
                 stage_attempt_num: task.stage_attempt_num as u32,
                 partition_id: task.partition.partition_id as u32,
@@ -754,7 +754,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .collect();
                 multi_tasks.push(MultiTaskDefinition {
                     task_ids,
-                    job_id,
+                    job_id: job_id.into(),
                     stage_id: stage_id as u32,
                     stage_attempt_num: stage_attempt_num as u32,
                     plan,
@@ -798,13 +798,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Generates a new random 7-character alphanumeric job ID.
-    pub fn generate_job_id(&self) -> String {
+    pub fn generate_job_id(&self) -> JobId {
         let mut rng = rng();
         std::iter::repeat(())
             .map(|()| rng.sample(Alphanumeric))
             .map(char::from)
             .take(7)
-            .collect()
+            .collect::<String>()
+            .into()
     }
 
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
@@ -849,7 +850,7 @@ impl From<&ExecutionGraphBox> for JobOverview {
         let completed_stages = value.completed_stages();
 
         Self {
-            job_id: value.job_id().to_string(),
+            job_id: value.job_id().to_owned(),
             job_name: value.job_name().to_owned(),
             status: value.status().clone(),
             start_time: value.start_time(),

@@ -18,6 +18,7 @@
 use crate::planner::create_shuffle_writer_with_config;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptiveStageInfo;
+use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleReaderExec;
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;

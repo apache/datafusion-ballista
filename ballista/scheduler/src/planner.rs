@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ballista_core::JobId;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::ShuffleWriter;
@@ -60,7 +61,7 @@ pub trait DistributedPlanner {
     /// partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
-        job_id: &'a str,
+        job_id: &'a JobId,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>>;
@@ -101,7 +102,7 @@ impl DistributedPlanner for DefaultDistributedPlanner {
     /// A shuffle writer is created whenever the partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
-        job_id: &'a str,
+        job_id: &'a JobId,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
@@ -125,7 +126,7 @@ impl DefaultDistributedPlanner {
     /// complete query stage (its parent might also belong to the same stage)
     fn plan_query_stages_internal<'a>(
         &'a mut self,
-        job_id: &'a str,
+        job_id: &'a JobId,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<PartialQueryStageResult> {
@@ -644,7 +645,7 @@ mod test {
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(
-            &job_uuid.to_string(),
+            &job_uuid.to_string().into(),
             plan,
             ctx.state().config().options(),
         )?;
@@ -762,7 +763,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -905,7 +907,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -953,7 +956,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
 
         for stage in &stages {
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
@@ -999,7 +1003,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -1044,7 +1049,7 @@ order by
         let make_loc = |partition_id: usize| PartitionLocation {
             map_partition_id: partition_id,
             partition_id: PartitionId {
-                job_id: "job".to_string(),
+                job_id: "job".to_owned().into(),
                 stage_id: 42,
                 partition_id,
             },
@@ -1148,7 +1153,7 @@ order by
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(
-            &job_uuid.to_string(),
+            &job_uuid.to_string().into(),
             plan,
             ctx.state().config().options(),
         )?;
@@ -1259,7 +1264,7 @@ order by
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(
-            &job_uuid.to_string(),
+            &job_uuid.to_string().into(),
             plan,
             ctx.state().config().options(),
         )?;

@@ -116,7 +116,7 @@ where
 
                 // Clean up any state related to the listed jobs
                 for cleanup in jobs_to_clean {
-                    let job_id = cleanup.job_id.clone();
+                    let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
@@ -158,7 +158,7 @@ where
                             //
 
                             let partition_id = PartitionId {
-                                job_id: task.job_id.clone(),
+                                job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
                                 partition_id: task.partition_id as usize,
                             };
@@ -275,7 +275,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         })?;
 
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
-        job_id.clone(),
+        job_id.clone().into(),
         stage_id as usize,
         partition_id as usize,
         plan,
@@ -285,7 +285,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
         let part = PartitionId {
-            job_id: job_id.clone(),
+            job_id: job_id.clone().into(),
             stage_id: stage_id as usize,
             partition_id: partition_id as usize,
         };

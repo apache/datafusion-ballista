@@ -128,7 +128,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         if let Some(subscriber) = subscriber {
                             let timestamp = timestamp_millis();
                             let job_status = JobStatus {
-                                job_id: job_id.clone(),
+                                job_id: job_id.clone().into(),
                                 job_name: job_name.into(),
                                 status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(
                                     FailedJob { error, queued_at, started_at: timestamp, ended_at: timestamp }

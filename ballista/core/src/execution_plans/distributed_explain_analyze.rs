@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::JobId;
 use crate::execution_plans::DistributedQueryExec;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::{
@@ -309,6 +310,7 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
+    use crate::JobId;
     use crate::serde::protobuf::{
         GetJobMetricsResult, JobStageMetrics, OperatorMetric, OperatorWithMetrics,
         operator_metric,
@@ -357,7 +359,8 @@ mod tests {
         };
 
         let batch =
-            format_metrics_as_record_batch(&response, "job-1", schema, true).unwrap();
+            format_metrics_as_record_batch(&response, &JobId::new("job-1"), schema, true)
+                .unwrap();
 
         let plan_type = batch
             .column(0)

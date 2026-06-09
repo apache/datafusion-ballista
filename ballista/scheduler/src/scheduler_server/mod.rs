@@ -22,7 +22,7 @@ use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::{JobName, JobStatusSubscriber};
+use ballista_core::{JobId, JobName, JobStatusSubscriber};
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
@@ -224,13 +224,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
         subscriber: Option<JobStatusSubscriber>,
-    ) -> Result<String> {
+    ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
         let job_id = self.state.task_manager.generate_job_id();
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
-                job_id: job_id.to_owned(),
+                job_id: job_id.to_owned().into(),
                 job_name: job_name.to_owned().into(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
@@ -411,9 +411,9 @@ pub fn timestamp_millis() -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use ballista_core::JobName;
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::protobuf::job_status::Status;
+    use ballista_core::{JobId, JobName};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{LogicalPlan, col};
@@ -423,10 +423,9 @@ mod test {
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
 
+    use crate::config::SchedulerConfig;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
-
-    use crate::config::SchedulerConfig;
 
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::{
@@ -474,11 +473,11 @@ mod test {
             .create_or_update_session("session_id", &config)
             .await?;
 
-        let job_id = "job";
+        let job_id: JobId = "job".to_owned().into();
 
         // Enqueue job
         scheduler.state.task_manager.queue_job(
-            job_id,
+            &job_id,
             &JobName::new(""),
             timestamp_millis(),
         )?;
@@ -486,7 +485,7 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, &JobName::new(""), ctx, &plan, 0, None)
+            .submit_job(&job_id, &JobName::new(""), ctx, &plan, 0, None)
             .await
             .expect("submitting plan");
 
@@ -494,7 +493,7 @@ mod test {
         while let Some(graph) = scheduler
             .state
             .task_manager
-            .get_active_execution_graph(job_id)
+            .get_active_execution_graph(&job_id)
         {
             let task = {
                 let mut graph = graph.write().await;
@@ -519,7 +518,7 @@ mod test {
                 // Complete the task
                 let task_status = TaskStatus {
                     task_id: task.task_id as u32,
-                    job_id: task.partition.job_id.clone(),
+                    job_id: task.partition.job_id.clone().into(),
                     stage_id: task.partition.stage_id as u32,
                     stage_attempt_num: task.stage_attempt_num as u32,
                     partition_id: task.partition.partition_id as u32,
@@ -545,7 +544,7 @@ mod test {
         let final_graph = scheduler
             .state
             .task_manager
-            .get_active_execution_graph(job_id)
+            .get_active_execution_graph(&job_id)
             .expect("Fail to find graph in the cache");
 
         let final_graph = final_graph.read().await;

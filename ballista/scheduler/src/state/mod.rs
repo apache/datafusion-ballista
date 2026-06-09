@@ -26,7 +26,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::{JobName, JobStatusSubscriber};
+use ballista_core::{JobId, JobName, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -264,7 +264,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
         let mut executor_stage_assignments: HashMap<
             String,
-            HashMap<(String, usize), Vec<TaskDescription>>,
+            HashMap<(JobId, usize), Vec<TaskDescription>>,
         > = HashMap::new();
         for (executor_id, task) in bound_tasks.into_iter() {
             let stage_key = (task.partition.job_id.clone(), task.partition.stage_id);
@@ -276,7 +276,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 }
             } else {
                 let mut executor_stage_tasks: HashMap<
-                    (String, usize),
+                    (JobId, usize),
                     Vec<TaskDescription>,
                 > = HashMap::new();
                 executor_stage_tasks.insert(stage_key, vec![task]);

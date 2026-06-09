@@ -178,7 +178,7 @@ impl ShuffleWriterExec {
     }
 
     /// Get the Job ID for this query stage
-    pub fn job_id(&self) -> &str {
+    pub fn job_id(&self) -> &JobId {
         &self.job_id
     }
 
@@ -487,7 +487,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         let schema = result_schema();
 
         let schema_captured = schema.clone();
-        let job_id = self.job_id.to_string();
+        let job_id = self.job_id.clone();
         let work_dir = self.work_dir.to_string();
         let stage_id = self.stage_id;
         let fut_stream = self
@@ -567,7 +567,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 }
 
 impl ShuffleWriter for ShuffleWriterExec {
-    fn job_id(&self) -> &str {
+    fn job_id(&self) -> &JobId {
         &self.job_id
     }
 
@@ -730,7 +730,7 @@ mod tests {
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            "jobOne".to_owned().into(),
             1,
             input_plan,
             work_dir,
@@ -763,7 +763,7 @@ mod tests {
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            "jobOne".to_owned().into(),
             1,
             input_plan,
             work_dir,

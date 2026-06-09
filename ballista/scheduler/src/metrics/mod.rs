@@ -21,7 +21,7 @@ pub mod prometheus;
 
 #[cfg(feature = "prometheus")]
 use crate::metrics::prometheus::PrometheusMetricsCollector;
-use ballista_core::error::Result;
+use ballista_core::{JobId, error::Result};
 use std::sync::Arc;
 
 /// Interface for recording metrics events in the scheduler. An instance of `Arc<dyn SchedulerMetricsCollector>`

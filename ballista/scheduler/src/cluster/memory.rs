@@ -26,7 +26,7 @@ use ballista_core::serde::protobuf::{
     executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::{ConfigProducer, JobName, JobStatusSubscriber};
+use ballista_core::{ConfigProducer, JobId, JobName, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::mpsc::error::TrySendError;
@@ -67,7 +67,7 @@ impl ClusterState for InMemoryClusterState {
     async fn bind_schedulable_tasks(
         &self,
         distribution: TaskDistributionPolicy,
-        active_jobs: Arc<HashMap<String, JobInfoCache>>,
+        active_jobs: Arc<HashMap<JobId, JobInfoCache>>,
         executors: Option<HashSet<String>>,
     ) -> Result<Vec<BoundTask>> {
         let mut guard = self.task_slots.lock().await;
@@ -264,11 +264,11 @@ impl ClusterState for InMemoryClusterState {
 pub struct InMemoryJobState {
     scheduler: String,
     /// Jobs which have either completed successfully or failed
-    completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraphBox>)>,
+    completed_jobs: DashMap<JobId, (JobStatus, Option<ExecutionGraphBox>)>,
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
-    queued_jobs: DashMap<String, (String, u64)>,
+    queued_jobs: DashMap<JobId, (JobName, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
-    running_jobs: DashMap<String, ExtendedJobStatus>,
+    running_jobs: DashMap<JobId, ExtendedJobStatus>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
     session_builder: SessionBuilder,
     /// Sender of job events
@@ -351,8 +351,8 @@ impl JobState for InMemoryJobState {
     async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
         if let Some((job_name, queued_at)) = self.queued_jobs.get(job_id).as_deref() {
             return Ok(Some(JobStatus {
-                job_id: job_id.to_string(),
-                job_name: job_name.clone(),
+                job_id: job_id.to_owned().into(),
+                job_name: job_name.to_owned().into(),
                 status: Some(Status::Queued(QueuedJob {
                     queued_at: *queued_at,
                 })),
@@ -381,7 +381,10 @@ impl JobState for InMemoryJobState {
             .and_then(|(_, graph)| graph.as_ref().map(|e| e.cloned())))
     }
 
-    async fn try_acquire_job(&self, _job_id: &JobId) -> Result<Option<ExecutionGraphBox>> {
+    async fn try_acquire_job(
+        &self,
+        _job_id: &JobId,
+    ) -> Result<Option<ExecutionGraphBox>> {
         // Always return None. The only state stored here are for completed jobs
         // which cannot be acquired
         Ok(None)
@@ -399,7 +402,7 @@ impl JobState for InMemoryJobState {
             }
 
             self.completed_jobs
-                .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
+                .insert(job_id.to_owned(), (status.clone(), Some(graph.cloned())));
         } else {
             // otherwise update running job
             if let Some(mut job_info) = self.running_jobs.get_mut(job_id) {
@@ -417,7 +420,7 @@ impl JobState for InMemoryJobState {
         // job change event emitted
         // it is emitting current job status
         self.job_event_sender.send(&JobStateEvent::JobUpdated {
-            job_id: job_id.to_string(),
+            job_id: job_id.to_owned().into(),
             status,
         });
 
@@ -458,7 +461,7 @@ impl JobState for InMemoryJobState {
         Ok(())
     }
 
-    async fn get_jobs(&self) -> Result<HashSet<String>> {
+    async fn get_jobs(&self) -> Result<HashSet<JobId>> {
         Ok(self
             .completed_jobs
             .iter()
@@ -466,8 +469,8 @@ impl JobState for InMemoryJobState {
             .collect())
     }
 
-    async fn get_all_jobs(&self) -> Result<HashSet<String>> {
-        let mut all_jobs: HashSet<String> = self
+    async fn get_all_jobs(&self) -> Result<HashSet<JobId>> {
+        let mut all_jobs: HashSet<JobId> = self
             .queued_jobs
             .iter()
             .map(|pair| pair.key().clone())
@@ -477,9 +480,14 @@ impl JobState for InMemoryJobState {
         Ok(all_jobs)
     }
 
-    fn accept_job(&self, job_id: &JobId, job_name: &JobName, queued_at: u64) -> Result<()> {
+    fn accept_job(
+        &self,
+        job_id: &JobId,
+        job_name: &JobName,
+        queued_at: u64,
+    ) -> Result<()> {
         self.queued_jobs
-            .insert(job_id.to_string(), (job_name.to_string(), queued_at));
+            .insert(job_id.to_owned(), (job_name.to_owned(), queued_at));
 
         Ok(())
     }
@@ -494,8 +502,8 @@ impl JobState for InMemoryJobState {
                 job_id.clone(),
                 (
                     JobStatus {
-                        job_id,
-                        job_name,
+                        job_id: job_id.into(),
+                        job_name: job_name.into(),
                         status: Some(Status::Failed(FailedJob {
                             error: reason,
                             queued_at,

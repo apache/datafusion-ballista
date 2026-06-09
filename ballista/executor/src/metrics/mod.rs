@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::execution_engine::QueryStageExecutor;
+use ballista_core::JobId;
 use log::debug;
 use std::{fmt::Display, sync::Arc};
 

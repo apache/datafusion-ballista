@@ -413,9 +413,9 @@ mod tests {
     use crate::planner::DefaultDistributedPlanner;
     use crate::state::execution_graph::StaticExecutionGraph;
     use crate::state::execution_graph_dot::ExecutionGraphDot;
-    use ballista_core::JobName;
     use ballista_core::error::{BallistaError, Result};
     use ballista_core::extension::SessionConfigExt;
+    use ballista_core::{JobId, JobName};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::MemTable;
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -607,7 +607,7 @@ filter_expr="]
         let mut planner = DefaultDistributedPlanner::new();
         StaticExecutionGraph::new(
             "scheduler_id",
-            "job_id",
+            &JobId::new("job_id"),
             &JobName::new("job_name"),
             "session_id",
             plan,
@@ -644,7 +644,7 @@ filter_expr="]
         let mut planner = DefaultDistributedPlanner::new();
         StaticExecutionGraph::new(
             "scheduler_id",
-            "job_id",
+            &JobId::new("job_id"),
             &JobName::new("job_name"),
             "session_id",
             plan,

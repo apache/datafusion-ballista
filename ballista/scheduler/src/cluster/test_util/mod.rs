@@ -19,10 +19,10 @@ use crate::cluster::{JobState, JobStateEvent};
 use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::ExecutionGraphBox;
 use crate::test_utils::{await_condition, mock_completed_task, mock_executor};
-use ballista_core::JobName;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::JobStatus;
 use ballista_core::serde::protobuf::job_status::Status;
+use ballista_core::{JobId, JobName};
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,7 +80,7 @@ impl<S: JobState> JobStateTest<S> {
         assert!(
             matches!(&status, JobStatus {
             job_id: status_job_id, status: Some(Status::Queued(_)), ..
-        } if status_job_id.as_str() == job_id),
+        } if status_job_id.as_str() == job_id.as_str()),
             "Expected queued status but found {:?}",
             status
         );
@@ -91,7 +91,7 @@ impl<S: JobState> JobStateTest<S> {
     /// Submits a job with the given execution graph.
     pub async fn submit_job(self, graph: &ExecutionGraphBox) -> Result<Self> {
         self.state
-            .submit_job(graph.job_id().to_string(), graph, None)
+            .submit_job(graph.job_id().to_owned(), graph, None)
             .await?;
         Ok(self)
     }
@@ -106,7 +106,7 @@ impl<S: JobState> JobStateTest<S> {
         assert!(
             matches!(&status, JobStatus {
             job_id: status_job_id, status: Some(Status::Running(_)), ..
-        } if status_job_id.as_str() == job_id),
+        } if status_job_id.as_str() == job_id.as_str()),
             "Expected running status but found {:?}",
             status
         );
@@ -130,7 +130,7 @@ impl<S: JobState> JobStateTest<S> {
         assert!(
             matches!(&status, JobStatus {
             job_id: status_job_id, status: Some(Status::Failed(_)), ..
-        } if status_job_id.as_str() == job_id),
+        } if status_job_id.as_str() == job_id.as_str()),
             "Expected failed status but found {:?}",
             status
         );
@@ -147,7 +147,7 @@ impl<S: JobState> JobStateTest<S> {
         assert!(
             matches!(&status, JobStatus {
             job_id: status_job_id, status: Some(Status::Successful(_)), ..
-        } if status_job_id.as_str() == job_id),
+        } if status_job_id.as_str() == job_id.as_str()),
             "Expected success status but found {:?}",
             status
         );
@@ -178,7 +178,7 @@ pub async fn test_job_lifecycle<S: JobState>(
 ) -> Result<()> {
     let test = JobStateTest::new(state).await?;
 
-    let job_id = graph.job_id().to_string();
+    let job_id = graph.job_id().to_owned();
 
     let test = test
         .queue_job(&job_id)?
@@ -207,7 +207,7 @@ pub async fn test_job_planning_failure<S: JobState>(
 ) -> Result<()> {
     let test = JobStateTest::new(state).await?;
 
-    let job_id = graph.job_id().to_string();
+    let job_id = graph.job_id().to_owned();
 
     test.queue_job(&job_id)?
         .fail_planning(&job_id)

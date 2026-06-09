@@ -24,13 +24,15 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::JobId;
+
 /// Trait for shuffle writer execution plans.
 ///
 /// This trait defines the common interface needed by the distributed planner
 /// and execution graph to work with different shuffle implementations.
 pub trait ShuffleWriter: ExecutionPlan + Debug + Send + Sync {
     /// Get the Job ID for this query stage.
-    fn job_id(&self) -> &str;
+    fn job_id(&self) -> &JobId;
 
     /// Get the Stage ID for this query stage.
     fn stage_id(&self) -> usize;

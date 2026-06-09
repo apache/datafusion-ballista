@@ -984,7 +984,7 @@ mod tests {
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
         PartitionId,
     };
-    use crate::utils;
+    use crate::{JobId, utils};
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::ipc::writer::StreamWriter;
@@ -1018,7 +1018,7 @@ mod tests {
                 vec![PartitionLocation {
                     map_partition_id: 0,
                     partition_id: PartitionId {
-                        job_id: job_id.to_string(),
+                        job_id: job_id.to_owned().into(),
                         stage_id,
                         partition_id: i,
                     },
@@ -1137,7 +1137,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.to_owned().into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1188,7 +1188,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.to_owned().into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1240,7 +1240,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.to_owned().into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1292,7 +1292,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.to_owned().into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1350,7 +1350,7 @@ mod tests {
         let task_ctx = session_ctx.task_ctx();
         let work_dir = TempDir::new().unwrap();
         let input = ShuffleWriterExec::try_new(
-            "local_file".to_owned(),
+            "local_file".to_owned().into(),
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
@@ -1401,7 +1401,8 @@ mod tests {
         let work_dir = tmp_dir.path();
 
         // job name and stage id are hard-coded
-        let file_path = create_shuffle_path(work_dir, "job", 1, 0, None, false).unwrap();
+        let file_path =
+            create_shuffle_path(work_dir, &JobId::new("job"), 1, 0, None, false).unwrap();
 
         std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
 
@@ -1443,7 +1444,8 @@ mod tests {
         for p in 0..partition_num {
             // job name and stage id are hard-codded
             let file_path =
-                create_shuffle_path(work_dir, "job", 1, p, None, false).unwrap();
+                create_shuffle_path(work_dir, &JobId::new("job"), 1, p, None, false)
+                    .unwrap();
             // this unwrap should not be problem as
             // this function never return root dir
             std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
@@ -1482,7 +1484,7 @@ mod tests {
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "job".to_string(),
+                    job_id: "job".to_owned().into(),
                     stage_id: 1,
                     partition_id,
                 },
@@ -1718,7 +1720,7 @@ mod tests {
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "j".to_string(),
+                    job_id: "j".to_owned().into(),
                     stage_id: 7,
                     partition_id,
                 },

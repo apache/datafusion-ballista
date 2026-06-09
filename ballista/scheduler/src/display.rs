@@ -19,6 +19,7 @@
 //! [`datafusion::physical_plan::display`] for examples of how to
 //! format
 
+use ballista_core::JobId;
 use ballista_core::utils::collect_plan_metrics;
 use datafusion::logical_expr::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;

@@ -73,7 +73,7 @@ impl PartitionId {
     /// Creates a new partition ID with the given job, stage, and partition identifiers.
     pub fn new(job_id: &JobId, stage_id: usize, partition_id: usize) -> Self {
         Self {
-            job_id: job_id.to_string(),
+            job_id: job_id.to_owned().into(),
             stage_id,
             partition_id,
         }

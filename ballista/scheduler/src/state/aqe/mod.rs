@@ -173,7 +173,7 @@ impl AdaptiveExecutionGraph {
         Ok(Self {
             planner,
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_string(),
+            job_id: job_id.to_owned(),
             job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
@@ -504,8 +504,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         Box::new(self.clone())
     }
 
-    fn job_id(&self) -> &str {
-        self.job_id.as_str()
+    fn job_id(&self) -> &JobId {
+        &self.job_id
     }
 
     fn job_name(&self) -> &JobName {
@@ -1176,7 +1176,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone().into(),
             status: Some(Status::Failed(FailedJob {
                 error,
@@ -1205,7 +1205,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone().into(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,

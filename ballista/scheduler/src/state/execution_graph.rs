@@ -103,7 +103,7 @@ pub type ExecutionGraphBox = Box<dyn ExecutionGraph + Send + Sync>;
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 pub trait ExecutionGraph: Debug {
     /// Returns the job ID for this execution graph.
-    fn job_id(&self) -> &str;
+    fn job_id(&self) -> &JobId;
 
     /// Returns the job name for this execution graph.
     fn job_name(&self) -> &JobName;
@@ -324,7 +324,7 @@ impl StaticExecutionGraph {
 
         Ok(Self {
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_string(),
+            job_id: job_id.to_owned().into(),
             job_name: job_name.to_owned().into(),
             session_id: session_id.to_string(),
 
@@ -636,8 +636,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         Box::new(self.clone())
     }
 
-    fn job_id(&self) -> &str {
-        self.job_id.as_str()
+    fn job_id(&self) -> &JobId {
+        &self.job_id
     }
 
     fn job_name(&self) -> &JobName {
@@ -1360,7 +1360,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone().into(),
             status: Some(Status::Failed(FailedJob {
                 error,
@@ -1389,7 +1389,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone().into(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,

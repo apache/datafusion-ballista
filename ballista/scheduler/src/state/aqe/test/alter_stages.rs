@@ -530,7 +530,7 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
         // next few properties are generic values
         map_partition_id: 0,
         partition_id: PartitionId {
-            job_id: "".to_string(),
+            job_id: "".to_owned().into(),
             stage_id: 0,
             partition_id: 0,
         },
@@ -562,7 +562,7 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
         // next few properties are generic values
         map_partition_id: 0,
         partition_id: PartitionId {
-            job_id: "".to_string(),
+            job_id: "".to_owned().into(),
             stage_id: 0,
             partition_id: 0,
         },

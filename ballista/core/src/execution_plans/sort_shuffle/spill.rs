@@ -21,6 +21,7 @@
 //! At finalization, the spill bytes are concatenated verbatim into the
 //! consolidated output file alongside the in-memory remainder.
 
+use crate::JobId;
 use crate::error::{BallistaError, Result};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::reader::StreamReader;
@@ -80,7 +81,7 @@ impl SpillManager {
         compression: CompressionType,
     ) -> Result<Self> {
         let mut spill_dir = PathBuf::from(work_dir);
-        spill_dir.push(job_id);
+        spill_dir.push(job_id.as_str());
         spill_dir.push(format!("{stage_id}"));
         spill_dir.push(format!("{input_partition}"));
         spill_dir.push("spill");
@@ -273,7 +274,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            "job1",
+            &JobId::new("job1"),
             1,
             0,
             schema.clone(),
@@ -308,7 +309,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            "job1",
+            &JobId::new("job1"),
             1,
             0,
             schema.clone(),
@@ -345,7 +346,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            "job1",
+            &JobId::new("job1"),
             1,
             0,
             schema.clone(),
@@ -391,7 +392,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            "job1",
+            &JobId::new("job1"),
             1,
             0,
             schema.clone(),

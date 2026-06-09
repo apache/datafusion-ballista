@@ -83,11 +83,11 @@ pub enum QueryStageSchedulerEvent {
         failed_at: u64,
     },
     /// A job's execution graph has been updated.
-    JobUpdated(String),
+    JobUpdated(JobId),
     /// Request to cancel a job.
-    JobCancel(String),
+    JobCancel(JobId),
     /// Request to clean up job data.
-    JobDataClean(String),
+    JobDataClean(JobId),
     /// Task status updates received.
     TaskUpdating(String, Vec<TaskStatus>),
     /// Signal to revive task offers.
@@ -150,6 +150,7 @@ impl Debug for QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 write!(f, "JobDataClean : job_id={job_id}.")
             }
+            // TODO: This is not job_id but Executor ID (based on usage).
             QueryStageSchedulerEvent::TaskUpdating(job_id, status) => {
                 write!(f, "TaskUpdating : job_id={job_id}, status:[{status:?}].")
             }

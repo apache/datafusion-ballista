@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 
 use once_cell::sync::OnceCell;

@@ -17,7 +17,7 @@
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::{JobName, JobStatusSubscriber};
+use ballista_core::{JobId, JobName, JobStatusSubscriber};
 use datafusion::catalog::Session;
 use std::any::Any;
 use std::collections::HashMap;
@@ -503,7 +503,7 @@ impl SchedulerTest {
         &mut self,
         job_name: &JobName,
         plan: &LogicalPlan,
-    ) -> Result<String> {
+    ) -> Result<JobId> {
         println!("{:?}", self.session_config);
         let ctx = self
             .scheduler
@@ -632,7 +632,7 @@ impl SchedulerTest {
         &mut self,
         job_name: &JobName,
         plan: &LogicalPlan,
-    ) -> Result<(JobStatus, String)> {
+    ) -> Result<(JobStatus, JobId)> {
         self.run_with_subscriber(job_name, plan, None).await
     }
     /// Returns job status and job_id, with provided subscriber
@@ -641,7 +641,7 @@ impl SchedulerTest {
         job_name: &JobName,
         plan: &LogicalPlan,
         subscriber: Option<JobStatusSubscriber>,
-    ) -> Result<(JobStatus, String)> {
+    ) -> Result<(JobStatus, JobId)> {
         let ctx = self
             .scheduler
             .state
@@ -698,23 +698,23 @@ impl SchedulerTest {
 #[derive(Clone)]
 pub enum MetricEvent {
     /// Job submitted event (job_id, queued_at, submitted_at).
-    Submitted(String, u64, u64),
+    Submitted(JobId, u64, u64),
     /// Job completed event (job_id, queued_at, completed_at).
-    Completed(String, u64, u64),
+    Completed(JobId, u64, u64),
     /// Job cancelled event (job_id).
-    Cancelled(String),
+    Cancelled(JobId),
     /// Job failed event (job_id, queued_at, failed_at).
-    Failed(String, u64, u64),
+    Failed(JobId, u64, u64),
 }
 
 impl MetricEvent {
     /// Returns the job ID associated with this event.
-    pub fn job_id(&self) -> &str {
+    pub fn job_id(&self) -> &JobId {
         match self {
-            MetricEvent::Submitted(job, _, _) => job.as_str(),
-            MetricEvent::Completed(job, _, _) => job.as_str(),
-            MetricEvent::Cancelled(job) => job.as_str(),
-            MetricEvent::Failed(job, _, _) => job.as_str(),
+            MetricEvent::Submitted(job, _, _) => job,
+            MetricEvent::Completed(job, _, _) => job,
+            MetricEvent::Cancelled(job) => job,
+            MetricEvent::Failed(job, _, _) => job,
         }
     }
 }
@@ -877,7 +877,7 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
 
 /// Creates a test execution graph with a simple aggregation plan.
 pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
-    test_aggregation_plan_with_job_id(partition, "job").await
+    test_aggregation_plan_with_job_id(partition, &JobId::new("job")).await
 }
 
 /// Creates a test execution graph with a simple aggregation plan and custom job ID.
@@ -965,7 +965,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
 
     StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &JobId::new("job"),
         &JobName::new(""),
         "session",
         plan,
@@ -1006,7 +1006,7 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
 
     StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &JobId::new("job"),
         &JobName::new(""),
         "session",
         plan,
@@ -1067,7 +1067,7 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &JobId::new("job"),
         &JobName::new(""),
         "session",
         plan,
@@ -1110,7 +1110,7 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &JobId::new("job"),
         &JobName::new(""),
         "session",
         plan,
@@ -1153,7 +1153,7 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &JobId::new("job"),
         &JobName::new(""),
         "session",
         plan,
@@ -1201,7 +1201,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
     // Complete the task
     protobuf::TaskStatus {
         task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone(),
+        job_id: task.partition.job_id.clone().into(),
         stage_id: task.partition.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
         partition_id: task.partition.partition_id as u32,
@@ -1236,7 +1236,7 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
     // Fail the task
     protobuf::TaskStatus {
         task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone(),
+        job_id: task.partition.job_id.clone().into(),
         stage_id: task.partition.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
         partition_id: task.partition.partition_id as u32,
