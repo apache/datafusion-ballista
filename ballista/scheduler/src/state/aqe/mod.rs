@@ -133,7 +133,7 @@ impl AdaptiveExecutionGraph {
     pub async fn try_new(
         scheduler_id: &str,
         job_id: &str,
-        job_name: &str,
+        job_name: &JobName,
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         queued_at: u64,
@@ -174,7 +174,7 @@ impl AdaptiveExecutionGraph {
             planner,
             scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_string(),
-            job_name: job_name.to_string(),
+            job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
             status: JobStatus {
@@ -508,8 +508,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.job_id.as_str()
     }
 
-    fn job_name(&self) -> &str {
-        self.job_name.as_str()
+    fn job_name(&self) -> &JobName {
+        &self.job_name
     }
 
     fn session_id(&self) -> &str {
@@ -1177,7 +1177,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone(),
-            job_name: self.job_name.clone(),
+            job_name: self.job_name.clone().into(),
             status: Some(Status::Failed(FailedJob {
                 error,
                 queued_at: self.queued_at,
@@ -1206,7 +1206,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone(),
-            job_name: self.job_name.clone(),
+            job_name: self.job_name.clone().into(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
 

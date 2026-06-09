@@ -19,6 +19,7 @@ use crate::cluster::{JobState, JobStateEvent};
 use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::ExecutionGraphBox;
 use crate::test_utils::{await_condition, mock_completed_task, mock_executor};
+use ballista_core::JobName;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::JobStatus;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -56,7 +57,7 @@ impl<S: JobState> JobStateTest<S> {
 
     /// Queues a job with the given ID.
     pub fn queue_job(self, job_id: &str) -> Result<Self> {
-        self.state.accept_job(job_id, "", timestamp_millis())?;
+        self.state.accept_job(job_id, &JobName::new(""), timestamp_millis())?;
         Ok(self)
     }
 

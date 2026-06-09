@@ -22,7 +22,7 @@ use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
-use ballista_core::JobStatusSubscriber;
+use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
@@ -364,7 +364,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,
-        job_name: &str,
+        job_name: &JobName,
         session_ctx: Arc<SessionContext>,
         logical_plan: &LogicalPlan,
         queued_at: u64,

@@ -105,7 +105,7 @@ pub trait ExecutionGraph: Debug {
     fn job_id(&self) -> &str;
 
     /// Returns the job name for this execution graph.
-    fn job_name(&self) -> &str;
+    fn job_name(&self) -> &JobName;
 
     /// Returns the session ID associated with this job.
     fn session_id(&self) -> &str;
@@ -305,7 +305,7 @@ impl StaticExecutionGraph {
     pub fn new(
         scheduler_id: &str,
         job_id: &str,
-        job_name: &str,
+        job_name: &JobName,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
@@ -324,7 +324,7 @@ impl StaticExecutionGraph {
         Ok(Self {
             scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_string(),
-            job_name: job_name.to_string(),
+            job_name: job_name.to_owned().into(),
             session_id: session_id.to_string(),
 
             status: JobStatus {
@@ -639,8 +639,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.job_id.as_str()
     }
 
-    fn job_name(&self) -> &str {
-        self.job_name.as_str()
+    fn job_name(&self) -> &JobName {
+        &self.job_name
     }
 
     fn session_id(&self) -> &str {
@@ -1360,7 +1360,7 @@ impl ExecutionGraph for StaticExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone(),
-            job_name: self.job_name.clone(),
+            job_name: self.job_name.clone().into(),
             status: Some(Status::Failed(FailedJob {
                 error,
                 queued_at: self.queued_at,
@@ -1389,7 +1389,7 @@ impl ExecutionGraph for StaticExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone(),
-            job_name: self.job_name.clone(),
+            job_name: self.job_name.clone().into(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
 

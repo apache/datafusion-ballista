@@ -26,7 +26,7 @@ use ballista_core::serde::protobuf::{
     executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::{ConfigProducer, JobStatusSubscriber};
+use ballista_core::{ConfigProducer, JobName, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::mpsc::error::TrySendError;
@@ -477,7 +477,7 @@ impl JobState for InMemoryJobState {
         Ok(all_jobs)
     }
 
-    fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
+    fn accept_job(&self, job_id: &str, job_name: &JobName, queued_at: u64) -> Result<()> {
         self.queued_jobs
             .insert(job_id.to_string(), (job_name.to_string(), queued_at));
 

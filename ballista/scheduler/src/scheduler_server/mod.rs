@@ -18,7 +18,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ballista_core::JobStatusSubscriber;
+use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
@@ -220,7 +220,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Submits a job to executor returning job_id
     pub async fn submit_job(
         &self,
-        job_name: &str,
+        job_name: &JobName,
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
         subscriber: Option<JobStatusSubscriber>,
@@ -231,7 +231,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
-                job_name: job_name.to_owned(),
+                job_name: job_name.to_owned().into(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
                 queued_at: timestamp_millis(),
@@ -411,7 +411,8 @@ pub fn timestamp_millis() -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use ballista_core::extension::SessionConfigExt;
+    use ballista_core::JobName;
+use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::protobuf::job_status::Status;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
@@ -479,12 +480,12 @@ mod test {
         scheduler
             .state
             .task_manager
-            .queue_job(job_id, "", timestamp_millis())?;
+            .queue_job(job_id, &JobName::new(""), timestamp_millis())?;
 
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, "", ctx, &plan, 0, None)
+            .submit_job(job_id, &JobName::new(""), ctx, &plan, 0, None)
             .await
             .expect("submitting plan");
 
@@ -574,7 +575,7 @@ mod test {
         )
         .await?;
 
-        let (status, job_id) = test.run("", &plan).await.expect("running plan");
+        let (status, job_id) = test.run(&JobName::new(""), &plan).await.expect("running plan");
 
         match status.status {
             Some(job_status::Status::Successful(SuccessfulJob {
@@ -614,7 +615,7 @@ mod test {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
         let (status, job_id) = test
-            .run_with_subscriber("", &plan, Some(tx))
+            .run_with_subscriber(&JobName::new(""), &plan, Some(tx))
             .await
             .expect("running plan");
 
@@ -707,7 +708,7 @@ mod test {
         )
         .await?;
 
-        let (status, job_id) = test.run("", &plan).await.expect("running plan");
+        let (status, job_id) = test.run(&JobName::new(""), &plan).await.expect("running plan");
 
         assert!(
             matches!(
@@ -784,7 +785,7 @@ mod test {
         .await?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let (status, job_id) = test
-            .run_with_subscriber("", &plan, Some(tx))
+            .run_with_subscriber(&JobName::new(""), &plan, Some(tx))
             .await
             .expect("running plan");
 
@@ -848,7 +849,7 @@ mod test {
             .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
-        let (status, job_id) = test.run("", &plan).await?;
+        let (status, job_id) = test.run(&JobName::new(""), &plan).await?;
 
         assert!(
             matches!(
@@ -894,7 +895,7 @@ mod test {
             .into_optimized_plan()?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         // This should fail when we try and create the physical plan
-        let (status, job_id) = test.run_with_subscriber("", &plan, Some(tx)).await?;
+        let (status, job_id) = test.run_with_subscriber(&JobName::new(""), &plan, Some(tx)).await?;
 
         assert!(
             matches!(

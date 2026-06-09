@@ -347,7 +347,7 @@ pub async fn get_jobs<
             };
             JobResponse {
                 job_id: job.job_id.to_string(),
-                job_name: job.job_name.to_string(),
+                job_name: job.job_name.to_owned().into(),
                 job_status,
                 status: plain_status,
                 start_time: job.start_time,
@@ -410,7 +410,7 @@ pub async fn get_job<
 
     Ok(Json(JobResponse {
         job_id: job.job_id().to_string(),
-        job_name: job.job_name().to_string(),
+        job_name: job.job_name().to_owned().into(),
         job_status,
         status: plain_status,
         start_time: job.start_time(),

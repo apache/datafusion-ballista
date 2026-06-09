@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::JobStatusSubscriber;
+use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use datafusion::catalog::Session;
@@ -499,7 +499,7 @@ impl SchedulerTest {
     }
 
     /// Submits a job and returns its ID.
-    pub async fn submit(&mut self, job_name: &str, plan: &LogicalPlan) -> Result<String> {
+    pub async fn submit(&mut self, job_name: &JobName, plan: &LogicalPlan) -> Result<String> {
         println!("{:?}", self.session_config);
         let ctx = self
             .scheduler
@@ -626,7 +626,7 @@ impl SchedulerTest {
     /// Returns job status and job_id
     pub async fn run(
         &mut self,
-        job_name: &str,
+        job_name: &JobName,
         plan: &LogicalPlan,
     ) -> Result<(JobStatus, String)> {
         self.run_with_subscriber(job_name, plan, None).await
@@ -634,7 +634,7 @@ impl SchedulerTest {
     /// Returns job status and job_id, with provided subscriber
     pub async fn run_with_subscriber(
         &mut self,
-        job_name: &str,
+        job_name: &JobName,
         plan: &LogicalPlan,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<(JobStatus, String)> {
@@ -913,7 +913,7 @@ pub async fn test_aggregation_plan_with_job_id(
     StaticExecutionGraph::new(
         "localhost:50050",
         job_id,
-        "",
+        &JobName::new(""),
         "session",
         plan,
         0,
@@ -962,7 +962,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
     StaticExecutionGraph::new(
         "localhost:50050",
         "job",
-        "",
+        &JobName::new(""),
         "session",
         plan,
         0,
@@ -1003,7 +1003,7 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
     StaticExecutionGraph::new(
         "localhost:50050",
         "job",
-        "",
+        &JobName::new(""),
         "session",
         plan,
         0,
@@ -1064,7 +1064,7 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
-        "",
+        &JobName::new(""),
         "session",
         plan,
         0,
@@ -1107,7 +1107,7 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
-        "",
+        &JobName::new(""),
         "session",
         plan,
         0,
@@ -1150,7 +1150,7 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
-        "",
+        &JobName::new(""),
         "session",
         plan,
         0,

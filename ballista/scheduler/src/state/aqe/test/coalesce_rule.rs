@@ -138,7 +138,7 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     // Before any stage finalizes the leaves are unresolved, so the rule
@@ -191,7 +191,7 @@ async fn should_skip_coalesce_when_rule_disabled() -> datafusion::error::Result<
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     let _ = planner.runnable_stages()?.unwrap();
@@ -228,7 +228,7 @@ async fn should_skip_coalesce_when_partitions_are_full() -> datafusion::error::R
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     let _ = planner.runnable_stages()?.unwrap();
@@ -267,7 +267,7 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -320,7 +320,7 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -385,7 +385,7 @@ async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -432,7 +432,7 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_string(),
+        "test_job".to_owned().into(),
     )?;
 
     // Stage 0 is the upstream shuffle writer, partitioning by `c` into M=8.

@@ -254,7 +254,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Enqueue a job for scheduling
-    pub fn queue_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
+    pub fn queue_job(&self, job_id: &str, job_name: &JobName, queued_at: u64) -> Result<()> {
         self.state.accept_job(job_id, job_name, queued_at)
     }
 
@@ -276,7 +276,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn submit_job(
         &self,
         job_id: &str,
-        job_name: &str,
+        job_name: &JobName,
         ctx: Arc<SessionContext>,
         logical_plan: &LogicalPlan,
         queued_at: u64,
@@ -400,7 +400,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 };
                 jobs.push(JobOverview {
                     job_id: job_status.job_id.clone(),
-                    job_name: job_status.job_name.clone(),
+                    job_name: job_status.job_name.clone().into(),
                     status: job_status,
                     start_time,
                     end_time,
@@ -845,7 +845,7 @@ impl From<&ExecutionGraphBox> for JobOverview {
 
         Self {
             job_id: value.job_id().to_string(),
-            job_name: value.job_name().to_string(),
+            job_name: value.job_name().to_owned(),
             status: value.status().clone(),
             start_time: value.start_time(),
             end_time: value.end_time(),
