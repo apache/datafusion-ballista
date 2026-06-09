@@ -131,23 +131,15 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
 pub async fn load_stage_plan(
     app: &App,
     job_id: &str,
-    tab: crate::tui::domain::jobs::stages::StagePlanTab,
+    tab: &StagePlanTab,
 ) -> TuiResult<()> {
-    use crate::tui::domain::jobs::stages::StagePlanTab;
-
-    let fmt = match tab {
-        StagePlanTab::Default => Some(""),
-        StagePlanTab::Tree => Some("tree"),
-        StagePlanTab::Metrics => Some("metrics"),
-    };
-
     let mut stages = app
         .http_client
-        .get_job_stages(job_id, &tab)
+        .get_job_stages(job_id, tab)
         .await
-        .inspect(|s| tracing::trace!("Loaded {fmt:?} plan for job '{job_id}': {s:?}"))
+        .inspect(|s| tracing::trace!("Loaded the {tab:?} plan for job '{job_id}': {s:?}"))
         .inspect_err(|e| {
-            tracing::error!("Failed to load {fmt:?} plan for job '{job_id}': {e:?}")
+            tracing::error!("Failed to load the {tab:?} plan for job '{job_id}': {e:?}")
         })?;
 
     stages
@@ -155,7 +147,7 @@ pub async fn load_stage_plan(
         .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
 
     app.send_event(Event::DataLoaded {
-        data: UiData::JobStagesPlanData(tab, stages),
+        data: UiData::JobStagesPlanData(tab.clone(), stages),
     })
     .await
 }

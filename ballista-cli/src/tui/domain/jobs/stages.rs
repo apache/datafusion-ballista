@@ -17,6 +17,7 @@
 
 use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
+use std::fmt::Display;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct JobStagesResponse {
@@ -95,6 +96,17 @@ impl StagePlanTab {
             StagePlanTab::Tree => "plan_format=tree",
             StagePlanTab::Metrics => "plan_format=metrics",
         }
+    }
+}
+
+impl Display for StagePlanTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            StagePlanTab::Default => "default".to_string(),
+            StagePlanTab::Tree => "tree".to_string(),
+            StagePlanTab::Metrics => "metrics".to_string(),
+        };
+        write!(f, "{}", str)
     }
 }
 

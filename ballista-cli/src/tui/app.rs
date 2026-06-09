@@ -249,8 +249,6 @@ impl App {
                     _ => {}
                 }
             } else if popup.is_plan_view() {
-                use crate::tui::domain::jobs::stages::StagePlanTab;
-
                 // Collect job_id + tab to fetch while popup is still borrowed,
                 // then drop the borrow before the async call.
                 let fetch = match key.code {
@@ -287,7 +285,7 @@ impl App {
                 };
 
                 if let Some((job_id, tab)) = fetch
-                    && let Err(e) = load_stage_plan(self, &job_id, tab).await
+                    && let Err(e) = load_stage_plan(self, &job_id, &tab).await
                 {
                     tracing::error!("Failed to load stage plan: {e:?}");
                 }
@@ -988,8 +986,6 @@ impl App {
                     _ => {}
                 }
             } else if popup.is_plan_view() {
-                use crate::tui::domain::jobs::stages::StagePlanTab;
-
                 let fetch = match key.code {
                     KeyCode::Char('d') => popup
                         .set_tab(StagePlanTab::Default)
