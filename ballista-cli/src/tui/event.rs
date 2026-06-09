@@ -142,7 +142,7 @@ pub(crate) mod web {
         pub fn new(
             data_reload_interval_ms: u32,
             repaint_interval_ms: u32,
-            terminal: &ratatui::Terminal<ratzilla::WebGl2Backend>,
+            terminal: &mut ratatui::Terminal<ratzilla::WebGl2Backend>,
         ) -> (Sender<Event>, Self) {
             let queue = Rc::new(RefCell::new(VecDeque::new()));
             let sender = Sender {
@@ -171,13 +171,15 @@ pub(crate) mod web {
             .forget();
 
             let key_sender = sender.clone();
-            terminal.on_key_event(move |key_event| {
+            if let Err(err) = terminal.on_key_event(move |key_event| {
                 tracing::debug!("on key event: {key_event:?}");
                 key_sender
                     .queue
                     .borrow_mut()
                     .push_back(Event::Key(key_event));
-            });
+            }) {
+                tracing::error!("Failed to set up key event listener: {err:?}");
+            };
 
             (sender, Self { events: queue })
         }
