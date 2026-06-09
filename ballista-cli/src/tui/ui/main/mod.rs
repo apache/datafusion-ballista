@@ -24,8 +24,8 @@ pub use executors::{executor_details_popup, render_executors};
 pub use executors::{load_executor_details_popup, load_executors_data};
 #[cfg(not(feature = "web"))]
 pub use jobs::{
-    load_job_config_popup, load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
-    load_stage_plan,
+    load_job_config_popup, load_job_details, load_job_dot, load_job_stages_popup,
+    load_jobs_data, load_stage_plan,
 };
 
 #[cfg(feature = "web")]

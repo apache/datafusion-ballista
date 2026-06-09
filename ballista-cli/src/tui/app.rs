@@ -30,8 +30,8 @@ use crate::tui::{
             ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
         },
         jobs::{
-            CancelJobResult, JobConfigPopup, JobDetails, JobPlansPopup, JobsData, PhysicalFormat,
-            PlanTab, SortColumn as JobsSortColumn,
+            CancelJobResult, JobConfigPopup, JobDetails, JobPlansPopup, JobsData,
+            PhysicalFormat, PlanTab, SortColumn as JobsSortColumn,
             stages::{JobStagesPopup, StagesGraph},
         },
         metrics::MetricsData,
@@ -53,8 +53,9 @@ use tokio::sync::mpsc::Sender;
 use crate::tui::http_client::HttpClient;
 #[cfg(not(feature = "web"))]
 use crate::tui::ui::{
-    load_executor_details_popup, load_executors_data, load_job_config_popup, load_job_details, load_job_dot,
-    load_job_stages_popup, load_jobs_data, load_metrics_data, load_stage_plan,
+    load_executor_details_popup, load_executors_data, load_job_config_popup,
+    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
+    load_metrics_data, load_stage_plan,
 };
 
 const INVALID_DATE: &str = "Invalid date";

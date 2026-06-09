@@ -36,8 +36,9 @@ pub use main::{
 };
 #[cfg(not(feature = "web"))]
 pub use main::{
-    load_executor_details_popup, load_executors_data, load_job_config_popup, load_job_details, load_job_dot,
-    load_job_stages_popup, load_jobs_data, load_metrics_data, load_stage_plan,
+    load_executor_details_popup, load_executors_data, load_job_config_popup,
+    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
+    load_metrics_data, load_stage_plan,
 };
 
 use ratatui::{
