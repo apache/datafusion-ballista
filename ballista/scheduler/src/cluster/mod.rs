@@ -154,7 +154,7 @@ pub type ExecutorSlot = (String, u32);
 /// Trait for maintaining a globally consistent view of cluster resources.
 ///
 /// Implementations track executor registration, heartbeats, and available task slots.
-#[tonic::async_trait]
+#[async_trait::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
     /// Initializes the cluster state backend.
     ///
@@ -277,7 +277,7 @@ pub type JobStateEventStream = Pin<Box<dyn Stream<Item = JobStateEvent> + Send>>
 /// Trait for persisting state related to executing jobs.
 ///
 /// Implementations handle job lifecycle, execution graphs, and session management.
-#[tonic::async_trait]
+#[async_trait::async_trait]
 pub trait JobState: Send + Sync {
     /// Accepts a job into the scheduler's queue.
     ///
