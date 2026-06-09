@@ -18,7 +18,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus};
 use log::{error, info, trace, warn};
 

@@ -21,7 +21,6 @@ use crate::client::BallistaClient;
 use crate::error::Result;
 use crate::extension::BallistaConfigGrpcEndpoint;
 use crate::utils::GrpcClientConfig;
-use async_trait::async_trait;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;

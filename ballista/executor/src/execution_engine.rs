@@ -21,7 +21,6 @@
 //! query stages in a distributed setting. The execution engine is responsible
 //! for creating query stage executors from physical plans.
 
-use async_trait::async_trait;
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};

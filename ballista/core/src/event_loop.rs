@@ -20,7 +20,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use async_trait::async_trait;
 use log::{error, info};
 use tokio::sync::mpsc;
 

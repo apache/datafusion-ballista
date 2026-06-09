@@ -20,7 +20,6 @@ use crate::cluster::{
     JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
-use async_trait::async_trait;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
     AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,

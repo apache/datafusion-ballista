@@ -29,7 +29,6 @@
 //! A optional background tokio task evicts idle connections that have not been used
 //! within the configured `idle_timeout`.
 
-use async_trait::async_trait;
 use ballista_core::client::BallistaClient;
 use ballista_core::client_pool::{BallistaClientPool, PooledClient};
 use ballista_core::error::Result;
