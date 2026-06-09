@@ -17,7 +17,7 @@
 
 use crate::tui::app::App;
 use ratatui::Frame;
-use ratatui::prelude::{Color, Line, Span, Style};
+use ratatui::prelude::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
@@ -54,13 +54,13 @@ pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
             info_text.push(Line::from(""));
             info_text.push(Line::from(vec![Span::styled(
                 " Enabled features",
-                Style::default().fg(Color::Green),
+                app.theme.feature_enabled,
             )]));
             enabled_features.sort();
             for feature in enabled_features {
                 info_text.push(Line::from(vec![Span::styled(
                     format!("  - {feature}"),
-                    Style::default().fg(Color::Green),
+                    app.theme.feature_enabled,
                 )]));
             }
         }
@@ -69,13 +69,13 @@ pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
             info_text.push(Line::from(""));
             info_text.push(Line::from(vec![Span::styled(
                 " Disabled features",
-                Style::default().fg(Color::Red),
+                app.theme.feature_disabled,
             )]));
             disabled_features.sort();
             for feature in disabled_features {
                 info_text.push(Line::from(vec![Span::styled(
                     format!("  - {feature}"),
-                    Style::default().fg(Color::Red),
+                    app.theme.feature_disabled,
                 )]));
             }
         }
@@ -85,7 +85,7 @@ pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
         let block = Block::default()
             .title(" Scheduler Information (Press any key to close) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightCyan))
+            .border_style(app.theme.popup_border)
             .border_type(BorderType::Thick);
 
         let para = Paragraph::new(info_text)

@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::ui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::prelude::{Color, Line, Span, Style};
+use ratatui::prelude::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub(crate) fn render_search_box(f: &mut Frame, area: Rect, app: &crate::tui::app::App) {
@@ -28,6 +29,7 @@ pub(crate) fn render_search_box(f: &mut Frame, area: Rect, app: &crate::tui::app
         app.is_main_search_edit_mode(),
         " Search [/ to activate] ",
         " Search ",
+        &app.theme,
     );
 }
 
@@ -38,16 +40,17 @@ pub(crate) fn render_search_input(
     is_edit_mode: bool,
     inactive_title: &str,
     active_title: &str,
+    theme: &Theme,
 ) {
     let (title, border_style) = if is_edit_mode {
-        (active_title, Style::default().fg(Color::Yellow))
+        (active_title, theme.search_active)
     } else {
-        (inactive_title, Style::default().dim())
+        (inactive_title, theme.search_inactive)
     };
 
     let display_text = if is_edit_mode {
         let search_term = Span::from(search_term);
-        let cursor = Span::from("_").style(Style::default().bold().yellow());
+        let cursor = Span::from("_").style(theme.search_cursor);
         Line::from(vec![search_term, cursor])
     } else {
         Line::from(Span::from(search_term))

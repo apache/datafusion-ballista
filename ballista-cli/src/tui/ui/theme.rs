@@ -1,0 +1,670 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use ratatui::style::{Color, Modifier, Style};
+
+use crate::tui::infrastructure::{ColorSpec, ThemeName, ThemeOverride, ThemeSettings};
+
+/// All visual styles used throughout the TUI, keyed by semantic role.
+/// Build one of the built-in presets with [`Theme::dark`] or [`Theme::light`],
+/// or call [`Theme::from_settings`] to resolve user config (including overrides).
+#[derive(Debug, Clone)]
+pub struct Theme {
+    // ── Job / stage / task status ─────────────────────────────────────────
+    pub status_running: Style,
+    pub status_queued: Style,
+    pub status_failed: Style,
+    pub status_completed: Style,
+    pub status_unknown: Style,
+
+    // ── Table chrome ──────────────────────────────────────────────────────
+    pub table_header: Style,
+    pub row_even: Style,
+    pub row_odd: Style,
+    pub row_selected: Style,
+
+    // ── Popup borders ─────────────────────────────────────────────────────
+    /// Default popup border (most dialogs).
+    pub popup_border: Style,
+    /// Alternate popup border — stage tasks popup.
+    pub popup_border_alt: Style,
+    /// Job-stages popup border.
+    pub popup_border_jobs_stages: Style,
+
+    // ── Navigation ────────────────────────────────────────────────────────
+    pub nav_active: Style,
+    pub nav_inactive: Style,
+
+    // ── Search box ────────────────────────────────────────────────────────
+    pub search_active: Style,
+    pub search_inactive: Style,
+    pub search_cursor: Style,
+
+    // ── Help overlay ──────────────────────────────────────────────────────
+    pub help_header: Style,
+    pub help_section: Style,
+    pub help_item: Style,
+    pub help_item_dim: Style,
+
+    // ── Executor details ──────────────────────────────────────────────────
+    pub detail_label: Style,
+
+    // ── DOT / stages graph ────────────────────────────────────────────────
+    pub graph_border: Style,
+    pub graph_label: Style,
+    pub graph_stage: Style,
+    pub graph_arrow: Style,
+
+    // ── Executor-view job-count tiles ─────────────────────────────────────
+    pub tile_running: Style,
+    pub tile_queued: Style,
+    pub tile_completed: Style,
+    pub tile_failed: Style,
+
+    // ── Miscellaneous indicators ──────────────────────────────────────────
+    pub scheduler_down: Style,
+    pub cancel_success: Style,
+    pub cancel_not_done: Style,
+    pub cancel_failure: Style,
+    pub feature_enabled: Style,
+    pub feature_disabled: Style,
+
+    // ── Misc ──────────────────────────────────────────────────────────────
+    pub banner: Style,
+    pub text_error: Style,
+}
+
+impl Theme {
+    /// Dark theme — matches the original hardcoded colour palette.
+    pub fn dark() -> Self {
+        Self {
+            status_running: Style::default().fg(Color::LightBlue).bold(),
+            status_queued: Style::default().fg(Color::LightMagenta).bold(),
+            status_failed: Style::default().fg(Color::LightRed).bold(),
+            status_completed: Style::default().fg(Color::LightGreen).bold(),
+            status_unknown: Style::default().fg(Color::Gray).bold(),
+
+            table_header: Style::default()
+                .fg(Color::LightYellow)
+                .bg(Color::Black)
+                .bold(),
+            row_even: Style::default().bg(Color::DarkGray),
+            row_odd: Style::default().bg(Color::Black),
+            row_selected: Style::default().bg(Color::Indexed(29)),
+
+            popup_border: Style::default().fg(Color::LightCyan),
+            popup_border_alt: Style::default()
+                .fg(Color::Indexed(193))
+                .add_modifier(Modifier::BOLD),
+            popup_border_jobs_stages: Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+
+            nav_active: Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            nav_inactive: Style::default().fg(Color::DarkGray),
+
+            search_active: Style::default().fg(Color::Yellow),
+            search_inactive: Style::default().add_modifier(Modifier::DIM),
+            search_cursor: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+
+            help_header: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            help_section: Style::default().fg(Color::Yellow),
+            help_item: Style::default(),
+            help_item_dim: Style::default().fg(Color::Gray),
+
+            detail_label: Style::default().fg(Color::Yellow),
+
+            graph_border: Style::default().fg(Color::Cyan),
+            graph_label: Style::default().fg(Color::White),
+            graph_stage: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            graph_arrow: Style::default().fg(Color::Green),
+
+            tile_running: Style::default().fg(Color::LightBlue),
+            tile_queued: Style::default().fg(Color::Magenta),
+            tile_completed: Style::default().fg(Color::Green),
+            tile_failed: Style::default().fg(Color::Red),
+
+            scheduler_down: Style::default().fg(Color::Red),
+
+            cancel_success: Style::default().fg(Color::Green),
+            cancel_not_done: Style::default().fg(Color::Yellow),
+            cancel_failure: Style::default().fg(Color::Red),
+
+            banner: Style::default().fg(Color::Yellow),
+
+            feature_enabled: Style::default().fg(Color::Green),
+            feature_disabled: Style::default().fg(Color::Red),
+
+            text_error: Style::default().fg(Color::Red),
+        }
+    }
+
+    /// Light theme — designed for terminals with a light/white background.
+    pub fn light() -> Self {
+        Self {
+            // Deeper saturated colours instead of "Light*" variants, which wash
+            // out on white backgrounds.
+            status_running: Style::default().fg(Color::Blue).bold(),
+            status_queued: Style::default().fg(Color::Magenta).bold(),
+            status_failed: Style::default().fg(Color::Red).bold(),
+            status_completed: Style::default().fg(Color::Green).bold(),
+            status_unknown: Style::default().fg(Color::DarkGray).bold(),
+
+            // Dark text on pale-yellow header; near-white and terminal-default row
+            // backgrounds so the table looks at home on white terminals.
+            table_header: Style::default()
+                .fg(Color::Black)
+                .bg(Color::Indexed(229)) // #ffffaf — pale yellow, visible on white
+                .bold(),
+            row_even: Style::default().bg(Color::Indexed(255)), // #eeeeee near-white
+            row_odd: Style::default().bg(Color::Reset),
+            row_selected: Style::default().bg(Color::Indexed(108)), // muted green
+
+            popup_border: Style::default().fg(Color::Indexed(30)), // dark teal
+            popup_border_alt: Style::default()
+                .fg(Color::Indexed(136)) // dark gold
+                .add_modifier(Modifier::BOLD),
+            popup_border_jobs_stages: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+
+            nav_active: Style::default()
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            nav_inactive: Style::default().fg(Color::Indexed(244)), // medium gray
+
+            search_active: Style::default().fg(Color::Indexed(166)), // dark orange
+            search_inactive: Style::default().add_modifier(Modifier::DIM),
+            search_cursor: Style::default()
+                .fg(Color::Indexed(166))
+                .add_modifier(Modifier::BOLD),
+
+            help_header: Style::default()
+                .fg(Color::Indexed(24)) // dark blue
+                .add_modifier(Modifier::BOLD),
+            help_section: Style::default().fg(Color::Indexed(130)), // dark orange-brown
+            help_item: Style::default().fg(Color::Black),
+            help_item_dim: Style::default().fg(Color::Indexed(244)),
+
+            detail_label: Style::default().fg(Color::Indexed(130)),
+
+            graph_border: Style::default().fg(Color::Indexed(24)),
+            graph_label: Style::default().fg(Color::Black),
+            graph_stage: Style::default()
+                .fg(Color::Indexed(130))
+                .add_modifier(Modifier::BOLD),
+            graph_arrow: Style::default().fg(Color::Indexed(28)), // forest green
+
+            tile_running: Style::default().fg(Color::Blue),
+            tile_queued: Style::default().fg(Color::Indexed(90)), // dark magenta
+            tile_completed: Style::default().fg(Color::Indexed(28)),
+            tile_failed: Style::default().fg(Color::Indexed(124)), // dark red
+
+            scheduler_down: Style::default().fg(Color::Indexed(124)),
+
+            cancel_success: Style::default().fg(Color::Indexed(28)),
+            cancel_not_done: Style::default().fg(Color::Indexed(130)),
+            cancel_failure: Style::default().fg(Color::Indexed(124)),
+
+            banner: Style::default().fg(Color::Indexed(136)), // dark gold
+
+            feature_enabled: Style::default().fg(Color::Indexed(28)),
+            feature_disabled: Style::default().fg(Color::Indexed(124)),
+
+            text_error: Style::default().fg(Color::Indexed(124)),
+        }
+    }
+
+    /// Resolve a [`Theme`] from user [`ThemeSettings`]: choose the base preset
+    /// then apply any per-field fg-colour overrides.
+    pub fn from_settings(settings: &ThemeSettings) -> Self {
+        let base = match settings.name {
+            ThemeName::Dark => Self::dark(),
+            ThemeName::Light => Self::light(),
+        };
+        base.apply_overrides(&settings.custom)
+    }
+
+    fn apply_overrides(mut self, overrides: &ThemeOverride) -> Self {
+        macro_rules! apply_fg {
+            ($field:ident) => {
+                if let Some(ref spec) = overrides.$field {
+                    self.$field = self.$field.fg(color_from_spec(spec));
+                }
+            };
+        }
+        apply_fg!(status_running);
+        apply_fg!(status_queued);
+        apply_fg!(status_failed);
+        apply_fg!(status_completed);
+        apply_fg!(status_unknown);
+        apply_fg!(table_header);
+        apply_fg!(row_even);
+        apply_fg!(row_odd);
+        apply_fg!(row_selected);
+        apply_fg!(popup_border);
+        apply_fg!(popup_border_alt);
+        apply_fg!(popup_border_jobs_stages);
+        apply_fg!(nav_active);
+        apply_fg!(nav_inactive);
+        apply_fg!(search_active);
+        apply_fg!(search_inactive);
+        apply_fg!(search_cursor);
+        apply_fg!(help_header);
+        apply_fg!(help_section);
+        apply_fg!(help_item);
+        apply_fg!(help_item_dim);
+        apply_fg!(detail_label);
+        apply_fg!(graph_border);
+        apply_fg!(graph_label);
+        apply_fg!(graph_stage);
+        apply_fg!(graph_arrow);
+        apply_fg!(tile_running);
+        apply_fg!(tile_queued);
+        apply_fg!(tile_completed);
+        apply_fg!(tile_failed);
+        apply_fg!(scheduler_down);
+        apply_fg!(cancel_success);
+        apply_fg!(cancel_not_done);
+        apply_fg!(cancel_failure);
+        apply_fg!(banner);
+        apply_fg!(feature_enabled);
+        apply_fg!(feature_disabled);
+        apply_fg!(text_error);
+        self
+    }
+}
+
+fn color_from_spec(spec: &ColorSpec) -> Color {
+    match spec {
+        ColorSpec::Named(name) => named_color(name),
+        ColorSpec::Indexed(n) => Color::Indexed(*n),
+        ColorSpec::Rgb { r, g, b } => Color::Rgb(*r, *g, *b),
+    }
+}
+
+fn named_color(name: &str) -> Color {
+    match name.to_lowercase().as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "gray" | "grey" => Color::Gray,
+        "darkgray" | "darkgrey" => Color::DarkGray,
+        "lightred" => Color::LightRed,
+        "lightgreen" => Color::LightGreen,
+        "lightyellow" => Color::LightYellow,
+        "lightblue" => Color::LightBlue,
+        "lightmagenta" => Color::LightMagenta,
+        "lightcyan" => Color::LightCyan,
+        "white" => Color::White,
+        _ => Color::Reset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::infrastructure::{
+        ColorSpec, ThemeName, ThemeOverride, ThemeSettings,
+    };
+
+    // ── helpers ────────────────────────────────────────────────────────────
+
+    fn dark_settings() -> ThemeSettings {
+        ThemeSettings {
+            name: ThemeName::Dark,
+            custom: ThemeOverride::default(),
+        }
+    }
+
+    fn light_settings() -> ThemeSettings {
+        ThemeSettings {
+            name: ThemeName::Light,
+            custom: ThemeOverride::default(),
+        }
+    }
+
+    fn settings_with_banner_override(spec: ColorSpec) -> ThemeSettings {
+        ThemeSettings {
+            name: ThemeName::Dark,
+            custom: ThemeOverride {
+                banner: Some(spec),
+                ..Default::default()
+            },
+        }
+    }
+
+    // ── Theme::dark() ──────────────────────────────────────────────────────
+
+    #[test]
+    fn dark_status_running_is_light_blue_bold() {
+        let theme = Theme::dark();
+        assert_eq!(
+            theme.status_running,
+            Style::default().fg(Color::LightBlue).bold()
+        );
+    }
+
+    #[test]
+    fn dark_status_failed_is_light_red_bold() {
+        let theme = Theme::dark();
+        assert_eq!(
+            theme.status_failed,
+            Style::default().fg(Color::LightRed).bold()
+        );
+    }
+
+    #[test]
+    fn dark_table_header_is_light_yellow_on_black_bold() {
+        let theme = Theme::dark();
+        assert_eq!(theme.table_header.fg, Some(Color::LightYellow));
+        assert_eq!(theme.table_header.bg, Some(Color::Black));
+        assert!(
+            theme.table_header.add_modifier.contains(Modifier::BOLD),
+            "table_header should be bold"
+        );
+    }
+
+    #[test]
+    fn dark_row_even_background_is_dark_gray() {
+        assert_eq!(Theme::dark().row_even.bg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn dark_row_odd_background_is_black() {
+        assert_eq!(Theme::dark().row_odd.bg, Some(Color::Black));
+    }
+
+    #[test]
+    fn dark_row_selected_background_is_indexed_29() {
+        assert_eq!(Theme::dark().row_selected.bg, Some(Color::Indexed(29)));
+    }
+
+    #[test]
+    fn dark_banner_is_yellow() {
+        assert_eq!(Theme::dark().banner.fg, Some(Color::Yellow));
+    }
+
+    // ── Theme::light() ─────────────────────────────────────────────────────
+
+    #[test]
+    fn light_status_running_is_blue_bold() {
+        let theme = Theme::light();
+        assert_eq!(theme.status_running.fg, Some(Color::Blue));
+        assert!(theme.status_running.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn light_table_header_is_black_on_indexed_229() {
+        let theme = Theme::light();
+        assert_eq!(theme.table_header.fg, Some(Color::Black));
+        assert_eq!(theme.table_header.bg, Some(Color::Indexed(229)));
+    }
+
+    #[test]
+    fn light_row_odd_background_is_reset() {
+        assert_eq!(Theme::light().row_odd.bg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn light_row_even_background_is_indexed_255() {
+        assert_eq!(Theme::light().row_even.bg, Some(Color::Indexed(255)));
+    }
+
+    #[test]
+    fn light_row_selected_background_is_indexed_108() {
+        assert_eq!(Theme::light().row_selected.bg, Some(Color::Indexed(108)));
+    }
+
+    // ── Theme::from_settings() ─────────────────────────────────────────────
+
+    #[test]
+    fn from_settings_dark_uses_dark_base() {
+        let theme = Theme::from_settings(&dark_settings());
+        assert_eq!(theme.status_running.fg, Some(Color::LightBlue));
+        assert_eq!(theme.row_odd.bg, Some(Color::Black));
+    }
+
+    #[test]
+    fn from_settings_light_uses_light_base() {
+        let theme = Theme::from_settings(&light_settings());
+        assert_eq!(theme.status_running.fg, Some(Color::Blue));
+        assert_eq!(theme.row_odd.bg, Some(Color::Reset));
+    }
+
+    // ── Override: ColorSpec variants ───────────────────────────────────────
+
+    #[test]
+    fn override_named_color_changes_fg() {
+        let theme = Theme::from_settings(&settings_with_banner_override(
+            ColorSpec::Named("Red".to_string()),
+        ));
+        assert_eq!(theme.banner.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn override_indexed_color_changes_fg() {
+        let settings = ThemeSettings {
+            name: ThemeName::Dark,
+            custom: ThemeOverride {
+                row_selected: Some(ColorSpec::Indexed(108)),
+                ..Default::default()
+            },
+        };
+        let theme = Theme::from_settings(&settings);
+        assert_eq!(theme.row_selected.fg, Some(Color::Indexed(108)));
+    }
+
+    #[test]
+    fn override_rgb_color_changes_fg() {
+        let theme =
+            Theme::from_settings(&settings_with_banner_override(ColorSpec::Rgb {
+                r: 180,
+                g: 100,
+                b: 0,
+            }));
+        assert_eq!(theme.banner.fg, Some(Color::Rgb(180, 100, 0)));
+    }
+
+    #[test]
+    fn override_unknown_named_color_applies_reset() {
+        let theme = Theme::from_settings(&settings_with_banner_override(
+            ColorSpec::Named("NotAColor".to_string()),
+        ));
+        assert_eq!(theme.banner.fg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn partial_override_only_affects_specified_field() {
+        let settings = ThemeSettings {
+            name: ThemeName::Dark,
+            custom: ThemeOverride {
+                banner: Some(ColorSpec::Named("Cyan".to_string())),
+                ..Default::default()
+            },
+        };
+        let theme = Theme::from_settings(&settings);
+        assert_eq!(theme.banner.fg, Some(Color::Cyan));
+        // Unspecified field keeps dark-theme default
+        assert_eq!(theme.status_running.fg, Some(Color::LightBlue));
+    }
+
+    #[test]
+    fn override_preserves_bg_and_modifiers_of_base_theme() {
+        // table_header in dark theme has bg=Black and BOLD modifier.
+        // Overriding only the fg should leave bg and modifiers intact.
+        let settings = ThemeSettings {
+            name: ThemeName::Dark,
+            custom: ThemeOverride {
+                table_header: Some(ColorSpec::Named("Cyan".to_string())),
+                ..Default::default()
+            },
+        };
+        let theme = Theme::from_settings(&settings);
+        assert_eq!(theme.table_header.fg, Some(Color::Cyan));
+        assert_eq!(theme.table_header.bg, Some(Color::Black)); // bg preserved
+        assert!(theme.table_header.add_modifier.contains(Modifier::BOLD)); // bold preserved
+    }
+
+    // ── named_color: case-insensitivity and all variants ──────────────────
+
+    #[test]
+    fn named_color_is_case_insensitive() {
+        for name in &["LIGHTBLUE", "LightBlue", "lightblue"] {
+            let theme = Theme::from_settings(&settings_with_banner_override(
+                ColorSpec::Named(name.to_string()),
+            ));
+            assert_eq!(
+                theme.banner.fg,
+                Some(Color::LightBlue),
+                "case variant '{}' should resolve",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn named_color_grey_aliases_gray() {
+        let theme = Theme::from_settings(&settings_with_banner_override(
+            ColorSpec::Named("grey".to_string()),
+        ));
+        assert_eq!(theme.banner.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn named_color_darkgrey_aliases_darkgray() {
+        let theme = Theme::from_settings(&settings_with_banner_override(
+            ColorSpec::Named("darkgrey".to_string()),
+        ));
+        assert_eq!(theme.banner.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn all_named_colors_resolve_correctly() {
+        let cases: &[(&str, Color)] = &[
+            ("black", Color::Black),
+            ("red", Color::Red),
+            ("green", Color::Green),
+            ("yellow", Color::Yellow),
+            ("blue", Color::Blue),
+            ("magenta", Color::Magenta),
+            ("cyan", Color::Cyan),
+            ("gray", Color::Gray),
+            ("grey", Color::Gray),
+            ("darkgray", Color::DarkGray),
+            ("darkgrey", Color::DarkGray),
+            ("lightred", Color::LightRed),
+            ("lightgreen", Color::LightGreen),
+            ("lightyellow", Color::LightYellow),
+            ("lightblue", Color::LightBlue),
+            ("lightmagenta", Color::LightMagenta),
+            ("lightcyan", Color::LightCyan),
+            ("white", Color::White),
+        ];
+        for (name, expected) in cases {
+            let theme = Theme::from_settings(&settings_with_banner_override(
+                ColorSpec::Named(name.to_string()),
+            ));
+            assert_eq!(
+                theme.banner.fg,
+                Some(*expected),
+                "named color '{}' did not resolve to {:?}",
+                name,
+                expected
+            );
+        }
+    }
+
+    // ── ThemeOverride / ColorSpec deserialization ──────────────────────────
+
+    #[test]
+    fn theme_override_default_has_no_fields_set() {
+        let o = ThemeOverride::default();
+        assert!(o.status_running.is_none());
+        assert!(o.table_header.is_none());
+        assert!(o.banner.is_none());
+        assert!(o.text_error.is_none());
+    }
+
+    #[test]
+    fn color_spec_named_deserializes() {
+        let o: ThemeOverride = serde_json::from_str(r#"{"banner": "Cyan"}"#).unwrap();
+        assert!(
+            matches!(o.banner, Some(ColorSpec::Named(ref n)) if n == "Cyan"),
+            "expected Named(\"Cyan\")"
+        );
+    }
+
+    #[test]
+    fn color_spec_indexed_deserializes() {
+        let o: ThemeOverride = serde_json::from_str(r#"{"row_selected": 108}"#).unwrap();
+        assert!(
+            matches!(o.row_selected, Some(ColorSpec::Indexed(108))),
+            "expected Indexed(108)"
+        );
+    }
+
+    #[test]
+    fn color_spec_rgb_deserializes() {
+        let o: ThemeOverride =
+            serde_json::from_str(r#"{"banner": {"r": 180, "g": 100, "b": 0}}"#).unwrap();
+        assert!(
+            matches!(
+                o.banner,
+                Some(ColorSpec::Rgb {
+                    r: 180,
+                    g: 100,
+                    b: 0
+                })
+            ),
+            "expected Rgb {{ r: 180, g: 100, b: 0 }}"
+        );
+    }
+
+    #[test]
+    fn theme_name_dark_deserializes() {
+        let name: ThemeName = serde_json::from_str(r#""dark""#).unwrap();
+        assert!(matches!(name, ThemeName::Dark));
+    }
+
+    #[test]
+    fn theme_name_light_deserializes() {
+        let name: ThemeName = serde_json::from_str(r#""light""#).unwrap();
+        assert!(matches!(name, ThemeName::Light));
+    }
+
+    #[test]
+    fn theme_override_unspecified_fields_remain_none() {
+        let o: ThemeOverride = serde_json::from_str(r#"{"banner": "Red"}"#).unwrap();
+        assert!(o.banner.is_some());
+        assert!(o.status_running.is_none());
+        assert!(o.table_header.is_none());
+        assert!(o.row_selected.is_none());
+    }
+}

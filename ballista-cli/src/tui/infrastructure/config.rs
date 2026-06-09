@@ -18,6 +18,79 @@
 use config::{Config, ConfigError, File, FileFormat};
 use serde::Deserialize;
 
+/// Selects a built-in colour preset.
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeName {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// A colour specification usable in the user's config file.
+/// Supports named colours (`"Red"`, `"LightBlue"`, …), 256-colour indices
+/// (`108`), and 24-bit RGB (`{r: 180, g: 100, b: 0}`).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum ColorSpec {
+    Named(String),
+    Indexed(u8),
+    Rgb { r: u8, g: u8, b: u8 },
+}
+
+/// Optional per-role fg-colour overrides applied on top of the chosen preset.
+/// Each absent field keeps the preset's value.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ThemeOverride {
+    pub status_running: Option<ColorSpec>,
+    pub status_queued: Option<ColorSpec>,
+    pub status_failed: Option<ColorSpec>,
+    pub status_completed: Option<ColorSpec>,
+    pub status_unknown: Option<ColorSpec>,
+    pub table_header: Option<ColorSpec>,
+    pub row_even: Option<ColorSpec>,
+    pub row_odd: Option<ColorSpec>,
+    pub row_selected: Option<ColorSpec>,
+    pub popup_border: Option<ColorSpec>,
+    pub popup_border_alt: Option<ColorSpec>,
+    pub popup_border_jobs_stages: Option<ColorSpec>,
+    pub nav_active: Option<ColorSpec>,
+    pub nav_inactive: Option<ColorSpec>,
+    pub search_active: Option<ColorSpec>,
+    pub search_inactive: Option<ColorSpec>,
+    pub search_cursor: Option<ColorSpec>,
+    pub help_header: Option<ColorSpec>,
+    pub help_section: Option<ColorSpec>,
+    pub help_item: Option<ColorSpec>,
+    pub help_item_dim: Option<ColorSpec>,
+    pub detail_label: Option<ColorSpec>,
+    pub graph_border: Option<ColorSpec>,
+    pub graph_label: Option<ColorSpec>,
+    pub graph_stage: Option<ColorSpec>,
+    pub graph_arrow: Option<ColorSpec>,
+    pub tile_running: Option<ColorSpec>,
+    pub tile_queued: Option<ColorSpec>,
+    pub tile_completed: Option<ColorSpec>,
+    pub tile_failed: Option<ColorSpec>,
+    pub scheduler_down: Option<ColorSpec>,
+    pub cancel_success: Option<ColorSpec>,
+    pub cancel_not_done: Option<ColorSpec>,
+    pub cancel_failure: Option<ColorSpec>,
+    pub banner: Option<ColorSpec>,
+    pub feature_enabled: Option<ColorSpec>,
+    pub feature_disabled: Option<ColorSpec>,
+    pub text_error: Option<ColorSpec>,
+}
+
+/// Theme configuration: built-in preset name plus optional colour overrides.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ThemeSettings {
+    #[serde(default)]
+    pub name: ThemeName,
+    #[serde(default)]
+    pub custom: ThemeOverride,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SchedulerSettings {
     pub url: String,
@@ -39,6 +112,8 @@ pub struct Settings {
     pub data_reload_interval_ms: u64,
     /// How often to refresh the UI. In millis.
     pub repaint_interval_ms: u64,
+    #[serde(default)]
+    pub theme: ThemeSettings,
 }
 
 const DEFAULT_CONFIG: &str = r#"
@@ -51,10 +126,12 @@ scheduler:
 http:
   timeout: 2000
 
-job:
-  stage:
-    plan:
-      tree: false
+theme:
+  name: dark
+  #custom:
+    #table_header: "red"
+    #row_selected: 108
+    #status_running: { r: 0, g: 128, b: 255 }
 "#;
 
 impl Settings {
@@ -106,7 +183,6 @@ mod web {
             let mut repaint_interval_ms = 50;
             let mut scheduler_url = "http://localhost:50050";
             let mut http_timeout_ms = 2000;
-            let mut format_tree = false;
 
             let query_string = Self::decode_request();
             query_string.split('&').for_each(|setting| {
@@ -124,9 +200,6 @@ mod web {
                         "ballista_http_timeout" => {
                             http_timeout_ms = value.parse::<u64>().unwrap_or(2000)
                         }
-                        "ballista_job_stage_plan_tree" => {
-                            format_tree = value.parse::<bool>().unwrap_or(false)
-                        }
                         _ => {}
                     }
                 }
@@ -142,10 +215,6 @@ scheduler:
 http:
   timeout: {http_timeout_ms}
 
-job:
-  stage:
-    plan:
-      tree: {format_tree}
 "#
             );
             tracing::info!("Using query string: {}", config);

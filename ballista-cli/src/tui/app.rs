@@ -49,6 +49,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
+use crate::tui::ui::theme::Theme;
 #[cfg(not(feature = "web"))]
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_config_popup,
@@ -99,10 +100,12 @@ pub(crate) struct App {
     pub executor_details_popup: Option<ExecutorDetailsPopup>,
 
     pub http_client: Arc<HttpClient>,
+    pub theme: Theme,
 }
 
 impl App {
     pub fn new(config: Settings) -> TuiResult<Self> {
+        let theme = Theme::from_settings(&config.theme);
         Ok(Self {
             should_quit: false,
             event_tx: None,
@@ -122,6 +125,7 @@ impl App {
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
             http_client: Arc::new(HttpClient::new(config)?),
+            theme,
         })
     }
 

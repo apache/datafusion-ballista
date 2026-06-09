@@ -17,4 +17,4 @@
 
 mod config;
 
-pub use config::Settings;
+pub use config::{ColorSpec, Settings, ThemeName, ThemeOverride, ThemeSettings};

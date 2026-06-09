@@ -20,7 +20,7 @@ use crate::tui::domain::executors::{Executor, SortColumn};
 use crate::tui::ui::vertical_scrollbar;
 use crate::tui::ui::vertical_scrollbar::render_scrollbar;
 use ratatui::layout::Constraint;
-use ratatui::prelude::{Color, Text};
+use ratatui::prelude::Text;
 use ratatui::style::Style;
 use ratatui::widgets::{Cell, HighlightSpacing, Row, Table};
 use ratatui::{
@@ -40,17 +40,12 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
             render_scrollbar(f, rects[1], &mut scroll_state);
         }
         _no_executors => {
-            f.render_widget(no_live_executors(block), area);
+            f.render_widget(no_live_executors(block, app.theme.tile_failed), area);
         }
     };
 }
 
 fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
-    let header_style = Style::default()
-        .fg(Color::LightYellow)
-        .bg(Color::Black)
-        .bold();
-
     let sort_column = &app.executors_data.sort_column;
     let sort_order = &app.executors_data.sort_order;
 
@@ -89,7 +84,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
         ),
         Cell::from(Text::from(format!("Last Seen{last_seen_suffix}")).centered()),
     ])
-    .style(header_style)
+    .style(app.theme.table_header)
     .height(1);
 
     let rows = app
@@ -98,9 +93,10 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, executor)| {
-            let color = match i % 2 {
-                0 => Color::DarkGray,
-                _ => Color::Black,
+            let row_style = if i % 2 == 0 {
+                app.theme.row_even
+            } else {
+                app.theme.row_odd
             };
 
             let host_cell = Cell::from(
@@ -138,7 +134,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
                 peak_physical_memory_cell,
                 last_seen_cell,
             ];
-            Row::new(cells).style(Style::default().bg(color))
+            Row::new(cells).style(row_style)
         });
 
     let t = Table::new(
@@ -155,7 +151,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
     )
     .block(Block::default().borders(Borders::all()))
     .header(header_row)
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
     let mut table_state = app.executors_data.table_state;
     frame.render_stateful_widget(t, area, &mut table_state);
@@ -166,8 +162,8 @@ fn render_last_seen_cell<'a>(executor: &'a Executor, app: &App) -> Cell<'a> {
     Cell::from(Text::from(last_seen).centered())
 }
 
-fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {
+fn no_live_executors(block: Block<'_>, style: Style) -> Paragraph<'_> {
     Paragraph::new("No live executors")
-        .block(block.border_style(Style::new().red()))
+        .block(block.border_style(style))
         .centered()
 }

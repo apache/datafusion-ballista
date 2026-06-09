@@ -18,7 +18,6 @@
 use crate::tui::app::App;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 pub(crate) fn render_stage_plan_popup(f: &mut Frame, app: &App) {
@@ -47,7 +46,7 @@ fn render_plans(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan))
+        .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);
 
     let paragraph = Paragraph::new(&*stage.plan).block(block).scroll((

@@ -17,7 +17,7 @@
 
 use crate::tui::app::App;
 use ratatui::Frame;
-use ratatui::prelude::{Color, Line, Modifier, Span, Style};
+use ratatui::prelude::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
@@ -26,33 +26,22 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     let style = if app.is_scheduler_up() {
-        Style::default()
+        app.theme.help_item
     } else {
-        Style::default().fg(Color::Gray)
+        app.theme.help_item_dim
     };
 
     let help_text = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "KEYBOARD SHORTCUTS",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("KEYBOARD SHORTCUTS", app.theme.help_header)),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            " Navigation",
-            Style::default().fg(Color::Yellow),
-        )]),
+        Line::from(vec![Span::styled(" Navigation", app.theme.help_section)]),
         Line::from(Span::styled("  j       Show Jobs", style)),
         Line::from(Span::styled("  e       Show Executors", style)),
         Line::from(Span::styled("  m       Show Metrics", style)),
         Line::from(Span::styled("  /       Search in Jobs or Metrics", style)),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            " Jobs view:",
-            Style::default().fg(Color::Yellow),
-        )]),
+        Line::from(vec![Span::styled(" Jobs view:", app.theme.help_section)]),
         Line::from(Span::styled(
             "  1/2/... Sort by first/second/... column",
             style,
@@ -71,10 +60,7 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             style,
         )),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            " General",
-            Style::default().fg(Color::Yellow),
-        )]),
+        Line::from(vec![Span::styled(" General", app.theme.help_section)]),
         Line::from(Span::styled("  i       Show Scheduler Info", style)),
         Line::from("  ?/h     Show this help"),
         Line::from("  q/Esc   Quit"),
@@ -83,7 +69,7 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
     let block = Block::default()
         .title(" Help (Press any key to close) ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan))
+        .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);
 
     let para = Paragraph::new(help_text)
