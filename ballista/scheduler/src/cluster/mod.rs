@@ -282,7 +282,7 @@ pub trait JobState: Send + Sync {
     /// Accepts a job into the scheduler's queue.
     ///
     /// Called when a job is received but before it is planned.
-    fn accept_job(&self, job_id: &str, job_name: &JobName, queued_at: u64) -> Result<()>;
+    fn accept_job(&self, job_id: &JobId, job_name: &JobName, queued_at: u64) -> Result<()>;
 
     /// Returns the number of queued jobs waiting to be scheduled.
     fn pending_job_number(&self) -> usize;
@@ -304,7 +304,7 @@ pub trait JobState: Send + Sync {
     async fn get_all_jobs(&self) -> Result<HashSet<String>>;
 
     /// Returns the status of the specified job.
-    async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>>;
+    async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>>;
 
     /// Returns the execution graph for a job.
     ///
@@ -312,27 +312,27 @@ pub trait JobState: Send + Sync {
     /// by another scheduler after this call returns.
     async fn get_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Result<Option<ExecutionGraphBox>>;
 
     /// Persists the current state of an owned job.
     ///
     /// Returns an error if the job is not owned by the caller.
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()>;
+    async fn save_job(&self, job_id: &JobId, graph: &ExecutionGraphBox) -> Result<()>;
 
     /// Marks an unscheduled job as failed.
     ///
     /// Called when a job fails during planning before an execution graph is created.
-    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()>;
+    async fn fail_unscheduled_job(&self, job_id: &JobId, reason: String) -> Result<()>;
 
     /// Deletes a job from the state.
-    async fn remove_job(&self, job_id: &str) -> Result<()>;
+    async fn remove_job(&self, job_id: &JobId) -> Result<()>;
 
     /// Attempts to acquire ownership of a job.
     ///
     /// Returns the execution graph if the job is still running and successfully acquired,
     /// otherwise returns None.
-    async fn try_acquire_job(&self, job_id: &str) -> Result<Option<ExecutionGraphBox>>;
+    async fn try_acquire_job(&self, job_id: &JobId) -> Result<Option<ExecutionGraphBox>>;
 
     /// Returns a stream of job state events.
     async fn job_state_events(&self) -> Result<JobStateEventStream>;
@@ -720,7 +720,7 @@ mod test {
     }
 
     async fn mock_graph(
-        job_id: &str,
+        job_id: &JobId,
         num_target_partitions: usize,
         num_pending_task: usize,
     ) -> Result<StaticExecutionGraph> {

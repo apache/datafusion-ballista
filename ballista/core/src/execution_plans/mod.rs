@@ -67,7 +67,7 @@ pub use unresolved_shuffle::UnresolvedShuffleExec;
 /// - `is_sort_shuffle` — selects between sort-shuffle and hash-shuffle path layout
 pub fn create_shuffle_path<P: AsRef<Path>>(
     work_dir: P,
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     partition_id: usize,
     file_id: Option<u64>,

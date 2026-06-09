@@ -541,7 +541,7 @@ pub fn rollback_resolved_shuffles(
 }
 
 pub(crate) fn create_shuffle_writer_with_config(
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,

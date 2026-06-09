@@ -549,7 +549,7 @@ impl SchedulerTest {
     }
 
     /// Cancels a job by ID.
-    pub async fn cancel(&self, job_id: &str) -> Result<()> {
+    pub async fn cancel(&self, job_id: &JobId) -> Result<()> {
         self.scheduler
             .query_stage_event_loop
             .get_sender()?
@@ -560,7 +560,7 @@ impl SchedulerTest {
     /// Waits for job completion with a timeout in milliseconds.
     pub async fn await_completion_timeout(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         timeout_ms: u64,
     ) -> Result<JobStatus> {
         let mut time = 0;
@@ -599,7 +599,7 @@ impl SchedulerTest {
     }
 
     /// Waits for job completion indefinitely.
-    pub async fn await_completion(&self, job_id: &str) -> Result<JobStatus> {
+    pub async fn await_completion(&self, job_id: &JobId) -> Result<JobStatus> {
         let final_status: Result<JobStatus> = loop {
             let status = self
                 .scheduler
@@ -728,7 +728,7 @@ pub struct TestMetricsCollector {
 
 impl TestMetricsCollector {
     /// Returns all events for the given job ID.
-    pub fn job_events(&self, job_id: &str) -> Vec<MetricEvent> {
+    pub fn job_events(&self, job_id: &JobId) -> Vec<MetricEvent> {
         let guard = self.events.lock();
 
         guard
@@ -745,7 +745,7 @@ impl TestMetricsCollector {
 }
 
 impl SchedulerMetricsCollector for TestMetricsCollector {
-    fn record_submitted(&self, job_id: &str, queued_at: u64, submitted_at: u64) {
+    fn record_submitted(&self, job_id: &JobId, queued_at: u64, submitted_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Submitted(
             job_id.to_owned(),
@@ -754,7 +754,7 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
         ));
     }
 
-    fn record_completed(&self, job_id: &str, queued_at: u64, completed_at: u64) {
+    fn record_completed(&self, job_id: &JobId, queued_at: u64, completed_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Completed(
             job_id.to_owned(),
@@ -763,12 +763,12 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
         ));
     }
 
-    fn record_failed(&self, job_id: &str, queued_at: u64, failed_at: u64) {
+    fn record_failed(&self, job_id: &JobId, queued_at: u64, failed_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Failed(job_id.to_owned(), queued_at, failed_at));
     }
 
-    fn record_cancelled(&self, job_id: &str) {
+    fn record_cancelled(&self, job_id: &JobId) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Cancelled(job_id.to_owned()));
     }
@@ -781,7 +781,7 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
 }
 
 /// Asserts that a submitted event was recorded for the job.
-pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -791,7 +791,7 @@ pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Asserts that no submitted event was recorded for the job.
-pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_no_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -801,7 +801,7 @@ pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector)
 }
 
 /// Asserts that a completed event was recorded for the job.
-pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_completed_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -811,7 +811,7 @@ pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Asserts that a cancelled event was recorded for the job.
-pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_cancelled_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -821,7 +821,7 @@ pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Asserts that a failed event was recorded for the job.
-pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_failed_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -883,7 +883,7 @@ pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
 /// Creates a test execution graph with a simple aggregation plan and custom job ID.
 pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
-    job_id: &str,
+    job_id: &JobId,
 ) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));

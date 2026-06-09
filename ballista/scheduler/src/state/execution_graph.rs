@@ -305,7 +305,7 @@ impl StaticExecutionGraph {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scheduler_id: &str,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &JobName,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
@@ -1733,7 +1733,7 @@ impl TaskDescription {
 }
 
 pub(crate) fn partition_to_location(
-    job_id: &str,
+    job_id: &JobId,
     map_partition_id: usize,
     stage_id: usize,
     executor: &ExecutorMetadata,

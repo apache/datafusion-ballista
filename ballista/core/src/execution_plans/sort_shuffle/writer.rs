@@ -419,7 +419,7 @@ fn spill_all_partitions(
 #[allow(clippy::too_many_arguments)]
 fn finalize_output(
     work_dir: &str,
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     input_partition: usize,
     buffered: &mut BufferedBatches,

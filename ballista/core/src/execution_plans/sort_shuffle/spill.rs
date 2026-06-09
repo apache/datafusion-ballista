@@ -73,7 +73,7 @@ impl SpillManager {
     /// * `compression` - Compression codec for spill files
     pub fn new(
         work_dir: &str,
-        job_id: &str,
+        job_id: &JobId,
         stage_id: usize,
         input_partition: usize,
         schema: SchemaRef,

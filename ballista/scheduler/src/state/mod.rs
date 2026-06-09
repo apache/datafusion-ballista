@@ -363,7 +363,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub(crate) async fn submit_job(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &JobName,
         session_ctx: Arc<SessionContext>,
         logical_plan: &LogicalPlan,

@@ -115,7 +115,7 @@ impl BallistaAdapter {
     /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
     pub fn adapt_to_ballista(
         plan: Arc<dyn ExecutionPlan>,
-        job_id: &str,
+        job_id: &JobId,
         config: &ConfigOptions,
     ) -> datafusion::error::Result<AdaptiveStageInfo> {
         if let Some(root) = plan.as_any().downcast_ref::<ExchangeExec>() {

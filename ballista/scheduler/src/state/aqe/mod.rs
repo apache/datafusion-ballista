@@ -132,7 +132,7 @@ impl AdaptiveExecutionGraph {
     #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         scheduler_id: &str,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &JobName,
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,

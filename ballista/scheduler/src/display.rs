@@ -51,7 +51,7 @@ fn merge_stage_metrics(
 
 /// Prints the physical plan for a completed stage with its aggregated metrics.
 pub fn print_stage_metrics(
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     plan: &dyn ExecutionPlan,
     stage_metrics: &[MetricsSet],

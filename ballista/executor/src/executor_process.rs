@@ -741,7 +741,7 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
 /// Used by both push-based (gRPC handler) and pull-based (poll loop) cleanup.
 pub(crate) async fn remove_job_dir(
     work_dir: &str,
-    job_id: &str,
+    job_id: &JobId,
 ) -> ballista_core::error::Result<()> {
     let work_path = PathBuf::from(&work_dir);
     let job_path = work_path.join(job_id);
@@ -983,7 +983,7 @@ mod tests {
             assert!(!is_subdirectory(&job_path, base_dir));
         }
     }
-    fn prepare_testing_job_directory(base_dir: &Path, job_id: &str) -> PathBuf {
+    fn prepare_testing_job_directory(base_dir: &Path, job_id: &JobId) -> PathBuf {
         let mut path = base_dir.to_path_buf();
         path.push(job_id);
         if !path.exists() {

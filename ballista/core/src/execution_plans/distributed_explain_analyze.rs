@@ -204,7 +204,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
 
 async fn fetch_job_metrics(
     scheduler_url: &str,
-    job_id: &str,
+    job_id: &JobId,
     session_config: datafusion::prelude::SessionConfig,
 ) -> Result<GetJobMetricsResult> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
@@ -248,7 +248,7 @@ async fn fetch_job_metrics(
 
 fn format_metrics_as_record_batch(
     job_metrics: &GetJobMetricsResult,
-    _job_id: &str,
+    _job_id: &JobId,
     schema: SchemaRef,
     _verbose: bool,
 ) -> Result<RecordBatch> {

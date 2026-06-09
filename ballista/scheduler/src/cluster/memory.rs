@@ -348,7 +348,7 @@ impl JobState for InMemoryJobState {
         }
     }
 
-    async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
+    async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
         if let Some((job_name, queued_at)) = self.queued_jobs.get(job_id).as_deref() {
             return Ok(Some(JobStatus {
                 job_id: job_id.to_string(),
@@ -372,7 +372,7 @@ impl JobState for InMemoryJobState {
 
     async fn get_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Result<Option<ExecutionGraphBox>> {
         Ok(self
             .completed_jobs
@@ -381,13 +381,13 @@ impl JobState for InMemoryJobState {
             .and_then(|(_, graph)| graph.as_ref().map(|e| e.cloned())))
     }
 
-    async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraphBox>> {
+    async fn try_acquire_job(&self, _job_id: &JobId) -> Result<Option<ExecutionGraphBox>> {
         // Always return None. The only state stored here are for completed jobs
         // which cannot be acquired
         Ok(None)
     }
 
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()> {
+    async fn save_job(&self, job_id: &JobId, graph: &ExecutionGraphBox) -> Result<()> {
         let status = graph.status().clone();
         // If job is either successful or failed, save to completed jobs
         if matches!(
@@ -451,7 +451,7 @@ impl JobState for InMemoryJobState {
         Ok(Box::pin(self.job_event_sender.subscribe()))
     }
 
-    async fn remove_job(&self, job_id: &str) -> Result<()> {
+    async fn remove_job(&self, job_id: &JobId) -> Result<()> {
         if self.completed_jobs.remove(job_id).is_none() {
             warn!("Tried to delete non-existent job {job_id} from state");
         }
@@ -477,7 +477,7 @@ impl JobState for InMemoryJobState {
         Ok(all_jobs)
     }
 
-    fn accept_job(&self, job_id: &str, job_name: &JobName, queued_at: u64) -> Result<()> {
+    fn accept_job(&self, job_id: &JobId, job_name: &JobName, queued_at: u64) -> Result<()> {
         self.queued_jobs
             .insert(job_id.to_string(), (job_name.to_string(), queued_at));
 
@@ -488,7 +488,7 @@ impl JobState for InMemoryJobState {
         self.queued_jobs.len()
     }
 
-    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()> {
+    async fn fail_unscheduled_job(&self, job_id: &JobId, reason: String) -> Result<()> {
         if let Some((job_id, (job_name, queued_at))) = self.queued_jobs.remove(job_id) {
             self.completed_jobs.insert(
                 job_id.clone(),

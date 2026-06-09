@@ -42,7 +42,7 @@ use crate::{
 };
 
 pub(crate) async fn generate_distributed_explain_plan(
-    job_id: &str,
+    job_id: &JobId,
     session_ctx: &SessionContext,
     plan: Arc<LogicalPlan>,
 ) -> Result<String> {
@@ -188,7 +188,7 @@ fn render_stages(stages: HashMap<usize, ExecutionStage>) -> String {
 }
 
 pub(crate) async fn handle_explain_plan(
-    job_id: &str,
+    job_id: &JobId,
     ctx: &SessionContext,
     logical_plan: &LogicalPlan,
     plan: Arc<dyn ExecutionPlan>,
