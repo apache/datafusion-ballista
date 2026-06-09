@@ -16,6 +16,7 @@
 // under the License.
 
 pub(crate) mod dot_parser;
+pub mod job_config_popup;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
 pub mod job_stages_popup;
@@ -25,6 +26,7 @@ pub mod stage_tasks_popup;
 #[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
+    domain::jobs::{JobConfigEntry, JobConfigPopup},
     event::{Event, UiData},
 };
 use crate::tui::{
@@ -79,6 +81,27 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
             Ok(())
         }
     }
+}
+
+#[cfg(not(feature = "web"))]
+pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
+    let config = match app.http_client.get_job_config(job_id).await {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!("Failed to load job config for {job_id}: {e:?}");
+            return Ok(());
+        }
+    };
+
+    let entries = config
+        .into_iter()
+        .map(|(key, value)| JobConfigEntry { key, value })
+        .collect();
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobConfig(JobConfigPopup::new(job_id.to_string(), entries)),
+    })
+    .await
 }
 
 #[cfg(not(feature = "web"))]
