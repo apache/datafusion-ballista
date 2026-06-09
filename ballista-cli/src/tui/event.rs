@@ -19,7 +19,7 @@ use crate::tui::domain::{
     SchedulerState,
     executors::Executor,
     jobs::{
-        CancelJobResult, Job, JobDetails,
+        CancelJobResult, Job, JobConfigPopup, JobDetails,
         stages::{JobStagesResponse, StagePlanTab, StagesGraph},
     },
     metrics::Metric,
@@ -36,6 +36,7 @@ pub enum UiData {
     Metrics(Vec<Metric>),
     Jobs(Vec<Job>),
     JobDetails(JobDetails),
+    JobConfig(JobConfigPopup),
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
     #[allow(dead_code)]

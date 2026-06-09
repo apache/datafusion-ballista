@@ -26,7 +26,10 @@ use crate::tui::{
     domain::{
         SchedulerState,
         executors::Executor,
-        jobs::{CancelJobResponse, Job, JobDetails, stages::JobStagesResponse},
+        jobs::{
+            CancelJobResponse, Job, JobConfigResponse, JobDetails,
+            stages::JobStagesResponse,
+        },
         metrics::{Metric, MetricsResponse},
     },
     error::TuiError,
@@ -152,6 +155,11 @@ impl HttpClient {
             },
         ));
         self.json::<JobStagesResponse>(&url).await
+    }
+
+    pub async fn get_job_config(&self, job_id: &str) -> TuiResult<JobConfigResponse> {
+        let url = self.url(&format!("job/{}/config", self.url_encode(job_id)));
+        self.json::<JobConfigResponse>(&url).await
     }
 
     pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
