@@ -27,7 +27,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let mut global_key_bindings = Vec::with_capacity(10);
 
     if app.is_edit_mode() {
-        current_view_key_bindings.push(Span::from("[Esc] Quit edit mode, "));
+        current_view_key_bindings.push(Span::from("[Esc] Quit edit mode"));
     } else {
         global_key_bindings.push(Span::from("Global key bindings: "));
 
@@ -65,7 +65,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                             current_view_key_bindings
                                 .push(Span::from("[g] View job stages graph, "));
                             current_view_key_bindings
-                                .push(Span::from("[C] View job config, "));
+                                .push(Span::from("[o] View job config, "));
 
                             if app.is_selected_job_cancelable() {
                                 current_view_key_bindings

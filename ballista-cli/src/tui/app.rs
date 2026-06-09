@@ -366,7 +366,7 @@ impl App {
             KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
             }
-            KeyCode::Char('C') if self.is_jobs_view() => {
+            KeyCode::Char('o') if self.is_jobs_view() => {
                 self.load_job_config_popup_data().await;
             }
             KeyCode::Char('e') if self.is_scheduler_up() => {
@@ -1031,7 +1031,7 @@ impl App {
                 self.open_job_plan_popup();
                 None
             }
-            KeyCode::Char('C') if self.is_jobs_view() => {
+            KeyCode::Char('o') if self.is_jobs_view() => {
                 let job_id = self
                     .jobs_data
                     .selected_job(&self.search_term)
