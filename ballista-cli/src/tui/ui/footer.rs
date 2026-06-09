@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
+use crate::tui::domain::jobs::PlanTab;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Style;
@@ -44,6 +45,13 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                     current_view_key_bindings.push(Span::from("[↑↓←→] Scroll, "));
                     current_view_key_bindings.push(Span::from("[s] Stage plan, "));
                     current_view_key_bindings.push(Span::from("[p] Physical plan, "));
+                    if let Some(popup) = app.job_plan_popup.as_ref()
+                        && popup.get_tab() == &PlanTab::Physical
+                    {
+                        current_view_key_bindings
+                            .push(Span::from("[d] Default format, "));
+                        current_view_key_bindings.push(Span::from("[t] Tree format, "));
+                    }
                     current_view_key_bindings.push(Span::from("[l] Logical plan, "));
                     current_view_key_bindings.push(Span::from("[Esc] Close popup, "));
                 } else if app.is_job_config_popup_open() {
