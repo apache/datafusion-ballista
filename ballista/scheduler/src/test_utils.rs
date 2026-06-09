@@ -25,7 +25,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::planner::DefaultDistributedPlanner;
