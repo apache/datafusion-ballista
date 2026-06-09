@@ -35,6 +35,7 @@ use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
+use crate::JobId;
 use crate::execution_plans::create_shuffle_path;
 use crate::serde::protobuf::ShuffleWritePartition;
 
@@ -75,7 +76,7 @@ type FinalizeResult = (PathBuf, PathBuf, Vec<(usize, u64, u64, u64)>);
 #[derive(Debug, Clone)]
 pub struct SortShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of
-    job_id: String,
+    job_id: JobId,
     /// Unique query stage ID within the job
     stage_id: usize,
     /// Physical execution plan for this query stage
@@ -131,7 +132,7 @@ impl SortShuffleWriteMetrics {
 impl SortShuffleWriterExec {
     /// Create a new sort-based shuffle writer.
     pub fn try_new(
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,

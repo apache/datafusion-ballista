@@ -28,7 +28,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{ConfigProducer, JobName, JobStatusSubscriber};
+use ballista_core::{ConfigProducer, JobId, JobName, JobStatusSubscriber};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
@@ -220,7 +220,7 @@ pub enum JobStateEvent {
     /// Event when a job status has been updated
     JobUpdated {
         /// Job ID of updated job
-        job_id: String,
+        job_id: JobId,
         /// New job status
         status: JobStatus,
     },
@@ -230,14 +230,14 @@ pub enum JobStateEvent {
     /// different scheduler
     JobAcquired {
         /// Job ID of the acquired job
-        job_id: String,
+        job_id: JobId,
         /// The scheduler which acquired ownership of the job
         owner: String,
     },
     /// Event when a scheduler releases ownership of a still active job
     JobReleased {
         /// Job ID of the released job
-        job_id: String,
+        job_id: JobId,
     },
     /// Event when a new session has been created.
     SessionAccessed {
@@ -292,7 +292,7 @@ pub trait JobState: Send + Sync {
     /// The submitter is assumed to own the job.
     async fn submit_job(
         &self,
-        job_id: String,
+        job_id: JobId,
         graph: &ExecutionGraphBox,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()>;

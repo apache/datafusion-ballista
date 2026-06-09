@@ -28,6 +28,7 @@ use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept};
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 
+use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
@@ -248,7 +249,7 @@ pub struct StaticExecutionGraph {
     #[allow(dead_code)] // not used at the moment, will be used later
     scheduler_id: Option<String>,
     /// ID for this job
-    job_id: String,
+    job_id: JobId,
     /// Job name, can be empty string
     job_name: JobName,
     /// Session ID for this job
@@ -287,7 +288,7 @@ pub struct RunningTaskInfo {
     /// Unique identifier for this task within the execution graph.
     pub task_id: usize,
     /// The job ID this task belongs to.
-    pub job_id: String,
+    pub job_id: JobId,
     /// The stage ID this task belongs to.
     pub stage_id: usize,
     /// The partition this task is processing.

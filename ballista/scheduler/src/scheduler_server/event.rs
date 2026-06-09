@@ -20,7 +20,7 @@ use std::fmt::{Debug, Formatter};
 use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
-use ballista_core::{JobName, JobStatusSubscriber, serde::protobuf::TaskStatus};
+use ballista_core::{JobId, JobName, JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ pub enum QueryStageSchedulerEvent {
     /// A new job has been queued for execution.
     JobQueued {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Human-readable job name.
         job_name: JobName,
         /// Session context for the job.
@@ -45,7 +45,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job has been submitted for execution.
     JobSubmitted {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Timestamp when the job was queued.
         queued_at: u64,
         /// Timestamp when the job was submitted.
@@ -54,7 +54,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job failed during the planning phase.
     JobPlanningFailed {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Error message describing the failure.
         fail_message: String,
         /// Timestamp when the job was queued.
@@ -65,7 +65,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job has completed successfully.
     JobFinished {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Timestamp when the job was queued.
         queued_at: u64,
         /// Timestamp when the job completed.
@@ -74,7 +74,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job failed during execution.
     JobRunningFailed {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Error message describing the failure.
         fail_message: String,
         /// Timestamp when the job was queued.

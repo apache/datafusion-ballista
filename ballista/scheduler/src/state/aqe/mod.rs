@@ -34,7 +34,7 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
-use ballista_core::JobName;
+use ballista_core::{JobId, JobName};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
@@ -95,7 +95,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
     /// ID for this job
-    job_id: String,
+    job_id: JobId,
     /// Job name, can be empty string
     job_name: JobName,
     /// Session ID for this job

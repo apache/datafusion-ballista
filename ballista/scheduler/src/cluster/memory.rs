@@ -323,7 +323,7 @@ impl ExtendedJobStatus {
 impl JobState for InMemoryJobState {
     async fn submit_job(
         &self,
-        job_id: String,
+        job_id: JobId,
         graph: &ExecutionGraphBox,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {

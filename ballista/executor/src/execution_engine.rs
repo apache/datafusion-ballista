@@ -48,7 +48,7 @@ pub trait ExecutionEngine: Sync + Send {
     /// plan partition and writing shuffle output to the specified work directory.
     fn create_query_stage_exec(
         &self,
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,
@@ -104,7 +104,7 @@ impl DefaultExecutionEngine {
 impl ExecutionEngine for DefaultExecutionEngine {
     fn create_query_stage_exec(
         &self,
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         _partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,

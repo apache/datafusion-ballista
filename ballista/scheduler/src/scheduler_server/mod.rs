@@ -186,7 +186,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_scheduler.metrics_collector()
     }
     /// Cancels job for given job_id
-    pub async fn cancel_job(&self, job_id: String) -> Result<()> {
+    pub async fn cancel_job(&self, job_id: JobId) -> Result<()> {
         log::debug!("Received cancellation request for job {job_id}");
 
         self.query_stage_event_loop
@@ -199,7 +199,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     pub(crate) async fn fail_job(
         &self,
-        job_id: String,
+        job_id: JobId,
         fail_message: String,
     ) -> Result<()> {
         log::debug!("Received fail job request for job {job_id}");

@@ -177,7 +177,7 @@ impl ExecutorManager {
     /// Send rpc to Executors to clean up the job data by delayed clean_up_interval seconds
     pub(crate) fn clean_up_job_data_delayed(
         &self,
-        job_id: String,
+        job_id: JobId,
         clean_up_interval: u64,
     ) {
         if clean_up_interval == 0 {
@@ -195,7 +195,7 @@ impl ExecutorManager {
     }
 
     /// Sends RPC requests to executors to clean up job data in a spawned task.
-    pub fn clean_up_job_data(&self, job_id: String) {
+    pub fn clean_up_job_data(&self, job_id: JobId) {
         let executor_manager = self.clone();
         tokio::spawn(async move {
             executor_manager.clean_up_job_data_inner(job_id).await;
@@ -204,7 +204,7 @@ impl ExecutorManager {
 
     /// 1. Push strategy: Send rpc to Executors to clean up the job data
     /// 2. Poll strategy: Save cleanup job ids and send them to executors
-    async fn clean_up_job_data_inner(&self, job_id: String) {
+    async fn clean_up_job_data_inner(&self, job_id: JobId) {
         let alive_executors = self.get_alive_executors();
 
         for executor in alive_executors {

@@ -234,7 +234,7 @@ impl Executor {
     pub async fn cancel_task(
         &self,
         task_id: usize,
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         partition_id: usize,
     ) -> Result<bool, BallistaError> {

@@ -33,7 +33,7 @@ use ballista_core::serde::protobuf::{
     JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::{JobName, JobStatusSubscriber};
+use ballista_core::{JobId, JobName, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
@@ -808,7 +808,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
-    pub(crate) fn clean_up_job_delayed(&self, job_id: String, clean_up_interval: u64) {
+    pub(crate) fn clean_up_job_delayed(&self, job_id: JobId, clean_up_interval: u64) {
         if clean_up_interval == 0 {
             info!(
                 "The interval is 0 and the clean up for the failed job state {job_id} will not triggered"
@@ -829,7 +829,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 /// Summary information about a job for display purposes.
 pub struct JobOverview {
     /// Unique identifier for this job.
-    pub job_id: String,
+    pub job_id: JobId,
     /// Human-readable name for this job.
     pub job_name: JobName,
     /// Current status of the job.

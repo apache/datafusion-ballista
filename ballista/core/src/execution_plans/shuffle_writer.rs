@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::JobId;
 use crate::execution_plans::create_shuffle_path;
 use crate::extension::SessionConfigExt;
 use crate::utils;
@@ -77,7 +78,7 @@ pub const DEFAULT_SHUFFLE_CHANNEL_CAPACITY: usize = 8;
 #[derive(Debug, Clone)]
 pub struct ShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of
-    job_id: String,
+    job_id: JobId,
     /// Unique query stage ID within the job
     stage_id: usize,
     /// Physical execution plan for this query stage
@@ -148,7 +149,7 @@ impl ShuffleWriteMetrics {
 impl ShuffleWriterExec {
     /// Create a new shuffle writer
     pub fn try_new(
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,

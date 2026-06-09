@@ -22,11 +22,11 @@ use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
-use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::{JobName, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -391,7 +391,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
-    pub(crate) fn clean_up_successful_job(&self, job_id: String) {
+    pub(crate) fn clean_up_successful_job(&self, job_id: JobId) {
         self.executor_manager.clean_up_job_data_delayed(
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,
@@ -403,7 +403,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
-    pub(crate) fn clean_up_failed_job(&self, job_id: String) {
+    pub(crate) fn clean_up_failed_job(&self, job_id: JobId) {
         self.executor_manager.clean_up_job_data(job_id.clone());
         self.task_manager.clean_up_job_delayed(
             job_id,
