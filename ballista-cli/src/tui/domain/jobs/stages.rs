@@ -81,7 +81,6 @@ pub enum StageDetailsView {
     Plan(StagePlanTab),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum StagePlanTab {
     Default,
