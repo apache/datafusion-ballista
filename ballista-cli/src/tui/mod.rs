@@ -137,7 +137,7 @@ pub(crate) mod web {
         let repaint_interval_ms =
             u32::try_from(config.repaint_interval_ms).unwrap_or(u32::MAX);
 
-        let wrapper = TuiWrapper::new()?;
+        let mut wrapper = TuiWrapper::new()?;
         let app = Rc::new(RefCell::new(App::new(config)?));
 
         /// Reset the tick in flight flag on tick event handler drop.
@@ -152,7 +152,7 @@ pub(crate) mod web {
         let (tx, mut rx) = EventHandler::new(
             data_reload_interval_ms,
             repaint_interval_ms,
-            &wrapper.terminal,
+            &mut wrapper.terminal,
         );
         app.borrow_mut().set_event_tx(tx.clone());
 
