@@ -22,7 +22,7 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use ballista_core::BALLISTA_VERSION;
+use ballista_core::{BALLISTA_VERSION, JobName};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     ExecutorMetric, executor_metric::Metric, task_status,
@@ -110,7 +110,7 @@ impl ExecutorMetricResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct JobResponse {
     pub job_id: String,
-    pub job_name: String,
+    pub job_name: JobName,
     pub job_status: String,
     pub status: String,
     pub num_stages: usize,

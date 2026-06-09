@@ -22,6 +22,7 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ballista_core::JobName;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept};
 use datafusion::prelude::SessionConfig;
@@ -249,7 +250,7 @@ pub struct StaticExecutionGraph {
     /// ID for this job
     job_id: String,
     /// Job name, can be empty string
-    job_name: String,
+    job_name: JobName,
     /// Session ID for this job
     session_id: String,
     /// Status of this job

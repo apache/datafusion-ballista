@@ -25,6 +25,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
+use ballista_core::JobName;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
@@ -96,7 +97,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     /// ID for this job
     job_id: String,
     /// Job name, can be empty string
-    job_name: String,
+    job_name: JobName,
     /// Session ID for this job
     session_id: String,
     /// Status of this job

@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 #[derive(Deserialize, Clone, Debug)]
 pub struct Job {
     pub job_id: String,
-    pub job_name: String,
+    pub job_name: JobName,
     pub status: String, // Running, Completed, Failed, Canceled
     pub start_time: i64,
     pub end_time: i64,

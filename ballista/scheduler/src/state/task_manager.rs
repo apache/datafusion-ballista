@@ -25,7 +25,7 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
-use ballista_core::JobStatusSubscriber;
+use ballista_core::{JobName, JobStatusSubscriber};
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
@@ -826,7 +826,7 @@ pub struct JobOverview {
     /// Unique identifier for this job.
     pub job_id: String,
     /// Human-readable name for this job.
-    pub job_name: String,
+    pub job_name: JobName,
     /// Current status of the job.
     pub status: JobStatus,
     /// Timestamp when the job started.
