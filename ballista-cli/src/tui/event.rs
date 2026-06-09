@@ -20,7 +20,7 @@ use crate::tui::domain::{
     executors::Executor,
     jobs::{
         CancelJobResult, Job, JobConfigPopup, JobDetails,
-        stages::{JobStagesResponse, StagesGraph},
+        stages::{JobStagesResponse, StagePlanTab, StagesGraph},
     },
     metrics::Metric,
 };
@@ -39,6 +39,7 @@ pub enum UiData {
     JobConfig(JobConfigPopup),
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
+    JobStagesPlanData(StagePlanTab, JobStagesResponse),
     ExecutorDetails(Executor),
     CancelJobResult(CancelJobResult),
 }

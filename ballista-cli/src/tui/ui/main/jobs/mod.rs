@@ -26,7 +26,7 @@ pub mod stage_tasks_popup;
 #[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
-    domain::jobs::{JobConfigEntry, JobConfigPopup},
+    domain::jobs::{JobConfigEntry, JobConfigPopup, stages::StagePlanTab},
     event::{Event, UiData},
 };
 use crate::tui::{
@@ -83,6 +83,7 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     }
 }
 
+/// Loading the whole job's stages to render the popup window
 #[cfg(not(feature = "web"))]
 pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
     let config = match app.http_client.get_job_config(job_id).await {
@@ -108,7 +109,7 @@ pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
 pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     let mut stages = app
         .http_client
-        .get_job_stages(job_id)
+        .get_job_stages(job_id, &StagePlanTab::Default)
         .await
         .inspect(|stages| tracing::trace!("Loaded stages for job '{job_id}': {stages:?}"))
         .inspect_err(|e| {
@@ -125,9 +126,39 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     .await
 }
 
+/// Loading stage's plan to render the popup window
+#[cfg(not(feature = "web"))]
+pub async fn load_stage_plan(
+    app: &App,
+    job_id: &str,
+    tab: &StagePlanTab,
+) -> TuiResult<()> {
+    let mut stages = app
+        .http_client
+        .get_job_stages(job_id, tab)
+        .await
+        .inspect(|s| tracing::trace!("Loaded the {tab:?} plan for job '{job_id}': {s:?}"))
+        .inspect_err(|e| {
+            tracing::error!("Failed to load the {tab:?} plan for job '{job_id}': {e:?}")
+        })?;
+
+    stages
+        .stages
+        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobStagesPlanData(tab.clone(), stages),
+    })
+    .await
+}
+
 #[cfg(not(feature = "web"))]
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
-    let details = match app.http_client.get_job_details(job_id).await {
+    let details = match app
+        .http_client
+        .get_job_details(job_id, &StagePlanTab::Default)
+        .await
+    {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("Failed to load job details for {job_id}: {e:?}");

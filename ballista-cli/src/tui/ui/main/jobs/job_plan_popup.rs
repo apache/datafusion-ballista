@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::jobs::{JobPlansPopup, PlanTab};
+use crate::tui::domain::jobs::{JobPlansPopup, PhysicalFormat, PlanTab};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
@@ -42,13 +42,28 @@ fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
     let details = &job_plans.details;
     let tab = job_plans.get_tab();
 
-    let plan = match tab {
-        PlanTab::Stage => details.stage_plan.as_deref().unwrap_or("N/A"),
-        PlanTab::Physical => details.physical_plan.as_deref().unwrap_or("N/A"),
-        PlanTab::Logical => details.logical_plan.as_deref().unwrap_or("N/A"),
+    let (plan, physical_fmt) = match tab {
+        PlanTab::Stage => (details.stage_plan.as_deref().unwrap_or("N/A"), ""),
+        PlanTab::Logical => (details.logical_plan.as_deref().unwrap_or("N/A"), ""),
+        PlanTab::Physical => match job_plans.get_physical_format() {
+            PhysicalFormat::Default => (
+                details.physical_plan.as_deref().unwrap_or("N/A"),
+                "(press t to switch to tree format) ",
+            ),
+            PhysicalFormat::Tree => (
+                details
+                    .physical_plan_tree
+                    .as_deref()
+                    .unwrap_or("Loading..."),
+                "(press d to switch to default format) ",
+            ),
+        },
     };
 
-    let title = format!(" {:?} plan for job '{}' ", tab, details.job_id);
+    let title = format!(
+        " {:?} plan for job '{}' {}",
+        tab, details.job_id, physical_fmt
+    );
 
     let block = Block::default()
         .title(title)

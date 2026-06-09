@@ -220,11 +220,18 @@ pub enum CancelJobResult {
     Failure { job_id: String, error: String },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PhysicalFormat {
+    Default,
+    Tree,
+}
+
 #[derive(Clone, Debug)]
 pub struct JobDetails {
     pub job_id: String,
     pub logical_plan: Option<String>,
     pub physical_plan: Option<String>,
+    pub physical_plan_tree: Option<String>,
     pub stage_plan: Option<String>,
 }
 
@@ -339,6 +346,7 @@ pub(crate) enum PlanTab {
 pub struct JobPlansPopup {
     pub details: JobDetails,
     tab: PlanTab,
+    physical_format: PhysicalFormat,
     vertical_scroll_position: u16,
     horizontal_scroll_position: u16,
 }
@@ -348,6 +356,7 @@ impl JobPlansPopup {
         Self {
             details,
             tab,
+            physical_format: PhysicalFormat::Default,
             vertical_scroll_position: 0,
             horizontal_scroll_position: 0,
         }
@@ -355,6 +364,24 @@ impl JobPlansPopup {
 
     pub fn get_tab(&self) -> &PlanTab {
         &self.tab
+    }
+
+    pub fn get_physical_format(&self) -> &PhysicalFormat {
+        &self.physical_format
+    }
+
+    /// Returns Some(()) if a fetch is needed (tree not cached yet), None if already available.
+    pub fn set_physical_format(&mut self, fmt: PhysicalFormat) -> Option<()> {
+        self.physical_format = fmt;
+        self.vertical_scroll_position = 0;
+        self.horizontal_scroll_position = 0;
+        if self.physical_format == PhysicalFormat::Tree
+            && self.details.physical_plan_tree.is_none()
+        {
+            Some(())
+        } else {
+            None
+        }
     }
 
     pub fn set_tab(&mut self, tab: PlanTab) {
@@ -798,6 +825,7 @@ mod tests {
     fn make_job_details(id: &str) -> JobDetails {
         JobDetails {
             job_id: id.to_string(),
+            physical_plan_tree: None,
             logical_plan: None,
             physical_plan: None,
             stage_plan: None,
