@@ -109,7 +109,7 @@ pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
 pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     let mut stages = app
         .http_client
-        .get_job_stages(job_id, None)
+        .get_job_stages(job_id, &StagePlanTab::Default)
         .await
         .inspect(|stages| tracing::trace!("Loaded stages for job '{job_id}': {stages:?}"))
         .inspect_err(|e| {
@@ -143,7 +143,7 @@ pub async fn load_stage_plan(
 
     let mut stages = app
         .http_client
-        .get_job_stages(job_id, fmt)
+        .get_job_stages(job_id, &tab)
         .await
         .inspect(|s| tracing::trace!("Loaded {fmt:?} plan for job '{job_id}': {s:?}"))
         .inspect_err(|e| {
@@ -164,7 +164,7 @@ pub async fn load_stage_plan(
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
     let details = match app
         .http_client
-        .get_job_details(job_id, StagePlanTab::Default)
+        .get_job_details(job_id, &StagePlanTab::Default)
         .await
     {
         Ok(d) => d,

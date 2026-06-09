@@ -292,7 +292,10 @@ pub(crate) mod web {
 
         match action {
             WebKeyAsyncAction::LoadJobStages(id) => {
-                match http_client.get_job_stages(&id, None).await {
+                match http_client
+                    .get_job_stages(&id, &StagePlanTab::Default)
+                    .await
+                {
                     Ok(mut stages) => {
                         stages
                             .stages
@@ -352,7 +355,7 @@ pub(crate) mod web {
             WebKeyAsyncAction::UpdateJobDetails(job_id) => {
                 if let Some(id) = job_id {
                     match http_client
-                        .get_job_details(&id, StagePlanTab::Default)
+                        .get_job_details(&id, &StagePlanTab::Default)
                         .await
                     {
                         Ok(details) => {
@@ -367,7 +370,7 @@ pub(crate) mod web {
                 }
             }
             WebKeyAsyncAction::LoadJobPlanTree(id) => {
-                match http_client.get_job_details(&id, StagePlanTab::Tree).await {
+                match http_client.get_job_details(&id, &StagePlanTab::Tree).await {
                     Ok(mut details) => {
                         details.physical_plan_tree = details.physical_plan.take();
                         send_data(UiData::JobDetails(details), tx).await;
@@ -378,13 +381,7 @@ pub(crate) mod web {
                 }
             }
             WebKeyAsyncAction::LoadStagePlan(job_id, tab) => {
-                use crate::tui::domain::jobs::stages::StagePlanTab;
-                let fmt = match tab {
-                    StagePlanTab::Default => Some(""),
-                    StagePlanTab::Tree => Some("tree"),
-                    StagePlanTab::Metrics => Some("metrics"),
-                };
-                match http_client.get_job_stages(&job_id, fmt).await {
+                match http_client.get_job_stages(&job_id, &tab).await {
                     Ok(mut stages) => {
                         stages
                             .stages

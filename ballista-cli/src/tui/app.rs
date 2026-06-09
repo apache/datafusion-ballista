@@ -364,7 +364,7 @@ impl App {
             if let Some(job_id) = fetch_tree {
                 match self
                     .http_client
-                    .get_job_details(&job_id, StagePlanTab::Tree)
+                    .get_job_details(&job_id, &StagePlanTab::Tree)
                     .await
                 {
                     Ok(details) => {

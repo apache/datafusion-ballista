@@ -110,7 +110,7 @@ impl HttpClient {
     pub async fn get_job_details(
         &self,
         job_id: &str,
-        plan_format: StagePlanTab,
+        plan_format: &StagePlanTab,
     ) -> TuiResult<JobDetails> {
         #[derive(serde::Deserialize, Debug)]
         struct JobDetailResponse {
@@ -142,15 +142,12 @@ impl HttpClient {
     pub async fn get_job_stages(
         &self,
         job_id: &str,
-        plan_format: Option<&str>,
+        plan_format: &StagePlanTab,
     ) -> TuiResult<JobStagesResponse> {
         let url = self.url(&format!(
-            "job/{}/stages{}",
+            "job/{}/stages?{}",
             self.url_encode(job_id),
-            match plan_format {
-                Some(fmt) => format!("?plan_format={}", fmt),
-                None => String::new(),
-            },
+            plan_format.as_query_param(),
         ));
         self.json::<JobStagesResponse>(&url).await
     }
