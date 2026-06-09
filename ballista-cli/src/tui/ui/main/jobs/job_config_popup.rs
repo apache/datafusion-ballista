@@ -74,7 +74,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
     );
 
     let rows = filtered
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(i, entry)| row_for_entry(i, entry));
 
@@ -97,7 +97,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
     render_scrollbar(f, table_area[1], &mut scrollbar_state);
 }
 
-fn row_for_entry<'a>(i: usize, entry: &&'a JobConfigEntry) -> Row<'a> {
+fn row_for_entry(i: usize, entry: &JobConfigEntry) -> Row<'_> {
     let color = if i.is_multiple_of(2) {
         Color::DarkGray
     } else {
