@@ -23,6 +23,9 @@ use std::sync::Arc;
 use datafusion::{execution::runtime_env::RuntimeEnv, prelude::SessionConfig};
 
 use crate::serde::protobuf::JobStatus;
+
+pub use crate::ids::{JobId, JobName};
+
 /// The current version of Ballista, derived from the Cargo package version.
 pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -47,6 +50,8 @@ pub mod event_loop;
 pub mod execution_plans;
 /// Extension traits and utilities for DataFusion integration.
 pub mod extension;
+/// Strongly-typed string identifiers (job ids, job names, ...).
+pub mod ids;
 #[cfg(feature = "build-binary")]
 /// Object store configuration and utilities for distributed file access.
 pub mod object_store;
