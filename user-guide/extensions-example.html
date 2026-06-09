@@ -671,7 +671,7 @@ transformation is performed using implementing <code class="docutils literal not
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug, Clone, Default)]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">CustomPlannerExtension</span><span class="w"> </span><span class="p">{}</span>
 
-<span class="cp">#[async_trait]</span>
+<span class="cp">#[async_trait::async_trait]</span>
 <span class="k">impl</span><span class="w"> </span><span class="n">ExtensionPlanner</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">CustomPlannerExtension</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">plan_extension</span><span class="p">(</span>
 <span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
