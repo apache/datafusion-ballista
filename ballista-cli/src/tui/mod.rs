@@ -109,6 +109,7 @@ mod _tui {
 
 #[cfg(feature = "web")]
 pub(crate) mod web {
+    use crate::tui::domain::jobs::stages::StagePlanTab;
     use crate::tui::{
         TuiResult,
         app::{App, WebKeyAsyncAction},
@@ -350,7 +351,10 @@ pub(crate) mod web {
             }
             WebKeyAsyncAction::UpdateJobDetails(job_id) => {
                 if let Some(id) = job_id {
-                    match http_client.get_job_details(&id, None).await {
+                    match http_client
+                        .get_job_details(&id, StagePlanTab::Default)
+                        .await
+                    {
                         Ok(details) => {
                             send_data(UiData::JobDetails(details), tx).await;
                         }
@@ -363,7 +367,7 @@ pub(crate) mod web {
                 }
             }
             WebKeyAsyncAction::LoadJobPlanTree(id) => {
-                match http_client.get_job_details(&id, Some("tree")).await {
+                match http_client.get_job_details(&id, StagePlanTab::Tree).await {
                     Ok(mut details) => {
                         details.physical_plan_tree = details.physical_plan.take();
                         send_data(UiData::JobDetails(details), tx).await;

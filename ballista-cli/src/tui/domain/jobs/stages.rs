@@ -14,7 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-#![allow(unfulfilled_lint_expectations)]
+
 use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 
@@ -87,6 +87,16 @@ pub enum StagePlanTab {
     Default,
     Tree,
     Metrics,
+}
+
+impl StagePlanTab {
+    pub fn as_query_param(&self) -> &'static str {
+        match self {
+            StagePlanTab::Default => "",
+            StagePlanTab::Tree => "plan_format=tree",
+            StagePlanTab::Metrics => "plan_format=metrics",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -185,7 +195,6 @@ impl JobStagesPopup {
         matches!(self.details_view, StageDetailsView::Plan(_))
     }
 
-    #[allow(dead_code)]
     pub fn set_tab(&mut self, tab: StagePlanTab) -> Option<StagePlanTab> {
         self.details_view = StageDetailsView::Plan(tab.clone());
         self.plan_vertical_scroll_position = 0;

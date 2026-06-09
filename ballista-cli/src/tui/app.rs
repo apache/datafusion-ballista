@@ -32,7 +32,7 @@ use crate::tui::{
         jobs::{
             CancelJobResult, JobConfigPopup, JobDetails, JobPlansPopup, JobsData,
             PhysicalFormat, PlanTab, SortColumn as JobsSortColumn,
-            stages::{JobStagesPopup, StagesGraph},
+            stages::{JobStagesPopup, StagePlanTab, StagesGraph},
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
@@ -366,7 +366,7 @@ impl App {
             if let Some(job_id) = fetch_tree {
                 match self
                     .http_client
-                    .get_job_details(&job_id, Some("tree"))
+                    .get_job_details(&job_id, StagePlanTab::Tree)
                     .await
                 {
                     Ok(details) => {

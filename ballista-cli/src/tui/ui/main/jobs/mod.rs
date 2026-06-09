@@ -26,7 +26,7 @@ pub mod stage_tasks_popup;
 #[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
-    domain::jobs::{JobConfigEntry, JobConfigPopup},
+    domain::jobs::{JobConfigEntry, JobConfigPopup, stages::StagePlanTab},
     event::{Event, UiData},
 };
 use crate::tui::{
@@ -83,7 +83,7 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     }
 }
 
-/// Loading whole job's stages to render the popup window
+/// Loading the whole job's stages to render the popup window
 #[cfg(not(feature = "web"))]
 pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
     let config = match app.http_client.get_job_config(job_id).await {
@@ -162,7 +162,11 @@ pub async fn load_stage_plan(
 
 #[cfg(not(feature = "web"))]
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
-    let details = match app.http_client.get_job_details(job_id, None).await {
+    let details = match app
+        .http_client
+        .get_job_details(job_id, StagePlanTab::Default)
+        .await
+    {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("Failed to load job details for {job_id}: {e:?}");

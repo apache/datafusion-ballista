@@ -21,6 +21,7 @@ use serde::de::DeserializeOwned;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+use crate::tui::domain::jobs::stages::StagePlanTab;
 use crate::tui::{
     TuiResult,
     domain::{
@@ -109,7 +110,7 @@ impl HttpClient {
     pub async fn get_job_details(
         &self,
         job_id: &str,
-        plan_format: Option<&str>,
+        plan_format: StagePlanTab,
     ) -> TuiResult<JobDetails> {
         #[derive(serde::Deserialize, Debug)]
         struct JobDetailResponse {
@@ -119,12 +120,9 @@ impl HttpClient {
         }
 
         let url = self.url(&format!(
-            "job/{}{}",
+            "job/{}?{}",
             self.url_encode(job_id),
-            match plan_format {
-                Some(fmt) => format!("?plan_format={fmt}"),
-                None => String::new(),
-            }
+            plan_format.as_query_param(),
         ));
         let resp = self.json::<JobDetailResponse>(&url).await?;
         Ok(JobDetails {
