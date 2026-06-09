@@ -90,7 +90,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::LightCyan))
             .border_type(BorderType::Thick),
     )
-    .row_highlight_style(Style::default().bg(Color::DarkGray))
+    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
 
     f.render_stateful_widget(table, table_area[0], &mut table_state);
