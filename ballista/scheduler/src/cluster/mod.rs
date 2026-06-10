@@ -701,9 +701,9 @@ mod test {
     async fn mock_active_jobs(
         num_partition: usize,
     ) -> Result<HashMap<JobId, JobInfoCache>> {
-        let graph_a = mock_graph(&JobId::new("job_a"), num_partition, 2).await?;
+        let graph_a = mock_graph(&"job_a".into(), num_partition, 2).await?;
 
-        let graph_b = mock_graph(&JobId::new("job_b"), num_partition, 7).await?;
+        let graph_b = mock_graph(&"job_b".into(), num_partition, 7).await?;
 
         let mut active_jobs = HashMap::new();
         active_jobs.insert(

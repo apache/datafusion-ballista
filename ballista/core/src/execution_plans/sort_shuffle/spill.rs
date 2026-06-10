@@ -274,7 +274,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            &JobId::new("job1"),
+            &"job1".into(),
             1,
             0,
             schema.clone(),
@@ -309,7 +309,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            &JobId::new("job1"),
+            &"job1".into(),
             1,
             0,
             schema.clone(),
@@ -346,7 +346,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            &JobId::new("job1"),
+            &"job1".into(),
             1,
             0,
             schema.clone(),
@@ -392,7 +392,7 @@ mod tests {
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
-            &JobId::new("job1"),
+            &"job1".into(),
             1,
             0,
             schema.clone(),

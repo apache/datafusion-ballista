@@ -873,7 +873,7 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
 
 /// Creates a test execution graph with a simple aggregation plan.
 pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
-    test_aggregation_plan_with_job_id(partition, &JobId::new("job")).await
+    test_aggregation_plan_with_job_id(partition, &"job".into()).await
 }
 
 /// Creates a test execution graph with a simple aggregation plan and custom job ID.
@@ -961,7 +961,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
 
     StaticExecutionGraph::new(
         "localhost:50050",
-        &JobId::new("job"),
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1002,7 +1002,7 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
 
     StaticExecutionGraph::new(
         "localhost:50050",
-        &JobId::new("job"),
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1063,7 +1063,7 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        &JobId::new("job"),
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1106,7 +1106,7 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        &JobId::new("job"),
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1149,7 +1149,7 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        &JobId::new("job"),
+        &"job".into(),
         "",
         "session",
         plan,

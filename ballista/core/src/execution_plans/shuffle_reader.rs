@@ -984,7 +984,7 @@ mod tests {
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
         PartitionId,
     };
-    use crate::{JobId, utils};
+    use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::ipc::writer::StreamWriter;
@@ -1402,7 +1402,7 @@ mod tests {
 
         // job name and stage id are hard-coded
         let file_path =
-            create_shuffle_path(work_dir, &JobId::new("job"), 1, 0, None, false).unwrap();
+            create_shuffle_path(work_dir, &"job".into(), 1, 0, None, false).unwrap();
 
         std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
 
@@ -1444,8 +1444,7 @@ mod tests {
         for p in 0..partition_num {
             // job name and stage id are hard-codded
             let file_path =
-                create_shuffle_path(work_dir, &JobId::new("job"), 1, p, None, false)
-                    .unwrap();
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
             // this unwrap should not be problem as
             // this function never return root dir
             std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
