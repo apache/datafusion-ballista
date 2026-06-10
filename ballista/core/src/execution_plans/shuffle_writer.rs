@@ -622,7 +622,7 @@ mod tests {
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
         let work_dir = TempDir::new()?;
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            JobId::new("jobOne"),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
@@ -680,7 +680,7 @@ mod tests {
         let input_plan = create_input_plan()?;
         let work_dir = TempDir::new()?;
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            JobId::new("jobOne"),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
