@@ -729,13 +729,8 @@ mod tests {
         let work_dir = tmp.path().to_str().unwrap().to_owned();
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
-        let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned().into(),
-            1,
-            input_plan,
-            work_dir,
-            None,
-        )?;
+        let query_stage =
+            ShuffleWriterExec::try_new("jobOne".into(), 1, input_plan, work_dir, None)?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let result = utils::collect_stream(&mut stream).await;
         assert!(
@@ -763,7 +758,7 @@ mod tests {
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned().into(),
+            "jobOne".into(),
             1,
             input_plan,
             work_dir,

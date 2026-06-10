@@ -43,7 +43,7 @@ async fn should_add_exchanges() -> datafusion::error::Result<()> {
     let planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     assert_plan!(planner.current_plan(),  @ r"
@@ -72,7 +72,7 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     assert_plan!(planner.current_plan(),  @ r"
@@ -124,7 +124,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     assert_plan!(planner.current_plan(),  @ r"
@@ -183,7 +183,7 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
     let planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     // plan has only two exchanges after initial planning
@@ -233,7 +233,7 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
@@ -303,7 +303,7 @@ async fn should_split_stages_resolve_left_branch() -> datafusion::error::Result<
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
@@ -378,7 +378,7 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
@@ -438,7 +438,7 @@ async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         exchange_exec,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     assert_plan!(planner.current_plan(), @ r"
@@ -467,7 +467,7 @@ async fn should_use_sort_shuffle_when_enabled() -> datafusion::error::Result<()>
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -497,7 +497,7 @@ async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         plan,
-        "test_job".to_owned().into(),
+        "test_job".to_owned(),
     )?;
 
     let stages = planner.runnable_stages()?.unwrap();

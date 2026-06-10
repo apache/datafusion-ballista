@@ -1350,7 +1350,7 @@ mod tests {
         let task_ctx = session_ctx.task_ctx();
         let work_dir = TempDir::new().unwrap();
         let input = ShuffleWriterExec::try_new(
-            "local_file".to_owned().into(),
+            "local_file".into(),
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
@@ -1483,7 +1483,7 @@ mod tests {
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "job".to_owned().into(),
+                    job_id: "job".into(),
                     stage_id: 1,
                     partition_id,
                 },
@@ -1719,7 +1719,7 @@ mod tests {
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "j".to_owned().into(),
+                    job_id: "j".into(),
                     stage_id: 7,
                     partition_id,
                 },

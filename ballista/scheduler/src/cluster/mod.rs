@@ -601,8 +601,8 @@ mod test {
             entry_b.insert("executor_3".to_string(), 5);
             entry_b.insert("executor_2".to_string(), 2);
 
-            expected0.insert("job_a".to_owned().into(), entry_a);
-            expected0.insert("job_b".to_owned().into(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
@@ -614,8 +614,8 @@ mod test {
             let mut entry_a = HashMap::new();
             entry_a.insert("executor_2".to_string(), 2);
 
-            expected0.insert("job_a".to_owned().into(), entry_a);
-            expected0.insert("job_b".to_owned().into(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
@@ -654,8 +654,8 @@ mod test {
             entry_b.insert("executor_3".to_string(), 2);
             entry_b.insert("executor_2".to_string(), 2);
 
-            expected0.insert("job_a".to_owned().into(), entry_a);
-            expected0.insert("job_b".to_owned().into(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
@@ -670,8 +670,8 @@ mod test {
             entry_a.insert("executor_2".to_string(), 1);
             entry_a.insert("executor_1".to_string(), 1);
 
-            expected0.insert("job_a".to_owned().into(), entry_a);
-            expected0.insert("job_b".to_owned().into(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }

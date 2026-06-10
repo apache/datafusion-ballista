@@ -838,7 +838,7 @@ mod test {
             LogicalPlan::default(),
             "session".to_string(),
         ));
-        *exec.job_id.lock() = Some("job-123".to_owned().into());
+        *exec.job_id.lock() = Some("job-123".into());
 
         let new_exec = exec.clone().with_new_children(vec![]).unwrap();
         let new_exec = new_exec

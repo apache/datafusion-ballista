@@ -473,7 +473,7 @@ mod test {
             .create_or_update_session("session_id", &config)
             .await?;
 
-        let job_id: JobId = "job".to_owned().into();
+        let job_id: JobId = "job".into();
 
         // Enqueue job
         scheduler

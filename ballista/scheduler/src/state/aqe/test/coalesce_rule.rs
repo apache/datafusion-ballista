@@ -97,7 +97,7 @@ fn partitions_with_byte_sizes(
             vec![PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "".to_owned().into(),
+                    job_id: "".into(),
                     stage_id: 0,
                     partition_id: idx,
                 },
@@ -135,11 +135,8 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     // Before any stage finalizes the leaves are unresolved, so the rule
     // no-ops: `coalesce=none`.
@@ -188,11 +185,8 @@ async fn should_skip_coalesce_when_rule_disabled() -> datafusion::error::Result<
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let _ = planner.runnable_stages()?.unwrap();
     planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
@@ -225,11 +219,8 @@ async fn should_skip_coalesce_when_partitions_are_full() -> datafusion::error::R
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let _ = planner.runnable_stages()?.unwrap();
     planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[300; 8]))?;
@@ -264,11 +255,8 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
@@ -317,11 +305,8 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(3, stages.len());
@@ -382,11 +367,8 @@ async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
@@ -429,11 +411,8 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
         .await?
         .create_physical_plan()
         .await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned().into(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     // Stage 0 is the upstream shuffle writer, partitioning by `c` into M=8.
     let stages = planner.runnable_stages()?.unwrap();

@@ -43,7 +43,7 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
         // next few properties are generic values
         map_partition_id: 0,
         partition_id: PartitionId {
-            job_id: "".to_owned().into(),
+            job_id: "".into(),
             stage_id: 0,
             partition_id: 0,
         },
@@ -68,7 +68,7 @@ pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLoca
         // next few properties are generic values
         map_partition_id: 0,
         partition_id: PartitionId {
-            job_id: "".to_owned().into(),
+            job_id: "".into(),
             stage_id: 0,
             partition_id: 0,
         },

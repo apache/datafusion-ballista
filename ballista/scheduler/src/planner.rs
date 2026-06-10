@@ -1049,7 +1049,7 @@ order by
         let make_loc = |partition_id: usize| PartitionLocation {
             map_partition_id: partition_id,
             partition_id: PartitionId {
-                job_id: "job".to_owned().into(),
+                job_id: "job".into(),
                 stage_id: 42,
                 partition_id,
             },

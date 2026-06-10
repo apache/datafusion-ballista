@@ -840,7 +840,7 @@ mod tests {
         let config = SortShuffleConfig::default();
 
         let writer = SortShuffleWriterExec::try_new(
-            "job1".to_owned().into(),
+            "job1".into(),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_string(),
@@ -937,7 +937,7 @@ mod tests {
         let work_dir = TempDir::new()?;
 
         let writer = SortShuffleWriterExec::try_new(
-            "round_trip_job".to_owned().into(),
+            "round_trip_job".into(),
             1,
             input,
             work_dir.path().to_str().unwrap().to_string(),
@@ -1084,7 +1084,7 @@ mod tests {
 
         let num_partitions = 8;
         let writer = SortShuffleWriterExec::try_new(
-            "empty_partitions_job".to_owned().into(),
+            "empty_partitions_job".into(),
             1,
             input,
             work_dir.path().to_str().unwrap().to_string(),
