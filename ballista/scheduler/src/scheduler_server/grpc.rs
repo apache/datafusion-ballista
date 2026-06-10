@@ -393,8 +393,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .iter()
                 .find(|s| s.key == BALLISTA_JOB_NAME)
                 .and_then(|s| s.value.clone())
-                .unwrap_or_default()
-                .into();
+                .unwrap_or_default();
 
             info!(
                 "execution query (PUSH) job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
@@ -470,8 +469,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .iter()
                 .find(|s| s.key == BALLISTA_JOB_NAME)
                 .and_then(|s| s.value.clone())
-                .unwrap_or_default()
-                .into();
+                .unwrap_or_default();
 
             info!(
                 "execution query job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"

@@ -22,7 +22,6 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ballista_core::JobName;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept};
 use datafusion::prelude::SessionConfig;
@@ -106,7 +105,7 @@ pub trait ExecutionGraph: Debug {
     fn job_id(&self) -> &JobId;
 
     /// Returns the job name for this execution graph.
-    fn job_name(&self) -> &JobName;
+    fn job_name(&self) -> &str;
 
     /// Returns the session ID associated with this job.
     fn session_id(&self) -> &str;
@@ -251,7 +250,7 @@ pub struct StaticExecutionGraph {
     /// ID for this job
     job_id: JobId,
     /// Job name, can be empty string
-    job_name: JobName,
+    job_name: String,
     /// Session ID for this job
     session_id: String,
     /// Status of this job
@@ -306,7 +305,7 @@ impl StaticExecutionGraph {
     pub fn new(
         scheduler_id: &str,
         job_id: &JobId,
-        job_name: &JobName,
+        job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
@@ -640,8 +639,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         &self.job_id
     }
 
-    fn job_name(&self) -> &JobName {
-        &self.job_name
+    fn job_name(&self) -> &str {
+        self.job_name.as_str()
     }
 
     fn session_id(&self) -> &str {
@@ -1361,7 +1360,7 @@ impl ExecutionGraph for StaticExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone().into(),
-            job_name: self.job_name.clone().into(),
+            job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
                 error,
                 queued_at: self.queued_at,
@@ -1390,7 +1389,7 @@ impl ExecutionGraph for StaticExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone().into(),
-            job_name: self.job_name.clone().into(),
+            job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
 

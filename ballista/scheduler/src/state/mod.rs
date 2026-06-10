@@ -26,7 +26,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::{JobId, JobName, JobStatusSubscriber};
+use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -364,7 +364,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn submit_job(
         &self,
         job_id: &JobId,
-        job_name: &JobName,
+        job_name: &str,
         session_ctx: Arc<SessionContext>,
         logical_plan: &LogicalPlan,
         queued_at: u64,

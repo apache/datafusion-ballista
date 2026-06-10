@@ -118,14 +118,6 @@ string_id! {
     JobId
 }
 
-string_id! {
-    /// Human-supplied, non-unique display name for a job.
-    ///
-    /// Unlike [`JobId`] this is not guaranteed to be unique and carries no
-    /// scheduler semantics; it exists purely for display and diagnostics.
-    JobName
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

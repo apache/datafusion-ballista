@@ -28,7 +28,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{ConfigProducer, JobId, JobName, JobStatusSubscriber};
+use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
@@ -282,12 +282,7 @@ pub trait JobState: Send + Sync {
     /// Accepts a job into the scheduler's queue.
     ///
     /// Called when a job is received but before it is planned.
-    fn accept_job(
-        &self,
-        job_id: &JobId,
-        job_name: &JobName,
-        queued_at: u64,
-    ) -> Result<()>;
+    fn accept_job(&self, job_id: &JobId, job_name: &str, queued_at: u64) -> Result<()>;
 
     /// Returns the number of queued jobs waiting to be scheduled.
     fn pending_job_number(&self) -> usize;

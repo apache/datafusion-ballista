@@ -24,7 +24,7 @@ use datafusion::{execution::runtime_env::RuntimeEnv, prelude::SessionConfig};
 
 use crate::serde::protobuf::JobStatus;
 
-pub use crate::ids::{JobId, JobName};
+pub use crate::ids::JobId;
 
 /// The current version of Ballista, derived from the Cargo package version.
 pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");

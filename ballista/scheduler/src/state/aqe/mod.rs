@@ -25,6 +25,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
@@ -34,7 +35,6 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
-use ballista_core::{JobId, JobName};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
@@ -97,7 +97,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     /// ID for this job
     job_id: JobId,
     /// Job name, can be empty string
-    job_name: JobName,
+    job_name: String,
     /// Session ID for this job
     session_id: String,
     /// Status of this job
@@ -133,7 +133,7 @@ impl AdaptiveExecutionGraph {
     pub async fn try_new(
         scheduler_id: &str,
         job_id: &JobId,
-        job_name: &JobName,
+        job_name: &str,
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         queued_at: u64,
@@ -508,8 +508,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         &self.job_id
     }
 
-    fn job_name(&self) -> &JobName {
-        &self.job_name
+    fn job_name(&self) -> &str {
+        self.job_name.as_str()
     }
 
     fn session_id(&self) -> &str {
@@ -1177,7 +1177,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone().into(),
-            job_name: self.job_name.clone().into(),
+            job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
                 error,
                 queued_at: self.queued_at,
@@ -1206,7 +1206,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         self.status = JobStatus {
             job_id: self.job_id.clone().into(),
-            job_name: self.job_name.clone().into(),
+            job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
 

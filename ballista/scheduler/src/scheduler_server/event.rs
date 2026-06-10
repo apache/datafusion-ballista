@@ -20,7 +20,7 @@ use std::fmt::{Debug, Formatter};
 use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
-use ballista_core::{JobId, JobName, JobStatusSubscriber, serde::protobuf::TaskStatus};
+use ballista_core::{JobId, JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ pub enum QueryStageSchedulerEvent {
         /// Unique job identifier.
         job_id: JobId,
         /// Human-readable job name.
-        job_name: JobName,
+        job_name: String,
         /// Session context for the job.
         session_ctx: Arc<SessionContext>,
         /// Logical plan to execute.

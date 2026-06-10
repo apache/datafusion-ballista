@@ -30,7 +30,7 @@ use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
 use ballista_core::utils::get_current_time;
-use ballista_core::{BALLISTA_VERSION, JobId, JobName};
+use ballista_core::{BALLISTA_VERSION, JobId};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
@@ -110,7 +110,7 @@ impl ExecutorMetricResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct JobResponse {
     pub job_id: JobId,
-    pub job_name: JobName,
+    pub job_name: String,
     pub job_status: String,
     pub status: String,
     pub num_stages: usize,

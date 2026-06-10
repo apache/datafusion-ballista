@@ -33,7 +33,7 @@ use ballista_core::serde::protobuf::{
     JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::{JobId, JobName, JobStatusSubscriber};
+use ballista_core::{JobId, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
@@ -257,7 +257,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub fn queue_job(
         &self,
         job_id: &JobId,
-        job_name: &JobName,
+        job_name: &str,
         queued_at: u64,
     ) -> Result<()> {
         self.state.accept_job(job_id, job_name, queued_at)
@@ -281,7 +281,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn submit_job(
         &self,
         job_id: &JobId,
-        job_name: &JobName,
+        job_name: &str,
         ctx: Arc<SessionContext>,
         logical_plan: &LogicalPlan,
         queued_at: u64,
@@ -405,7 +405,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 };
                 jobs.push(JobOverview {
                     job_id: job_status.job_id.clone().into(),
-                    job_name: job_status.job_name.clone().into(),
+                    job_name: job_status.job_name.clone(),
                     status: job_status,
                     start_time,
                     end_time,
@@ -832,7 +832,7 @@ pub struct JobOverview {
     /// Unique identifier for this job.
     pub job_id: JobId,
     /// Human-readable name for this job.
-    pub job_name: JobName,
+    pub job_name: String,
     /// Current status of the job.
     pub status: JobStatus,
     /// Timestamp when the job started.

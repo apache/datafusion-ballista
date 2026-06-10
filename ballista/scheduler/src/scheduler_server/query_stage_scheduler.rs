@@ -129,7 +129,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             let timestamp = timestamp_millis();
                             let job_status = JobStatus {
                                 job_id: job_id.clone().into(),
-                                job_name: job_name.into(),
+                                job_name,
                                 status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(
                                     FailedJob { error, queued_at, started_at: timestamp, ended_at: timestamp }
                                 ))
@@ -369,7 +369,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 mod tests {
     use crate::config::SchedulerConfig;
     use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
-    use ballista_core::JobName;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -395,7 +394,7 @@ mod tests {
         )
         .await?;
 
-        let job_id = test.submit(&JobName::new(""), &plan).await?;
+        let job_id = test.submit("", &plan).await?;
 
         test.tick().await?;
 
