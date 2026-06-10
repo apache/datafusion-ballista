@@ -417,7 +417,7 @@ pub(crate) async fn bind_task_bias(
                 *task_info = Some(create_task_info(executor_id.clone(), task_id));
 
                 let partition = PartitionId {
-                    job_id: job_id.clone().into(),
+                    job_id: job_id.clone(),
                     stage_id: running_stage.stage_id,
                     partition_id,
                 };
@@ -503,7 +503,7 @@ pub(crate) async fn bind_task_round_robin(
                 *task_info = Some(create_task_info(executor_id.clone(), task_id));
 
                 let partition = PartitionId {
-                    job_id: job_id.to_owned().into(),
+                    job_id: job_id.to_owned(),
                     stage_id: running_stage.stage_id,
                     partition_id,
                 };

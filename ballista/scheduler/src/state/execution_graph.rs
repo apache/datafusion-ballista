@@ -324,8 +324,8 @@ impl StaticExecutionGraph {
 
         Ok(Self {
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_owned().into(),
-            job_name: job_name.to_owned().into(),
+            job_id: job_id.to_owned(),
+            job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
             status: JobStatus {

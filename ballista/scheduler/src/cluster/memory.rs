@@ -420,7 +420,7 @@ impl JobState for InMemoryJobState {
         // job change event emitted
         // it is emitting current job status
         self.job_event_sender.send(&JobStateEvent::JobUpdated {
-            job_id: job_id.to_owned().into(),
+            job_id: job_id.to_owned(),
             status,
         });
 
