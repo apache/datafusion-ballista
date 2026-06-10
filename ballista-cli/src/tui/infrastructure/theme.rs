@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn light_status_running_is_blue_bold() {
         let theme = Theme::light();
-        assert_eq!(theme.status_running.fg, Some(Color::Blue));
+        assert_eq!(theme.status_running.fg, Some(Color::Rgb(0, 0, 139)));
         assert!(theme.status_running.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn from_settings_light_uses_light_base() {
         let theme = Theme::from_settings(&light_settings());
-        assert_eq!(theme.status_running.fg, Some(Color::Blue));
+        assert_eq!(theme.status_running.fg, Some(Color::Rgb(0, 0, 139)));
         assert_eq!(theme.row_odd.bg, Some(Color::Reset));
     }
 
