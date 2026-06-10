@@ -29,7 +29,6 @@
   --pst-color-h2: var(--color-text-base);
   /* Use softer blue from bootstrap's default info color */
   --pst-color-info: 23, 162, 184;
-  --pst-header-height: 0px;
 }
 
 code {
@@ -40,23 +39,38 @@ code {
   text-align: center;
 }
 
-/* Ensure the logo is properly displayed */
-
-.navbar-brand {
-  height: auto;
+/* Limit both light and dark mode logos in the navbar */
+.logo__image {
+  height: 32px;
   width: auto;
+  max-height: 2.5rem;
 }
 
-a.navbar-brand img {
-  height: auto;
-  width: auto;
-  max-height: 15vh;
-  max-width: 100%;
+/* Display appropriate logo for dark and light mode */
+.light-logo {
+  display: inline;
 }
 
+.dark-logo {
+  display: none;
+}
+
+html[data-theme="dark"] .light-logo {
+  display: none;
+}
+
+html[data-theme="dark"] .dark-logo {
+  display: inline;
+  background-color: transparent !important;
+}
+
+/* Align search bar & theme switch right */
+.navbar-header-items__end {
+  margin-left: auto;
+}
 
 /* This is the bootstrap CSS style for "table-striped". Since the theme does
-not yet provide an easy way to configure this globaly, it easier to simply
+not yet provide an easy way to configure this globally, it easier to simply
 include this snippet here than updating each table in all rst files to
 add ":class: table-striped" */
 
@@ -66,15 +80,15 @@ add ":class: table-striped" */
 
 
 /* Limit the max height of the sidebar navigation section. Because in our
-custimized template, there is more content above the navigation, i.e.
+customized template, there is more content above the navigation, i.e.
 larger logo: if we don't decrease the max-height, it will overlap with
 the footer.
-Details: min(15vh, 110px) for the logo size, 8rem for search box etc*/
+Details: 8rem for search box etc*/
 
 @media (min-width:720px) {
   @supports (position:-webkit-sticky) or (position:sticky) {
     .bd-links {
-      max-height: calc(100vh - min(15vh, 110px) - 8rem)
+      max-height: calc(100vh - 8rem)
     }
   }
 }
@@ -90,4 +104,55 @@ Details: min(15vh, 110px) for the logo size, 8rem for search box etc*/
           this as on RTD they are loaded after this stylesheet */
         white-space: normal !important;
     }
+}
+
+/* Make wide tables scroll within the content area to avoid overlapping the
+   right sidebar. Prevents tables from bleeding underneath the sticky sidebar. */
+.bd-content table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+/* Make table container width fit content instead of spanning full width. */
+.pst-scrollable-table-container {
+  display: inline-block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Restore proper table display to maintain column alignment */
+.bd-content table thead,
+.bd-content table tbody { display: table-row-group; }
+
+.bd-content table tr { display: table-row; }
+
+.bd-content table th,
+.bd-content table td {
+  display: table-cell;
+  white-space: normal;
+}
+
+/* Maintain striped styling when table scrolls */
+.bd-content table tbody tr:nth-of-type(odd) {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+
+/* Ensure the config tables are readable without having to scroll horizontally. */
+
+#ballista-configuration-settings table {
+  display: table;
+  table-layout: fixed;
+}
+
+#ballista-configuration-settings th,
+#ballista-configuration-settings td {
+  word-wrap: break-word;
+}
+
+#ballista-configuration-settings th:nth-child(2),
+#ballista-configuration-settings td:nth-child(2) {
+  width: 15%;
 }
