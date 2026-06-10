@@ -1018,7 +1018,7 @@ mod tests {
                 vec![PartitionLocation {
                     map_partition_id: 0,
                     partition_id: PartitionId {
-                        job_id: job_id.to_owned().into(),
+                        job_id: job_id.into(),
                         stage_id,
                         partition_id: i,
                     },
@@ -1137,7 +1137,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_owned().into(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1188,7 +1188,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_owned().into(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1240,7 +1240,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_owned().into(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1292,7 +1292,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_owned().into(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
