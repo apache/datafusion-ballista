@@ -16,14 +16,15 @@
 // under the License.
 
 use crate::tui::app::App;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::prelude::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
     let area = crate::tui::ui::centered_rect(45, 50, f.area());
 
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let style = if app.is_scheduler_up() {
         app.theme.help_item

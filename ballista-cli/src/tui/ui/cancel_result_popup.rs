@@ -17,14 +17,15 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::CancelJobResult;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::prelude::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 pub(crate) fn render_cancel_result_popup(f: &mut Frame, app: &App) {
     if let Some(result) = app.cancel_job_result.as_ref() {
         let area = crate::tui::ui::centered_rect(40, 20, f.area());
-        f.render_widget(Clear, area);
+        clear_area(f, area, app);
 
         let (message, style) = match result {
             CancelJobResult::Success { job_id } => (

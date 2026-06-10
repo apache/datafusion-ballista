@@ -15,5 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod clear_area;
-pub mod loading_indicator;
+use crate::tui::app::App;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, Clear};
+
+/// Clears the provided area and renders a [`Block`]
+/// with the configured application background style
+pub fn clear_area(f: &mut Frame, area: Rect, app: &App) {
+    f.render_widget(Clear, area);
+    let block = Block::default().style(app.theme.app_background);
+    f.render_widget(block, area);
+}

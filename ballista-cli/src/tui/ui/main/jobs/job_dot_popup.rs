@@ -17,9 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::GraphNode;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::prelude::{Line, Span, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
@@ -28,7 +29,7 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(60, 60, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let block = Block::default()
         .title(format!(" Stages graph for job '{}' ", graph.job_id))

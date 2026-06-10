@@ -143,6 +143,7 @@ pub struct Theme {
     pub banner: Style,
     pub text_error: Style,
     pub text_info: Style,
+    pub app_background: Style,
 }
 
 impl Theme {
@@ -155,10 +156,7 @@ impl Theme {
             status_completed: Style::default().fg(Color::LightGreen).bold(),
             status_unknown: Style::default().fg(Color::Gray).bold(),
 
-            table_header: Style::default()
-                .fg(Color::LightYellow)
-                .bg(Color::Black)
-                .bold(),
+            table_header: Style::default().fg(Color::LightYellow).bold(),
             row_even: Style::default().bg(Color::DarkGray),
             row_odd: Style::default().bg(Color::Black),
             row_selected: Style::default().bg(Color::Indexed(29)),
@@ -204,6 +202,7 @@ impl Theme {
 
             text_info: Style::default().bold(),
             text_error: Style::default().fg(Color::Red).bold(),
+            app_background: Style::default().bg(Color::Black),
 
             footer: Style::default().bold(),
         }
@@ -275,6 +274,7 @@ impl Theme {
 
             text_error: Style::default().fg(Color::Indexed(124)),
             text_info: Style::default().fg(Color::Black).bold(),
+            app_background: Style::default().bg(Color::Gray),
 
             footer: Style::default().bold(),
         }

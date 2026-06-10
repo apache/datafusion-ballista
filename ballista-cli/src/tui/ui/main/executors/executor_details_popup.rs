@@ -17,9 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::executors::Executor;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.executor_details_popup else {
@@ -27,7 +28,7 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(35, 55, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let executor = &popup.executor;
     let title = " Executor details ";

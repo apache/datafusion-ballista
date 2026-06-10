@@ -17,13 +17,14 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::JobConfigEntry;
+use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::search_box::render_search_input;
 use crate::tui::ui::vertical_scrollbar::{render_scrollbar, split_area};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::Text;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table,
+    Block, BorderType, Borders, Cell, HighlightSpacing, Paragraph, Row, Table,
 };
 
 pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
@@ -32,7 +33,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(85, 80, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let areas = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
 

@@ -57,6 +57,8 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
 
 pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
+    let block = Block::default().style(app.theme.app_background); // or any color you want
+    f.render_widget(block, f.area());
 
     let search_term = app.search_term.to_lowercase();
     let filtered_metrics: Vec<&Metric> = if search_term.is_empty() {

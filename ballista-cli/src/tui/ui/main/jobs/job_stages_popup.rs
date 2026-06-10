@@ -17,13 +17,12 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::JobStageResponse;
+use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::text::Text;
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Row, Table,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, HighlightSpacing, Row, Table};
 
 pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
@@ -31,7 +30,7 @@ pub(crate) fn render_job_stages_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(85, 70, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let header_row = Row::new(vec![
         Cell::from(Text::from("Stage ID").right_aligned()),

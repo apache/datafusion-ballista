@@ -17,9 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::{JobPlansPopup, PhysicalFormat, PlanTab};
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     let Some(job_plans) = &app.job_plan_popup else {
@@ -27,7 +28,7 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(80, 70, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let areas = Layout::vertical([
         Constraint::Min(0), // Plans

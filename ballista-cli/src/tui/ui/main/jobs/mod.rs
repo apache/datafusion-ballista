@@ -39,6 +39,7 @@ use crate::tui::{
     ui::vertical_scrollbar::render_scrollbar,
 };
 
+use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::components::loading_indicator::shimmer_spans_with_style;
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::text::Line;
@@ -48,7 +49,7 @@ use ratatui::{
     style::Style,
     text::Text,
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
 };
 
@@ -171,7 +172,7 @@ pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
 }
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let search_term = app.search_term.to_lowercase();
     let filtered_jobs: Vec<&Job> = if search_term.is_empty() {

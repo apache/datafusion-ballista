@@ -16,14 +16,15 @@
 // under the License.
 
 use crate::tui::app::App;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::prelude::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
     if let Some(scheduler_state) = app.executors_data.scheduler_state.as_ref() {
         let area = crate::tui::ui::centered_rect(25, 35, f.area());
-        f.render_widget(Clear, area);
+        clear_area(f, area, app);
 
         let mut enabled_features = Vec::new();
         enabled_features.push("rest-api".to_string());
