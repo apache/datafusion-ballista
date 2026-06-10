@@ -23,7 +23,6 @@ mod help_overlay;
 mod main;
 mod scheduler_info_popup;
 mod search_box;
-pub mod theme;
 mod vertical_scrollbar;
 
 use super::{app::App, ui::header::render_header};

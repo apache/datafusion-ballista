@@ -19,13 +19,13 @@ use super::{ThemeName, ThemeOverride};
 use config::{Config, ConfigError, File, FileFormat};
 use serde::Deserialize;
 
-/// Theme configuration: built-in preset name plus optional colour overrides.
+/// Theme configuration: built-in preset name plus optional color overrides.
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ThemeSettings {
     #[serde(default)]
     pub name: ThemeName,
     #[serde(default)]
-    pub custom: ThemeOverride,
+    pub overrides: ThemeOverride,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,15 +140,18 @@ mod web {
             });
             let config = format!(
                 r#"
-data_reload_interval_ms: {data_reload_interval_ms}
-repaint_interval_ms: {repaint_interval_ms}
+{{
+    "data_reload_interval_ms": {data_reload_interval_ms},
+    "repaint_interval_ms": {repaint_interval_ms},
 
-scheduler:
-  url: {scheduler_url}
+    "scheduler": {{
+        "url": "{scheduler_url}"
+    }},
 
-http:
-  timeout: {http_timeout_ms}
-
+    "http": {{
+        "timeout": {http_timeout_ms}
+    }}
+}}
 "#
             );
             tracing::info!("Using query string: {}", config);

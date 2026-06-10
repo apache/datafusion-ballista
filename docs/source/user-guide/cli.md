@@ -320,7 +320,7 @@ Create the file manually if it does not exist. The following settings are availa
 - `theme.name`: The name of the base theme. Possible values: `dark` and `light`
 - `theme.overrides`: An JSON object that allows to override the style of the theme
   properties. The complete list of the properties could be
-  found [here](https://github.com/apache/datafusion-ballista/blob/main/ballista-cli/src/tui/ui/theme.rs).
+  found [here](https://github.com/apache/datafusion-ballista/blob/main/ballista-cli/src/tui/infrastructure/theme.rs).
   The supported values for [colors](https://docs.rs/ratatui/latest/ratatui/prelude/enum.Color.html) are: 1) named (
   e.g. "White"); 2) RGB (e.g. "#rrggbb"); 3) Indexed (e.g. "108")
 

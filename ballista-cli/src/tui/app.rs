@@ -49,7 +49,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
-use crate::tui::ui::theme::Theme;
+use crate::tui::infrastructure::theme::Theme;
 #[cfg(not(feature = "web"))]
 use crate::tui::ui::{
     load_executor_details_popup, load_executors_data, load_job_config_popup,

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::ui::theme::Theme;
+use crate::tui::infrastructure::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::prelude::{Line, Span};
