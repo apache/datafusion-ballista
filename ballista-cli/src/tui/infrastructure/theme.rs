@@ -221,10 +221,7 @@ impl Theme {
 
             // Dark text on pale-yellow header; near-white and terminal-default row
             // backgrounds so the table looks at home on white terminals.
-            table_header: Style::default()
-                .fg(Color::Black)
-                .bg(Color::Indexed(229)) // #ffffaf — pale yellow, visible on white
-                .bold(),
+            table_header: Style::default().fg(Color::Black).bold(),
             row_even: Style::default().bg(Color::Indexed(255)), // #eeeeee near-white
             row_odd: Style::default().bg(Color::Reset),
             row_selected: Style::default().bg(Color::Indexed(108)), // muted green
@@ -394,10 +391,9 @@ mod tests {
     }
 
     #[test]
-    fn dark_table_header_is_light_yellow_on_black_bold() {
+    fn dark_table_header_is_light_yellow_and_bold() {
         let theme = Theme::dark();
         assert_eq!(theme.table_header.fg, Some(Color::LightYellow));
-        assert_eq!(theme.table_header.bg, Some(Color::Black));
         assert!(
             theme.table_header.add_modifier.contains(Modifier::BOLD),
             "table_header should be bold"
@@ -434,10 +430,9 @@ mod tests {
     }
 
     #[test]
-    fn light_table_header_is_black_on_indexed_229() {
+    fn light_table_header_fg_is_black() {
         let theme = Theme::light();
         assert_eq!(theme.table_header.fg, Some(Color::Black));
-        assert_eq!(theme.table_header.bg, Some(Color::Indexed(229)));
     }
 
     #[test]
@@ -518,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn override_preserves_bg_and_modifiers_of_base_theme() {
+    fn override_preserves_modifiers_of_base_theme() {
         // table_header in dark theme has bg=Black and BOLD modifier.
         // Overriding only the fg should leave bg and modifiers intact.
         let settings = ThemeSettings {
@@ -530,7 +525,6 @@ mod tests {
         };
         let theme = Theme::from_settings(&settings);
         assert_eq!(theme.table_header.fg, Some(Color::Cyan));
-        assert_eq!(theme.table_header.bg, Some(Color::Black)); // bg preserved
         assert!(theme.table_header.add_modifier.contains(Modifier::BOLD)); // bold preserved
     }
 
