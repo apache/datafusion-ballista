@@ -193,7 +193,7 @@ The TUI provides the following views:
 #### Global Keybindings
 
 | Key         | Action                                  |
-| ----------- | --------------------------------------- |
+|-------------|-----------------------------------------|
 | `j`         | Switch to Jobs view                     |
 | `e`         | Switch to Executors view                |
 | `m`         | Switch to Metrics view                  |
@@ -204,7 +204,7 @@ The TUI provides the following views:
 #### Jobs View Keybindings
 
 | Key                   | Action                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------- |
+|-----------------------|---------------------------------------------------------------------------------------------|
 | `↑` / `↓`             | Navigate rows in the jobs table                                                             |
 | `1` / `2` / `3` / ... | Sort by first/second/third/... column (press again to reverse, third press removes sorting) |
 | `/`                   | Search jobs                                                                                 |
@@ -216,7 +216,7 @@ The TUI provides the following views:
 #### Job Stages Popup Keybindings
 
 | Key       | Action                                     |
-| --------- | ------------------------------------------ |
+|-----------|--------------------------------------------|
 | `↑` / `↓` | Navigate stages                            |
 | `Enter`   | View tasks for the selected stage          |
 | `p`       | View execution plan for the selected stage |
@@ -225,7 +225,7 @@ The TUI provides the following views:
 #### Stage Plan Popup Keybindings
 
 | Key       | Action                     |
-| --------- | -------------------------- |
+|-----------|----------------------------|
 | `↑` / `↓` | Scroll up/down             |
 | `←` / `→` | Scroll left/right          |
 | `Esc`     | Return to Job Stages popup |
@@ -233,20 +233,20 @@ The TUI provides the following views:
 #### Stage Tasks Popup Keybindings
 
 | Key   | Action                     |
-| ----- | -------------------------- |
+|-------|----------------------------|
 | `Esc` | Return to Job Stages popup |
 
 #### Job Stages Graph Popup Keybindings
 
 | Key       | Action         |
-| --------- | -------------- |
+|-----------|----------------|
 | `↑` / `↓` | Scroll up/down |
 | `Esc`     | Close popup    |
 
 #### Job Plans Popup Keybindings
 
 | Key       | Action             |
-| --------- | ------------------ |
+|-----------|--------------------|
 | `s`       | Show Stage plan    |
 | `p`       | Show Physical plan |
 | `l`       | Show Logical plan  |
@@ -257,21 +257,21 @@ The TUI provides the following views:
 #### Executors View Keybindings
 
 | Key                   | Action                                       |
-| --------------------- | -------------------------------------------- |
+|-----------------------|----------------------------------------------|
 | `Enter`               | Show extra details for the selected executor |
 | `1` / `2` / `3` / ... | Sort by first/second/third/... column        |
 
 #### Executor Details Popup Keybindings
 
 | Key       | Action         |
-| --------- | -------------- |
+|-----------|----------------|
 | `↑` / `↓` | Scroll up/down |
 | `Esc`     | Close popup    |
 
 #### Metrics View Keybindings
 
 | Key | Action         |
-| --- | -------------- |
+|-----|----------------|
 | `/` | Search metrics |
 
 ### TUI Configuration
@@ -279,22 +279,33 @@ The TUI provides the following views:
 The TUI reads its configuration from a YAML file located at the platform-specific config directory:
 
 | Platform | Example Path                                      |
-| -------- | ------------------------------------------------- |
+|----------|---------------------------------------------------|
 | Linux    | `~/.config/ballista/tui.yaml`                     |
 | macOS    | `~/Library/Application Support/ballista/tui.yaml` |
 | Windows  | `%LOCALAPPDATA%\ballista\tui.yaml`                |
 
 Create the file manually if it does not exist. The following settings are available:
 
-```yaml
-data_reload_interval_ms: 2000
-repaint_interval_ms: 50
-
-scheduler:
-  url: http://localhost:50050
-
-http:
-  timeout: 2000
+```json
+{
+  "data_reload_interval_ms": 2000,
+  "repaint_interval_ms": 50,
+  "scheduler": {
+    "url": "http://localhost:50050"
+  },
+  "http": {
+    "timeout": 2000
+  },
+  "theme": {
+    "name": "dark",
+    "custom": {
+      "table_header": {
+        "fg": "Cyan",
+        "add_modifier": "UNDERLINED|ITALIC"
+      }
+    }
+  }
+}
 ```
 
 - `data_reload_interval_ms`: How often the TUI refreshes data from the scheduler (milliseconds).

@@ -16,5 +16,7 @@
 // under the License.
 
 mod config;
+pub mod theme;
 
-pub use config::{ColorSpec, Settings, ThemeName, ThemeOverride, ThemeSettings};
+pub use config::{Settings, ThemeSettings};
+pub use theme::{ThemeName, ThemeOverride};

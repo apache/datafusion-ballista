@@ -15,72 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::{ThemeName, ThemeOverride};
 use config::{Config, ConfigError, File, FileFormat};
 use serde::Deserialize;
-
-/// Selects a built-in colour preset.
-#[derive(Debug, Deserialize, Default, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum ThemeName {
-    #[default]
-    Dark,
-    Light,
-}
-
-/// A colour specification usable in the user's config file.
-/// Supports named colours (`"Red"`, `"LightBlue"`, …), 256-colour indices
-/// (`108`), and 24-bit RGB (`{r: 180, g: 100, b: 0}`).
-#[derive(Debug, Deserialize, Clone)]
-#[serde(untagged)]
-pub enum ColorSpec {
-    Named(String),
-    Indexed(u8),
-    Rgb { r: u8, g: u8, b: u8 },
-}
-
-/// Optional per-role fg-colour overrides applied on top of the chosen preset.
-/// Each absent field keeps the preset's value.
-#[derive(Debug, Deserialize, Default, Clone)]
-pub struct ThemeOverride {
-    pub status_running: Option<ColorSpec>,
-    pub status_queued: Option<ColorSpec>,
-    pub status_failed: Option<ColorSpec>,
-    pub status_completed: Option<ColorSpec>,
-    pub status_unknown: Option<ColorSpec>,
-    pub table_header: Option<ColorSpec>,
-    pub row_even: Option<ColorSpec>,
-    pub row_odd: Option<ColorSpec>,
-    pub row_selected: Option<ColorSpec>,
-    pub popup_border: Option<ColorSpec>,
-    pub popup_border_alt: Option<ColorSpec>,
-    pub popup_border_jobs_stages: Option<ColorSpec>,
-    pub nav_active: Option<ColorSpec>,
-    pub nav_inactive: Option<ColorSpec>,
-    pub search_active: Option<ColorSpec>,
-    pub search_inactive: Option<ColorSpec>,
-    pub search_cursor: Option<ColorSpec>,
-    pub help_header: Option<ColorSpec>,
-    pub help_section: Option<ColorSpec>,
-    pub help_item: Option<ColorSpec>,
-    pub help_item_dim: Option<ColorSpec>,
-    pub detail_label: Option<ColorSpec>,
-    pub graph_border: Option<ColorSpec>,
-    pub graph_label: Option<ColorSpec>,
-    pub graph_stage: Option<ColorSpec>,
-    pub graph_arrow: Option<ColorSpec>,
-    pub tile_running: Option<ColorSpec>,
-    pub tile_queued: Option<ColorSpec>,
-    pub tile_completed: Option<ColorSpec>,
-    pub tile_failed: Option<ColorSpec>,
-    pub scheduler_down: Option<ColorSpec>,
-    pub cancel_success: Option<ColorSpec>,
-    pub cancel_not_done: Option<ColorSpec>,
-    pub cancel_failure: Option<ColorSpec>,
-    pub banner: Option<ColorSpec>,
-    pub feature_enabled: Option<ColorSpec>,
-    pub feature_disabled: Option<ColorSpec>,
-    pub text_error: Option<ColorSpec>,
-}
 
 /// Theme configuration: built-in preset name plus optional colour overrides.
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -117,28 +54,25 @@ pub struct Settings {
 }
 
 const DEFAULT_CONFIG: &str = r#"
-data_reload_interval_ms: 2000
-repaint_interval_ms: 50
+{
+    "data_reload_interval_ms": 2000,
+    "repaint_interval_ms": 50,
 
-scheduler:
-  url: http://localhost:50050
+    "scheduler": {
+        "url": "http://localhost:50050"
+    },
 
-http:
-  timeout: 2000
-
-theme:
-  name: dark
-  #custom:
-    #table_header: "red"
-    #row_selected: 108
-    #status_running: { r: 0, g: 128, b: 255 }
+    "http": {
+        "timeout": 2000
+    }
+}
 "#;
 
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
         let builder = Config::builder()
             // Start off by merging in the "default" configuration file
-            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml));
+            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Json));
 
         #[cfg(all(feature = "web", not(feature = "tui")))]
         let builder = builder.add_source(web::QueryString::parse());
@@ -155,7 +89,7 @@ impl Settings {
             builder // Add in user's config file
                 .add_source(
                     File::with_name(&format!("{}/tui", config_dir.display()))
-                        .format(FileFormat::Yaml)
+                        .format(FileFormat::Json)
                         .required(false),
                 )
                 // Add in settings from the environment (with a prefix of BALLISTA_)
@@ -218,7 +152,7 @@ http:
 "#
             );
             tracing::info!("Using query string: {}", config);
-            File::from_str(&config, FileFormat::Yaml)
+            File::from_str(&config, FileFormat::Json)
         }
 
         fn decode_request() -> std::string::String {

@@ -42,7 +42,7 @@ mimalloc = { workspace = true, optional = true }
 # TUI/web shared deps
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
-config = { version = "0.15.23", default-features = false, features = ["yaml"], optional = true }
+config = { version = "0.15.23", default-features = false, features = ["json"], optional = true }
 dirs = "6.0"
 dotparser = { version = "0.3.0", optional = true }
 futures = { version = "0.3.31", optional = true }
@@ -91,12 +91,12 @@ tui = [
     "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text",
     "dep:tui-shimmer", "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
-    "ratatui/layout-cache", "ratatui/underline-color",
+    "ratatui/layout-cache", "ratatui/underline-color", "ratatui/serde"
 ]
 
 web = [
     "dep:chrono", "dep:config", "dep:critical-section", "dep:dotparser", "dep:futures", "dep:percent-encoding",
-    "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
+    "dep:prometheus-parse", "dep:ratatui", "ratatui/serde", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tui-big-text", "dep:tui-shimmer",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
     "dep:gloo-timers", "dep:console_error_panic_hook",

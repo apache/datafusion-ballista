@@ -17,7 +17,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::tui::infrastructure::{ColorSpec, ThemeName, ThemeOverride, ThemeSettings};
+use crate::tui::infrastructure::{ThemeName, ThemeOverride, ThemeSettings};
 
 /// All visual styles used throughout the TUI, keyed by semantic role.
 /// Build one of the built-in presets with [`Theme::dark`] or [`Theme::light`],
@@ -250,8 +250,8 @@ impl Theme {
     fn apply_overrides(mut self, overrides: &ThemeOverride) -> Self {
         macro_rules! apply_fg {
             ($field:ident) => {
-                if let Some(ref spec) = overrides.$field {
-                    self.$field = self.$field.fg(color_from_spec(spec));
+                if let Some(style) = overrides.$field {
+                    self.$field = self.$field.patch(style);
                 }
             };
         }
@@ -297,42 +297,11 @@ impl Theme {
     }
 }
 
-fn color_from_spec(spec: &ColorSpec) -> Color {
-    match spec {
-        ColorSpec::Named(name) => named_color(name),
-        ColorSpec::Indexed(n) => Color::Indexed(*n),
-        ColorSpec::Rgb { r, g, b } => Color::Rgb(*r, *g, *b),
-    }
-}
-
-fn named_color(name: &str) -> Color {
-    match name.to_lowercase().as_str() {
-        "black" => Color::Black,
-        "red" => Color::Red,
-        "green" => Color::Green,
-        "yellow" => Color::Yellow,
-        "blue" => Color::Blue,
-        "magenta" => Color::Magenta,
-        "cyan" => Color::Cyan,
-        "gray" | "grey" => Color::Gray,
-        "darkgray" | "darkgrey" => Color::DarkGray,
-        "lightred" => Color::LightRed,
-        "lightgreen" => Color::LightGreen,
-        "lightyellow" => Color::LightYellow,
-        "lightblue" => Color::LightBlue,
-        "lightmagenta" => Color::LightMagenta,
-        "lightcyan" => Color::LightCyan,
-        "white" => Color::White,
-        _ => Color::Reset,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::infrastructure::{
-        ColorSpec, ThemeName, ThemeOverride, ThemeSettings,
-    };
+    use crate::tui::infrastructure::{ThemeName, ThemeOverride, ThemeSettings};
+    use core::str::FromStr;
 
     // ── helpers ────────────────────────────────────────────────────────────
 
@@ -350,11 +319,11 @@ mod tests {
         }
     }
 
-    fn settings_with_banner_override(spec: ColorSpec) -> ThemeSettings {
+    fn settings_with_banner_override(style: Style) -> ThemeSettings {
         ThemeSettings {
             name: ThemeName::Dark,
             custom: ThemeOverride {
-                banner: Some(spec),
+                banner: Some(style),
                 ..Default::default()
             },
         }
@@ -463,7 +432,7 @@ mod tests {
     #[test]
     fn override_named_color_changes_fg() {
         let theme = Theme::from_settings(&settings_with_banner_override(
-            ColorSpec::Named("Red".to_string()),
+            Style::default().fg(Color::Red),
         ));
         assert_eq!(theme.banner.fg, Some(Color::Red));
     }
@@ -473,7 +442,7 @@ mod tests {
         let settings = ThemeSettings {
             name: ThemeName::Dark,
             custom: ThemeOverride {
-                row_selected: Some(ColorSpec::Indexed(108)),
+                row_selected: Some(Style::default().fg(Color::Indexed(108))),
                 ..Default::default()
             },
         };
@@ -483,21 +452,10 @@ mod tests {
 
     #[test]
     fn override_rgb_color_changes_fg() {
-        let theme =
-            Theme::from_settings(&settings_with_banner_override(ColorSpec::Rgb {
-                r: 180,
-                g: 100,
-                b: 0,
-            }));
-        assert_eq!(theme.banner.fg, Some(Color::Rgb(180, 100, 0)));
-    }
-
-    #[test]
-    fn override_unknown_named_color_applies_reset() {
         let theme = Theme::from_settings(&settings_with_banner_override(
-            ColorSpec::Named("NotAColor".to_string()),
+            Style::default().fg(Color::Rgb(180, 100, 0)),
         ));
-        assert_eq!(theme.banner.fg, Some(Color::Reset));
+        assert_eq!(theme.banner.fg, Some(Color::Rgb(180, 100, 0)));
     }
 
     #[test]
@@ -505,7 +463,7 @@ mod tests {
         let settings = ThemeSettings {
             name: ThemeName::Dark,
             custom: ThemeOverride {
-                banner: Some(ColorSpec::Named("Cyan".to_string())),
+                banner: Some(Style::default().fg(Color::Cyan)),
                 ..Default::default()
             },
         };
@@ -522,7 +480,7 @@ mod tests {
         let settings = ThemeSettings {
             name: ThemeName::Dark,
             custom: ThemeOverride {
-                table_header: Some(ColorSpec::Named("Cyan".to_string())),
+                table_header: Some(Style::default().fg(Color::Cyan)),
                 ..Default::default()
             },
         };
@@ -538,7 +496,7 @@ mod tests {
     fn named_color_is_case_insensitive() {
         for name in &["LIGHTBLUE", "LightBlue", "lightblue"] {
             let theme = Theme::from_settings(&settings_with_banner_override(
-                ColorSpec::Named(name.to_string()),
+                Style::default().fg(Color::from_str(name).unwrap()),
             ));
             assert_eq!(
                 theme.banner.fg,
@@ -552,7 +510,7 @@ mod tests {
     #[test]
     fn named_color_grey_aliases_gray() {
         let theme = Theme::from_settings(&settings_with_banner_override(
-            ColorSpec::Named("grey".to_string()),
+            Style::default().fg(Color::from_str("grey").unwrap()),
         ));
         assert_eq!(theme.banner.fg, Some(Color::Gray));
     }
@@ -560,7 +518,7 @@ mod tests {
     #[test]
     fn named_color_darkgrey_aliases_darkgray() {
         let theme = Theme::from_settings(&settings_with_banner_override(
-            ColorSpec::Named("darkgrey".to_string()),
+            Style::default().fg(Color::from_str("darkgrey").unwrap()),
         ));
         assert_eq!(theme.banner.fg, Some(Color::DarkGray));
     }
@@ -589,14 +547,12 @@ mod tests {
         ];
         for (name, expected) in cases {
             let theme = Theme::from_settings(&settings_with_banner_override(
-                ColorSpec::Named(name.to_string()),
+                Style::default().fg(Color::from_str(name).unwrap()),
             ));
             assert_eq!(
                 theme.banner.fg,
                 Some(*expected),
-                "named color '{}' did not resolve to {:?}",
-                name,
-                expected
+                "named color '{name}' did not resolve to {expected:?}",
             );
         }
     }
@@ -614,18 +570,22 @@ mod tests {
 
     #[test]
     fn color_spec_named_deserializes() {
-        let o: ThemeOverride = serde_json::from_str(r#"{"banner": "Cyan"}"#).unwrap();
-        assert!(
-            matches!(o.banner, Some(ColorSpec::Named(ref n)) if n == "Cyan"),
+        let o: ThemeOverride =
+            serde_json::from_str(r#"{"banner": {"fg": "Cyan"}}"#).unwrap();
+        assert_eq!(
+            o.banner,
+            Some(Style::default().fg(Color::Cyan)),
             "expected Named(\"Cyan\")"
         );
     }
 
     #[test]
     fn color_spec_indexed_deserializes() {
-        let o: ThemeOverride = serde_json::from_str(r#"{"row_selected": 108}"#).unwrap();
-        assert!(
-            matches!(o.row_selected, Some(ColorSpec::Indexed(108))),
+        let o: ThemeOverride =
+            serde_json::from_str(r#"{"row_selected": {"fg": "108"}}"#).unwrap();
+        assert_eq!(
+            o.row_selected,
+            Some(Style::default().fg(Color::Indexed(108))),
             "expected Indexed(108)"
         );
     }
@@ -633,17 +593,11 @@ mod tests {
     #[test]
     fn color_spec_rgb_deserializes() {
         let o: ThemeOverride =
-            serde_json::from_str(r#"{"banner": {"r": 180, "g": 100, "b": 0}}"#).unwrap();
-        assert!(
-            matches!(
-                o.banner,
-                Some(ColorSpec::Rgb {
-                    r: 180,
-                    g: 100,
-                    b: 0
-                })
-            ),
-            "expected Rgb {{ r: 180, g: 100, b: 0 }}"
+            serde_json::from_str(r##"{"banner": {"fg": "#1005FF"}}"##).unwrap();
+        assert_eq!(
+            o.banner,
+            Some(Style::default().fg(Color::Rgb(16, 5, 255))),
+            "expected Rgb(16, 5, 255)"
         );
     }
 
@@ -661,7 +615,8 @@ mod tests {
 
     #[test]
     fn theme_override_unspecified_fields_remain_none() {
-        let o: ThemeOverride = serde_json::from_str(r#"{"banner": "Red"}"#).unwrap();
+        let o: ThemeOverride =
+            serde_json::from_str(r#"{"banner": {"fg": "Red"}}"#).unwrap();
         assert!(o.banner.is_some());
         assert!(o.status_running.is_none());
         assert!(o.table_header.is_none());
