@@ -40,7 +40,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
             render_scrollbar(f, rects[1], &mut scroll_state);
         }
         _no_executors => {
-            f.render_widget(no_live_executors(block, app.theme.tile_failed), area);
+            f.render_widget(no_live_executors(block, app.theme.text_error), area);
         }
     };
 }

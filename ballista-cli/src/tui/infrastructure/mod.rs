@@ -19,4 +19,4 @@ mod config;
 pub mod theme;
 
 pub use config::{Settings, ThemeSettings};
-pub use theme::{ThemeName, ThemeOverride};
+use theme::{ThemeName, ThemeOverride};

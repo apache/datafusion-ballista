@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::tui::infrastructure::ThemeSettings;
-use ratatui::prelude::{Color, Modifier, Style};
+use ratatui::prelude::{Color, Style};
 use serde::Deserialize;
 
 /// Selects a built-in color preset.
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "lowercase")]
-pub enum ThemeName {
+pub(super) enum ThemeName {
     #[default]
     Dark,
     Light,
@@ -31,7 +31,7 @@ pub enum ThemeName {
 /// Optional per-role fg-color overrides applied on top of the chosen preset.
 /// Each absent field keeps the preset's value.
 #[derive(Debug, Deserialize, Default, Clone)]
-pub struct ThemeOverride {
+pub(super) struct ThemeOverride {
     pub status_running: Option<Style>,
     pub status_queued: Option<Style>,
     pub status_failed: Option<Style>,
@@ -136,9 +136,13 @@ pub struct Theme {
     pub feature_enabled: Style,
     pub feature_disabled: Style,
 
+    // ── Footer ────────────────────────────────────────────────────────────
+    pub footer: Style,
+
     // ── Misc ──────────────────────────────────────────────────────────────
     pub banner: Style,
     pub text_error: Style,
+    pub text_info: Style,
 }
 
 impl Theme {
@@ -159,39 +163,27 @@ impl Theme {
             row_odd: Style::default().bg(Color::Black),
             row_selected: Style::default().bg(Color::Indexed(29)),
 
-            popup_border: Style::default().fg(Color::LightCyan),
-            popup_border_alt: Style::default()
-                .fg(Color::Indexed(193))
-                .add_modifier(Modifier::BOLD),
-            popup_border_jobs_stages: Style::default()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
+            popup_border: Style::default().fg(Color::LightCyan).bold(),
+            popup_border_alt: Style::default().fg(Color::Indexed(193)).bold(),
+            popup_border_jobs_stages: Style::default().fg(Color::LightBlue).bold(),
 
-            nav_active: Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            nav_inactive: Style::default().fg(Color::DarkGray),
+            nav_active: Style::default().fg(Color::White).bold(),
+            nav_inactive: Style::default().dim(),
 
             search_active: Style::default().fg(Color::Yellow),
-            search_inactive: Style::default().add_modifier(Modifier::DIM),
-            search_cursor: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            search_inactive: Style::default().dim(),
+            search_cursor: Style::default().fg(Color::Yellow).bold(),
 
-            help_header: Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            help_header: Style::default().fg(Color::Cyan).bold(),
             help_section: Style::default().fg(Color::Yellow),
             help_item: Style::default(),
-            help_item_dim: Style::default().fg(Color::Gray),
+            help_item_dim: Style::default().dim(),
 
             detail_label: Style::default().fg(Color::Yellow),
 
             graph_border: Style::default().fg(Color::Cyan),
             graph_label: Style::default().fg(Color::White),
-            graph_stage: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            graph_stage: Style::default().fg(Color::Yellow).bold(),
             graph_arrow: Style::default().fg(Color::Green),
 
             tile_running: Style::default().fg(Color::LightBlue),
@@ -199,7 +191,7 @@ impl Theme {
             tile_completed: Style::default().fg(Color::Green),
             tile_failed: Style::default().fg(Color::Red),
 
-            scheduler_down: Style::default().fg(Color::Red),
+            scheduler_down: Style::default().fg(Color::Red).bold(),
 
             cancel_success: Style::default().fg(Color::Green),
             cancel_not_done: Style::default().fg(Color::Yellow),
@@ -210,7 +202,10 @@ impl Theme {
             feature_enabled: Style::default().fg(Color::Green),
             feature_disabled: Style::default().fg(Color::Red),
 
-            text_error: Style::default().fg(Color::Red),
+            text_info: Style::default().bold(),
+            text_error: Style::default().fg(Color::Red).bold(),
+
+            footer: Style::default().bold(),
         }
     }
 
@@ -219,10 +214,10 @@ impl Theme {
         Self {
             // Deeper saturated colors instead of "Light*" variants, which wash
             // out on white backgrounds.
-            status_running: Style::default().fg(Color::Blue).bold(),
-            status_queued: Style::default().fg(Color::Magenta).bold(),
-            status_failed: Style::default().fg(Color::Red).bold(),
-            status_completed: Style::default().fg(Color::Green).bold(),
+            status_running: Style::default().fg(Color::Rgb(0, 0, 139)).bold(),
+            status_queued: Style::default().fg(Color::Rgb(139, 0, 139)).bold(),
+            status_failed: Style::default().fg(Color::Rgb(139, 0, 0)).bold(),
+            status_completed: Style::default().fg(Color::Rgb(0, 139, 0)).bold(),
             status_unknown: Style::default().fg(Color::DarkGray).bold(),
 
             // Dark text on pale-yellow header; near-white and terminal-default row
@@ -238,25 +233,19 @@ impl Theme {
             popup_border: Style::default().fg(Color::Indexed(30)), // dark teal
             popup_border_alt: Style::default()
                 .fg(Color::Indexed(136)) // dark gold
-                .add_modifier(Modifier::BOLD),
-            popup_border_jobs_stages: Style::default()
-                .fg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
+                .bold(),
+            popup_border_jobs_stages: Style::default().fg(Color::Blue).bold(),
 
-            nav_active: Style::default()
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
+            nav_active: Style::default().fg(Color::Black).bold(),
             nav_inactive: Style::default().fg(Color::Indexed(244)), // medium gray
 
             search_active: Style::default().fg(Color::Indexed(166)), // dark orange
-            search_inactive: Style::default().add_modifier(Modifier::DIM),
-            search_cursor: Style::default()
-                .fg(Color::Indexed(166))
-                .add_modifier(Modifier::BOLD),
+            search_inactive: Style::default().dim(),
+            search_cursor: Style::default().fg(Color::Indexed(166)).bold(),
 
             help_header: Style::default()
                 .fg(Color::Indexed(24)) // dark blue
-                .add_modifier(Modifier::BOLD),
+                .bold(),
             help_section: Style::default().fg(Color::Indexed(130)), // dark orange-brown
             help_item: Style::default().fg(Color::Black),
             help_item_dim: Style::default().fg(Color::Indexed(244)),
@@ -265,15 +254,13 @@ impl Theme {
 
             graph_border: Style::default().fg(Color::Indexed(24)),
             graph_label: Style::default().fg(Color::Black),
-            graph_stage: Style::default()
-                .fg(Color::Indexed(130))
-                .add_modifier(Modifier::BOLD),
+            graph_stage: Style::default().fg(Color::Indexed(130)).bold(),
             graph_arrow: Style::default().fg(Color::Indexed(28)), // forest green
 
-            tile_running: Style::default().fg(Color::Blue),
-            tile_queued: Style::default().fg(Color::Indexed(90)), // dark magenta
-            tile_completed: Style::default().fg(Color::Indexed(28)),
-            tile_failed: Style::default().fg(Color::Indexed(124)), // dark red
+            tile_running: Style::default().fg(Color::Rgb(0, 0, 139)),
+            tile_queued: Style::default().fg(Color::Rgb(139, 0, 139)), // dark magenta
+            tile_completed: Style::default().fg(Color::Rgb(0, 139, 0)),
+            tile_failed: Style::default().fg(Color::Rgb(139, 0, 0)), // dark red
 
             scheduler_down: Style::default().fg(Color::Indexed(124)),
 
@@ -287,6 +274,9 @@ impl Theme {
             feature_disabled: Style::default().fg(Color::Indexed(124)),
 
             text_error: Style::default().fg(Color::Indexed(124)),
+            text_info: Style::default().fg(Color::Black).bold(),
+
+            footer: Style::default().bold(),
         }
     }
 
@@ -355,6 +345,7 @@ mod tests {
     use super::*;
     use crate::tui::infrastructure::{ThemeName, ThemeOverride, ThemeSettings};
     use core::str::FromStr;
+    use ratatui::prelude::Modifier;
 
     // ── helpers ────────────────────────────────────────────────────────────
 

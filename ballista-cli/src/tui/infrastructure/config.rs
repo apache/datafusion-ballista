@@ -23,9 +23,9 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ThemeSettings {
     #[serde(default)]
-    pub name: ThemeName,
+    pub(super) name: ThemeName,
     #[serde(default)]
-    pub overrides: ThemeOverride,
+    pub(super) overrides: ThemeOverride,
 }
 
 #[derive(Debug, Deserialize)]

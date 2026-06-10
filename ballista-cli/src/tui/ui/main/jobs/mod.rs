@@ -213,14 +213,14 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
         );
         render_scrollbar(f, table_area[1], &mut scroll_state);
     } else {
-        render_no_jobs(f, rects[1]);
+        render_no_jobs(f, rects[1], app.theme.text_info);
     }
 }
 
-fn render_no_jobs(f: &mut Frame, area: Rect) {
+fn render_no_jobs(f: &mut Frame, area: Rect, style: Style) {
     let block = Block::default().borders(Borders::all());
     let paragraph = Paragraph::new("No registered jobs in the scheduler!")
-        .style(Style::default().bold())
+        .style(style)
         .centered()
         .block(block);
     f.render_widget(paragraph, area);

@@ -104,6 +104,7 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
 
     let status_style = match task.status.as_str() {
         "Running" => app.theme.status_running,
+        "Queued" => app.theme.status_queued,
         "Successful" | "Completed" => app.theme.status_completed,
         "Failed" => app.theme.status_failed,
         _ => app.theme.status_unknown,

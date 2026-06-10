@@ -18,7 +18,6 @@
 use crate::tui::app::App;
 use crate::tui::domain::executors::Executor;
 use ratatui::Frame;
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
@@ -37,7 +36,6 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);

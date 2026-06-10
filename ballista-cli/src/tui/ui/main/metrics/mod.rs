@@ -36,7 +36,6 @@ use crate::tui::ui::vertical_scrollbar;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::Style,
     text::Text,
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
@@ -109,7 +108,7 @@ fn render_no_metrics(f: &mut Frame, area: Rect, reason: &str, app: &App) {
         .borders(Borders::all())
         .style(app.theme.text_error);
     let paragraph = Paragraph::new(reason)
-        .style(Style::default().bold())
+        .style(app.theme.text_error)
         .centered()
         .block(block);
     f.render_widget(paragraph, area);

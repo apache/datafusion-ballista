@@ -91,6 +91,7 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
 
     let status_style = match stage.status.as_str() {
         "Running" => app.theme.status_running,
+        "Queued" => app.theme.status_queued,
         "Successful" | "Completed" => app.theme.status_completed,
         "Failed" => app.theme.status_failed,
         _ => app.theme.status_unknown,

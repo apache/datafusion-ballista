@@ -19,7 +19,6 @@ use crate::tui::app::App;
 use crate::tui::domain::jobs::PlanTab;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -161,7 +160,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
         let block = Block::default();
         let paragraph = Paragraph::new(line)
-            .style(Style::default().bold())
+            .style(app.theme.footer)
             .block(block)
             .centered();
         f.render_widget(paragraph, areas[0]);
@@ -175,7 +174,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default();
     let paragraph = Paragraph::new(line)
-        .style(Style::default().bold())
+        .style(app.theme.footer)
         .block(block)
         .centered();
     f.render_widget(paragraph, global_area);
