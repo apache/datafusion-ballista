@@ -54,12 +54,12 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "local-time"] }
-tui-big-text = { version = "0.8.4", optional = true }
 tui-shimmer = { version = "0.1", optional = true }
 
 # Native-only TUI deps
 crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
 tracing-appender = { version = "0.2", optional = true }
+tui-big-text = { version = "0.8.4", optional = true }
 
 # Web-only deps (WASM)
 critical-section = { version = "1.2.0", features = ["std"], optional = true }
