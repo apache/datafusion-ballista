@@ -116,6 +116,8 @@ mod web {
             let mut repaint_interval_ms = 50;
             let mut scheduler_url = "http://localhost:50050";
             let mut http_timeout_ms = 2000;
+            let mut theme_name = "dark";
+            let mut theme_app_background_bg = String::from("black");
 
             let query_string = Self::decode_request();
             query_string.split('&').for_each(|setting| {
@@ -123,15 +125,19 @@ mod web {
 
                 if let (Some(key), Some(value)) = (pair.next(), pair.next()) {
                     match key {
-                        "ballista_tick_interval" => {
+                        "ballista_data_reload_interval_ms" => {
                             data_reload_interval_ms = value.parse::<u64>().unwrap_or(2000)
                         }
-                        "ballista_repaint_interval" => {
+                        "ballista_repaint_interval_ms" => {
                             repaint_interval_ms = value.parse::<u64>().unwrap_or(50)
                         }
                         "ballista_scheduler_url" => scheduler_url = value,
                         "ballista_http_timeout" => {
                             http_timeout_ms = value.parse::<u64>().unwrap_or(2000)
+                        }
+                        "ballista_theme_name" => theme_name = value,
+                        "ballista_theme_overrides_app_background_bg" => {
+                            theme_app_background_bg = value.replace("%23", "#");
                         }
                         _ => {}
                     }
@@ -139,18 +145,20 @@ mod web {
             });
             let config = format!(
                 r#"
-{{
-    "data_reload_interval_ms": {data_reload_interval_ms},
-    "repaint_interval_ms": {repaint_interval_ms},
+    data_reload_interval_ms: {data_reload_interval_ms}
+    repaint_interval_ms: {repaint_interval_ms}
 
-    "scheduler": {{
-        "url": "{scheduler_url}"
-    }},
+    scheduler:
+        url: {scheduler_url}
 
-    "http": {{
-        "timeout": {http_timeout_ms}
-    }}
-}}
+    http:
+        timeout: {http_timeout_ms}
+
+    theme:
+        name: {theme_name}
+        overrides:
+            app_background:
+                bg: {theme_app_background_bg}
 "#
             );
             tracing::info!("Using query string: {}", config);
