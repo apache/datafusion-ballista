@@ -106,4 +106,3 @@ web = [
 [[bin]]
 name = "ballista-cli"
 test = false
-required-features = ["cli"]
