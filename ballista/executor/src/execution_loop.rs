@@ -25,6 +25,7 @@ use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_dir;
 use crate::{TaskExecutionTimes, as_task_status};
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::BallistaCodec;
@@ -231,7 +232,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
-    let job_id = task.job_id.into();
+    let job_id: JobId = task.job_id.into();
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
@@ -275,7 +276,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         })?;
 
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
-        job_id.clone().into(),
+        job_id.clone(),
         stage_id as usize,
         partition_id as usize,
         plan,
@@ -285,7 +286,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
         let part = PartitionId {
-            job_id: job_id.clone().into(),
+            job_id: job_id.clone(),
             stage_id: stage_id as usize,
             partition_id: partition_id as usize,
         };
