@@ -319,10 +319,12 @@ theme:
   The supported values for [colors](https://docs.rs/ratatui/latest/ratatui/prelude/enum.Color.html) are: 1) named (
   e.g. "White"); 2) RGB (e.g. "#rrggbb"); 3) Indexed (e.g. "108")
 
-Environment variables prefixed with `BALLISTA_` also override these values. For example:
+Environment variables prefixed with `BALLISTA__` also override these values. For example:
 
 ```bash
-BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista-cli --tui
+BALLISTA__SCHEDULER__URL=http://localhost:50051 ballista-cli --tui
 ```
 
-The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
+Double underscores (`__`) are used to denote nesting in the configuration structure. In the above example, `BALLISTA__SCHEDULER__URL` overrides the `scheduler.url` setting in the YAML configuration.
+
+The TUI connects to the scheduler via HTTP and refreshes the data automatically every `data_reload_interval_ms` milliseconds.

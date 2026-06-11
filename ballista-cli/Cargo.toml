@@ -97,7 +97,7 @@ tui = [
 web = [
     "dep:chrono", "dep:config", "dep:critical-section", "dep:dotparser", "dep:futures", "dep:percent-encoding",
     "dep:prometheus-parse", "dep:ratatui", "ratatui/serde", "dep:reqwest",
-    "dep:serde", "dep:serde_json", "dep:tui-big-text", "dep:tui-shimmer",
+    "dep:serde", "dep:serde_json", "dep:tui-shimmer",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
     "dep:gloo-timers", "dep:console_error_panic_hook",
     "dep:tracing-web", "dep:web-sys", "dep:js-sys",
@@ -106,3 +106,4 @@ web = [
 [[bin]]
 name = "ballista-cli"
 test = false
+required-features = ["cli"]

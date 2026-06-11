@@ -65,9 +65,6 @@ http:
 
 theme:
     name: "dark"
-    overrides:
-        app_background:
-            bg: red
 "#;
 
 impl Settings {
@@ -94,10 +91,10 @@ impl Settings {
                         .format(FileFormat::Yaml)
                         .required(false),
                 )
-                // Add in settings from the environment (with a prefix of BALLISTA_)
-                // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
+                // Add in settings from the environment (with a prefix of `BALLISTA`.)
+                // E.g. `BALLISTA__SCHEDULER__URL=http://localhost:50051 ballista_cli`
                 // would set the scheduler url key
-                .add_source(Environment::with_prefix("BALLISTA").separator("_"))
+                .add_source(Environment::with_prefix("BALLISTA").separator("__"))
         };
 
         let config = builder.build()?;
