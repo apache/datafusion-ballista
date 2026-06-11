@@ -42,7 +42,7 @@ mimalloc = { workspace = true, optional = true }
 # TUI/web shared deps
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
-config = { version = "0.15.23", default-features = false, features = ["json"], optional = true }
+config = { version = "0.15.23", default-features = false, features = ["yaml"], optional = true }
 dirs = "6.0"
 dotparser = { version = "0.3.0", optional = true }
 futures = { version = "0.3.31", optional = true }

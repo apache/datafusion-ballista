@@ -70,6 +70,8 @@ pub(super) struct ThemeOverride {
     pub feature_enabled: Option<Style>,
     pub feature_disabled: Option<Style>,
     pub text_error: Option<Style>,
+    pub text_info: Option<Style>,
+    pub app_background: Option<Style>,
 }
 
 /// All visual styles used throughout the TUI, keyed by semantic role.
@@ -333,6 +335,8 @@ impl Theme {
         patch!(feature_enabled);
         patch!(feature_disabled);
         patch!(text_error);
+        patch!(text_info);
+        patch!(app_background);
         self
     }
 }

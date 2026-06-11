@@ -54,25 +54,27 @@ pub struct Settings {
 }
 
 const DEFAULT_CONFIG: &str = r#"
-{
-    "data_reload_interval_ms": 2000,
-    "repaint_interval_ms": 50,
+data_reload_interval_ms: 2000
+repaint_interval_ms: 50
 
-    "scheduler": {
-        "url": "http://localhost:50050"
-    },
+scheduler:
+    url: "http://localhost:50050"
 
-    "http": {
-        "timeout": 2000
-    }
-}
+http:
+    timeout: 2000
+
+theme:
+    name: "dark"
+    overrides:
+        app_background:
+            bg: red
 "#;
 
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
         let builder = Config::builder()
             // Start off by merging in the "default" configuration file
-            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Json));
+            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml));
 
         #[cfg(all(feature = "web", not(feature = "tui")))]
         let builder = builder.add_source(web::QueryString::parse());
@@ -89,7 +91,7 @@ impl Settings {
             builder // Add in user's config file
                 .add_source(
                     File::with_name(&format!("{}/tui", config_dir.display()))
-                        .format(FileFormat::Json)
+                        .format(FileFormat::Yaml)
                         .required(false),
                 )
                 // Add in settings from the environment (with a prefix of BALLISTA_)
@@ -155,7 +157,7 @@ mod web {
 "#
             );
             tracing::info!("Using query string: {}", config);
-            File::from_str(&config, FileFormat::Json)
+            File::from_str(&config, FileFormat::Yaml)
         }
 
         fn decode_request() -> std::string::String {
