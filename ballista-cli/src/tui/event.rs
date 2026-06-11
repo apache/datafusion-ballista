@@ -92,13 +92,13 @@ pub(crate) mod tui {
                     tokio::select! {
                         _ = data_reload_tick => {
                             if let Err(err) = tx.send(Event::DataReload) {
-                                tracing::error!("Failed to send DataReload event: {err:?}");
+                                tracing::debug!("Failed to send DataReload event: {err:?}");
                                 break;
                             }
                         }
                         _ = repaint_tick => {
                             if let Err(err) = tx.send(Event::Repaint) {
-                                tracing::error!("Failed to send Repaint event: {err:?}");
+                                tracing::debug!("Failed to send Repaint event: {err:?}");
                                 break;
                             }
                         }
