@@ -855,10 +855,21 @@ stage execution plan.</p></li>
 <span class="nt">repaint_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
 
 <span class="nt">scheduler</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:50050</span>
+<span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://localhost:50050&quot;</span>
 
 <span class="nt">http</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
+
+<span class="nt">theme</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;dark&quot;</span>
+<span class="w">  </span><span class="nt">overrides</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">table_header</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">fg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;DarkBlue&quot;</span>
+<span class="w">      </span><span class="nt">bg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;White&quot;</span>
+<span class="w">      </span><span class="nt">add_modifier</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;UNDERLINED|ITALIC&quot;</span>
+<span class="w">    </span><span class="nt">status_running</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">fg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;#ff00aa&quot;</span>
+<span class="w">      </span><span class="nt">bg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;108&quot;</span>
 </pre></div>
 </div>
 <ul class="simple">
@@ -866,12 +877,19 @@ stage execution plan.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">repaint_interval_ms</span></code>: How often the TUI repaints the screen (milliseconds).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">scheduler.url</span></code>: The Ballista scheduler HTTP endpoint.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">http.timeout</span></code>: HTTP request timeout in milliseconds.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">theme.name</span></code>: The name of the base theme. Possible values: <code class="docutils literal notranslate"><span class="pre">dark</span></code> and <code class="docutils literal notranslate"><span class="pre">light</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">theme.overrides</span></code>: An object that allows to override the style of the theme
+properties. The complete list of the properties could be
+found <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista-cli/src/tui/infrastructure/theme.rs">here</a>.
+The supported values for <a class="reference external" href="https://docs.rs/ratatui/latest/ratatui/prelude/enum.Color.html">colors</a> are: 1) named (
+e.g. “White”); 2) RGB (e.g. “#rrggbb”); 3) Indexed (e.g. “108”)</p></li>
 </ul>
-<p>Environment variables prefixed with <code class="docutils literal notranslate"><span class="pre">BALLISTA_</span></code> also override these values. For example:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">BALLISTA_SCHEDULER_URL</span><span class="o">=</span>http://localhost:50051<span class="w"> </span>ballista-cli<span class="w"> </span>--tui
+<p>Environment variables prefixed with <code class="docutils literal notranslate"><span class="pre">BALLISTA__</span></code> also override these values. For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">BALLISTA__SCHEDULER__URL</span><span class="o">=</span>http://localhost:50051<span class="w"> </span>ballista-cli<span class="w"> </span>--tui
 </pre></div>
 </div>
-<p>The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.</p>
+<p>Double underscores (<code class="docutils literal notranslate"><span class="pre">__</span></code>) are used to denote nesting in the configuration structure. In the above example, <code class="docutils literal notranslate"><span class="pre">BALLISTA__SCHEDULER__URL</span></code> overrides the <code class="docutils literal notranslate"><span class="pre">scheduler.url</span></code> setting in the YAML configuration.</p>
+<p>The TUI connects to the scheduler via HTTP and refreshes the data automatically every <code class="docutils literal notranslate"><span class="pre">data_reload_interval_ms</span></code> milliseconds.</p>
 </section>
 </section>
 </section>
