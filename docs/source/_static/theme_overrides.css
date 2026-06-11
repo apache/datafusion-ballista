@@ -69,6 +69,16 @@ html[data-theme="dark"] .dark-logo {
   margin-left: auto;
 }
 
+/* Render in-page toctree listings (e.g. the home page index) at body text
+size. The theme default enlarges links to 1.1em and captions to 1.5em. */
+.toctree-wrapper li[class^="toctree-l"] > a {
+  font-size: 1em;
+}
+
+.toctree-wrapper p.caption {
+  font-size: 1em;
+}
+
 /* This is the bootstrap CSS style for "table-striped". Since the theme does
 not yet provide an easy way to configure this globally, it easier to simply
 include this snippet here than updating each table in all rst files to
