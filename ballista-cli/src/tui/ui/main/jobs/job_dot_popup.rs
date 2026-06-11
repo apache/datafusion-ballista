@@ -17,9 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::GraphNode;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
-use ratatui::prelude::{Color, Line, Modifier, Span, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::prelude::{Line, Span, Style};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
@@ -28,12 +29,12 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(60, 60, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let block = Block::default()
         .title(format!(" Stages graph for job '{}' ", graph.job_id))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan))
+        .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);
 
     // Width of the area inside the popup block borders.
@@ -46,12 +47,10 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
     // 1 (indent space) + 1 (┌/└) + junction_col
     let arrow_col = 2 + junction_col;
 
-    let border_style = Style::default().fg(Color::Cyan);
-    let label_style = Style::default().fg(Color::White);
-    let stage_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let arrow_style = Style::default().fg(Color::Green);
+    let border_style = app.theme.graph_border;
+    let label_style = app.theme.graph_label;
+    let stage_style = app.theme.graph_stage;
+    let arrow_style = app.theme.graph_arrow;
 
     let mut lines: Vec<Line> = Vec::new();
 

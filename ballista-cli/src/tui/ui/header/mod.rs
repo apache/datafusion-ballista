@@ -17,11 +17,11 @@
 
 use crate::tui::app::App;
 use crate::tui::ui::header::scheduler_state::render_scheduler_state;
+use ratatui::style::{Style, Stylize};
 use ratatui::widgets::BorderType;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
 };
@@ -47,12 +47,12 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    render_banner(f, chunks[0]);
+    render_banner(f, chunks[0], app.theme.banner);
     render_navbar(f, chunks[1], app);
 }
 
 #[cfg(not(feature = "web"))]
-fn render_banner(f: &mut Frame, area: Rect) {
+fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
     use tui_big_text::{BigText, PixelSize};
 
     let banner_size = match area.width {
@@ -63,7 +63,7 @@ fn render_banner(f: &mut Frame, area: Rect) {
 
     let big_text = BigText::builder()
         .pixel_size(banner_size)
-        .style(Style::new().yellow())
+        .style(banner_style)
         .lines(vec![" DataFusion".into(), " Ballista".into()])
         .build();
     f.render_widget(big_text, area);
@@ -73,7 +73,7 @@ fn render_banner(f: &mut Frame, area: Rect) {
 // Halfblock characters are not reliably present in Ratzilla's WebGL2 glyph atlas,
 // so we leave this area blank and rely on setup_logo_dom() in wasm.rs.
 #[cfg(feature = "web")]
-fn render_banner(f: &mut Frame, area: Rect) {
+fn render_banner(f: &mut Frame, area: Rect, _banner_style: Style) {
     f.render_widget(Block::default(), area);
 }
 
@@ -99,7 +99,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     for (index, menu_item) in MENU_ITEMS.iter().enumerate() {
         let mut block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().dark_gray());
+            .border_style(app.theme.nav_inactive);
 
         let first_char = menu_item.chars().next().unwrap().underlined();
         let rest_chars = menu_item.chars().skip(1).collect::<String>();
@@ -112,11 +112,11 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
 
         let style = if is_active && app.is_scheduler_up() {
             block = block
-                .border_style(Style::default().white())
+                .border_style(app.theme.nav_active)
                 .border_type(BorderType::Thick);
-            Style::default().white()
+            app.theme.nav_active
         } else {
-            Style::default().dark_gray()
+            app.theme.nav_inactive
         };
 
         let paragraph = Paragraph::new(text)

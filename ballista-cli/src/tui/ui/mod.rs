@@ -41,6 +41,7 @@ pub use main::{
     load_metrics_data, load_stage_plan,
 };
 
+use ratatui::widgets::Block;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -55,6 +56,9 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
             Constraint::Length(2), // Footer
         ])
         .split(f.area());
+
+    let block = Block::default().style(app.theme.app_background);
+    f.render_widget(block, f.area());
 
     render_header(f, chunks[0], app);
     render_main_view(f, app, chunks[1]);

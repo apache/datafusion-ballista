@@ -39,9 +39,9 @@ use crate::tui::{
     ui::vertical_scrollbar::render_scrollbar,
 };
 
+use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::components::loading_indicator::shimmer_spans_with_style;
 use crate::tui::ui::vertical_scrollbar;
-use ratatui::style::Color;
 use ratatui::text::Line;
 use ratatui::{
     Frame,
@@ -49,7 +49,7 @@ use ratatui::{
     style::Style,
     text::Text,
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
 };
 
@@ -172,7 +172,7 @@ pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
 }
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let search_term = app.search_term.to_lowercase();
     let filtered_jobs: Vec<&Job> = if search_term.is_empty() {
@@ -214,14 +214,14 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
         );
         render_scrollbar(f, table_area[1], &mut scroll_state);
     } else {
-        render_no_jobs(f, rects[1]);
+        render_no_jobs(f, rects[1], app.theme.text_info);
     }
 }
 
-fn render_no_jobs(f: &mut Frame, area: Rect) {
+fn render_no_jobs(f: &mut Frame, area: Rect, style: Style) {
     let block = Block::default().borders(Borders::all());
     let paragraph = Paragraph::new("No registered jobs in the scheduler!")
-        .style(Style::default().bold())
+        .style(style)
         .centered()
         .block(block);
     f.render_widget(paragraph, area);
@@ -248,11 +248,6 @@ fn render_jobs_table(
     sort_order: &SortOrder,
     app: &App,
 ) {
-    let header_style = Style::default()
-        .fg(Color::LightYellow)
-        .bg(Color::Black)
-        .bold();
-
     let id_suffix = column_suffix(sort_column, sort_order, &SortColumn::Id);
     let name_suffix = column_suffix(sort_column, sort_order, &SortColumn::Name);
     let status_suffix = column_suffix(sort_column, sort_order, &SortColumn::Status);
@@ -273,18 +268,19 @@ fn render_jobs_table(
         Cell::from(Text::from(format!("Start Time{start_time_suffix}")).centered()),
         Cell::from(Text::from(format!("Duration{duration_suffix}")).right_aligned()),
     ])
-    .style(header_style)
+    .style(app.theme.table_header)
     .height(1);
 
     let rows = jobs.iter().enumerate().map(|(i, job)| {
-        let color = match i % 2 {
-            0 => Color::DarkGray,
-            _ => Color::Black,
+        let row_style = if i % 2 == 0 {
+            app.theme.row_even
+        } else {
+            app.theme.row_odd
         };
 
         let id_cell = Cell::from(Text::from(job.job_id.clone()).right_aligned());
         let name_cell = Cell::from(Text::from(job.job_name.clone()).centered());
-        let status_cell = render_job_status_cell(job);
+        let status_cell = render_job_status_cell(job, app);
         let stage_completion_cell = render_job_stage_completion_cell(job);
         let percent_completion_cell = render_job_percent_completion_cell(job);
         let start_time_cell = render_job_start_time_cell(job, app);
@@ -299,7 +295,7 @@ fn render_jobs_table(
             start_time_cell,
             duration_cell,
         ];
-        Row::new(cells).style(Style::default().bg(color))
+        Row::new(cells).style(row_style)
     });
 
     let t = Table::new(
@@ -316,7 +312,7 @@ fn render_jobs_table(
     )
     .block(Block::default().borders(Borders::all()))
     .header(header_row)
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
 }
@@ -355,22 +351,22 @@ fn render_job_stage_completion_cell(job: &Job) -> Cell<'_> {
     Cell::from(Text::from(stage_completion).centered())
 }
 
-fn render_job_status_cell(job: &Job) -> Cell<'_> {
-    fn content_wo_animation(text: &str, color: Color) -> Text<'_> {
-        Text::from(text).style(Style::default().fg(color).bold())
+fn render_job_status_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
+    fn content_wo_animation(text: &str, style: Style) -> Text<'_> {
+        Text::from(text).style(style)
     }
 
-    fn content_with_animation(text: &str, color: Color) -> Text<'_> {
-        let text = shimmer_spans_with_style(text, Style::default().fg(color).bold());
+    fn content_with_animation(text: &str, style: Style) -> Text<'_> {
+        let text = shimmer_spans_with_style(text, style);
         Line::from(text).into()
     }
 
     let content = match job.status.as_str() {
-        "Running" => content_with_animation("Running", Color::LightBlue),
-        "Queued" => content_with_animation("Queued", Color::LightMagenta),
-        "Failed" => content_wo_animation("Failed", Color::LightRed),
-        "Completed" => content_wo_animation("Completed", Color::LightGreen),
-        other => content_wo_animation(other, Color::Gray),
+        "Running" => content_with_animation("Running", app.theme.status_running),
+        "Queued" => content_with_animation("Queued", app.theme.status_queued),
+        "Failed" => content_wo_animation("Failed", app.theme.status_failed),
+        "Completed" => content_wo_animation("Completed", app.theme.status_completed),
+        other => content_wo_animation(other, app.theme.status_unknown),
     };
 
     Cell::from(content.centered())

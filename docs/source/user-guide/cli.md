@@ -291,21 +291,40 @@ data_reload_interval_ms: 2000
 repaint_interval_ms: 50
 
 scheduler:
-  url: http://localhost:50050
+  url: "http://localhost:50050"
 
 http:
   timeout: 2000
+
+theme:
+  name: "dark"
+  overrides:
+    table_header:
+      fg: "DarkBlue"
+      bg: "White"
+      add_modifier: "UNDERLINED|ITALIC"
+    status_running:
+      fg: "#ff00aa"
+      bg: "108"
 ```
 
 - `data_reload_interval_ms`: How often the TUI refreshes data from the scheduler (milliseconds).
 - `repaint_interval_ms`: How often the TUI repaints the screen (milliseconds).
 - `scheduler.url`: The Ballista scheduler HTTP endpoint.
 - `http.timeout`: HTTP request timeout in milliseconds.
+- `theme.name`: The name of the base theme. Possible values: `dark` and `light`
+- `theme.overrides`: An object that allows to override the style of the theme
+  properties. The complete list of the properties could be
+  found [here](https://github.com/apache/datafusion-ballista/blob/main/ballista-cli/src/tui/infrastructure/theme.rs).
+  The supported values for [colors](https://docs.rs/ratatui/latest/ratatui/prelude/enum.Color.html) are: 1) named (
+  e.g. "White"); 2) RGB (e.g. "#rrggbb"); 3) Indexed (e.g. "108")
 
-Environment variables prefixed with `BALLISTA_` also override these values. For example:
+Environment variables prefixed with `BALLISTA__` also override these values. For example:
 
 ```bash
-BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista-cli --tui
+BALLISTA__SCHEDULER__URL=http://localhost:50051 ballista-cli --tui
 ```
 
-The TUI connects to the scheduler via HTTP and refreshes data automatically every few seconds.
+Double underscores (`__`) are used to denote nesting in the configuration structure. In the above example, `BALLISTA__SCHEDULER__URL` overrides the `scheduler.url` setting in the YAML configuration.
+
+The TUI connects to the scheduler via HTTP and refreshes the data automatically every `data_reload_interval_ms` milliseconds.

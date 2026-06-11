@@ -25,9 +25,9 @@ use ratatui::{
 };
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
-    fn no_jobs(block: Block<'_>) -> Paragraph<'_> {
+    fn no_jobs(block: Block<'_>, style: Style) -> Paragraph<'_> {
         Paragraph::new("No Jobs data")
-            .block(block.border_style(Style::new().gray()))
+            .block(block.border_style(style))
             .centered()
     }
 
@@ -60,57 +60,48 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
                 ])
                 .split(area);
 
-            render_running_jobs(f, chunks[0], running_jobs);
-            render_queued_jobs(f, chunks[1], queued_jobs);
-            render_completed_jobs(f, chunks[2], completed_jobs);
-            render_failed_jobs(f, chunks[3], failed_jobs);
+            render_tile(
+                f,
+                chunks[0],
+                "Running Jobs",
+                running_jobs,
+                app.theme.tile_running,
+            );
+            render_tile(
+                f,
+                chunks[1],
+                "Queued Jobs",
+                queued_jobs,
+                app.theme.tile_queued,
+            );
+            render_tile(
+                f,
+                chunks[2],
+                "Completed Jobs",
+                completed_jobs,
+                app.theme.tile_completed,
+            );
+            render_tile(
+                f,
+                chunks[3],
+                "Failed Jobs",
+                failed_jobs,
+                app.theme.tile_failed,
+            );
         }
         _no_jobs => {
-            f.render_widget(no_jobs(block), area);
+            f.render_widget(no_jobs(block, app.theme.nav_inactive), area);
         }
     }
 }
 
-fn render_running_jobs(f: &mut Frame, area: Rect, running_jobs: usize) {
+fn render_tile(f: &mut Frame, area: Rect, title: &str, count: usize, style: Style) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Running Jobs ")
-        .style(Style::new().light_blue());
+        .title(format!(" {title} "))
+        .style(style);
     f.render_widget(
-        Paragraph::new(format!("Running jobs: {running_jobs}")).block(block),
-        area,
-    );
-}
-
-fn render_queued_jobs(f: &mut Frame, area: Rect, queued_jobs: usize) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Queued Jobs ")
-        .style(Style::new().magenta());
-    f.render_widget(
-        Paragraph::new(format!("Queued jobs: {queued_jobs}")).block(block),
-        area,
-    );
-}
-
-fn render_completed_jobs(f: &mut Frame, area: Rect, completed_jobs: usize) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Completed Jobs ")
-        .style(Style::new().green());
-    f.render_widget(
-        Paragraph::new(format!("Completed jobs: {completed_jobs}")).block(block),
-        area,
-    );
-}
-
-fn render_failed_jobs(f: &mut Frame, area: Rect, failed_jobs: usize) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Failed Jobs ")
-        .style(Style::new().red());
-    f.render_widget(
-        Paragraph::new(format!("Failed jobs: {failed_jobs}")).block(block),
+        Paragraph::new(format!("{title}: {count}")).block(block),
         area,
     );
 }
