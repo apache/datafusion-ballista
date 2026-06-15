@@ -49,7 +49,7 @@ on:
 jobs:
   web-tui:
     name: Build Web TUI WASM32 application
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.3
         with:
@@ -82,7 +82,6 @@ jobs:
       - name: Build
         working-directory: ballista-cli
         run: |
-          echo "==== DEBUG BALLISTA_VERSION: ${{ steps.cargo_metadata.outputs.ballista_version }}"
           trunk build --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
 
