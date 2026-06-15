@@ -49,7 +49,7 @@ on:
 jobs:
   web-tui:
     name: Build Web TUI WASM32 application
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6.0.3
         with:
@@ -76,6 +76,8 @@ jobs:
       - name: Get package.version
         id: cargo_metadata
         run: |
+          set -x
+          rsync --version
           BALLISTA_VERSION=$(cargo get --entry ballista/core/ package.version)
           echo "ballista_version=${BALLISTA_VERSION}" >> "$GITHUB_OUTPUT"
 
