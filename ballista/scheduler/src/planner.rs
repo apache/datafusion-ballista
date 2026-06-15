@@ -651,6 +651,11 @@ mod test {
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::lit;
+    use datafusion::physical_plan::filter::FilterExecBuilder;
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
@@ -668,12 +673,6 @@ mod test {
     /// must rewrite it into a serde-safe equivalent that still emits zero columns.
     #[test]
     fn empty_projection_filter_is_rewritten_serde_safe() -> Result<(), BallistaError> {
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-        use datafusion::physical_plan::empty::EmptyExec;
-        use datafusion::physical_plan::expressions::lit;
-        use datafusion::physical_plan::filter::FilterExecBuilder;
-
         // 1-column input feeding a FilterExec that projects to ZERO columns
         // (mirrors TPC-DS Q9's `FROM reason WHERE r_reason_sk = 1`).
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -694,14 +693,14 @@ mod test {
 
         let serde_safe_plan = super::make_filter_projection_serde_safe(plan)?;
 
-        // schema is preserved (still zero columns) ...
+        // schema is preserved
         assert_eq!(
             serde_safe_plan.schema().fields().len(),
             0,
             "rewrite must preserve the zero-column output schema"
         );
 
-        // ... and no FilterExec retains an empty projection (the un-serde-safe form).
+        // FilterExec does not retain an empty projection
         let mut has_empty_filter_projection = false;
         serde_safe_plan.apply(|node| {
             if let Some(f) = node.as_any().downcast_ref::<FilterExec>()
