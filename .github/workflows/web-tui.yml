@@ -89,16 +89,8 @@ jobs:
 
       - name: Deploy to Nightlies
         #if: ${{ github.ref == 'refs/heads/main' }}
-        uses: burnett01/rsync-deployments@66257cad6bfeb2171d3b6bfa6c9a22279dd9c3a1 # v8.0.5
-        with:
-          switches: -rlptDvz
-          path: target/web-tui/*
-          remote_path: datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
-          remote_host: https://nightlies.apache.org
-          remote_port: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
-          remote_user: ${{ secrets.NIGHTLIES_RSYNC_USER }}
-          remote_key: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
-
+        run: |
+          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} -i ${{ secrets.NIGHTLIES_RSYNC_KEY }}" target/web-tui/* nightlies.apache.org:/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
