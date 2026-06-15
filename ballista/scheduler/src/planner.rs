@@ -635,10 +635,15 @@ mod test {
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::lit;
     use datafusion::physical_plan::filter::FilterExec;
+    use datafusion::physical_plan::filter::FilterExecBuilder;
     use datafusion::physical_plan::joins::HashJoinExec;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
@@ -651,11 +656,6 @@ mod test {
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::expressions::lit;
-    use datafusion::physical_plan::filter::FilterExecBuilder;
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
