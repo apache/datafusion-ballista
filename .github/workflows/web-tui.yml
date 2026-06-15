@@ -68,11 +68,36 @@ jobs:
         with:
           tool: trunk@0.21.14
 
+      - name: Install cargo-get
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-get@1.4.0
+
+      - name: Get package.version
+        id: cargo_metadata
+        run: |
+          BALLISTA_VERSION=$(cargo get --entry ballista/core/ package.version)
+          echo "ballista_version=${BALLISTA_VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Build
         working-directory: ballista-cli
         run: |
+          echo "==== DEBUG BALLISTA_VERSION: ${{ steps.cargo_metadata.outputs.ballista_version }}"
           trunk build --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
+
+      - name: Deploy to Nightlies
+        #if: ${{ github.ref == 'refs/heads/main' }}
+        uses: burnett01/rsync-deployments@0dc935cdecc5f5e571865e60d2a6cdc673704823
+        with:
+          switches: -rlptDvz
+          path: target/web-tui/*
+          remote_path: datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
+          remote_host: https://nightlies.apache.org
+          remote_port: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
+          remote_user: ${{ secrets.NIGHTLIES_RSYNC_USER }}
+          remote_key: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
+
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
