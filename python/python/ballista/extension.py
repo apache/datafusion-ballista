@@ -71,8 +71,6 @@ class RedefiningDataFrameMeta(type):
             return method_wrapper
 
         for base_name, base_value in bases[0].__dict__.items():
-            #
-            #
             if (
                 callable(base_value)
                 and not base_name.startswith("__")
@@ -110,8 +108,6 @@ class RedefiningSessionContextMeta(type):
             return method_wrapper
 
         for base_name, base_value in bases[0].__dict__.items():
-            #
-            #
             if (
                 callable(base_value)
                 and not base_name.startswith("__")
