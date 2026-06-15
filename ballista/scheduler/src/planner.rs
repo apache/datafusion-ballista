@@ -32,11 +32,15 @@ use ballista_core::{
     serde::scheduler::PartitionLocation,
 };
 use datafusion::arrow::datatypes::DataType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
@@ -106,8 +110,10 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
         info!("planning query stages for job {job_id}");
+        // Workaround until DF 54 migration : <https://github.com/apache/datafusion/pull/21885>
+        let serde_safe_plan = make_filter_projection_serde_safe(execution_plan)?;
         let (new_plan, mut stages) =
-            self.plan_query_stages_internal(job_id, execution_plan, config)?;
+            self.plan_query_stages_internal(job_id, serde_safe_plan, config)?;
         stages.push(create_shuffle_writer_with_config(
             job_id,
             self.next_stage_id(),
@@ -413,6 +419,40 @@ impl DefaultDistributedPlanner {
     }
 }
 
+/// Workaround until DF 54 migration: <https://github.com/apache/datafusion/pull/21885>
+/// datafusion-proto 53.1.0 encodes both `Some([])` (zero cols) and `None` (all cols)
+/// as an empty list, decoding back to `None` and shifting column indices (#1838).
+/// Rewrite `FilterExec(Some([]))` → empty `ProjectionExec` wrapped `FilterExec(None)`
+fn make_filter_projection_serde_safe(
+    plan: Arc<dyn ExecutionPlan>,
+) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|node| {
+            if let Some(filter) = node.as_any().downcast_ref::<FilterExec>() {
+                let empty_projection = filter
+                    .projection()
+                    .as_ref()
+                    .map(|p| p.is_empty())
+                    .unwrap_or(false);
+                if empty_projection {
+                    let orig_filter_exec = FilterExecBuilder::from(filter)
+                        .apply_projection(None)?
+                        .build()?;
+                    let zero_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = vec![];
+                    let proj = ProjectionExec::try_new(
+                        zero_expr,
+                        Arc::new(orig_filter_exec) as Arc<dyn ExecutionPlan>,
+                    )?;
+                    return Ok(
+                        Transformed::yes(Arc::new(proj) as Arc<dyn ExecutionPlan>),
+                    );
+                }
+            }
+            Ok(Transformed::no(node))
+        })?
+        .data)
+}
+
 fn create_unresolved_shuffle(
     shuffle_writer: &dyn ShuffleWriter,
 ) -> Arc<UnresolvedShuffleExec> {
@@ -620,6 +660,66 @@ mod test {
                 $exec
             ))
         };
+    }
+
+    /// Regression test for issue #1838: a `FilterExec` projecting to zero columns
+    /// is not serialization-safe in datafusion-proto 53.1.0 (the empty projection
+    /// decodes back as `None`, shifting downstream column indices). The planner
+    /// must rewrite it into a serde-safe equivalent that still emits zero columns.
+    #[test]
+    fn empty_projection_filter_is_rewritten_serde_safe() -> Result<(), BallistaError> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::expressions::lit;
+        use datafusion::physical_plan::filter::FilterExecBuilder;
+
+        // 1-column input feeding a FilterExec that projects to ZERO columns
+        // (mirrors TPC-DS Q9's `FROM reason WHERE r_reason_sk = 1`).
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "r_reason_sk",
+            DataType::Int32,
+            false,
+        )]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let filter = FilterExecBuilder::new(lit(true), input)
+            .apply_projection(Some(vec![]))?
+            .build()?;
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(filter);
+        assert_eq!(
+            plan.schema().fields().len(),
+            0,
+            "precondition: filter projects to zero columns"
+        );
+
+        let serde_safe_plan = super::make_filter_projection_serde_safe(plan)?;
+
+        // schema is preserved (still zero columns) ...
+        assert_eq!(
+            serde_safe_plan.schema().fields().len(),
+            0,
+            "rewrite must preserve the zero-column output schema"
+        );
+
+        // ... and no FilterExec retains an empty projection (the un-serde-safe form).
+        let mut has_empty_filter_projection = false;
+        serde_safe_plan.apply(|node| {
+            if let Some(f) = node.as_any().downcast_ref::<FilterExec>()
+                && f.projection()
+                    .as_ref()
+                    .map(|p| p.is_empty())
+                    .unwrap_or(false)
+            {
+                has_empty_filter_projection = true;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        assert!(
+            !has_empty_filter_projection,
+            "FilterExec with empty projection must be rewritten to be serde-safe"
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
