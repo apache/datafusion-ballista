@@ -138,3 +138,33 @@ def test_write_json(ctx, tmp_path):
     df.write_json(out_dir)
     json_files = list((tmp_path / "out").glob("*.json"))
     assert len(json_files) > 0
+
+
+def test_distributed_dataframe_wraps_dataframe_returning_methods():
+    from ballista.extension import DistributedDataFrame, DataFrame
+
+    should_be_wrapped = {
+        name
+        for name, val in DataFrame.__dict__.items()
+        if callable(val)
+        and not name.startswith("__")
+        and val.__annotations__.get("return") == DataFrame.__name__
+    }
+
+    assert should_be_wrapped
+    assert should_be_wrapped.issubset(DistributedDataFrame.__dict__)
+
+
+def test_ballista_session_context_wraps_dataframe_returning_methods():
+    from ballista.extension import BallistaSessionContext, SessionContext, DataFrame
+
+    should_be_wrapped = {
+        name
+        for name, val in SessionContext.__dict__.items()
+        if callable(val)
+        and not name.startswith("__")
+        and val.__annotations__.get("return") == DataFrame.__name__
+    }
+
+    assert should_be_wrapped
+    assert should_be_wrapped.issubset(BallistaSessionContext.__dict__)
