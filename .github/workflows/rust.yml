@@ -135,8 +135,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.3
         with:
-          submodules: true
           fetch-depth: 1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
       - name: Setup Rust toolchain
         run: |
           rustup toolchain install stable
@@ -178,6 +181,10 @@ jobs:
       - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
       - name: Setup Rust toolchain
         run: |
           rustup toolchain install stable

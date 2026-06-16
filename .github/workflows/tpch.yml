@@ -54,16 +54,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y netcat-traditional
+          sudo apt-get install -y netcat-traditional protobuf-compiler
 
       - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 1
 
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: stable
+        run: |
+          rustup toolchain install stable
+          rustup default stable
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
