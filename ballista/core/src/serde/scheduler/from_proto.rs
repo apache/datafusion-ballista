@@ -37,7 +37,8 @@ use crate::extension::SessionConfigHelperExt;
 use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
-    ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId, PartitionStats, TaskDefinition,
+    ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
+    PartitionStats, TaskDefinition,
 };
 
 use crate::serde::{BallistaCodec, protobuf};
