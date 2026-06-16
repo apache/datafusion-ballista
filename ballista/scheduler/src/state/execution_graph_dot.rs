@@ -606,7 +606,7 @@ filter_expr="]
         let mut planner = DefaultDistributedPlanner::new();
         StaticExecutionGraph::new(
             "scheduler_id",
-            "job_id",
+            &"job_id".into(),
             "job_name",
             "session_id",
             plan,
@@ -643,7 +643,7 @@ filter_expr="]
         let mut planner = DefaultDistributedPlanner::new();
         StaticExecutionGraph::new(
             "scheduler_id",
-            "job_id",
+            &"job_id".into(),
             "job_name",
             "session_id",
             plan,

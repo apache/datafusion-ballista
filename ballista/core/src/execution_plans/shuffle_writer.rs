@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::JobId;
 use crate::execution_plans::create_shuffle_path;
 use crate::extension::SessionConfigExt;
 use crate::utils;
@@ -77,7 +78,7 @@ pub const DEFAULT_SHUFFLE_CHANNEL_CAPACITY: usize = 8;
 #[derive(Debug, Clone)]
 pub struct ShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of
-    job_id: String,
+    job_id: JobId,
     /// Unique query stage ID within the job
     stage_id: usize,
     /// Physical execution plan for this query stage
@@ -148,7 +149,7 @@ impl ShuffleWriteMetrics {
 impl ShuffleWriterExec {
     /// Create a new shuffle writer
     pub fn try_new(
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,
@@ -177,7 +178,7 @@ impl ShuffleWriterExec {
     }
 
     /// Get the Job ID for this query stage
-    pub fn job_id(&self) -> &str {
+    pub fn job_id(&self) -> &JobId {
         &self.job_id
     }
 
@@ -486,7 +487,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         let schema = result_schema();
 
         let schema_captured = schema.clone();
-        let job_id = self.job_id.to_string();
+        let job_id = self.job_id.clone();
         let work_dir = self.work_dir.to_string();
         let stage_id = self.stage_id;
         let fut_stream = self
@@ -566,7 +567,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 }
 
 impl ShuffleWriter for ShuffleWriterExec {
-    fn job_id(&self) -> &str {
+    fn job_id(&self) -> &JobId {
         &self.job_id
     }
 
@@ -621,7 +622,7 @@ mod tests {
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
         let work_dir = TempDir::new()?;
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            JobId::new("jobOne"),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
@@ -679,7 +680,7 @@ mod tests {
         let input_plan = create_input_plan()?;
         let work_dir = TempDir::new()?;
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            JobId::new("jobOne"),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
@@ -728,13 +729,8 @@ mod tests {
         let work_dir = tmp.path().to_str().unwrap().to_owned();
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
-        let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
-            1,
-            input_plan,
-            work_dir,
-            None,
-        )?;
+        let query_stage =
+            ShuffleWriterExec::try_new("jobOne".into(), 1, input_plan, work_dir, None)?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let result = utils::collect_stream(&mut stream).await;
         assert!(
@@ -762,7 +758,7 @@ mod tests {
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
         let query_stage = ShuffleWriterExec::try_new(
-            "jobOne".to_owned(),
+            "jobOne".into(),
             1,
             input_plan,
             work_dir,

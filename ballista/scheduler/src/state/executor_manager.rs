@@ -17,6 +17,7 @@
 
 use std::time::Duration;
 
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf;
@@ -66,7 +67,7 @@ pub struct ExecutorManager {
     /// Cached gRPC clients for communicating with executors.
     clients: ExecutorClients,
     /// Jobs pending cleanup on each executor.
-    pending_cleanup_jobs: Arc<DashMap<String, HashSet<String>>>,
+    pending_cleanup_jobs: Arc<DashMap<String, HashSet<JobId>>>,
     /// Configuration for gRPC client connections.
     grpc_client_config: GrpcClientConfig,
 }
@@ -106,7 +107,7 @@ impl ExecutorManager {
     /// Returns a list of bound tasks that can be launched on executors.
     pub async fn bind_schedulable_tasks(
         &self,
-        running_jobs: Arc<HashMap<String, JobInfoCache>>,
+        running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     ) -> Result<Vec<BoundTask>> {
         if running_jobs.is_empty() {
             debug!("There's no active jobs for binding tasks");
@@ -142,7 +143,7 @@ impl ExecutorManager {
             let infos = tasks_to_cancel.entry(task_info.executor_id).or_default();
             infos.push(protobuf::RunningTaskInfo {
                 task_id: task_info.task_id as u32,
-                job_id: task_info.job_id,
+                job_id: task_info.job_id.into(),
                 stage_id: task_info.stage_id as u32,
                 partition_id: task_info.partition_id as u32,
             });
@@ -177,7 +178,7 @@ impl ExecutorManager {
     /// Send rpc to Executors to clean up the job data by delayed clean_up_interval seconds
     pub(crate) fn clean_up_job_data_delayed(
         &self,
-        job_id: String,
+        job_id: JobId,
         clean_up_interval: u64,
     ) {
         if clean_up_interval == 0 {
@@ -195,7 +196,7 @@ impl ExecutorManager {
     }
 
     /// Sends RPC requests to executors to clean up job data in a spawned task.
-    pub fn clean_up_job_data(&self, job_id: String) {
+    pub fn clean_up_job_data(&self, job_id: JobId) {
         let executor_manager = self.clone();
         tokio::spawn(async move {
             executor_manager.clean_up_job_data_inner(job_id).await;
@@ -204,11 +205,11 @@ impl ExecutorManager {
 
     /// 1. Push strategy: Send rpc to Executors to clean up the job data
     /// 2. Poll strategy: Save cleanup job ids and send them to executors
-    async fn clean_up_job_data_inner(&self, job_id: String) {
+    async fn clean_up_job_data_inner(&self, job_id: JobId) {
         let alive_executors = self.get_alive_executors();
 
         for executor in alive_executors {
-            let job_id_clone = job_id.to_owned();
+            let job_id_clone = job_id.to_owned().into_inner();
 
             if self.config.is_push_staged_scheduling() {
                 if let Ok(mut client) =
@@ -386,10 +387,7 @@ impl ExecutorManager {
         Ok(())
     }
 
-    pub(crate) fn drain_pending_cleanup_jobs(
-        &self,
-        executor_id: &str,
-    ) -> HashSet<String> {
+    pub(crate) fn drain_pending_cleanup_jobs(&self, executor_id: &str) -> HashSet<JobId> {
         self.pending_cleanup_jobs
             .remove(executor_id)
             .map(|(_, jobs)| jobs)
