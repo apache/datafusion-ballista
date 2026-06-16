@@ -1322,7 +1322,7 @@ mod tests {
                     },
                     executor_meta: Arc::new(ExecutorMetadata {
                         id: "executor_1".to_string(),
-                        host: "executor_1".to_string(),
+                        host: "localhost".to_string(),
                         port: 7070,
                         grpc_port: 8080,
                         specification: ExecutorSpecification::default()
@@ -1441,7 +1441,7 @@ mod tests {
                 },
                 executor_meta: Arc::new(ExecutorMetadata {
                     id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
+                    host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
                     specification: ExecutorSpecification::default().with_task_slots(1),
@@ -1492,7 +1492,7 @@ mod tests {
                 },
                 executor_meta: Arc::new(ExecutorMetadata {
                     id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
+                    host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
                     specification: ExecutorSpecification::default().with_task_slots(1),
@@ -1544,7 +1544,7 @@ mod tests {
                 },
                 executor_meta: Arc::new(ExecutorMetadata {
                     id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
+                    host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
                     specification: ExecutorSpecification::default().with_task_slots(1),
@@ -1596,7 +1596,7 @@ mod tests {
                 },
                 executor_meta: Arc::new(ExecutorMetadata {
                     id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
+                    host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
                     specification: ExecutorSpecification::default().with_task_slots(1),
@@ -1966,7 +1966,7 @@ mod tests {
                 },
                 executor_meta: Arc::new(ExecutorMetadata {
                     id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
+                    host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
                     specification: ExecutorSpecification::default().with_task_slots(1),
@@ -2202,7 +2202,7 @@ mod tests {
                 },
                 executor_meta: Arc::new(ExecutorMetadata {
                     id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
+                    host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
                     specification: ExecutorSpecification::default().with_task_slots(1),
