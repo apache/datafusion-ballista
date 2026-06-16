@@ -49,7 +49,7 @@ use ratatui::{
     style::Style,
     text::Text,
     widgets::{
-        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
     },
 };
 
@@ -200,22 +200,63 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     app.jobs_data.sort_jobs(&mut sorted_jobs);
 
     if !sorted_jobs.is_empty() {
+        let selected_job = app
+            .jobs_data
+            .table_state
+            .selected()
+            .and_then(|idx| sorted_jobs.get(idx).copied());
+
+        let (table_area, failed_status_area) =
+            split_area_for_table_and_failure(selected_job, rects[1]);
+
         let mut scroll_state = app.jobs_data.scrollbar_state;
         let mut table_state = app.jobs_data.table_state;
-        let table_area = vertical_scrollbar::split_area(rects[1]);
+        let [table_area, scrollbar_area] = vertical_scrollbar::split_area(table_area);
         render_jobs_table(
             f,
-            table_area[0],
+            table_area,
             &sorted_jobs,
             &mut table_state,
             &app.jobs_data.sort_column,
             &app.jobs_data.sort_order,
             app,
         );
-        render_scrollbar(f, table_area[1], &mut scroll_state);
+        render_scrollbar(f, scrollbar_area, &mut scroll_state);
+
+        if let Some((area, job)) = failed_status_area {
+            render_job_failure_reason(f, area, job, app);
+        }
     } else {
         render_no_jobs(f, rects[1], app.theme.text_info);
     }
+}
+
+fn split_area_for_table_and_failure(
+    selected_job: Option<&Job>,
+    area: Rect,
+) -> (Rect, Option<(Rect, &Job)>) {
+    match selected_job {
+        Some(job) if job.status == "Failed" => {
+            let areas = Layout::vertical([
+                Constraint::Min(5),    // Table
+                Constraint::Length(5), // Failure reason
+            ])
+            .split(area);
+            (areas[0], Some((areas[1], job)))
+        }
+        _ => (area, None),
+    }
+}
+
+fn render_job_failure_reason(f: &mut Frame, area: Rect, job: &Job, app: &App) {
+    let block = Block::default()
+        .borders(Borders::all())
+        .style(app.theme.text_error);
+    let paragraph = Paragraph::new(job.job_status.as_str())
+        .style(app.theme.text_error)
+        .wrap(Wrap { trim: true })
+        .block(block);
+    f.render_widget(paragraph, area);
 }
 
 fn render_no_jobs(f: &mut Frame, area: Rect, style: Style) {

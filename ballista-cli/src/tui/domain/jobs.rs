@@ -25,7 +25,8 @@ use std::collections::BTreeMap;
 pub struct Job {
     pub job_id: String,
     pub job_name: String,
-    pub status: String, // Running, Completed, Failed, Canceled
+    pub status: String,     // Running, Completed, Failed, Canceled
+    pub job_status: String, // human-readable status/failure detail, e.g. "Failed: <reason>"
     pub start_time: i64,
     pub end_time: i64,
     pub num_stages: usize,
@@ -440,6 +441,7 @@ mod tests {
             job_id: id.to_string(),
             job_name: name.to_string(),
             status: status.to_string(),
+            job_status: status.to_string(),
             start_time,
             end_time,
             num_stages,
@@ -679,6 +681,23 @@ mod tests {
         data.table_state.select(Some(1));
         let job = data.selected_job("").unwrap();
         assert_eq!(job.job_id, "j2");
+    }
+
+    #[test]
+    fn job_status_carries_failure_detail_independent_of_status() {
+        let job = Job {
+            job_id: "j1".to_string(),
+            job_name: "Job One".to_string(),
+            status: "Failed".to_string(),
+            job_status: "Failed: division by zero".to_string(),
+            start_time: 1,
+            end_time: 2,
+            num_stages: 1,
+            completed_stages: 0,
+            percent_complete: 0,
+        };
+        assert_eq!(job.status, "Failed");
+        assert_eq!(job.job_status, "Failed: division by zero");
     }
 
     #[test]

@@ -1329,6 +1329,7 @@ mod tests {
             job_id: id.to_string(),
             job_name: format!("Job {id}"),
             status: status.to_string(),
+            job_status: status.to_string(),
             start_time: 0,
             end_time: 1,
             num_stages: 1,
