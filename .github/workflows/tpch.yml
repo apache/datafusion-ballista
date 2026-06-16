@@ -26,7 +26,7 @@ concurrency:
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "ballista/**"
       - "benchmarks/**"
@@ -49,9 +49,7 @@ on:
 jobs:
   tpch-sf10:
     name: TPC-H SF10 (all queries)
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Install dependencies
         run: |

@@ -131,9 +131,7 @@ jobs:
 
   ballista-test:
     name: test linux ballista
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6.0.3
         with:
@@ -173,9 +171,7 @@ jobs:
   # verify that the benchmark queries return the correct results
   verify-benchmark-results:
     name: verify benchmark results (amd64)
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6.0.3
         with:
