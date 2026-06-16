@@ -53,8 +53,8 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -y netcat-traditional
+          sudo apt-get update
+          sudo apt-get install -y netcat-traditional
 
       - uses: actions/checkout@v6.0.3
         with:
