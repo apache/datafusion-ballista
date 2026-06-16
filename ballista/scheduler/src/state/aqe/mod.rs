@@ -31,8 +31,8 @@ use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
-    job_status, task_status,
+    self, FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob,
+    TaskStatus, job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
 use datafusion::execution::context::SessionContext;
@@ -1197,8 +1197,18 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             )));
         }
 
-        let partition_location = self
-            .output_locations()
+        let output_locations = self.output_locations();
+
+        let executor_map = output_locations
+            .iter()
+            .map(|l| {
+                let proto_meta: protobuf::ExecutorMetadata =
+                    (*l.executor_meta).clone().into();
+                (l.executor_meta.id.clone(), proto_meta)
+            })
+            .collect::<HashMap<String, protobuf::ExecutorMetadata>>();
+
+        let partition_location = output_locations
             .into_iter()
             .map(|l| l.try_into())
             .collect::<ballista_core::error::Result<Vec<_>>>()?;
@@ -1210,6 +1220,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+                executor_map,
 
                 queued_at: self.queued_at,
                 started_at: self.start_time,

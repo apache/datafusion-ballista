@@ -88,7 +88,7 @@ pub struct PartitionLocation {
     /// The partition identifier.
     pub partition_id: PartitionId,
     /// Metadata about the executor hosting this partition.
-    pub executor_meta: ExecutorMetadata,
+    pub executor_meta: Arc<ExecutorMetadata>,
     /// Statistics about the partition data.
     pub partition_stats: PartitionStats,
     /// shuffle file id

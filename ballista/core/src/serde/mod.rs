@@ -19,6 +19,7 @@
 //! as convenience code for interacting with the generated code.
 
 use crate::extension::BallistaCacheNode;
+use crate::serde::scheduler::ExecutorMetadata as SchedulerExecutorMetadata;
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
@@ -47,6 +48,7 @@ use datafusion_proto::{
 };
 
 use prost::Message;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -446,16 +448,62 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .partition
                     .iter()
                     .map(|p| {
+                        // Build Arc map once
+                        let executor_map: HashMap<
+                            String,
+                            Arc<SchedulerExecutorMetadata>,
+                        > = p
+                            .executor_map
+                            .iter()
+                            .map(|(id, meta)| {
+                                let converted: SchedulerExecutorMetadata =
+                                    meta.clone().into();
+                                (id.clone(), Arc::new(converted))
+                            })
+                            .collect();
+
                         p.location
                             .iter()
                             .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {e:?}"
-                                    ))
+                                let executor_meta = executor_map
+                                    .get(&l.executor_id)
+                                    .ok_or_else(|| {
+                                        DataFusionError::Internal(format!(
+                                            "executor {} not in map",
+                                            l.executor_id
+                                        ))
+                                    })?
+                                    // cheap Arc clone
+                                    .clone();
+
+                                Ok(PartitionLocation {
+                                    map_partition_id: l.map_partition_id as usize,
+                                    partition_id: l
+                                        .partition_id
+                                        .as_ref()
+                                        .ok_or_else(|| {
+                                            DataFusionError::Internal(
+                                                "missing partition_id".to_string(),
+                                            )
+                                        })?
+                                        .clone()
+                                        .into(),
+                                    executor_meta,
+                                    partition_stats: l
+                                        .partition_stats
+                                        .as_ref()
+                                        .ok_or_else(|| {
+                                            DataFusionError::Internal(
+                                                "missing partition_stats".to_string(),
+                                            )
+                                        })?
+                                        .clone()
+                                        .into(),
+                                    file_id: l.file_id,
+                                    is_sort_shuffle: l.is_sort_shuffle,
                                 })
                             })
-                            .collect::<Result<Vec<_>, _>>()
+                            .collect()
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let partitioning = parse_protobuf_partitioning(
@@ -641,6 +689,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             let stage_id = exec.stage_id as u32;
             let mut partition = vec![];
             for location in &exec.partition {
+                let mut executor_map: HashMap<String, protobuf::ExecutorMetadata> =
+                    HashMap::new();
+
+                // Build dedup map as a side effect, reuse existing try_into() for locations
+                for l in location {
+                    executor_map
+                        .entry(l.executor_meta.id.clone())
+                        .or_insert_with(|| l.executor_meta.as_ref().clone().into());
+                }
+
                 partition.push(protobuf::ShuffleReaderPartition {
                     location: location
                         .iter()
@@ -652,6 +710,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?,
+                    executor_map,
                 });
             }
             let converter = DefaultPhysicalProtoConverter {};

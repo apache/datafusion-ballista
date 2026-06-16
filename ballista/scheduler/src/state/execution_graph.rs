@@ -34,7 +34,9 @@ use ballista_core::execution_plans::{
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
-use ballista_core::serde::protobuf::{FailedJob, ShuffleWritePartition, job_status};
+use ballista_core::serde::protobuf::{
+    self, FailedJob, ShuffleWritePartition, job_status,
+};
 use ballista_core::serde::protobuf::{
     FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
 };
@@ -1401,8 +1403,18 @@ impl ExecutionGraph for StaticExecutionGraph {
             )));
         }
 
-        let partition_location = self
-            .output_locations()
+        let output_locations = self.output_locations();
+
+        let executor_map = output_locations
+            .iter()
+            .map(|l| {
+                let proto_meta: protobuf::ExecutorMetadata =
+                    (*l.executor_meta).clone().into();
+                (l.executor_meta.id.clone(), proto_meta)
+            })
+            .collect::<HashMap<String, protobuf::ExecutorMetadata>>();
+
+        let partition_location = output_locations
             .into_iter()
             .map(|l| l.try_into())
             .collect::<Result<Vec<_>>>()?;
@@ -1414,6 +1426,7 @@ impl ExecutionGraph for StaticExecutionGraph {
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+                executor_map,
 
                 queued_at: self.queued_at,
                 started_at: self.start_time,
@@ -1763,7 +1776,7 @@ pub(crate) fn partition_to_location(
                 stage_id,
                 partition_id: shuffle.partition_id as usize,
             },
-            executor_meta: executor.clone(),
+            executor_meta: Arc::new(executor.clone()),
             partition_stats: PartitionStats::new(
                 Some(shuffle.num_rows),
                 Some(shuffle.num_batches),

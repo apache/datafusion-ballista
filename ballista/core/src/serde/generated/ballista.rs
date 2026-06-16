@@ -134,6 +134,11 @@ pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
     pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+    #[prost(map = "string, message", tag = "2")]
+    pub executor_map: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ExecutorMetadata,
+    >,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).
@@ -405,8 +410,8 @@ pub struct PartitionLocation {
     /// partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
     #[prost(message, optional, tag = "2")]
     pub partition_id: ::core::option::Option<PartitionId>,
-    #[prost(message, optional, tag = "3")]
-    pub executor_meta: ::core::option::Option<ExecutorMetadata>,
+    #[prost(string, tag = "3")]
+    pub executor_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "4")]
     pub partition_stats: ::core::option::Option<PartitionStats>,
     #[prost(uint64, optional, tag = "6")]
@@ -1096,11 +1101,16 @@ pub struct GetJobMetricsResult {
 pub struct SuccessfulJob {
     #[prost(message, repeated, tag = "1")]
     pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
-    #[prost(uint64, tag = "2")]
-    pub queued_at: u64,
+    #[prost(map = "string, message", tag = "2")]
+    pub executor_map: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ExecutorMetadata,
+    >,
     #[prost(uint64, tag = "3")]
-    pub started_at: u64,
+    pub queued_at: u64,
     #[prost(uint64, tag = "4")]
+    pub started_at: u64,
+    #[prost(uint64, tag = "5")]
     pub ended_at: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

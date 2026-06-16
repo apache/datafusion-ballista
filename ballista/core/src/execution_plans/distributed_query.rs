@@ -50,6 +50,7 @@ use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{debug, error, info};
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -526,11 +527,13 @@ async fn execute_query_pull(
                 started_at,
                 ended_at,
                 partition_location,
+                executor_map,
                 ..
             })) => {
                 // Calculate job execution time (server-side execution)
                 let job_execution_ms = ended_at.saturating_sub(started_at);
                 let duration = Duration::from_millis(job_execution_ms);
+                let executor_map = Arc::new(executor_map);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
 
@@ -562,6 +565,7 @@ async fn execute_query_pull(
                 let streams = partition_location.into_iter().map(move |partition| {
                     let f = fetch_partition(
                         partition,
+                        executor_map.clone(),
                         max_message_size,
                         true,
                         scheduler_url.clone(),
@@ -692,11 +696,13 @@ async fn execute_query_push(
                 started_at,
                 ended_at,
                 partition_location,
+                executor_map,
                 ..
             })) => {
                 // Calculate job execution time (server-side execution)
                 let job_execution_ms = ended_at.saturating_sub(started_at);
                 let duration = Duration::from_millis(job_execution_ms);
+                let executor_map = Arc::new(executor_map);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
 
@@ -728,6 +734,7 @@ async fn execute_query_push(
                 let streams = partition_location.into_iter().map(move |partition| {
                     let f = fetch_partition(
                         partition,
+                        executor_map.clone(),
                         max_message_size,
                         true,
                         scheduler_url.clone(),
@@ -795,6 +802,7 @@ fn get_client_host_port(
 #[allow(clippy::too_many_arguments)]
 async fn fetch_partition(
     location: PartitionLocation,
+    executor_map: Arc<HashMap<String, ExecutorMetadata>>,
     max_message_size: usize,
     flight_transport: bool,
     scheduler_url: String,
@@ -804,8 +812,11 @@ async fn fetch_partition(
     io_retries_times: u8,
     io_retry_wait_time_ms: u64,
 ) -> Result<SendableRecordBatchStream> {
-    let metadata = location.executor_meta.ok_or_else(|| {
-        DataFusionError::Internal("Received empty executor metadata".to_owned())
+    let metadata = executor_map.get(&location.executor_id).ok_or_else(|| {
+        DataFusionError::Internal(format!(
+            "Executor {} not found in map",
+            location.executor_id
+        ))
     })?;
 
     let partition_id = location.partition_id.ok_or_else(|| {
@@ -815,7 +826,7 @@ async fn fetch_partition(
     let port = metadata.port as u16;
 
     let (client_host, client_port) =
-        get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
+        get_client_host_port(metadata, &scheduler_url, &flight_proxy)?;
 
     let mut ballista_client = BallistaClient::try_new(
         client_host.as_str(),
