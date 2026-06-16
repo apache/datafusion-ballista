@@ -238,8 +238,8 @@ fn split_area_for_table_and_failure(
     match selected_job {
         Some(job) if job.status == "Failed" => {
             let areas = Layout::vertical([
-                Constraint::Min(5),    // Table
-                Constraint::Length(5), // Failure reason
+                Constraint::Percentage(80), // Table
+                Constraint::Percentage(20), // Failure reason
             ])
             .split(area);
             (areas[0], Some((areas[1], job)))
