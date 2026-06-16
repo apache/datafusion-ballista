@@ -181,29 +181,29 @@ impl Theme {
 
             detail_label: Style::default().fg(Color::Yellow),
 
-            graph_border: Style::default().fg(Color::Cyan),
+            graph_border: Style::default().fg(Color::LightCyan),
             graph_label: Style::default().fg(Color::White),
-            graph_stage: Style::default().fg(Color::Yellow).bold(),
-            graph_arrow: Style::default().fg(Color::Green),
+            graph_stage: Style::default().fg(Color::LightYellow).bold(),
+            graph_arrow: Style::default().fg(Color::LightGreen),
 
             tile_running: Style::default().fg(Color::LightBlue),
-            tile_queued: Style::default().fg(Color::Magenta),
-            tile_completed: Style::default().fg(Color::Green),
-            tile_failed: Style::default().fg(Color::Red),
+            tile_queued: Style::default().fg(Color::LightMagenta),
+            tile_completed: Style::default().fg(Color::LightGreen),
+            tile_failed: Style::default().fg(Color::LightRed),
 
-            scheduler_down: Style::default().fg(Color::Red).bold(),
+            scheduler_down: Style::default().fg(Color::LightRed).bold(),
 
-            cancel_success: Style::default().fg(Color::Green),
-            cancel_not_done: Style::default().fg(Color::Yellow),
-            cancel_failure: Style::default().fg(Color::Red),
+            cancel_success: Style::default().fg(Color::LightGreen),
+            cancel_not_done: Style::default().fg(Color::LightYellow),
+            cancel_failure: Style::default().fg(Color::LightRed),
 
             banner: Style::default().fg(Color::Yellow),
 
-            feature_enabled: Style::default().fg(Color::Green),
-            feature_disabled: Style::default().fg(Color::Red),
+            feature_enabled: Style::default().fg(Color::LightGreen),
+            feature_disabled: Style::default().fg(Color::LightRed),
 
             text_info: Style::default().bold(),
-            text_error: Style::default().fg(Color::Red).bold(),
+            text_error: Style::default().fg(Color::LightRed).bold(),
             app_background: Style::default().bg(Color::Black),
 
             footer: Style::default().bold(),

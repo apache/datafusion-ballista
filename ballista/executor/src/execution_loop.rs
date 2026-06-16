@@ -25,6 +25,7 @@ use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_dir;
 use crate::{TaskExecutionTimes, as_task_status};
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::BallistaCodec;
@@ -116,7 +117,7 @@ where
 
                 // Clean up any state related to the listed jobs
                 for cleanup in jobs_to_clean {
-                    let job_id = cleanup.job_id.clone();
+                    let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
@@ -158,7 +159,7 @@ where
                             //
 
                             let partition_id = PartitionId {
-                                job_id: task.job_id.clone(),
+                                job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
                                 partition_id: task.partition_id as usize,
                             };
@@ -231,7 +232,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
-    let job_id = task.job_id;
+    let job_id: JobId = task.job_id.into();
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;

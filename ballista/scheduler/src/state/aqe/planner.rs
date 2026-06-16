@@ -24,6 +24,7 @@ use crate::state::aqe::optimizer_rule::{
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
+use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
@@ -164,7 +165,11 @@ impl AdaptivePlanner {
         );
 
         let plan = state.create_physical_plan(logical_plan).await?;
-        let plan = handle_explain_plan(&job_name, ctx, logical_plan, plan)
+
+        // Note: the signature requires a JobId, but we are passing a JobName. The below is a
+        // dirty fix but this seems like a bug or a design flaw.
+        let job_id: JobId = job_name.clone().into();
+        let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan)
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
@@ -359,12 +364,10 @@ impl AdaptivePlanner {
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
-                        BallistaAdapter::adapt_to_ballista(
-                            plan,
-                            self.job_name.as_str(),
-                            config,
-                        )
-                        .map(|w| (w.plan.stage_id(), w))
+                        // adapt_to_ballista takes an job_id, we are passing a job_name. Need to transform to fix compiler.
+                        let job_id = self.job_name.clone().into();
+                        BallistaAdapter::adapt_to_ballista(plan, &job_id, config)
+                            .map(|w| (w.plan.stage_id(), w))
                     })
                     .collect::<common::Result<(HashSet<_>, Vec<_>)>>()?;
 
