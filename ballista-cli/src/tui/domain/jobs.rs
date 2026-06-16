@@ -34,6 +34,24 @@ pub struct Job {
     pub percent_complete: u8,
 }
 
+impl Job {
+    pub fn is_queued(&self) -> bool {
+        self.status == "Queued"
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.status == "Running"
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.status == "Completed"
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.status == "Failed"
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SortColumn {
     None,
