@@ -78,7 +78,7 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
         Ok(protobuf::PartitionLocation {
             map_partition_id: self.map_partition_id as u32,
             partition_id: Some(self.partition_id.into()),
-            executor_id: self.executor_meta.clone().id.clone(),
+            executor_id: self.executor_meta.id.clone(),
             partition_stats: Some(self.partition_stats.into()),
             file_id: self.file_id,
             is_sort_shuffle: self.is_sort_shuffle,
