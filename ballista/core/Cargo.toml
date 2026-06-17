@@ -55,7 +55,7 @@ datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
 datafusion-spark = { workspace = true, optional = true, features = ["datafusion"] }
 futures = { workspace = true }
-itertools = "0.14"
+itertools = "0.15"
 log = { workspace = true }
 md-5 = { version = "^0.11.0" }
 object_store = { workspace = true, features = ["aws", "http"], optional = true }
