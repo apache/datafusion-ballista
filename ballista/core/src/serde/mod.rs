@@ -394,7 +394,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
-                    shuffle_writer.job_id.clone(),
+                    shuffle_writer.job_id.clone().into(),
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
@@ -430,7 +430,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 );
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
-                    sort_shuffle_writer.job_id.clone(),
+                    sort_shuffle_writer.job_id.clone().into(),
                     sort_shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // executor will fill this in

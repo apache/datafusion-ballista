@@ -15,8 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod config;
-pub mod theme;
+use crate::tui::app::App;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, Clear};
 
-pub use config::{Settings, ThemeSettings};
-use theme::{ThemeName, ThemeOverride};
+/// Clears the provided area and renders a [`Block`]
+/// with the configured application background style
+pub fn clear_area(f: &mut Frame, area: Rect, app: &App) {
+    f.render_widget(Clear, area);
+    let block = Block::default().style(app.theme.app_background);
+    f.render_widget(block, area);
+}

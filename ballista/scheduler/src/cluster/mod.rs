@@ -28,7 +28,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{ConfigProducer, JobStatusSubscriber};
+use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
@@ -154,7 +154,7 @@ pub type ExecutorSlot = (String, u32);
 /// Trait for maintaining a globally consistent view of cluster resources.
 ///
 /// Implementations track executor registration, heartbeats, and available task slots.
-#[tonic::async_trait]
+#[async_trait::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
     /// Initializes the cluster state backend.
     ///
@@ -169,7 +169,7 @@ pub trait ClusterState: Send + Sync + 'static {
     async fn bind_schedulable_tasks(
         &self,
         distribution: TaskDistributionPolicy,
-        active_jobs: Arc<HashMap<String, JobInfoCache>>,
+        active_jobs: Arc<HashMap<JobId, JobInfoCache>>,
         executors: Option<HashSet<String>>,
     ) -> Result<Vec<BoundTask>>;
 
@@ -220,7 +220,7 @@ pub enum JobStateEvent {
     /// Event when a job status has been updated
     JobUpdated {
         /// Job ID of updated job
-        job_id: String,
+        job_id: JobId,
         /// New job status
         status: JobStatus,
     },
@@ -230,14 +230,14 @@ pub enum JobStateEvent {
     /// different scheduler
     JobAcquired {
         /// Job ID of the acquired job
-        job_id: String,
+        job_id: JobId,
         /// The scheduler which acquired ownership of the job
         owner: String,
     },
     /// Event when a scheduler releases ownership of a still active job
     JobReleased {
         /// Job ID of the released job
-        job_id: String,
+        job_id: JobId,
     },
     /// Event when a new session has been created.
     SessionAccessed {
@@ -277,12 +277,12 @@ pub type JobStateEventStream = Pin<Box<dyn Stream<Item = JobStateEvent> + Send>>
 /// Trait for persisting state related to executing jobs.
 ///
 /// Implementations handle job lifecycle, execution graphs, and session management.
-#[tonic::async_trait]
+#[async_trait::async_trait]
 pub trait JobState: Send + Sync {
     /// Accepts a job into the scheduler's queue.
     ///
     /// Called when a job is received but before it is planned.
-    fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()>;
+    fn accept_job(&self, job_id: &JobId, job_name: &str, queued_at: u64) -> Result<()>;
 
     /// Returns the number of queued jobs waiting to be scheduled.
     fn pending_job_number(&self) -> usize;
@@ -292,19 +292,19 @@ pub trait JobState: Send + Sync {
     /// The submitter is assumed to own the job.
     async fn submit_job(
         &self,
-        job_id: String,
+        job_id: JobId,
         graph: &ExecutionGraphBox,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()>;
 
     /// Returns the set of all active job IDs.
-    async fn get_jobs(&self) -> Result<HashSet<String>>;
+    async fn get_jobs(&self) -> Result<HashSet<JobId>>;
 
     /// Returns the set of all job IDs including running, queued, and completed jobs.
-    async fn get_all_jobs(&self) -> Result<HashSet<String>>;
+    async fn get_all_jobs(&self) -> Result<HashSet<JobId>>;
 
     /// Returns the status of the specified job.
-    async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>>;
+    async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>>;
 
     /// Returns the execution graph for a job.
     ///
@@ -312,27 +312,27 @@ pub trait JobState: Send + Sync {
     /// by another scheduler after this call returns.
     async fn get_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Result<Option<ExecutionGraphBox>>;
 
     /// Persists the current state of an owned job.
     ///
     /// Returns an error if the job is not owned by the caller.
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()>;
+    async fn save_job(&self, job_id: &JobId, graph: &ExecutionGraphBox) -> Result<()>;
 
     /// Marks an unscheduled job as failed.
     ///
     /// Called when a job fails during planning before an execution graph is created.
-    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()>;
+    async fn fail_unscheduled_job(&self, job_id: &JobId, reason: String) -> Result<()>;
 
     /// Deletes a job from the state.
-    async fn remove_job(&self, job_id: &str) -> Result<()>;
+    async fn remove_job(&self, job_id: &JobId) -> Result<()>;
 
     /// Attempts to acquire ownership of a job.
     ///
     /// Returns the execution graph if the job is still running and successfully acquired,
     /// otherwise returns None.
-    async fn try_acquire_job(&self, job_id: &str) -> Result<Option<ExecutionGraphBox>>;
+    async fn try_acquire_job(&self, job_id: &JobId) -> Result<Option<ExecutionGraphBox>>;
 
     /// Returns a stream of job state events.
     async fn job_state_events(&self) -> Result<JobStateEventStream>;
@@ -353,7 +353,7 @@ pub trait JobState: Send + Sync {
 
 pub(crate) async fn bind_task_bias(
     mut slots: Vec<&mut AvailableTaskSlots>,
-    running_jobs: Arc<HashMap<String, JobInfoCache>>,
+    running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
@@ -437,7 +437,7 @@ pub(crate) async fn bind_task_bias(
 
 pub(crate) async fn bind_task_round_robin(
     mut slots: Vec<&mut AvailableTaskSlots>,
-    running_jobs: Arc<HashMap<String, JobInfoCache>>,
+    running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
@@ -498,7 +498,7 @@ pub(crate) async fn bind_task_round_robin(
                 *task_info = Some(create_task_info(executor_id.clone(), task_id));
 
                 let partition = PartitionId {
-                    job_id: job_id.clone(),
+                    job_id: job_id.to_owned(),
                     stage_id: running_stage.stage_id,
                     partition_id,
                 };
@@ -551,7 +551,7 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     async fn bind_tasks(
         &self,
         mut slots: Vec<&mut AvailableTaskSlots>,
-        running_jobs: Arc<HashMap<String, JobInfoCache>>,
+        running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     ) -> datafusion::error::Result<Vec<BoundTask>>;
 
     /// Name of [DistributionPolicy]
@@ -563,6 +563,7 @@ mod test {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use ballista_core::JobId;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::AvailableTaskSlots;
     use ballista_core::serde::scheduler::{
@@ -592,7 +593,7 @@ mod test {
 
         let mut expected = Vec::new();
         {
-            let mut expected0 = HashMap::new();
+            let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
 
             let mut entry_a = HashMap::new();
             entry_a.insert("executor_3".to_string(), 2);
@@ -600,21 +601,21 @@ mod test {
             entry_b.insert("executor_3".to_string(), 5);
             entry_b.insert("executor_2".to_string(), 2);
 
-            expected0.insert("job_a".to_string(), entry_a);
-            expected0.insert("job_b".to_string(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
         {
-            let mut expected0 = HashMap::new();
+            let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
 
             let mut entry_b = HashMap::new();
             entry_b.insert("executor_3".to_string(), 7);
             let mut entry_a = HashMap::new();
             entry_a.insert("executor_2".to_string(), 2);
 
-            expected0.insert("job_a".to_string(), entry_a);
-            expected0.insert("job_b".to_string(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
@@ -641,9 +642,9 @@ mod test {
 
         let result = get_result(bound_tasks);
 
-        let mut expected = Vec::new();
+        let mut expected: Vec<HashMap<JobId, HashMap<String, usize>>> = Vec::new();
         {
-            let mut expected0 = HashMap::new();
+            let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
 
             let mut entry_a = HashMap::new();
             entry_a.insert("executor_3".to_string(), 1);
@@ -653,13 +654,13 @@ mod test {
             entry_b.insert("executor_3".to_string(), 2);
             entry_b.insert("executor_2".to_string(), 2);
 
-            expected0.insert("job_a".to_string(), entry_a);
-            expected0.insert("job_b".to_string(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
         {
-            let mut expected0 = HashMap::new();
+            let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
 
             let mut entry_b = HashMap::new();
             entry_b.insert("executor_3".to_string(), 3);
@@ -669,8 +670,8 @@ mod test {
             entry_a.insert("executor_2".to_string(), 1);
             entry_a.insert("executor_1".to_string(), 1);
 
-            expected0.insert("job_a".to_string(), entry_a);
-            expected0.insert("job_b".to_string(), entry_b);
+            expected0.insert("job_a".into(), entry_a);
+            expected0.insert("job_b".into(), entry_b);
 
             expected.push(expected0);
         }
@@ -683,9 +684,7 @@ mod test {
         Ok(())
     }
 
-    fn get_result(
-        bound_tasks: Vec<BoundTask>,
-    ) -> HashMap<String, HashMap<String, usize>> {
+    fn get_result(bound_tasks: Vec<BoundTask>) -> HashMap<JobId, HashMap<String, usize>> {
         let mut result = HashMap::new();
 
         for bound_task in bound_tasks {
@@ -701,18 +700,18 @@ mod test {
 
     async fn mock_active_jobs(
         num_partition: usize,
-    ) -> Result<HashMap<String, JobInfoCache>> {
-        let graph_a = mock_graph("job_a", num_partition, 2).await?;
+    ) -> Result<HashMap<JobId, JobInfoCache>> {
+        let graph_a = mock_graph(&"job_a".into(), num_partition, 2).await?;
 
-        let graph_b = mock_graph("job_b", num_partition, 7).await?;
+        let graph_b = mock_graph(&"job_b".into(), num_partition, 7).await?;
 
         let mut active_jobs = HashMap::new();
         active_jobs.insert(
-            graph_a.job_id().to_string(),
+            graph_a.job_id().to_owned(),
             JobInfoCache::new(Box::new(graph_a)),
         );
         active_jobs.insert(
-            graph_b.job_id().to_string(),
+            graph_b.job_id().to_owned(),
             JobInfoCache::new(Box::new(graph_b)),
         );
 
@@ -720,7 +719,7 @@ mod test {
     }
 
     async fn mock_graph(
-        job_id: &str,
+        job_id: &JobId,
         num_target_partitions: usize,
         num_pending_task: usize,
     ) -> Result<StaticExecutionGraph> {

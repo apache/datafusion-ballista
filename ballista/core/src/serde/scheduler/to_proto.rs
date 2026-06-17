@@ -46,7 +46,7 @@ impl TryInto<protobuf::Action> for Action {
                 is_sort_shuffle,
             } => Ok(protobuf::Action {
                 action_type: Some(ActionType::FetchPartition(protobuf::FetchPartition {
-                    job_id,
+                    job_id: job_id.into(),
                     stage_id: stage_id as u32,
                     partition_id: partition_id as u32,
                     host,
@@ -64,7 +64,7 @@ impl TryInto<protobuf::Action> for Action {
 impl Into<protobuf::PartitionId> for PartitionId {
     fn into(self) -> protobuf::PartitionId {
         protobuf::PartitionId {
-            job_id: self.job_id,
+            job_id: self.job_id.into(),
             stage_id: self.stage_id as u32,
             partition_id: self.partition_id as u32,
         }

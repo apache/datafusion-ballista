@@ -24,10 +24,12 @@ use ballista_cli::{
     BALLISTA_CLI_VERSION, exec, print_format::PrintFormat, print_options::PrintOptions,
 };
 use clap::Parser;
+#[cfg(feature = "cli")]
 use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
+#[cfg(feature = "cli")]
 use datafusion_cli::{
     object_storage::instrumented::InstrumentedObjectStoreRegistry, print_options::MaxRows,
 };

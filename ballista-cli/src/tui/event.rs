@@ -19,8 +19,8 @@ use crate::tui::domain::{
     SchedulerState,
     executors::Executor,
     jobs::{
-        CancelJobResult, Job, JobDetails,
-        stages::{JobStagesResponse, StagesGraph},
+        CancelJobResult, Job, JobConfigPopup, JobDetails,
+        stages::{JobStagesResponse, StagePlanTab, StagesGraph},
     },
     metrics::Metric,
 };
@@ -36,8 +36,10 @@ pub enum UiData {
     Metrics(Vec<Metric>),
     Jobs(Vec<Job>),
     JobDetails(JobDetails),
+    JobConfig(JobConfigPopup),
     JobStagesGraph(StagesGraph),
     JobStagesData(String, JobStagesResponse),
+    JobStagesPlanData(StagePlanTab, JobStagesResponse),
     ExecutorDetails(Executor),
     CancelJobResult(CancelJobResult),
 }
@@ -90,13 +92,13 @@ pub(crate) mod tui {
                     tokio::select! {
                         _ = data_reload_tick => {
                             if let Err(err) = tx.send(Event::DataReload) {
-                                tracing::error!("Failed to send DataReload event: {err:?}");
+                                tracing::debug!("Failed to send DataReload event: {err:?}");
                                 break;
                             }
                         }
                         _ = repaint_tick => {
                             if let Err(err) = tx.send(Event::Repaint) {
-                                tracing::error!("Failed to send Repaint event: {err:?}");
+                                tracing::debug!("Failed to send Repaint event: {err:?}");
                                 break;
                             }
                         }

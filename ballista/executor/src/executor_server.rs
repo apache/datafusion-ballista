@@ -906,7 +906,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 .executor
                 .cancel_task(
                     task.task_id as usize,
-                    task.job_id,
+                    task.job_id.into(),
                     task.stage_id as usize,
                     task.partition_id as usize,
                 )
@@ -924,7 +924,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let job_id = request.into_inner().job_id.into();
 
         remove_job_dir(&self.executor.work_dir, &job_id)
             .await
