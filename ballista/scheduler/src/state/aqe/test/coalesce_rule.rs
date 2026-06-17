@@ -29,8 +29,7 @@ use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{mock_batch, mock_schema};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    PartitionId, PartitionLocation, PartitionLocationMetadata, PartitionStats,
 };
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;

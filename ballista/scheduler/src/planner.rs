@@ -1031,8 +1031,7 @@ order by
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
         use ballista_core::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+            PartitionId, PartitionLocation, PartitionLocationMetadata, PartitionStats,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 

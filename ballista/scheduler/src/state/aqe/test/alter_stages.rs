@@ -21,8 +21,7 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics_no_data,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    PartitionId, PartitionLocation, PartitionLocationMetadata, PartitionStats,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::stats::Precision;

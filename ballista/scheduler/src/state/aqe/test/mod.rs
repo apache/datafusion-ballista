@@ -27,8 +27,7 @@ mod plan_to_stages;
 use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    PartitionId, PartitionLocation, PartitionLocationMetadata, PartitionStats,
 };
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
