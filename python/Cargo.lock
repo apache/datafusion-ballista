@@ -642,6 +642,7 @@ dependencies = [
  "futures",
  "http",
  "insta",
+ "itertools",
  "log",
  "object_store",
  "parking_lot",
@@ -652,6 +653,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tower-http",
  "uuid",
 ]
 

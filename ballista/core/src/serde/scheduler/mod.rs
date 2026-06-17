@@ -79,6 +79,30 @@ impl PartitionId {
     }
 }
 
+/// Lean exec information for a shuffle partition.
+#[derive(Debug, Clone)]
+pub struct PartitionLocationMetadata {
+    /// Unique executor identifier.
+    pub id: String,
+    /// Hostname or IP address of the executor.
+    pub host: String,
+    /// Port number for data transfer.
+    pub port: u16,
+    /// Port number for gRPC communication.
+    pub grpc_port: u16,
+}
+
+impl From<&ExecutorMetadata> for PartitionLocationMetadata {
+    fn from(m: &ExecutorMetadata) -> Self {
+        Self {
+            id: m.id.clone(),
+            host: m.host.clone(),
+            port: m.port,
+            grpc_port: m.grpc_port,
+        }
+    }
+}
+
 /// Location information for a shuffle partition.
 #[derive(Debug, Clone)]
 pub struct PartitionLocation {
@@ -87,7 +111,7 @@ pub struct PartitionLocation {
     /// The partition identifier.
     pub partition_id: PartitionId,
     /// Metadata about the executor hosting this partition.
-    pub executor_meta: ExecutorMetadata,
+    pub partition_location_metadata: Arc<PartitionLocationMetadata>,
     /// Statistics about the partition data.
     pub partition_stats: PartitionStats,
     /// shuffle file id

@@ -551,7 +551,10 @@ mod test {
         assert_eq!(final_graph.output_locations().len(), 4);
 
         for output_location in final_graph.output_locations() {
-            assert_eq!(output_location.executor_meta.host, "localhost1".to_owned())
+            assert_eq!(
+                output_location.partition_location_metadata.host,
+                "localhost1".to_owned()
+            )
         }
 
         Ok(())

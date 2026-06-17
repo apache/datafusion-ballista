@@ -1,0 +1,115 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running `target/debug/ballista-cli`
+Ballista CLI v53.0.0
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[?2026h[K❯ \q[4C[?2026l[?2026h[K❯ select case when (select count(*) from store_sales where ss_quantity between 1 and 20) > 409437
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 1 and 20) end bucket1,
+         case when (select count(*) from store_sales where ss_quantity between 21 and 40) > 4595804
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 21 and 40)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 21 and 40) end bucket2,
+         case when (select count(*) from store_sales where ss_quantity between 41 and 60) > 1333710
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 41 and 60)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 41 and 60) end bucket3,
+         case when (select count(*) from store_sales where ss_quantity between 61 and 80) > 2361102
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 61 and 80)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 61 and 80) end bucket4,
+         case when (select count(*) from store_sales where ss_quantity between 81 and 100) > 1517817
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 81 and 100)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 81 and 100) end bucket5
+
+;[1C[?2026l[A[D[2A[2A[2A[2A[2A[2A[2A[2A[2A[2B[2B[2B[2B[2B[2B[2B[2B[2B[B[C[?2004l
+Collection([Diagnostic(Diagnostic { kind: Error, message: "table 'store_sales' not found", span: Some(Span(Location(1,40)..Location(1,51))), notes: [], helps: [] }, Plan("table 'datafusion.public.store_sales' not found")), Diagnostic(Diagnostic { kind: Error, message: "table 'store_sales' not found", span: Some(Span(Location(4,42)..Location(4,53))), notes: [], helps: [] }, Plan("table 'datafusion.public.store_sales' not found")), Diagnostic(Diagnostic { kind: Error, message: "table 'store_sales' not found", span: Some(Span(Location(7,42)..Location(7,53))), notes: [], helps: [] }, Plan("table 'datafusion.public.store_sales' not found")), Diagnostic(Diagnostic { kind: Error, message: "table 'store_sales' not found", span: Some(Span(Location(10,42)..Location(10,53))), notes: [], helps: [] }, Plan("table 'datafusion.public.store_sales' not found")), Diagnostic(Diagnostic { kind: Error, message: "table 'store_sales' not found", span: Some(Span(Location(13,42)..Location(13,53))), notes: [], helps: [] }, Plan("table 'datafusion.public.store_sales' not found"))])
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[?2026h[K❯   CREATE EXTERNAL TABLE store_sales STORED AS PARQUET LOCATION '/Users/bhargava/Projects/oss/datafusion/benchmarks/data/tpcds_sf1/store_sales.parquet';[73C[?2026l[?2004l
+0 row(s) fetched. 
+Elapsed 0.059 seconds.
+
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[?2026h[K❯   CREATE EXTERNAL TABLE reason STORED AS PARQUET LOCATION '/Users/bhargava/Projects/oss/datafusion/benchmarks/data/tpcds_sf1/reason.parquet';[63C[?2026l[?2004l
+0 row(s) fetched. 
+Elapsed 0.006 seconds.
+
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[?2026h[K❯   select case when (select count(*) from store_sales where ss_quantity between 1 and 20) > 409437
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 1 and 20) end bucket1,
+         case when (select count(*) from store_sales where ss_quantity between 21 and 40) > 4595804
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 21 and 40)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 21 and 40) end bucket2,
+         case when (select count(*) from store_sales where ss_quantity between 41 and 60) > 1333710
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 41 and 60)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 41 and 60) end bucket3,
+         case when (select count(*) from store_sales where ss_quantity between 61 and 80) > 2361102
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 61 and 80)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 61 and 80) end bucket4,
+         case when (select count(*) from store_sales where ss_quantity between 81 and 100) > 1517817
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 81 and 100)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 81 and 100) end bucket5
+  from reason where r_reason_sk = 1;[36C[?2026l[?2004l
+[2m2026-06-11T06:41:53.393166Z[0m [33m WARN[0m [2mballista_executor::execution_loop[0m[2m:[0m Executor failed to run task: PartitionId { job_id: "py8NA3j", stage_id: 16, partition_id: 0 }, error: DataFusionError(Internal("Assertion failed: col.name() == matching_name: Input field name r_reason_sk does not match with the projection expression count(*)"))
+[2m2026-06-11T06:41:53.395745Z[0m [31mERROR[0m [2mballista_scheduler::scheduler_server::query_stage_scheduler[0m[2m:[0m Job py8NA3j running failed
+[2m2026-06-11T06:41:53.396515Z[0m [31mERROR[0m [2mballista_core::execution_plans::distributed_query[0m[2m:[0m Job py8NA3j failed: Job failed due to stage 16 failed: Task failed due to runtime execution error: DataFusionError(Internal("Assertion failed: col.name() == matching_name: Input field name r_reason_sk does not match with the projection expression count(*)"))
+
+ArrowError(ExternalError(Execution("Job py8NA3j failed: Job failed due to stage 16 failed: Task failed due to runtime execution error: DataFusionError(Internal(\"Assertion failed: col.name() == matching_name: Input field name r_reason_sk does not match with the projection expression count(*)\"))\n")), Some(""))
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[?2026h[K❯ [2C[?2026l[?2026h[K❯ 
+[?2026l[?2026h[K[A[K❯ 
+
+[?2026l;[?2004l
+Plan("No SQL statements were provided in the query string")
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[?2026h[K❯ 
+
+;[1C[?2026l[A[D[A[2C[?2026h[2B[K[A[K[A[K❯   select case when (select count(*) from store_sales where ss_quantity between 1 and 20) > 409437
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 1 and 20) end bucket1,
+         case when (select count(*) from store_sales where ss_quantity between 21 and 40) > 4595804
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 21 and 40)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 21 and 40) end bucket2,
+         case when (select count(*) from store_sales where ss_quantity between 41 and 60) > 1333710
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 41 and 60)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 41 and 60) end bucket3,
+         case when (select count(*) from store_sales where ss_quantity between 61 and 80) > 2361102
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 61 and 80)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 61 and 80) end bucket4,
+         case when (select count(*) from store_sales where ss_quantity between 81 and 100) > 1517817
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 81 and 100)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 81 and 100) end bucket5
+  from reason where r_reason_sk = 1;[36C[?2026l[?2004l
+[2m2026-06-11T07:00:31.183600Z[0m [33m WARN[0m [2mballista_executor::execution_loop[0m[2m:[0m Executor failed to run task: PartitionId { job_id: "5zg9liN", stage_id: 16, partition_id: 0 }, error: DataFusionError(Internal("Assertion failed: col.name() == matching_name: Input field name r_reason_sk does not match with the projection expression count(*)"))
+[2m2026-06-11T07:00:31.183996Z[0m [31mERROR[0m [2mballista_scheduler::scheduler_server::query_stage_scheduler[0m[2m:[0m Job 5zg9liN running failed
+[2m2026-06-11T07:00:31.184692Z[0m [31mERROR[0m [2mballista_core::execution_plans::distributed_query[0m[2m:[0m Job 5zg9liN failed: Job failed due to stage 16 failed: Task failed due to runtime execution error: DataFusionError(Internal("Assertion failed: col.name() == matching_name: Input field name r_reason_sk does not match with the projection expression count(*)"))
+
+ArrowError(ExternalError(Execution("Job 5zg9liN failed: Job failed due to stage 16 failed: Task failed due to runtime execution error: DataFusionError(Internal(\"Assertion failed: col.name() == matching_name: Input field name r_reason_sk does not match with the projection expression count(*)\"))\n")), Some(""))
+[?2004h[?2026h[K❯ [90m \? for help, \q to quit[0m[2C[?2026l[2m2026-06-11T08:01:20.885457Z[0m [33m WARN[0m [2mballista_scheduler::scheduler_server[0m[2m:[0m ACTIVE executor 6e7e4ea9-ad5e-469f-b327-829e1cd78ae5 heartbeat timed out after 180s
+[2m2026-06-11T08:01:20.892955Z[0m [33m WARN[0m [2mballista_scheduler::state::executor_manager[0m[2m:[0m Executor is already dead, failed to connect to Executor 6e7e4ea9-ad5e-469f-b327-829e1cd78ae5
+[?2026h[K❯ w[3C[?2026lait is this AWE [D[K[D[K[D[KQE ?[?2026h[K❯ wait is this AQE ?
+[?2026l;[?2026h[K[A[K❯ wait is this AQE ?
+;  🤔 Invalid statement: SQL error: ParserError("Expected: an SQL statement, found: wait at Line: 1, Column: 1")[1A[1C[?2026l[?2026h[1B[K[A[K[A[K❯ wait is this AQE ?
+;  🤔 Invalid statement: SQL error: ParserError("Expected: an SQL statement, found: wait at Line: 1, Column: 1")[1A[1C[?2026l[?2026h[1B[K[A[K[A[K❯ wait is this AQE ?
+;  🤔 Invalid statement: SQL error: ParserError("Expected: an SQL statement, found: wait at Line: 1, Column: 1")[1A[1C[?2026l[?2026h[1B[K[A[K[A[K❯ wait is this AQE ?
+;  🤔 Invalid statement: SQL error: ParserError("Expected: an SQL statement, found: wait at Line: 1, Column: 1")[1A[1C[?2026l[?2026h[1B[K[A[K[A[K❯ wait is this AQE ?
+;  🤔 Invalid statement: SQL error: ParserError("Expected: an SQL statement, found: wait at Line: 1, Column: 1")[1A[1C[?2026l[?2026h[1B[K[A[K[A[K❯ wait is this AQE ?
+;  🤔 Invalid statement: SQL error: ParserError("Expected: an SQL statement, found: wait at Line: 1, Column: 1")[1A[1C[?2026l[A[C[?2026h[2B[K[A[K[A[K❯   select case when (select count(*) from store_sales where ss_quantity between 1 and 20) > 409437
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 1 and 20) end bucket1,
+         case when (select count(*) from store_sales where ss_quantity between 21 and 40) > 4595804
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 21 and 40)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 21 and 40) end bucket2,
+         case when (select count(*) from store_sales where ss_quantity between 41 and 60) > 1333710
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 41 and 60)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 41 and 60) end bucket3,
+         case when (select count(*) from store_sales where ss_quantity between 61 and 80) > 2361102
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 61 and 80)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 61 and 80) end bucket4,
+         case when (select count(*) from store_sales where ss_quantity between 81 and 100) > 1517817
+              then (select avg(ss_ext_tax) from store_sales where ss_quantity between 81 and 100)
+              else (select avg(ss_net_paid) from store_sales where ss_quantity between 81 and 100) end bucket5
+  from reason where r_reason_sk = 1;[36C[?2026l[2A[2A[2A[6B[?2004l
+^C
+[?2004h[?2026h[K❯ [2C[?2026l[?2026h[K❯ 
+[?2026l[?2026h[K[A[K❯ 
+
+[?2026l\q[?2026h[K[A[K[A[K❯ 
+
+\q
+[?2026l[?2004l
+^C
+[?2004h[?2026h[K❯ [2C[?2026l/q[?2026h[K❯ /q
+[?2026l[?2004l
+\q

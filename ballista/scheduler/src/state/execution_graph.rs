@@ -39,7 +39,8 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
+    ExecutorMetadata, PartitionId, PartitionLocation, PartitionLocationMetadata,
+    PartitionStats,
 };
 
 use crate::display::print_stage_metrics;
@@ -544,7 +545,7 @@ impl StaticExecutionGraph {
                     stage_output.partition_locations.iter_mut().for_each(
                         |(_partition, locs)| {
                             let before_len = locs.len();
-                            locs.retain(|loc| loc.executor_meta.id != executor_id);
+                            locs.retain(|loc| loc.partition_location_metadata.id != executor_id);
                             if locs.len() < before_len {
                                 match_found = true;
                             }
@@ -1734,9 +1735,10 @@ pub(crate) fn partition_to_location(
     job_id: &str,
     map_partition_id: usize,
     stage_id: usize,
-    executor: &ExecutorMetadata,
+    exec_metadata: &ExecutorMetadata,
     shuffles: Vec<ShuffleWritePartition>,
 ) -> Vec<PartitionLocation> {
+    let partition_metadata = Arc::new(PartitionLocationMetadata::from(exec_metadata));
     shuffles
         .into_iter()
         .map(|shuffle| PartitionLocation {
@@ -1746,7 +1748,7 @@ pub(crate) fn partition_to_location(
                 stage_id,
                 partition_id: shuffle.partition_id as usize,
             },
-            executor_meta: executor.clone(),
+            partition_location_metadata: Arc::clone(&partition_metadata),
             partition_stats: PartitionStats::new(
                 Some(shuffle.num_rows),
                 Some(shuffle.num_batches),
@@ -1881,7 +1883,10 @@ mod test {
         let outputs = agg_graph.output_locations();
 
         for location in outputs {
-            assert_eq!(location.executor_meta.host, "localhost2".to_owned());
+            assert_eq!(
+                location.partition_location_metadata.host,
+                "localhost2".to_owned()
+            );
         }
 
         Ok(())

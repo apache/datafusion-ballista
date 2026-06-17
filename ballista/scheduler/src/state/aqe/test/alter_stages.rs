@@ -534,7 +534,7 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             stage_id: 0,
             partition_id: 0,
         },
-        executor_meta: ExecutorMetadata {
+        partition_location_metadata: ExecutorMetadata {
             id: "".to_string(),
             host: "".to_string(),
             port: 0,
@@ -566,7 +566,7 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             stage_id: 0,
             partition_id: 0,
         },
-        executor_meta: ExecutorMetadata {
+        partition_location_metadata: ExecutorMetadata {
             id: "".to_string(),
             host: "".to_string(),
             port: 0,

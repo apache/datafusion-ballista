@@ -78,7 +78,14 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
         Ok(protobuf::PartitionLocation {
             map_partition_id: self.map_partition_id as u32,
             partition_id: Some(self.partition_id.into()),
-            executor_meta: Some(self.executor_meta.into()),
+            executor_meta: Some(protobuf::ExecutorMetadata {
+                id: self.partition_location_metadata.id.clone(),
+                host: self.partition_location_metadata.host.clone(),
+                port: self.partition_location_metadata.port as u32,
+                grpc_port: self.partition_location_metadata.grpc_port as u32,
+                specification: None,
+                os_info: None,
+            }),
             partition_stats: Some(self.partition_stats.into()),
             file_id: self.file_id,
             is_sort_shuffle: self.is_sort_shuffle,

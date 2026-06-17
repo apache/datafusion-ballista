@@ -1048,7 +1048,7 @@ order by
                 stage_id: 42,
                 partition_id,
             },
-            executor_meta: ExecutorMetadata {
+            partition_location_metadata: ExecutorMetadata {
                 id: format!("exec-{partition_id}"),
                 host: "localhost".to_string(),
                 port: 50050,

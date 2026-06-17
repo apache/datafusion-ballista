@@ -38,7 +38,7 @@ use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
     ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats, TaskDefinition,
+    PartitionLocation, PartitionLocationMetadata, PartitionStats, TaskDefinition,
 };
 
 use crate::RuntimeProducer;
@@ -108,14 +108,19 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                     )
                 })?
                 .into(),
-            executor_meta: self
-                .executor_meta
-                .ok_or_else(|| {
+            partition_location_metadata: {
+                let m = self.executor_meta.ok_or_else(|| {
                     BallistaError::General(
                         "executor_meta in PartitionLocation is missing".to_owned(),
                     )
-                })?
-                .into(),
+                })?;
+                Arc::new(PartitionLocationMetadata {
+                    id: m.id,
+                    host: m.host,
+                    port: m.port as u16,
+                    grpc_port: m.grpc_port as u16,
+                })
+            },
             partition_stats: self
                 .partition_stats
                 .ok_or_else(|| {

@@ -101,7 +101,7 @@ fn partitions_with_byte_sizes(
                     stage_id: 0,
                     partition_id: idx,
                 },
-                executor_meta: ExecutorMetadata {
+                partition_location_metadata: ExecutorMetadata {
                     id: "".to_string(),
                     host: "".to_string(),
                     port: 0,

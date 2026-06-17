@@ -413,7 +413,7 @@ impl AdaptiveExecutionGraph {
                     stage_output.partition_locations.iter_mut().for_each(
                         |(_partition, locs)| {
                             let before_len = locs.len();
-                            locs.retain(|loc| loc.executor_meta.id != executor_id);
+                            locs.retain(|loc| loc.partition_location_metadata.id != executor_id);
                             if locs.len() < before_len {
                                 match_found = true;
                             }
