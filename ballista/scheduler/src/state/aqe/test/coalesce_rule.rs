@@ -101,14 +101,12 @@ fn partitions_with_byte_sizes(
                     stage_id: 0,
                     partition_id: idx,
                 },
-                partition_location_metadata: ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: "".to_string(),
                     host: "".to_string(),
                     port: 0,
                     grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_task_slots(0),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                }),
                 partition_stats: PartitionStats::new(Some(1), None, Some(bytes)),
                 file_id: None,
                 is_sort_shuffle: false,

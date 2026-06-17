@@ -1048,14 +1048,12 @@ order by
                 stage_id: 42,
                 partition_id,
             },
-            partition_location_metadata: ExecutorMetadata {
+            partition_location_metadata: Arc::new(PartitionLocationMetadata {
                 id: format!("exec-{partition_id}"),
                 host: "localhost".to_string(),
                 port: 50050,
                 grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_task_slots(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            }),
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
             file_id: None,
             is_sort_shuffle: false,

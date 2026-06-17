@@ -980,10 +980,7 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 mod tests {
     use super::*;
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId,
-    };
+    use crate::serde::scheduler::{PartitionId, PartitionLocationMetadata};
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1022,14 +1019,11 @@ mod tests {
                         stage_id,
                         partition_id: i,
                     },
-                    partition_location_metadata: Arc::new(ExecutorMetadata {
+                    partition_location_metadata: Arc::new(PartitionLocationMetadata {
                         id: "executor_1".to_string(),
                         host: "executor_1".to_string(),
                         port: 7070,
                         grpc_port: 8080,
-                        specification: ExecutorSpecification::default()
-                            .with_task_slots(1),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
                     }),
                     partition_stats: PartitionStats {
                         num_rows: Some(rows),
@@ -1141,13 +1135,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                partition_location_metadata: Arc::new(ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: "executor_1".to_string(),
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -1192,13 +1184,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                partition_location_metadata: Arc::new(ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: "executor_1".to_string(),
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -1244,13 +1234,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                partition_location_metadata: Arc::new(ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: "executor_1".to_string(),
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -1296,13 +1284,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                partition_location_metadata: Arc::new(ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: "executor_1".to_string(),
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: Default::default(),
                 file_id: None,
@@ -1486,13 +1472,11 @@ mod tests {
                     stage_id: 1,
                     partition_id,
                 },
-                partition_location_metadata: Arc::new(ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: format!("exec{partition_id}"),
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification::default().with_task_slots(12),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: Default::default(),
                 file_id,
@@ -1722,13 +1706,11 @@ mod tests {
                     stage_id: 7,
                     partition_id,
                 },
-                partition_location_metadata: Arc::new(ExecutorMetadata {
+                partition_location_metadata: Arc::new(PartitionLocationMetadata {
                     id: format!("exec-{partition_id}"),
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification::default(),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats::new(Some(100), Some(1), Some(1024)),
                 file_id: None,
