@@ -47,7 +47,7 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
-use log::{debug, info};
+use log::debug;
 
 use crate::physical_optimizer::join_selection::should_swap_join_order;
 
@@ -110,7 +110,7 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
-        info!("planning query stages for job {job_id}");
+        debug!("Planning query stages for job: [{job_id}]");
         // Workaround until DF 54 migration : <https://github.com/apache/datafusion/pull/21885>
         let serde_safe_plan = make_filter_projection_serde_safe(execution_plan)?;
         let (new_plan, mut stages) =
