@@ -385,7 +385,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         let elapsed = start.elapsed();
 
-        info!("Planned job {job_id} in {elapsed:?}");
+        info!("Job [{job_id}] planning took {elapsed:?}");
 
         Ok(())
     }

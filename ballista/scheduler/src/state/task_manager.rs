@@ -330,7 +330,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 .indent(false)
                 .to_string();
 
-        info!("Submitting execution graph for job_id: {job_id}:\n\n{string_plan}");
+        info!("Submitting execution graph for job_id [{job_id}]:\n{string_plan}");
 
         self.state
             .submit_job(job_id.to_owned(), &graph, subscriber)
@@ -593,8 +593,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let curr_available_tasks = graph.available_tasks();
 
             graph.revive();
-
-            info!("Saving job with status {:?}", graph.status());
+            let status = graph.status();
+            debug!(
+                "Saving status, job_id: [{}], status: {:?}",
+                status.job_id, status.status
+            );
 
             self.state.save_job(job_id, &graph).await?;
 

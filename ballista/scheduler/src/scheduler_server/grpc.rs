@@ -395,7 +395,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .and_then(|s| s.value.clone())
                 .unwrap_or_default();
 
-            info!(
+            debug!(
                 "execution query (PUSH) job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
             );
 
@@ -441,7 +441,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            info!(
+            debug!(
                 "execution query (PUSH) job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
             );
 
