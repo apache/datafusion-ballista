@@ -19,37 +19,51 @@
 
 # Starting a Ballista Cluster using Docker Compose
 
-Docker Compose is a convenient way to launch a cluster when testing locally.
+Two Compose files are provided. Choose based on whether you need the last stable release
+or want to run against local source changes.
 
-## Build Docker Images
+## Option 1: Pre-built images (no local build required)
 
-To create the required Docker images please refer to the [docker deployment page](docker.md).
-
-## Start a Cluster
-
-Using the [docker-compose.yml](https://github.com/apache/datafusion-ballista/blob/main/docker-compose.yml) from the
-source repository, run the following command to start a cluster:
+`docker-compose.quick.yml` pulls images directly from GHCR — no Rust toolchain needed.
+Images are published on each stable release; `latest` tracks the most recent release,
+not the `main` branch.
 
 ```bash
-docker-compose up --build
+docker compose -f docker-compose.quick.yml up
 ```
 
-This should show output similar to the following:
+See the [quickstart guide](quick-start.md) for connection instructions and data volume setup.
+
+## Option 2: Build from source
+
+`docker-compose.yml` builds executor and scheduler images from the local Dockerfiles.
+The Dockerfiles copy pre-compiled binaries — they do **not** run `cargo build` themselves.
+You must compile first:
 
 ```bash
-$ docker-compose up
-Creating network "ballista-benchmarks_default" with the default driver
-Creating ballista-benchmarks_ballista-scheduler_1 ... done
-Creating ballista-benchmarks_ballista-executor_1  ... done
-Attaching to ballista-benchmarks_ballista-scheduler_1, ballista-benchmarks_ballista-executor_1
-ballista-scheduler_1  | INFO ballista_scheduler: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
-ballista-executor_1   | INFO ballista_executor: Ballista v52.0.0 Rust Executor listening on 0.0.0.0:50051
+# Step 1 — compile (requires Rust + protoc, takes ~20 min cold)
+cargo build --release
+
+# Step 2 — build Docker images and start the cluster
+docker compose up --build
 ```
 
-The scheduler listens on port 50050 and this is the port that clients will need to connect to.
+Skipping Step 1 will cause the build to fail because the `COPY target/release/ballista-*`
+instruction in the Dockerfiles will find no binaries to copy.
+
+Expected output after a successful start:
+
+```
+ballista-scheduler_1  | Ballista Scheduler listening on 0.0.0.0:50050
+ballista-executor_1   | Executor registration succeed
+```
+
+The scheduler listens on port 50050.
 
 ## Connect from the Ballista CLI
 
+No pre-built CLI image is published to GHCR. Build it locally from source:
+
 ```shell
-docker run --network=host -it apache/datafusion-ballista-cli:latest --host localhost --port 50050
+cargo run -p ballista-cli -- --host localhost --port 50050
 ```
