@@ -21,12 +21,12 @@
 
 There are two ways to get a local Ballista cluster running. Choose based on your goal:
 
-| | [Evaluate Ballista](#path-a-evaluate-with-docker) | [Build from source](#path-b-build-from-source) |
-|---|---|---|
-| Goal | Try Ballista against the last stable release | Develop or test against local code changes |
-| Prerequisites | Docker | Rust, protoc |
-| Cold start | Image pull | Full compile |
-| Terminals needed | 1 | 3 |
+|                  | [Evaluate Ballista](#path-a-evaluate-with-docker) | [Build from source](#path-b-build-from-source) |
+| ---------------- | ------------------------------------------------- | ---------------------------------------------- |
+| Goal             | Try Ballista against the last stable release      | Develop or test against local code changes     |
+| Prerequisites    | Docker                                            | Rust, protoc                                   |
+| Cold start       | Image pull                                        | Full compile                                   |
+| Terminals needed | 1                                                 | 3                                              |
 
 > [!IMPORTANT]
 > Ballista and DataFusion are developed independently. A given Ballista release may not be compatible
