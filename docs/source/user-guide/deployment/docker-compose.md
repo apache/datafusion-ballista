@@ -41,7 +41,7 @@ The Dockerfiles copy pre-compiled binaries — they do **not** run `cargo build`
 You must compile first:
 
 ```bash
-# Step 1 — compile (requires Rust + protoc, takes ~20 min cold)
+# Step 1 — compile (requires Rust + protoc)
 cargo build --release
 
 # Step 2 — build Docker images and start the cluster
@@ -54,8 +54,8 @@ instruction in the Dockerfiles will find no binaries to copy.
 Expected output after a successful start:
 
 ```
-ballista-scheduler_1  | Ballista Scheduler listening on 0.0.0.0:50050
-ballista-executor_1   | Executor registration succeed
+ballista-scheduler-1  | Ballista Scheduler listening on 0.0.0.0:50050
+ballista-executor-1   | Executor registration succeed
 ```
 
 The scheduler listens on port 50050.

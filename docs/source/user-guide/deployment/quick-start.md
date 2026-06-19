@@ -21,11 +21,11 @@
 
 There are two ways to get a local Ballista cluster running. Choose based on your goal:
 
-| | [Evaluate Ballista](#path-a-evaluate-with-docker-2-min) | [Build from source](#path-b-build-from-source-20-min) |
+| | [Evaluate Ballista](#path-a-evaluate-with-docker) | [Build from source](#path-b-build-from-source) |
 |---|---|---|
 | Goal | Try Ballista against the last stable release | Develop or test against local code changes |
 | Prerequisites | Docker | Rust, protoc |
-| Cold start time | ~2 min (image pull) | ~20 min (full compile) |
+| Cold start | Image pull | Full compile |
 | Terminals needed | 1 | 3 |
 
 > [!IMPORTANT]
@@ -34,7 +34,7 @@ There are two ways to get a local Ballista cluster running. Choose based on your
 
 ---
 
-## Path A: Evaluate with Docker (~2 min)
+## Path A: Evaluate with Docker
 
 The only prerequisite is [Docker](https://docs.docker.com/get-docker/) with Compose v2.
 
@@ -73,11 +73,11 @@ in `docker-compose.quick.yml`:
 ```yaml
 ballista-executor:
   volumes:
-    - /absolute/path/to/your/data:/data:ro
+    - /absolute/path/to/your/data:/absolute/path/to/your/data:ro
 ```
 
-Then reference `/data/yourfile.parquet` in your queries. The path must be the same inside
-every executor container.
+The container-side path must match exactly what you pass to `register_parquet` or
+`register_csv` — the scheduler stores that path and sends it to the executor as-is.
 
 **Tear down:**
 
@@ -87,7 +87,7 @@ docker compose -f docker-compose.quick.yml down
 
 ---
 
-## Path B: Build from source (~20 min)
+## Path B: Build from source
 
 Use this path if you need to test local code changes or run against the `main` branch.
 
@@ -130,12 +130,16 @@ Examples live in the `examples/` directory and connect to `localhost:50050` by d
 
 ### Distributed SQL example
 
+[Source](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-sql.rs)
+
 ```bash
 cd examples
 cargo run --release --example remote-sql
 ```
 
 ### Distributed DataFrame example
+
+[Source](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-dataframe.rs)
 
 ```bash
 cd examples
@@ -144,7 +148,9 @@ cargo run --release --example remote-dataframe
 
 ### Standalone (single-process) example
 
-No cluster needed — scheduler and executor run in the same process:
+No cluster needed — scheduler and executor run in the same process.
+
+[Source](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-sql.rs)
 
 ```bash
 cd examples

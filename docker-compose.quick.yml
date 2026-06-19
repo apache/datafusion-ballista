@@ -31,9 +31,11 @@
 #   cargo run -p ballista-cli -- --host localhost --port 50050
 #
 # To make local data available inside executors, uncomment and
-# set the volume path under ballista-executor:
+# set the volume path under ballista-executor. The container-side
+# path must match exactly what you pass to register_parquet/register_csv
+# since the scheduler stores and forwards that path to executors as-is:
 #   volumes:
-#     - /absolute/path/to/your/data:/data:ro
+#     - /absolute/path/to/your/data:/absolute/path/to/your/data:ro
 
 services:
   ballista-scheduler:
@@ -78,5 +80,7 @@ services:
       timeout: 5s
       retries: 10
     restart: "no"
+    # deploy.replicas requires Docker Compose v2 (the Go rewrite, default since Docker Desktop 3.x).
+    # It is not supported by the legacy Compose v1 (docker-compose) without Swarm.
     deploy:
       replicas: 2
