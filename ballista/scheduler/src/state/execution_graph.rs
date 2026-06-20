@@ -2161,6 +2161,52 @@ mod test {
         Ok(())
     }
 
+    // Aborting a running job (failure or cancellation) must transition every
+    // running stage to Failed and return its in-flight tasks for cancellation.
+    // `abort_running` is the shared teardown invoked by `abort_job`.
+    #[tokio::test]
+    async fn test_abort_running_cancels_stages_and_returns_inflight_tasks() -> Result<()>
+    {
+        let executor = mock_executor("executor-id1".to_string());
+        let mut graph = test_join_plan(2).await;
+
+        // Call revive to move the two leaf Resolved stages to Running
+        graph.revive();
+        assert!(
+            graph.running_stages().len() >= 2,
+            "expected two concurrently running leaf stages, found {:?}",
+            graph.running_stages()
+        );
+
+        // Dispatch a task so there is an in-flight task to cancel
+        let _task = graph.pop_next_task(&executor.id)?.unwrap();
+
+        // Aborting cancels every running stage and returns its in-flight tasks
+        let cancelled = graph.abort_running("job aborted".to_string());
+
+        assert!(
+            !cancelled.is_empty(),
+            "abort_running must return the in-flight tasks to cancel"
+        );
+        assert!(
+            graph.running_stages().is_empty(),
+            "every running stage must be cancelled, found {:?}",
+            graph.running_stages()
+        );
+        assert!(
+            matches!(
+                graph.status(),
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "the job must be Failed after abort"
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_long_delayed_failed_task_after_executor_lost() -> Result<()> {
         let executor1 = mock_executor("executor-id1".to_string());
