@@ -219,6 +219,18 @@ pub trait ExecutionGraph: Debug {
     /// fail job with error message
     fn fail_job(&mut self, error: String);
 
+    /// Abort a running job: fail it, transition every running stage to Failed,
+    /// and return the in-flight tasks that should be cancelled. Used for both the
+    /// failure and cancellation teardown paths.
+    fn abort_running(&mut self, error: String) -> Vec<RunningTaskInfo> {
+        let running_tasks = self.running_tasks();
+        self.fail_job(error.clone());
+        for stage_id in self.running_stages() {
+            self.fail_stage(stage_id, error.clone());
+        }
+        running_tasks
+    }
+
     /// Marks the job as successfully completed.
     ///
     /// This should only be called after all stages have completed successfully.

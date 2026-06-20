@@ -548,15 +548,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let mut guard = graph.write().await;
 
             let pending_tasks = guard.available_tasks();
-            let running_tasks = guard.running_tasks();
+            let running_tasks = guard.abort_running(failure_reason);
 
             info!(
                 "Cancelling {} running tasks for job {}",
                 running_tasks.len(),
                 job_id
             );
-
-            guard.fail_job(failure_reason);
 
             self.state.save_job(job_id, &guard).await?;
 
