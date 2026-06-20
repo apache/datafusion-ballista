@@ -103,8 +103,7 @@ message ShuffleReaderExecNode {
 
 message ShuffleReaderPartition {
   // each partition of a shuffle read can read data from multiple locations
-  repeated PartitionLocation location = 1;
-  map<string, ExecutorMetadata> executor_map = 2;
+  repeated PartitionLocationExt locations = 1;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
@@ -283,6 +282,12 @@ message PartitionLocation {
   reserved "path";
 }
 
+// Holding both partition info and executor metadata for connection
+message PartitionLocationExt {
+  repeated PartitionLocation location = 1;
+  map<string, ExecutorConnection> executor_map = 2;
+}
+
 // Unique identifier for a materialized partition of data
 message PartitionId {
   string job_id = 1;
@@ -360,6 +365,12 @@ message OperatorMetric {
     NamedRatio ratio = 14;
     uint64 output_batches = 15;
   }
+}
+
+message ExecutorConnection {
+  string host = 2;
+  uint32 port = 3;
+  uint32 grpc_port = 4;
 }
 
 // Used by scheduler
@@ -726,11 +737,10 @@ message GetJobMetricsResult {
 }
 
 message SuccessfulJob {
-  repeated PartitionLocation partition_location = 1;
-  map<string, ExecutorMetadata> executor_map = 2;
-  uint64 queued_at = 3;
-  uint64 started_at = 4;
-  uint64 ended_at = 5;
+  PartitionLocationExt locations = 1;
+  uint64 queued_at = 2;
+  uint64 started_at = 3;
+  uint64 ended_at = 4;
 }
 
 message QueuedJob {

@@ -414,7 +414,7 @@ impl AdaptiveExecutionGraph {
                     stage_output.partition_locations.iter_mut().for_each(
                         |(_partition, locs)| {
                             let before_len = locs.len();
-                            locs.retain(|loc| loc.executor_meta.id != executor_id);
+                            locs.retain(|loc| loc.executor_id != executor_id);
                             if locs.len() < before_len {
                                 match_found = true;
                             }
@@ -1199,29 +1199,31 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         let output_locations = self.output_locations();
 
-        let executor_map = output_locations
+        let executor_conn_map = output_locations
             .iter()
             .map(|l| {
-                let proto_meta: protobuf::ExecutorMetadata =
-                    (*l.executor_meta).clone().into();
-                (l.executor_meta.id.clone(), proto_meta)
+                let proto_meta: protobuf::ExecutorConnection =
+                    (*l.executor_connection).clone().into();
+                (l.executor_id.clone(), proto_meta)
             })
-            .collect::<HashMap<String, protobuf::ExecutorMetadata>>();
+            .collect::<HashMap<String, protobuf::ExecutorConnection>>();
 
         let partition_location = output_locations
             .into_iter()
             .map(|l| l.try_into())
             .collect::<ballista_core::error::Result<Vec<_>>>()?;
-
         self.end_time = timestamp_millis();
+        // Constructing extended version of PartitionLocations
+        let locations = protobuf::PartitionLocationExt {
+            location: partition_location,
+            executor_map: executor_conn_map,
+        };
 
         self.status = JobStatus {
             job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
-                partition_location,
-                executor_map,
-
+                locations: Some(locations),
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,

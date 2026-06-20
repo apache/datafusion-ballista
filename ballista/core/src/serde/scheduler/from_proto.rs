@@ -36,7 +36,7 @@ use crate::error::BallistaError;
 use crate::extension::SessionConfigHelperExt;
 use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
-    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
+    Action, BallistaFunctionRegistry, ExecutorConnection, ExecutorData, ExecutorMetadata,
     ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
     PartitionStats, TaskDefinition,
 };
@@ -231,6 +231,17 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
             grpc_port: self.grpc_port as u16,
             specification: self.specification.map(|s| s.into()).unwrap_or_default(),
             os_info: self.os_info.map(|o| o.into()).unwrap_or_default(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorConnection> for protobuf::ExecutorConnection {
+    fn into(self) -> ExecutorConnection {
+        ExecutorConnection {
+            host: self.host,
+            port: self.port as u16,
+            grpc_port: self.grpc_port as u16,
         }
     }
 }

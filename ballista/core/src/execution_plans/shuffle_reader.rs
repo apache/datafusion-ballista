@@ -377,7 +377,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         let mut partition_locations = HashMap::new();
         for p in &self.partition[partition] {
             partition_locations
-                .entry(p.executor_meta.id.clone())
+                .entry(p.executor_id.clone())
                 .or_insert_with(Vec::new)
                 .push(p.clone());
         }
@@ -1045,12 +1045,12 @@ async fn fetch_partition_remote(
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-    let metadata = &location.executor_meta;
+    let executor_id = &location.executor_id;
     let partition_id = &location.partition_id;
     let file_id = location.file_id;
     let is_sort_shuffle = location.is_sort_shuffle;
-    let host = metadata.host.as_str();
-    let port = metadata.port;
+    let host = &location.executor_connection.host;
+    let port = location.executor_connection.port;
 
     if let Some(pool) = client_pool {
         let mut pooled = pool
@@ -1058,7 +1058,7 @@ async fn fetch_partition_remote(
             .await
             .map_err(|error| match error {
                 BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
-                    metadata.id.clone(),
+                    executor_id.to_string(),
                     partition_id.stage_id,
                     partition_id.partition_id,
                     msg,
@@ -1068,7 +1068,7 @@ async fn fetch_partition_remote(
 
         let result = pooled
             .fetch_partition(
-                &metadata.id,
+                executor_id,
                 partition_id,
                 file_id,
                 is_sort_shuffle,
@@ -1088,7 +1088,7 @@ async fn fetch_partition_remote(
                 .map_err(|error| match error {
                     BallistaError::GrpcConnectionError(msg) => {
                         BallistaError::FetchFailed(
-                            metadata.id.clone(),
+                            executor_id.to_string(),
                             partition_id.stage_id,
                             partition_id.partition_id,
                             msg,
@@ -1099,7 +1099,7 @@ async fn fetch_partition_remote(
 
         ballista_client
             .fetch_partition(
-                &metadata.id,
+                executor_id,
                 partition_id,
                 file_id,
                 is_sort_shuffle,
@@ -1115,7 +1115,7 @@ fn fetch_partition_local(
     sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path(work_dir)?;
-    let metadata = &location.executor_meta;
+    let executor_id = &location.executor_id;
     let partition_id = &location.partition_id;
     let data_path = std::path::Path::new(path);
 
@@ -1139,7 +1139,7 @@ fn fetch_partition_local(
         )
         .map_err(|e| {
             BallistaError::FetchFailed(
-                metadata.id.clone(),
+                executor_id.to_string(),
                 partition_id.stage_id,
                 partition_id.partition_id,
                 e.to_string(),
@@ -1151,7 +1151,7 @@ fn fetch_partition_local(
     let reader = fetch_partition_local_inner(path).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
         BallistaError::FetchFailed(
-            metadata.id.clone(),
+            executor_id.to_string(),
             partition_id.stage_id,
             partition_id.partition_id,
             e.to_string(),
@@ -1278,10 +1278,7 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 mod tests {
     use super::*;
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId,
-    };
+    use crate::serde::scheduler::{ExecutorConnection, PartitionId};
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1320,14 +1317,11 @@ mod tests {
                         stage_id,
                         partition_id: i,
                     },
-                    executor_meta: Arc::new(ExecutorMetadata {
-                        id: "executor_1".to_string(),
+                    executor_id: "executor_1".to_string(),
+                    executor_connection: Arc::new(ExecutorConnection {
                         host: "localhost".to_string(),
                         port: 7070,
                         grpc_port: 8080,
-                        specification: ExecutorSpecification::default()
-                            .with_task_slots(1),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
                     }),
                     partition_stats: PartitionStats {
                         num_rows: Some(rows),
@@ -1439,13 +1433,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
                     host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -1490,13 +1482,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
                     host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -1542,13 +1532,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
                     host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
@@ -1594,13 +1582,11 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
                     host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: Default::default(),
                 file_id: None,
@@ -1964,13 +1950,11 @@ mod tests {
                     stage_id: 1,
                     partition_id,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
                     host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: Default::default(),
                 file_id,
@@ -2200,13 +2184,11 @@ mod tests {
                     stage_id: 7,
                     partition_id,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
                     host: "localhost".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
                 }),
                 partition_stats: PartitionStats::new(Some(100), Some(1), Some(1024)),
                 file_id: None,

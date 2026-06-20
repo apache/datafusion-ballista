@@ -354,12 +354,12 @@ impl UnresolvedStage {
                 .iter_mut()
                 .for_each(|(_partition, locs)| {
                     locs.iter().for_each(|loc| {
-                        if loc.executor_meta.id == executor_id {
+                        if loc.executor_id == executor_id {
                             bad_map_partitions.insert(loc.map_partition_id);
                         }
                     });
 
-                    locs.retain(|loc| loc.executor_meta.id != executor_id);
+                    locs.retain(|loc| loc.executor_id != executor_id);
                 });
             stage_output.complete = false;
             Ok(bad_map_partitions)
@@ -861,12 +861,12 @@ impl RunningStage {
                 .iter_mut()
                 .for_each(|(_partition, locs)| {
                     locs.iter().for_each(|loc| {
-                        if loc.executor_meta.id == executor_id {
+                        if loc.executor_id == executor_id {
                             bad_map_partitions.insert(loc.map_partition_id);
                         }
                     });
 
-                    locs.retain(|loc| loc.executor_meta.id != executor_id);
+                    locs.retain(|loc| loc.executor_id != executor_id);
                 });
             stage_output.complete = false;
             Ok(bad_map_partitions)

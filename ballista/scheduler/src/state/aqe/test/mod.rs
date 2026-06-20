@@ -29,8 +29,7 @@ mod plan_to_stages;
 use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorConnection, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -49,13 +48,11 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
             stage_id: 0,
             partition_id: 0,
         },
-        executor_meta: Arc::new(ExecutorMetadata {
-            id: "".to_string(),
-            host: "".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
+        executor_id: "executor_1".to_string(),
+        executor_connection: Arc::new(ExecutorConnection {
+            host: "localhost".to_string(),
+            port: 7070,
+            grpc_port: 8080,
         }),
         // next few properties are needed
         partition_stats: PartitionStats::new(Some(42), None, Some(10)),
@@ -74,13 +71,11 @@ pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLoca
             stage_id: 0,
             partition_id: 0,
         },
-        executor_meta: Arc::new(ExecutorMetadata {
-            id: "".to_string(),
-            host: "".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
+        executor_id: "executor_1".to_string(),
+        executor_connection: Arc::new(ExecutorConnection {
+            host: "localhost".to_string(),
+            port: 7070,
+            grpc_port: 8080,
         }),
         // next few properties are needed
         partition_stats: PartitionStats::new(Some(0), None, Some(0)),

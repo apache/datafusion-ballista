@@ -727,6 +727,7 @@ mod test {
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
+    use ballista_core::serde::scheduler::ExecutorConnection;
     use datafusion::arrow::compute::SortOptions;
 
     use datafusion::execution::TaskContext;
@@ -1512,8 +1513,7 @@ order by
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
         use ballista_core::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+            PartitionId, PartitionLocation, PartitionStats,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
@@ -1529,13 +1529,11 @@ order by
                 stage_id: 42,
                 partition_id,
             },
-            executor_meta: Arc::new(ExecutorMetadata {
-                id: format!("exec-{partition_id}"),
+            executor_id: "executor_1".to_string(),
+            executor_connection: Arc::new(ExecutorConnection {
                 host: "localhost".to_string(),
-                port: 50050,
-                grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_task_slots(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
+                port: 7070,
+                grpc_port: 8080,
             }),
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
             file_id: None,

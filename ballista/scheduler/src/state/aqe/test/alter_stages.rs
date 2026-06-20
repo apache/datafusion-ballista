@@ -21,8 +21,7 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics_no_data,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorConnection, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::stats::Precision;
@@ -515,13 +514,11 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             stage_id: 0,
             partition_id: 0,
         },
-        executor_meta: Arc::new(ExecutorMetadata {
-            id: "executor_1".to_string(),
-            host: "executor_1".to_string(),
+        executor_id: "executor_1".to_string(),
+        executor_connection: Arc::new(ExecutorConnection {
+            host: "localhost".to_string(),
             port: 7070,
             grpc_port: 8080,
-            specification: ExecutorSpecification::default().with_task_slots(1),
-            os_info: ExecutorOperatingSystemSpecification::default(),
         }),
         // next few properties are needed
         partition_stats: PartitionStats::new(
@@ -547,13 +544,11 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             stage_id: 0,
             partition_id: 0,
         },
-        executor_meta: Arc::new(ExecutorMetadata {
-            id: "executor_1".to_string(),
-            host: "executor_1".to_string(),
+        executor_id: "executor_1".to_string(),
+        executor_connection: Arc::new(ExecutorConnection {
+            host: "localhost".to_string(),
             port: 7070,
             grpc_port: 8080,
-            specification: ExecutorSpecification::default().with_task_slots(1),
-            os_info: ExecutorOperatingSystemSpecification::default(),
         }),
         // next few properties are needed
         partition_stats: PartitionStats::new(

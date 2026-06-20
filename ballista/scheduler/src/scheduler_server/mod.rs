@@ -584,7 +584,10 @@ mod test {
         assert_eq!(final_graph.output_locations().len(), 4);
 
         for output_location in final_graph.output_locations() {
-            assert_eq!(output_location.executor_meta.host, "localhost1".to_owned())
+            assert_eq!(
+                output_location.executor_connection.host,
+                "localhost1".to_owned()
+            )
         }
 
         Ok(())
@@ -664,11 +667,8 @@ mod test {
         let (status, job_id) = test.run("", &plan).await.expect("running plan");
 
         match status.status {
-            Some(job_status::Status::Successful(SuccessfulJob {
-                partition_location,
-                ..
-            })) => {
-                assert_eq!(partition_location.len(), 4);
+            Some(job_status::Status::Successful(SuccessfulJob { locations, .. })) => {
+                assert_eq!(locations.unwrap().location.len(), 4);
             }
             other => {
                 panic!("Expected success status but found {other:?}");
@@ -706,11 +706,8 @@ mod test {
             .expect("running plan");
 
         match status.status {
-            Some(job_status::Status::Successful(SuccessfulJob {
-                partition_location,
-                ..
-            })) => {
-                assert_eq!(partition_location.len(), 4);
+            Some(job_status::Status::Successful(SuccessfulJob { locations, .. })) => {
+                assert_eq!(locations.unwrap().location.len(), 4);
             }
             other => {
                 panic!("Expected success status but found {other:?}");

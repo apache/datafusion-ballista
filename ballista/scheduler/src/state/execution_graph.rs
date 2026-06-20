@@ -42,7 +42,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
+    ExecutorConnection, ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
 };
 
 use crate::display::print_stage_metrics;
@@ -569,7 +569,7 @@ impl StaticExecutionGraph {
                     stage_output.partition_locations.iter_mut().for_each(
                         |(_partition, locs)| {
                             let before_len = locs.len();
-                            locs.retain(|loc| loc.executor_meta.id != executor_id);
+                            locs.retain(|loc| loc.executor_id != executor_id);
                             if locs.len() < before_len {
                                 match_found = true;
                             }
@@ -1405,14 +1405,14 @@ impl ExecutionGraph for StaticExecutionGraph {
 
         let output_locations = self.output_locations();
 
-        let executor_map = output_locations
+        let executor_conn_map = output_locations
             .iter()
             .map(|l| {
-                let proto_meta: protobuf::ExecutorMetadata =
-                    (*l.executor_meta).clone().into();
-                (l.executor_meta.id.clone(), proto_meta)
+                let proto_executor_conn: protobuf::ExecutorConnection =
+                    (*l.executor_connection).clone().into();
+                (l.executor_id.clone(), proto_executor_conn)
             })
-            .collect::<HashMap<String, protobuf::ExecutorMetadata>>();
+            .collect::<HashMap<String, protobuf::ExecutorConnection>>();
 
         let partition_location = output_locations
             .into_iter()
@@ -1420,14 +1420,17 @@ impl ExecutionGraph for StaticExecutionGraph {
             .collect::<Result<Vec<_>>>()?;
 
         self.end_time = timestamp_millis();
+        // Constructing extended version of PartitionLocations
+        let locations = protobuf::PartitionLocationExt {
+            location: partition_location,
+            executor_map: executor_conn_map,
+        };
 
         self.status = JobStatus {
             job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
-                partition_location,
-                executor_map,
-
+                locations: Some(locations),
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
@@ -1767,6 +1770,12 @@ pub(crate) fn partition_to_location(
     executor: &ExecutorMetadata,
     shuffles: Vec<ShuffleWritePartition>,
 ) -> Vec<PartitionLocation> {
+    let executor_id = executor.id.clone();
+    let executor_connection = Arc::new(ExecutorConnection {
+        host: executor.host.clone(),
+        port: executor.port,
+        grpc_port: executor.grpc_port,
+    });
     shuffles
         .into_iter()
         .map(|shuffle| PartitionLocation {
@@ -1776,7 +1785,8 @@ pub(crate) fn partition_to_location(
                 stage_id,
                 partition_id: shuffle.partition_id as usize,
             },
-            executor_meta: Arc::new(executor.clone()),
+            executor_id: executor_id.clone(),
+            executor_connection: executor_connection.clone(),
             partition_stats: PartitionStats::new(
                 Some(shuffle.num_rows),
                 Some(shuffle.num_batches),
@@ -1939,7 +1949,7 @@ mod test {
         let outputs = agg_graph.output_locations();
 
         for location in outputs {
-            assert_eq!(location.executor_meta.host, "localhost2".to_owned());
+            assert_eq!(location.executor_connection.host, "localhost2".to_owned());
         }
 
         Ok(())

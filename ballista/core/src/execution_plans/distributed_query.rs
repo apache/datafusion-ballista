@@ -20,12 +20,12 @@ use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
+use crate::serde::protobuf::{self, SuccessfulJob};
 use crate::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
     PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
@@ -526,15 +526,18 @@ async fn execute_query_pull(
                 queued_at,
                 started_at,
                 ended_at,
-                partition_location,
-                executor_map,
+                locations,
                 ..
             })) => {
                 // Calculate job execution time (server-side execution)
                 let job_execution_ms = ended_at.saturating_sub(started_at);
                 let duration = Duration::from_millis(job_execution_ms);
-                let executor_map = Arc::new(executor_map);
-
+                let locations = locations.ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "SuccessfulJob missing locations".to_string(),
+                    )
+                })?;
+                let executor_connection = Arc::new(locations.executor_map);
                 info!("Job {job_id} finished executing in {duration:?} ");
 
                 // Calculate scheduling time (server-side queue time)
@@ -562,10 +565,11 @@ async fn execute_query_pull(
                 // happens lazily when the stream is consumed, not during execute_query.
                 // This could be added in a future enhancement by wrapping the stream.
 
-                let streams = partition_location.into_iter().map(move |partition| {
+                let streams = locations.location.into_iter().map(move |partition| {
+                    let executor_connection = executor_connection.clone();
                     let f = fetch_partition(
                         partition,
-                        executor_map.clone(),
+                        executor_connection,
                         max_message_size,
                         true,
                         scheduler_url.clone(),
@@ -695,14 +699,18 @@ async fn execute_query_push(
                 queued_at,
                 started_at,
                 ended_at,
-                partition_location,
-                executor_map,
+                locations,
                 ..
             })) => {
                 // Calculate job execution time (server-side execution)
                 let job_execution_ms = ended_at.saturating_sub(started_at);
                 let duration = Duration::from_millis(job_execution_ms);
-                let executor_map = Arc::new(executor_map);
+                let locations = locations.ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "SuccessfulJob missing locations".to_string(),
+                    )
+                })?;
+                let executor_connection = Arc::new(locations.executor_map);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
 
@@ -731,10 +739,11 @@ async fn execute_query_push(
                 // happens lazily when the stream is consumed, not during execute_query.
                 // This could be added in a future enhancement by wrapping the stream.
 
-                let streams = partition_location.into_iter().map(move |partition| {
+                let streams = locations.location.into_iter().map(move |partition| {
+                    let executor_connection = executor_connection.clone();
                     let f = fetch_partition(
                         partition,
-                        executor_map.clone(),
+                        executor_connection,
                         max_message_size,
                         true,
                         scheduler_url.clone(),
@@ -756,7 +765,8 @@ async fn execute_query_push(
 }
 
 fn get_client_host_port(
-    executor_metadata: &ExecutorMetadata,
+    executor_host: &str,
+    executor_port: u16,
     scheduler_url: &str,
     flight_proxy: &Option<FlightProxy>,
 ) -> Result<(String, u16)> {
@@ -790,19 +800,16 @@ fn get_client_host_port(
         Some(FlightProxy::Local(false)) | None => {
             debug!(
                 "Fetching results from executor: {}:{}",
-                executor_metadata.host, executor_metadata.port
+                executor_host, executor_port,
             );
-            Ok((
-                executor_metadata.host.clone(),
-                executor_metadata.port as u16,
-            ))
+            Ok((executor_host.to_string(), executor_port))
         }
     }
 }
 #[allow(clippy::too_many_arguments)]
 async fn fetch_partition(
     location: PartitionLocation,
-    executor_map: Arc<HashMap<String, ExecutorMetadata>>,
+    executor_conn_map: Arc<HashMap<String, protobuf::ExecutorConnection>>,
     max_message_size: usize,
     flight_transport: bool,
     scheduler_url: String,
@@ -812,21 +819,24 @@ async fn fetch_partition(
     io_retries_times: u8,
     io_retry_wait_time_ms: u64,
 ) -> Result<SendableRecordBatchStream> {
-    let metadata = executor_map.get(&location.executor_id).ok_or_else(|| {
-        DataFusionError::Internal(format!(
-            "Executor {} not found in map",
-            location.executor_id
-        ))
-    })?;
+    let executor_conn =
+        executor_conn_map
+            .get(&location.executor_id)
+            .ok_or_else(|| {
+                DataFusionError::Internal(format!(
+                    "Executor {} not found in map",
+                    location.executor_id
+                ))
+            })?;
 
     let partition_id = location.partition_id.ok_or_else(|| {
         DataFusionError::Internal("Received empty partition id".to_owned())
     })?;
-    let host = metadata.host.as_str();
-    let port = metadata.port as u16;
+    let host = executor_conn.host.as_str();
+    let port = executor_conn.port as u16;
 
     let (client_host, client_port) =
-        get_client_host_port(metadata, &scheduler_url, &flight_proxy)?;
+        get_client_host_port(host, port, &scheduler_url, &flight_proxy)?;
 
     let mut ballista_client = BallistaClient::try_new(
         client_host.as_str(),
@@ -843,7 +853,7 @@ async fn fetch_partition(
     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
         .fetch_partition_proxied(
-            &metadata.id,
+            &location.executor_id,
             &partition_id.into(),
             location.file_id,
             location.is_sort_shuffle,
@@ -862,8 +872,8 @@ mod test {
     use crate::execution_plans::distributed_query::{
         DistributedQueryExec, get_client_host_port,
     };
-    use crate::serde::protobuf::ExecutorMetadata;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
+    use crate::serde::scheduler::ExecutorConnection;
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -875,36 +885,36 @@ mod test {
         let scheduler_port: u16 = 5000;
 
         let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
-        let executor = ExecutorMetadata {
-            id: "test".to_string(),
+        let executor = ExecutorConnection {
             host: "executor".to_string(),
             port: 12345,
             grpc_port: 1,
-            specification: None,
-            os_info: None,
         };
 
         // no flight proxy -> client should fetch results from executor
         assert_eq!(
-            get_client_host_port(&executor, &scheduler_url, &None).unwrap(),
-            (executor.host.clone(), executor.port as u16)
+            get_client_host_port(&executor.host, executor.port, &scheduler_url, &None)
+                .unwrap(),
+            (executor.host.clone(), executor.port)
         );
 
         // same, no flight proxy
         assert_eq!(
             get_client_host_port(
-                &executor,
+                &executor.host,
+                executor.port,
                 &scheduler_url,
                 &Some(FlightProxy::Local(false))
             )
             .unwrap(),
-            (executor.host.clone(), executor.port as u16)
+            (executor.host.clone(), executor.port)
         );
 
         // embedded flight proxy on scheduler
         assert_eq!(
             get_client_host_port(
-                &executor,
+                &executor.host,
+                executor.port,
                 &scheduler_url,
                 &Some(FlightProxy::Local(true))
             )
@@ -915,7 +925,8 @@ mod test {
         // external proxy
         assert_eq!(
             get_client_host_port(
-                &executor,
+                &executor.host,
+                executor.port,
                 &scheduler_url,
                 &Some(FlightProxy::External("proxy:1234".to_string()))
             )

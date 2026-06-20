@@ -29,8 +29,7 @@ use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{mock_batch, mock_schema};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorConnection, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
@@ -101,13 +100,11 @@ fn partitions_with_byte_sizes(
                     stage_id: 0,
                     partition_id: idx,
                 },
-                executor_meta: Arc::new(ExecutorMetadata {
-                    id: "".to_string(),
-                    host: "".to_string(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_task_slots(0),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
+                executor_id: "executor_1".to_string(),
+                executor_connection: Arc::new(ExecutorConnection {
+                    host: "localhost".to_string(),
+                    port: 7070,
+                    grpc_port: 8080,
                 }),
                 partition_stats: PartitionStats::new(Some(1), None, Some(bytes)),
                 file_id: None,
