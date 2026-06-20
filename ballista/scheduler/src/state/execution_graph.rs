@@ -1781,10 +1781,11 @@ mod test {
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
-        TaskKilled, failed_task, job_status,
+        TaskKilled, failed_task, job_status, task_status,
     };
 
     use crate::state::execution_graph::ExecutionGraph;
+    use crate::state::execution_stage::ExecutionStage;
     use crate::test_utils::{
         mock_completed_task, mock_executor, mock_failed_task,
         revive_graph_and_complete_next_stage,
@@ -2216,6 +2217,26 @@ mod test {
                 }
             ),
             "the job must be Failed after abort"
+        );
+
+        // In-flight tasks of the cancelled stage are recorded as Failed(TaskKilled)
+        let has_killed_task = graph.stages.values().any(|stage| match stage {
+            ExecutionStage::Failed(failed) => {
+                failed.task_infos.iter().flatten().any(|info| {
+                    matches!(
+                        &info.task_status,
+                        task_status::Status::Failed(FailedTask {
+                            failed_reason: Some(failed_task::FailedReason::TaskKilled(_)),
+                            ..
+                        })
+                    )
+                })
+            }
+            _ => false,
+        });
+        assert!(
+            has_killed_task,
+            "in-flight tasks must be recorded as Failed(TaskKilled) after abort"
         );
 
         Ok(())

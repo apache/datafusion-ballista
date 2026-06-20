@@ -19,9 +19,12 @@
 
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::execution_graph::ExecutionGraph;
+use crate::state::execution_stage::ExecutionStage;
 use crate::test_utils::mock_executor;
 use ballista_core::error::Result;
-use ballista_core::serde::protobuf::{JobStatus, job_status};
+use ballista_core::serde::protobuf::{
+    FailedTask, JobStatus, failed_task, job_status, task_status,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::sum::sum;
@@ -110,6 +113,26 @@ async fn test_abort_running_cancels_stages_and_returns_inflight_tasks() -> Resul
             }
         ),
         "the job must be Failed after abort"
+    );
+
+    // In-flight tasks of the cancelled stage are recorded as Failed(TaskKilled)
+    let has_killed_task = graph.stages.values().any(|stage| match stage {
+        ExecutionStage::Failed(failed) => {
+            failed.task_infos.iter().flatten().any(|info| {
+                matches!(
+                    &info.task_status,
+                    task_status::Status::Failed(FailedTask {
+                        failed_reason: Some(failed_task::FailedReason::TaskKilled(_)),
+                        ..
+                    })
+                )
+            })
+        }
+        _ => false,
+    });
+    assert!(
+        has_killed_task,
+        "in-flight tasks must be recorded as Failed(TaskKilled) after abort"
     );
 
     Ok(())

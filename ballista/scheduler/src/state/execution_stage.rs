@@ -35,7 +35,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, SortShuffleWriterExec};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskStatus,
+    FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskKilled, TaskStatus,
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
@@ -554,15 +554,40 @@ impl RunningStage {
         }
     }
 
-    /// Converts this running stage to a failed stage with the given error message.
+    /// Converts this running stage to a failed stage. Still-running tasks are recorded
+    /// as cancelled (`Failed(TaskKilled)`) since failing the stage cancels them.
     pub fn to_failed(&self, error_message: String) -> FailedStage {
+        let task_infos = self
+            .task_infos
+            .iter()
+            .map(|task_info| {
+                task_info.as_ref().map(|info| {
+                    if matches!(info.task_status, task_status::Status::Running(_)) {
+                        TaskInfo {
+                            task_status: task_status::Status::Failed(FailedTask {
+                                error: "cancelled".to_string(),
+                                retryable: false,
+                                count_to_failures: false,
+                                failed_reason: Some(FailedReason::TaskKilled(
+                                    TaskKilled {},
+                                )),
+                            }),
+                            ..info.clone()
+                        }
+                    } else {
+                        info.clone()
+                    }
+                })
+            })
+            .collect();
+
         FailedStage {
             stage_id: self.stage_id,
             stage_attempt_num: self.stage_attempt_num,
             partitions: self.partitions,
             output_links: self.output_links.clone(),
             plan: self.plan.clone(),
-            task_infos: self.task_infos.clone(),
+            task_infos,
             stage_metrics: self.stage_metrics.clone(),
             error_message,
         }
