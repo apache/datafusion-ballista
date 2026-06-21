@@ -41,7 +41,7 @@ jobs:
     name: msrv dependency check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
