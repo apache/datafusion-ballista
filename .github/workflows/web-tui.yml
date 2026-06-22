@@ -76,8 +76,6 @@ jobs:
       - name: Get package.version
         id: cargo_metadata
         run: |
-          set -x
-          rsync --version
           BALLISTA_VERSION=$(cargo get --entry ballista/core/ package.version)
           echo "ballista_version=${BALLISTA_VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -90,7 +88,8 @@ jobs:
       - name: Deploy to Nightlies
         #if: ${{ github.ref == 'refs/heads/main' }}
         run: |
-          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} -i ${{ secrets.NIGHTLIES_RSYNC_KEY }}" target/web-tui/* nightlies.apache.org:/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
+          echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
+          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" target/web-tui/* nightlies.apache.org:/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
