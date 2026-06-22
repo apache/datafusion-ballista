@@ -88,13 +88,22 @@ jobs:
       - name: Deploy to Nightlies
         #if: ${{ github.ref == 'refs/heads/main' }}
         run: |
-          set -x
+          # Add the SSH key to the agent
           echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
+
+          # Add the host to the known hosts file
           ssh-keyscan -H "${{ secrets.NIGHTLIES_RSYNC_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Prepare the directories
           ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/"
+
+          # Copy the files
           rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" \
             target/web-tui/* \
             ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
+          
+          # Print the contents of the directory
+          ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "ls -la ${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/"
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
