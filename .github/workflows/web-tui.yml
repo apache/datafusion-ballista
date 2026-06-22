@@ -92,7 +92,7 @@ jobs:
             --no-default-features --features web
 
       - name: Deploy to Nightlies
-        #if: ${{ github.ref == 'refs/heads/main' }}
+        if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           # Add the SSH key to the agent
           echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
