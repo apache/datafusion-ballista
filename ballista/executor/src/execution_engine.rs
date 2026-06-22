@@ -25,7 +25,7 @@ use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
-use ballista_core::utils;
+use ballista_core::{JobId, utils};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -48,7 +48,7 @@ pub trait ExecutionEngine: Sync + Send {
     /// plan partition and writing shuffle output to the specified work directory.
     fn create_query_stage_exec(
         &self,
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,
@@ -104,7 +104,7 @@ impl DefaultExecutionEngine {
 impl ExecutionEngine for DefaultExecutionEngine {
     fn create_query_stage_exec(
         &self,
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         _partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,

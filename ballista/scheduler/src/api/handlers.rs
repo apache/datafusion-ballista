@@ -22,7 +22,6 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     ExecutorMetric, executor_metric::Metric, task_status,
@@ -31,6 +30,7 @@ use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
 use ballista_core::utils::get_current_time;
+use ballista_core::{BALLISTA_VERSION, JobId};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
@@ -109,7 +109,7 @@ impl ExecutorMetricResponse {
 
 #[derive(Debug, serde::Serialize)]
 pub struct JobResponse {
-    pub job_id: String,
+    pub job_id: JobId,
     pub job_name: String,
     pub job_status: String,
     pub status: String,
@@ -346,8 +346,8 @@ pub async fn get_jobs<
                 ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8
             };
             JobResponse {
-                job_id: job.job_id.to_string(),
-                job_name: job.job_name.to_string(),
+                job_id: job.job_id.to_owned(),
+                job_name: job.job_name.to_owned(),
                 job_status,
                 status: plain_status,
                 start_time: job.start_time,
@@ -376,7 +376,7 @@ pub async fn get_job<
     let graph = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|err| {
             tracing::error!("Error occurred while getting the execution graph for job '{job_id}' reason: {err:?}");
@@ -409,8 +409,8 @@ pub async fn get_job<
     };
 
     Ok(Json(JobResponse {
-        job_id: job.job_id().to_string(),
-        job_name: job.job_name().to_string(),
+        job_id: job.job_id().to_owned(),
+        job_name: job.job_name().to_owned(),
         job_status,
         status: plain_status,
         start_time: job.start_time(),
@@ -435,7 +435,7 @@ pub async fn cancel_job<
     let job_status = data_server
         .state
         .task_manager
-        .get_job_status(&job_id)
+        .get_job_status(&job_id.clone().into())
         .await
         .map_err(|err| {
             tracing::error!("Error getting job status: {err:?}");
@@ -457,7 +457,7 @@ pub async fn cancel_job<
                     );
                     SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
                 })?
-                .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
+                .post_event(QueryStageSchedulerEvent::JobCancel(job_id.into()))
                 .await
                 .map_err(|_| {
                     SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
@@ -509,7 +509,7 @@ pub async fn get_query_stages<
     if let Some(graph) = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|e| {
             tracing::error!("Error occurred while getting the query stages for job '{job_id}' reason: {e:?}");
@@ -833,7 +833,7 @@ pub async fn get_job_dot_graph<
     if let Some(graph) = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|e| {
             tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
@@ -860,7 +860,7 @@ pub async fn get_query_stage_dot_graph<
     if let Some(graph) = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))?
     {
@@ -936,7 +936,7 @@ pub async fn get_job_config<
     data_server
         .state
         .task_manager
-        .get_job_config(&job_id)
+        .get_job_config(&job_id.clone().into())
         .await
         .map(|e| Json(e.to_props()))
         .map_err(|_| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))

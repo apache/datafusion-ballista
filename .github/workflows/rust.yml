@@ -63,7 +63,7 @@ jobs:
     name: cargo check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -82,7 +82,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -102,7 +102,7 @@ jobs:
     needs: build-lib
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
@@ -115,7 +115,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -135,7 +135,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -155,7 +155,7 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -177,7 +177,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -191,7 +191,7 @@ jobs:
     name: Lint
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -209,7 +209,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -226,7 +226,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -235,7 +235,7 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5 # v2.82.0
         with:
           tool: cargo-tomlfmt@0.2.1
 
@@ -261,7 +261,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v6.0.3
+#     - uses: actions/checkout@v7.0.0
 #       with:
 #         submodules: true
 #     - name: Cache Cargo

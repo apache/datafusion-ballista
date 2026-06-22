@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 
 use once_cell::sync::OnceCell;
@@ -140,23 +141,23 @@ impl PrometheusMetricsCollector {
 }
 
 impl SchedulerMetricsCollector for PrometheusMetricsCollector {
-    fn record_submitted(&self, _job_id: &str, queued_at: u64, submitted_at: u64) {
+    fn record_submitted(&self, _job_id: &JobId, queued_at: u64, submitted_at: u64) {
         self.submitted.inc();
         self.planning_time
             .observe((submitted_at - queued_at) as f64);
     }
 
-    fn record_completed(&self, _job_id: &str, queued_at: u64, completed_at: u64) {
+    fn record_completed(&self, _job_id: &JobId, queued_at: u64, completed_at: u64) {
         self.completed.inc();
         self.execution_time
             .observe((completed_at - queued_at) as f64 / 1000_f64)
     }
 
-    fn record_failed(&self, _job_id: &str, _queued_at: u64, _failed_at: u64) {
+    fn record_failed(&self, _job_id: &JobId, _queued_at: u64, _failed_at: u64) {
         self.failed.inc()
     }
 
-    fn record_cancelled(&self, _job_id: &str) {
+    fn record_cancelled(&self, _job_id: &JobId) {
         self.cancelled.inc();
     }
 

@@ -27,6 +27,7 @@ use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept};
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 
+use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
@@ -101,7 +102,7 @@ pub type ExecutionGraphBox = Box<dyn ExecutionGraph + Send + Sync>;
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 pub trait ExecutionGraph: Debug {
     /// Returns the job ID for this execution graph.
-    fn job_id(&self) -> &str;
+    fn job_id(&self) -> &JobId;
 
     /// Returns the job name for this execution graph.
     fn job_name(&self) -> &str;
@@ -247,7 +248,7 @@ pub struct StaticExecutionGraph {
     #[allow(dead_code)] // not used at the moment, will be used later
     scheduler_id: Option<String>,
     /// ID for this job
-    job_id: String,
+    job_id: JobId,
     /// Job name, can be empty string
     job_name: String,
     /// Session ID for this job
@@ -286,7 +287,7 @@ pub struct RunningTaskInfo {
     /// Unique identifier for this task within the execution graph.
     pub task_id: usize,
     /// The job ID this task belongs to.
-    pub job_id: String,
+    pub job_id: JobId,
     /// The stage ID this task belongs to.
     pub stage_id: usize,
     /// The partition this task is processing.
@@ -303,7 +304,7 @@ impl StaticExecutionGraph {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scheduler_id: &str,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
@@ -322,8 +323,8 @@ impl StaticExecutionGraph {
 
         Ok(Self {
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_string(),
-            job_name: job_name.to_string(),
+            job_id: job_id.to_owned(),
+            job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
             status: JobStatus {
@@ -634,8 +635,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         Box::new(self.clone())
     }
 
-    fn job_id(&self) -> &str {
-        self.job_id.as_str()
+    fn job_id(&self) -> &JobId {
+        &self.job_id
     }
 
     fn job_name(&self) -> &str {
@@ -1358,7 +1359,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
                 error,
@@ -1387,7 +1388,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
@@ -1731,7 +1732,7 @@ impl TaskDescription {
 }
 
 pub(crate) fn partition_to_location(
-    job_id: &str,
+    job_id: &JobId,
     map_partition_id: usize,
     stage_id: usize,
     executor: &ExecutorMetadata,

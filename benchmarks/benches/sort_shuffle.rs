@@ -239,7 +239,7 @@ fn run_sort_shuffle(
     let config = SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, 8192);
 
     let writer = SortShuffleWriterExec::try_new(
-        "bench_job".to_string(),
+        "bench_job".into(),
         1,
         input,
         work_dir.to_string(),

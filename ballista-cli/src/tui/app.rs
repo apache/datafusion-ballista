@@ -553,7 +553,7 @@ impl App {
     #[cfg(not(feature = "web"))]
     async fn load_job_dot_data(&self) {
         if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
-            if selected_job.status == "Completed"
+            if selected_job.is_completed()
                 && let Err(e) = load_job_dot(self, &selected_job.job_id).await
             {
                 tracing::error!("Failed to load job dot: {e:?}");
@@ -669,7 +669,7 @@ impl App {
     #[cfg(not(feature = "web"))]
     async fn cancel_selected_job(&mut self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term)
-            && (job.status == "Running" || job.status == "Queued")
+            && (job.is_running() || job.is_queued())
         {
             let job_id = job.job_id.clone();
             let cancel_job_result = match self.http_client.cancel_job(&job_id).await {
@@ -695,16 +695,16 @@ impl App {
         self.jobs_data.selected_job(&self.search_term).is_some()
     }
 
-    pub fn is_selected_job_completed_or_running(&self) -> bool {
+    pub fn does_job_have_plan(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Completed" || j.status == "Running")
+            .is_some_and(|j| !j.is_queued())
     }
 
     pub fn is_selected_job_cancelable(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Running" || j.status == "Queued")
+            .is_some_and(|j| j.is_running() || j.is_queued())
     }
 
     pub fn has_more_than_one_job(&self) -> bool {
@@ -746,7 +746,7 @@ impl App {
     }
 
     fn open_job_plan_popup(&mut self) {
-        if self.is_selected_job_completed_or_running()
+        if self.does_job_have_plan()
             && let Some(details) = &self.job_details
         {
             self.job_plan_popup =
@@ -1148,7 +1148,7 @@ impl App {
                 let job_id = self
                     .jobs_data
                     .selected_job(&self.search_term)
-                    .filter(|j| j.status == "Completed")
+                    .filter(|j| j.is_completed())
                     .map(|j| j.job_id.clone());
                 job_id.map(WebKeyAsyncAction::LoadJobDot)
             }
@@ -1243,7 +1243,7 @@ impl App {
                 let job_id = self
                     .jobs_data
                     .selected_job(&self.search_term)
-                    .filter(|j| j.status == "Running" || j.status == "Queued")
+                    .filter(|j| j.is_running() || j.is_queued())
                     .map(|j| j.job_id.clone());
                 job_id.map(WebKeyAsyncAction::CancelJob)
             }
@@ -1329,6 +1329,7 @@ mod tests {
             job_id: id.to_string(),
             job_name: format!("Job {id}"),
             status: status.to_string(),
+            job_status: status.to_string(),
             start_time: 0,
             end_time: 1,
             num_stages: 1,
@@ -1742,35 +1743,35 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_completed() {
+    fn does_job_have_plan_for_completed() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Completed")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(app.is_selected_job_completed_or_running());
+        assert!(app.does_job_have_plan());
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_running() {
+    fn does_job_have_plan_for_running() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Running")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(app.is_selected_job_completed_or_running());
+        assert!(app.does_job_have_plan());
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_queued() {
+    fn does_job_have_plan_for_queued() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Queued")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.is_selected_job_completed_or_running());
+        assert!(!app.does_job_have_plan());
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_failed() {
+    fn does_job_have_plan_for_failed() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Failed")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.is_selected_job_completed_or_running());
+        assert!(app.does_job_have_plan());
     }
 
     // --- has_selected_job with selection ---
