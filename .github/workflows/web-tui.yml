@@ -89,19 +89,21 @@ jobs:
         #if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
         working-directory: ballista-cli
         run: |
-          trunk build --public-url "/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/" --dist ../target/web-tui-nightlies --cargo-profile release-nonlto --minify --locked \
+          LOCAL_BUILD_DIR="../target/web-tui-nightlies/"
+          TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
+          REMOTE_TARGET_DIR="${{ secrets.NIGHTLIES_RSYNC_PATH }}/${TUI_DIR}/"
+          SSH_OPTIONS="-p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}"
+          
+          trunk build --public-url "/${TUI_DIR}/" --dist "${LOCAL_BUILD_DIR}" --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
 
           echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
 
           ssh-keyscan -H "${{ secrets.NIGHTLIES_RSYNC_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-          ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} \
-            "mkdir -p ${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/"
+          ssh "${SSH_OPTIONS}" ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${REMOTE_TARGET_DIR}"
 
-          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" \
-            target/web-tui-nightlies/* \
-            ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
+          rsync -rlptDvz -e "ssh ${SSH_OPTIONS}" ${LOCAL_BUILD_DIR}/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
