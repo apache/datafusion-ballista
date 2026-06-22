@@ -92,7 +92,6 @@ jobs:
           LOCAL_BUILD_DIR="../target/web-tui-nightlies/"
           TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
           REMOTE_TARGET_DIR="${{ secrets.NIGHTLIES_RSYNC_PATH }}/${TUI_DIR}/"
-          OPTIONS_SSH="-p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}"
           
           trunk build --public-url "/${TUI_DIR}/" --dist "${LOCAL_BUILD_DIR}" --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
@@ -101,9 +100,9 @@ jobs:
 
           ssh-keyscan -H "${{ secrets.NIGHTLIES_RSYNC_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-          ssh "${OPTIONS_SSH}" ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${REMOTE_TARGET_DIR}"
+          ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${REMOTE_TARGET_DIR}"
 
-          rsync -rlptDvz -e "ssh ${OPTIONS_SSH}" ${LOCAL_BUILD_DIR}/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
+          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" ${LOCAL_BUILD_DIR}/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
