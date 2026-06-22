@@ -79,10 +79,16 @@ jobs:
           BALLISTA_VERSION=$(cargo get --entry ballista/core/ package.version)
           echo "ballista_version=${BALLISTA_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build
+      - name: Build for local deployment
         working-directory: ballista-cli
         run: |
           trunk build --cargo-profile release-nonlto --minify --locked \
+            --no-default-features --features web
+
+      - name: Build for deployment at nightlies.a.o
+        working-directory: ballista-cli
+        run: |
+          trunk build --public-url "/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/" --dist ../target/web-tui-nightlies --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
 
       - name: Deploy to Nightlies
@@ -99,11 +105,8 @@ jobs:
 
           # Copy the files
           rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" \
-            target/web-tui/* \
+            target/web-tui-nightlies/* \
             ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
-          
-          # Print the contents of the directory
-          ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "ls -la ${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/"
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
