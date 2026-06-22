@@ -91,7 +91,7 @@ jobs:
           set -x
           echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
           ssh-keyscan -H "${{ secrets.NIGHTLIES_RSYNC_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" target/web-tui/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${{ secrets.NIGHTLIES_RSYNC_PATH }}/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
+          rsync -rlptDvz -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" target/web-tui/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${{ secrets.NIGHTLIES_RSYNC_PATH }}/datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}/
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7
