@@ -108,7 +108,14 @@ except ImportError:
             return decorator
 
 
+from datafusion import configure_formatter
+
 from .extension import BallistaSessionContext, DistributedDataFrame
+
+# Default number of rows rendered for a ``%%sql`` cell when ``--limit`` is not
+# given. This caps only the display (via datafusion's HTML formatter); the
+# underlying result keeps all of its rows.
+DEFAULT_DISPLAY_LIMIT = 50
 
 
 class BallistaConnectionError(Exception):
@@ -221,6 +228,45 @@ class BallistaMagics(Magics):
                     "Currently not supporting the inserted file format"
                 )
 
+    @staticmethod
+    def _parse_cell_magic_args(line: str):
+        """Parse the argument line of a ``%%sql`` cell magic.
+
+        Recognises the ``--no-display`` and ``--limit N`` flags (space form,
+        e.g. ``--limit 5``, consistent with the other magics in this module).
+        The first non-flag token, if any, is treated as the variable name to
+        store the result in.
+
+        Returns a ``(var_name, no_display, limit)`` tuple where ``limit`` is
+        ``None`` when ``--limit`` was not supplied. Raises ``ValueError`` for a
+        missing or invalid ``--limit`` value.
+        """
+        tokens = line.strip().split()
+        var_name = None
+        no_display = False
+        limit = None
+
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--no-display":
+                no_display = True
+            elif token == "--limit":
+                i += 1
+                if i >= len(tokens):
+                    raise ValueError("--limit requires a number, e.g. --limit 5")
+                try:
+                    limit = int(tokens[i])
+                except ValueError:
+                    raise ValueError(f"--limit expects an integer, got '{tokens[i]}'")
+                if limit < 1:
+                    raise ValueError("--limit must be a positive integer")
+            elif not token.startswith("--") and var_name is None:
+                var_name = token
+            i += 1
+
+        return var_name, no_display, limit
+
     @line_cell_magic
     def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
         """
@@ -243,27 +289,41 @@ class BallistaMagics(Magics):
             LIMIT 5
 
         `my_result` will store the result of the SQL-query
+
+        The cell magic accepts two optional flags before the variable name:
+            --limit N      Render at most N rows in the cell output (default
+                           50). This caps the display only; the stored result
+                           keeps every row.
+            --no-display   Run the query and store the result without
+                           displaying it.
         """
         if not cell:
             return self._execute_sql(line.strip()) if line.strip() else None
         else:
-            var_name = None
             query = cell.strip()
             if not query:
                 return None
 
-            args = line.strip().split()
-            i = 0
-            while i < len(args):
-                if not args[i].startswith("--"):
-                    var_name = args[i]
-                i += 1
+            try:
+                var_name, no_display, limit = self._parse_cell_magic_args(line)
+            except ValueError as e:
+                return str(e)
 
             result = self._execute_sql(query)
 
-            # Store in user namespace if variable name provided
+            # The stored variable always holds the full, untruncated result.
             if var_name and self.shell is not None:
                 self.shell.user_ns[var_name] = result
+
+            if no_display:
+                return None
+
+            # Display-only cap: limits the rows rendered in the cell, never the
+            # underlying data, so an in-query LIMIT always takes effect. Both
+            # min_rows and max_rows are set because the formatter requires
+            # min_rows <= max_rows (datafusion itself defaults them equal).
+            rows = limit if limit is not None else DEFAULT_DISPLAY_LIMIT
+            configure_formatter(max_rows=rows, min_rows=rows)
             return result
 
     def _connect(self, address: str) -> Optional[str]:
@@ -487,7 +547,7 @@ Query:
 
     %%sql [options] [var]     - Execute multi-line SQL query
         Options:
-            --no-display      - Don't display results
+            --no-display      - Run the query and store the result without displaying it
             --limit N         - Limit displayed rows (default: 50)
         var                   - Store result in variable
 

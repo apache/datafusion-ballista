@@ -146,6 +146,19 @@ You can also store results in a variable:
 SELECT * FROM orders WHERE status = 'pending'
 ```
 
+The cell magic accepts two optional flags before the variable name:
+
+```python
+# Render at most 10 rows in the cell (display only; the stored result keeps
+# every row). Without --limit the display defaults to 50 rows.
+%%sql --limit 10 my_result
+SELECT * FROM orders
+
+# Run the query and store the result without displaying it.
+%%sql --no-display my_result
+SELECT * FROM orders
+```
+
 ### Execution Plan Visualization
 
 Visualize query execution plans directly in notebooks:

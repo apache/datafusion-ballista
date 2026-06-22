@@ -241,6 +241,40 @@ class TestBallistaMagicsConnected:
         result = connected_magics.sql("")
         assert result is None
 
+    def test_sql_cell_magic_limit_and_no_display(self, connected_magics):
+        """%%sql honors --limit (display-only) and --no-display."""
+        from datafusion.dataframe_formatter import get_formatter
+        from ballista.jupyter import DEFAULT_DISPLAY_LIMIT
+
+        mock_shell = MagicMock()
+        mock_shell.user_ns = {}
+        connected_magics.shell = mock_shell
+
+        # --limit caps the display formatter but never truncates the stored data.
+        connected_magics.sql(
+            "--limit 2 my_var",
+            cell="SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(x)",
+        )
+        stored = mock_shell.user_ns["my_var"]
+        assert sum(batch.num_rows for batch in stored.collect()) == 5
+        assert get_formatter().max_rows == 2
+
+        # Without --limit the formatter falls back to the default cap.
+        connected_magics.sql("", cell="SELECT 1 as value")
+        assert get_formatter().max_rows == DEFAULT_DISPLAY_LIMIT
+
+        # --no-display stores the result but renders nothing.
+        result = connected_magics.sql(
+            "--no-display other_var", cell="SELECT 1 as value"
+        )
+        assert result is None
+        assert mock_shell.user_ns["other_var"] is not None
+
+        # An invalid --limit returns the error string instead of raising.
+        result = connected_magics.sql("--limit abc", cell="SELECT 1")
+        assert isinstance(result, str)
+        assert "--limit" in result
+
     def test_schema_missing_table_name_returns_usage(self, connected_magics):
         """Test _schema with no table name returns usage string."""
         result = connected_magics._schema("")
@@ -273,6 +307,27 @@ class TestBallistaMagicsConnected:
         """Test %register with missing file path returns a message."""
         result = connected_magics.register("parquet my_table")
         assert result is not None
+
+
+class TestSqlCellMagicArgParsing:
+    """Cluster-free tests for %%sql argument parsing."""
+
+    def test_parse_cell_magic_args(self, magics):
+        # (line, expected (var_name, no_display, limit))
+        valid_cases = [
+            ("", (None, False, None)),
+            ("my_var", ("my_var", False, None)),
+            ("--no-display", (None, True, None)),
+            ("--limit 10 my_var", ("my_var", False, 10)),
+            ("my_var --no-display --limit 3", ("my_var", True, 3)),
+        ]
+        for line, expected in valid_cases:
+            assert magics._parse_cell_magic_args(line) == expected, line
+
+        # Missing, non-integer, and non-positive --limit values are rejected.
+        for line in ("--limit", "--limit abc", "--limit 0", "--limit -1"):
+            with pytest.raises(ValueError):
+                magics._parse_cell_magic_args(line)
 
 
 class TestIPythonExtension:
