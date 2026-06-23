@@ -430,7 +430,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
     // This registers the executor and starts polling for tasks
     info!("Starting execution poll loop...");
     let poll_handle = tokio::spawn(async move {
-        execution_loop::poll_loop(scheduler, executor, codec).await
+        execution_loop::poll_loop(scheduler, executor, codec, None).await
     });
 
     tokio::select! {

@@ -142,9 +142,7 @@ pub async fn new_standalone_executor_from_builder(
             )),
     );
 
-    tokio::spawn(execution_loop::poll_loop(
-        scheduler, executor, codec, None,
-    ));
+    tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec, None));
     Ok(())
 }
 
