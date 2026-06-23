@@ -505,6 +505,7 @@ pub async fn start_executor_process(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                None, // available_task_slots: use internal semaphore
             )));
         }
     };

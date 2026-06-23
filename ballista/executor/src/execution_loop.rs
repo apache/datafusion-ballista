@@ -57,10 +57,16 @@ use tonic::codegen::{Body, Bytes, StdError};
 ///
 /// The loop respects the executor's concurrent task limit via a semaphore,
 /// ensuring no more than the configured number of tasks run simultaneously.
+///
+/// `available_task_slots`, when provided, lets the caller supply the semaphore
+/// controlling task concurrency (e.g. to share it across poll loops or to
+/// observe executor busy state via `available_permits()`). When `None`, a
+/// semaphore sized to the executor's task slots is created internally.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    available_task_slots: Option<Arc<Semaphore>>,
 ) -> Result<(), BallistaError>
 where
     C: tonic::client::GrpcService<tonic::body::Body>,
@@ -75,8 +81,9 @@ where
         .unwrap()
         .clone()
         .into();
-    let available_task_slots =
-        Arc::new(Semaphore::new(executor_specification.task_slots as usize));
+    let available_task_slots = available_task_slots.unwrap_or_else(|| {
+        Arc::new(Semaphore::new(executor_specification.task_slots as usize))
+    });
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
