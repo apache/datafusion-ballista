@@ -180,6 +180,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .post_event(QueryStageSchedulerEvent::ReviveOffers)
                         .await?;
                 }
+
+                // Notify external systems that new work is available
+                if let Some(ref callback) = self.config.on_work_available {
+                    callback(&format!("job_submitted:{job_id}"));
+                }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
                 job_id,
@@ -293,6 +298,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             event_sender
                                 .post_event(QueryStageSchedulerEvent::ReviveOffers)
                                 .await?;
+                        }
+
+                        // Notify external systems when new stages become runnable
+                        if !stage_events.is_empty()
+                            && let Some(ref callback) = self.config.on_work_available
+                        {
+                            callback("tasks_completed:new_stages_runnable");
                         }
 
                         for stage_event in stage_events {

@@ -46,7 +46,7 @@ use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
 
 /// Main execution loop that polls the scheduler for available tasks.
@@ -57,10 +57,14 @@ use tonic::codegen::{Body, Bytes, StdError};
 ///
 /// The loop respects the executor's concurrent task limit via a semaphore,
 /// ensuring no more than the configured number of tasks run simultaneously.
+///
+/// `poll_now_notify`, when provided, allows the scheduler to wake the poll loop
+/// immediately instead of waiting for the next idle poll interval.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    poll_now_notify: Option<Arc<Notify>>,
 ) -> Result<(), BallistaError>
 where
     C: tonic::client::GrpcService<tonic::body::Body>,
@@ -204,7 +208,20 @@ where
         }
 
         if !active_job {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Wait for either the poll interval or a poll_now notification
+            match &poll_now_notify {
+                Some(notify) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_millis(50)) => {}
+                        () = notify.notified() => {
+                            debug!("Received poll_now notification, polling immediately");
+                        }
+                    }
+                }
+                None => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
         }
     }
 }

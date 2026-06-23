@@ -34,6 +34,16 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;
 use std::sync::Arc;
 
+/// Callback invoked when new work becomes available for executors.
+///
+/// This is called after:
+/// - A job is submitted and tasks are ready to be scheduled
+/// - Tasks complete and new stages become runnable
+///
+/// This allows external systems to notify executors to poll immediately
+/// rather than waiting for their next poll interval.
+pub type OnWorkAvailableFn = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
 #[derive(clap::Parser, Debug)]
@@ -278,6 +288,9 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
+    /// Callback invoked when new work becomes available for executors.
+    /// The string argument is a reason/description for debugging purposes.
+    pub on_work_available: Option<OnWorkAvailableFn>,
 }
 
 impl Default for SchedulerConfig {
@@ -314,6 +327,7 @@ impl Default for SchedulerConfig {
             cors_allowed_origins: String::default(),
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
+            on_work_available: None,
         }
     }
 }
@@ -546,6 +560,7 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_origins: opt.cors_allowed_origins,
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
+            on_work_available: None,
         };
 
         Ok(config)
