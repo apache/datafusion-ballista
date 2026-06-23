@@ -47,3 +47,4 @@ mod flight_proxy_service;
 pub mod test_utils;
 
 pub use scheduler_server::SessionBuilder;
+pub use scheduler_server::job_state_event::{JobState, JobStateEvent};
