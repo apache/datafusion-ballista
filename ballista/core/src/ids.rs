@@ -99,6 +99,12 @@ macro_rules! string_id {
             }
         }
 
+        impl From<&$name> for String {
+            fn from(value: &$name) -> Self {
+                value.0.clone()
+            }
+        }
+
         impl AsRef<str> for $name {
             fn as_ref(&self) -> &str {
                 &self.0
