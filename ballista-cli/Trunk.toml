@@ -28,6 +28,7 @@
 [build]
 target = "ballista-web-tui.html"
 dist = "../target/web-tui"
+public_url = "./"
 
 [watch]
 ignore = []
