@@ -86,7 +86,7 @@ jobs:
             --no-default-features --features web
 
       - name: Deploy at nightlies.a.o
-        #if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
         working-directory: ballista-cli
         run: |
           TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
