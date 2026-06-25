@@ -36,7 +36,7 @@ crate-type = ["cdylib", "rlib"]
 ballista = { path = "../ballista/client", version = "53.0.0", features = ["standalone"], optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-cli = { workspace = true, optional = true }
-rustyline = { version = "17.0.1", optional = true }
+rustyline = { version = "18.0.1", optional = true }
 mimalloc = { workspace = true, optional = true }
 
 # TUI/web shared deps
