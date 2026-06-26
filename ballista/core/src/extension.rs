@@ -767,18 +767,15 @@ impl SessionConfigHelperExt for SessionConfig {
             // same like previous comment
             .set_bool("datafusion.sql_parser.map_string_types_to_utf8view", false)
             //
-            // As mentioned in https://github.com/apache/datafusion-ballista/issues/1055
-            // "Left/full outer join incorrect for CollectLeft / broadcast"
-            //
-            // In order to make correct results (decreasing performance) CollectLeft
-            // has been disabled until fixed
+            // A build side smaller than these thresholds is collected into a
+            // CollectLeft (broadcast) hash join rather than being repartitioned.
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                0,
+                10 * 1024 * 1024,
             )
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-                0,
+                1_000_000,
             )
             //
             // DataFusion's hash join has no spill support, so each parallel
