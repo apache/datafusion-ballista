@@ -130,7 +130,7 @@ under the License.
     print_pulls(repo_name, "Other", other)
 
     # show code contributions
-    credits = subprocess.check_output(f"git shortlog -sn {tag1}..{tag2}", shell=True, text=True).rstrip()
+    credits = shortlog_output.rstrip()
 
     print("## Credits\n")
     print("Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) "
