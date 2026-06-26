@@ -32,6 +32,21 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "sqlparser"
         update-types: ["version-update:semver-major"]
+  - package-ecosystem: cargo
+    directory: "/python"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    target-branch: main
+    labels: [auto-dependencies]
+    ignore:
+      # arrow and datafusion are bumped manually
+      - dependency-name: "arrow*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "datafusion*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sqlparser"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
