@@ -67,7 +67,7 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
         cc_type = ''
         cc_scope = ''
         cc_breaking = ''
-        parts = re.findall(r'^([a-z]+)(\([a-z]+\))?(!)?:', pull.title)
+        parts = re.findall(r'^([a-zA-Z]+)(\([a-zA-Z0-9_-]+\))?(!)?:', pull.title)
         if len(parts) == 1:
             parts_tuple = parts[0]
             cc_type = parts_tuple[0] # fix, feat, docs, chore
