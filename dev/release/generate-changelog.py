@@ -114,7 +114,7 @@ under the License.
     print(f"# Apache DataFusion Ballista {version} Changelog\n")
 
     # get the number of commits
-    commit_count = subprocess.check_output(f"git log --pretty=oneline {tag1}..{tag2} | wc -l", shell=True, text=True).strip()
+    commit_count = subprocess.check_output(["git", "rev-list", "--count", f"{tag1}..{tag2}"], text=True).strip()
 
     # get number of contributors
     contributor_count = subprocess.check_output(f"git shortlog -sn {tag1}..{tag2} | wc -l", shell=True, text=True).strip()
