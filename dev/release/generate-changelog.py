@@ -63,6 +63,12 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
     print("Categorizing pull requests", file=sys.stderr)
     for (pull, commit) in all_pulls:
 
+        labels = [label.name for label in pull.labels]
+
+        # skip Dependabot dependency-bump PRs (labeled 'auto-dependencies')
+        if 'auto-dependencies' in labels:
+            continue
+
         # see if PR title uses Conventional Commits
         cc_type = ''
         cc_scope = ''
@@ -74,7 +80,6 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
             cc_scope = parts_tuple[1] # component within project
             cc_breaking = parts_tuple[2] == '!'
 
-        labels = [label.name for label in pull.labels]
         if 'api change' in labels or cc_breaking:
             breaking.append((pull, commit))
         elif 'performance' in labels or cc_type == 'perf':
