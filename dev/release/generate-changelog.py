@@ -117,7 +117,8 @@ under the License.
     commit_count = subprocess.check_output(["git", "rev-list", "--count", f"{tag1}..{tag2}"], text=True).strip()
 
     # get number of contributors
-    contributor_count = subprocess.check_output(f"git shortlog -sn {tag1}..{tag2} | wc -l", shell=True, text=True).strip()
+    shortlog_output = subprocess.check_output(["git", "shortlog", "-sn", f"{tag1}..{tag2}"], text=True)
+    contributor_count = len(shortlog_output.strip().splitlines())
 
     print(f"This release consists of {commit_count} commits from {contributor_count} contributors. "
           f"See credits at the end of this changelog for more information.\n")
