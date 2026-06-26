@@ -361,6 +361,8 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         task.session_id.clone(),
         session_config.clone(),
         scalar_functions,
+        // higher-order functions: none registered in Ballista
+        Default::default(),
         aggregate_functions,
         window_functions,
         runtime.clone(),
@@ -425,6 +427,8 @@ pub fn get_task_definition_vec<
         uuid::Uuid::new_v4().to_string(),
         session_config.clone(),
         scalar_functions,
+        // higher-order functions: none registered in Ballista
+        Default::default(),
         aggregate_functions,
         window_functions,
         runtime.clone(),

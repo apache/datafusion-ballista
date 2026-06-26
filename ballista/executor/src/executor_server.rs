@@ -398,6 +398,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task.session_id,
                         task.session_config,
                         function_registry.scalar_functions.clone(),
+                        // higher-order functions: none registered in Ballista
+                        Default::default(),
                         function_registry.aggregate_functions.clone(),
                         function_registry.window_functions.clone(),
                         runtime,

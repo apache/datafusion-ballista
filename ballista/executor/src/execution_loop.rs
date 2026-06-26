@@ -265,6 +265,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         session_id,
         session_config,
         task_scalar_functions,
+        // higher-order functions: none registered in Ballista
+        Default::default(),
         task_aggregate_functions,
         task_window_functions,
         runtime.clone(),
