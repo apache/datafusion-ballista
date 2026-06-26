@@ -149,8 +149,9 @@ def resolve_ref(ref):
             ["git", "rev-parse", ref], text=True
         ).strip()
     except subprocess.CalledProcessError:
-        # If it can't be resolved locally, return as-is (e.g. a tag name
-        # that the GitHub API can resolve)
+        # If it can't be resolved locally, return as-is (e.g. a remote tag).
+        # The GitHub API will attempt to resolve it.
+        print(f"Note: Could not resolve '{ref}' locally; passing to GitHub API as-is", file=sys.stderr)
         return ref
 
 
