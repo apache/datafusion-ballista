@@ -355,15 +355,22 @@ impl SessionConfigExt for SessionConfig {
     }
 
     fn upgrade_for_ballista(self) -> SessionConfig {
-        // if ballista config is not provided
-        // one is created and session state is updated
-        let ballista_config = self.ballista_config();
+        // Ballista's opinionated DataFusion defaults are applied once, when a
+        // plain config is first upgraded. The `BallistaConfig` extension marks a
+        // config that has already been through this path; re-applying the
+        // defaults on such a config would overwrite any values the user set
+        // afterwards (e.g. via `-c`/`SET`), so they are left untouched.
+        let already_upgraded =
+            self.options().extensions.get::<BallistaConfig>().is_some();
 
-        // session config has ballista config extension and
-        // default datafusion configuration is altered
-        // to fit ballista execution
-        self.with_option_extension(ballista_config)
-            .ballista_restricted_configuration()
+        let ballista_config = self.ballista_config();
+        let config = self.with_option_extension(ballista_config);
+
+        if already_upgraded {
+            config
+        } else {
+            config.ballista_restricted_configuration()
+        }
     }
 
     fn ballista_config(&self) -> BallistaConfig {
@@ -1018,6 +1025,53 @@ mod test {
 
         assert!(!state.config().round_robin_repartition());
     }
+
+    // User overrides of Ballista's soft defaults must survive `upgrade_for_ballista`;
+    // re-applying the defaults would discard them. See #1901.
+    #[test]
+    fn should_preserve_user_overrides_on_upgrade() {
+        // Ballista defaults these to prefer_hash_join=false and threshold=0.
+        let mut config = SessionConfig::new_with_ballista();
+        config
+            .options_mut()
+            .set("datafusion.optimizer.prefer_hash_join", "true")
+            .unwrap();
+        config
+            .options_mut()
+            .set(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                "10485760",
+            )
+            .unwrap();
+
+        let upgraded = config.upgrade_for_ballista();
+
+        assert!(upgraded.options().optimizer.prefer_hash_join);
+        assert_eq!(
+            upgraded
+                .options()
+                .optimizer
+                .hash_join_single_partition_threshold,
+            10485760
+        );
+    }
+
+    // A plain (non-Ballista) config still receives Ballista's opinionated
+    // defaults when upgraded.
+    #[test]
+    fn should_apply_defaults_when_upgrading_plain_config() {
+        let config = SessionConfig::new().upgrade_for_ballista();
+
+        assert!(!config.options().optimizer.prefer_hash_join);
+        assert_eq!(
+            config
+                .options()
+                .optimizer
+                .hash_join_single_partition_threshold,
+            0
+        );
+    }
+
     #[test]
     fn should_convert_to_key_value_pairs() {
         // key value pairs should contain datafusion and ballista values
