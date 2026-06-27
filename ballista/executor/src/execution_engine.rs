@@ -27,11 +27,16 @@ use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::{JobId, utils};
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::physical_plan::{
+    FileGroup, FileScanConfig, FileScanConfigBuilder,
+};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::prelude::SessionConfig;
+use std::any::Any;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
@@ -101,12 +106,54 @@ impl DefaultExecutionEngine {
     }
 }
 
+/// Restrict a `DataSourceExec` to the file group for `partition_id`.
+///
+/// DataFusion 54's `DataSourceExec` hands file groups to partition streams from
+/// a shared work-queue that is only divided across partitions when all
+/// partitions of one plan instance are polled concurrently. Ballista runs one
+/// partition per task on its own plan instance, so a task that polls a single
+/// partition in isolation would otherwise drain the whole queue and scan the
+/// entire table. Keeping only this task's file group (other slots emptied,
+/// partition count preserved) makes the lone `execute(partition_id)` read just
+/// that group.
+///
+/// Returns `None` for any node that is not a file-backed `DataSourceExec`, and
+/// for a `partition_id` outside the source's file groups (e.g. when an operator
+/// between the scan and the stage output changed the partition count).
+fn restrict_scan_to_partition(
+    plan: &Arc<dyn ExecutionPlan>,
+    partition_id: usize,
+) -> Option<Arc<dyn ExecutionPlan>> {
+    let exec = plan.downcast_ref::<DataSourceExec>()?;
+    let source: &dyn Any = exec.data_source().as_ref();
+    let config = source.downcast_ref::<FileScanConfig>()?;
+    if partition_id >= config.file_groups.len() {
+        return None;
+    }
+    let file_groups: Vec<FileGroup> = config
+        .file_groups
+        .iter()
+        .enumerate()
+        .map(|(i, group)| {
+            if i == partition_id {
+                group.clone()
+            } else {
+                FileGroup::new(vec![])
+            }
+        })
+        .collect();
+    let config = FileScanConfigBuilder::from(config.clone())
+        .with_file_groups(file_groups)
+        .build();
+    Some(DataSourceExec::from_data_source(config))
+}
+
 impl ExecutionEngine for DefaultExecutionEngine {
     fn create_query_stage_exec(
         &self,
         job_id: JobId,
         stage_id: usize,
-        _partition_id: usize,
+        partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
         _config: &SessionConfig,
@@ -124,6 +171,10 @@ impl ExecutionEngine for DefaultExecutionEngine {
                             reader.with_work_dir(work_dir.to_string()),
                         ))),
                     }
+                } else if let Some(rewritten) =
+                    restrict_scan_to_partition(&p, partition_id)
+                {
+                    Ok(Transformed::yes(rewritten))
                 } else {
                     Ok(Transformed::no(p))
                 }
