@@ -565,7 +565,7 @@ impl RunningStage {
                     if matches!(info.task_status, task_status::Status::Running(_)) {
                         TaskInfo {
                             task_status: task_status::Status::Failed(FailedTask {
-                                error: "cancelled".to_string(),
+                                error: "killed".to_string(),
                                 retryable: false,
                                 count_to_failures: false,
                                 failed_reason: Some(FailedReason::TaskKilled(
