@@ -1088,6 +1088,21 @@ mod test {
         );
     }
 
+    // Uncorrelated scalar subqueries must be rewritten to joins rather than
+    // planned as a physical `ScalarSubqueryExec`, whose `ScalarSubqueryExpr`
+    // cannot be deserialized once Ballista splits the plan into stages. See
+    // #1909.
+    #[test]
+    fn should_disable_physical_uncorrelated_scalar_subquery() {
+        let config = SessionConfig::new().upgrade_for_ballista();
+        assert!(
+            !config
+                .options()
+                .optimizer
+                .enable_physical_uncorrelated_scalar_subquery
+        );
+    }
+
     #[test]
     fn should_convert_to_key_value_pairs() {
         // key value pairs should contain datafusion and ballista values

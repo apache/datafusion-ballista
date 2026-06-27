@@ -310,3 +310,60 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::ParquetSource;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    /// Build a `DataSourceExec` over `n` file groups, one file each.
+    fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let source = Arc::new(ParquetSource::new(schema));
+        let mut builder =
+            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
+        for i in 0..n {
+            builder =
+                builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
+                    format!("file{i}.parquet"),
+                    100,
+                )]));
+        }
+        DataSourceExec::from_data_source(builder.build())
+    }
+
+    /// Number of files in each file group of a `DataSourceExec`.
+    fn group_file_counts(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
+        let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
+        let source: &dyn Any = exec.data_source().as_ref();
+        let config = source.downcast_ref::<FileScanConfig>().unwrap();
+        config.file_groups.iter().map(|g| g.len()).collect()
+    }
+
+    #[test]
+    fn restrict_scan_keeps_only_its_own_group() {
+        let plan = scan_with_file_groups(4);
+        // partition 2 keeps only group 2; the partition count is preserved.
+        let restricted = restrict_scan_to_partition(&plan, 2).expect("scan rewritten");
+        assert_eq!(group_file_counts(&restricted), vec![0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn restrict_scan_partition_out_of_range_is_left_untouched() {
+        let plan = scan_with_file_groups(3);
+        // an operator between the scan and the stage output may change the
+        // partition count; in that case we must not rewrite the scan.
+        assert!(restrict_scan_to_partition(&plan, 3).is_none());
+    }
+
+    #[test]
+    fn restrict_scan_ignores_non_file_scans() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        assert!(restrict_scan_to_partition(&plan, 0).is_none());
+    }
+}
