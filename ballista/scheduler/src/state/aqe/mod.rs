@@ -1187,15 +1187,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         };
     }
 
-    fn abort_running(&mut self, error: String) -> Vec<RunningTaskInfo> {
-        let running_tasks = self.running_tasks();
-        self.fail_job(error.clone());
-        for stage_id in self.running_stages() {
-            self.fail_stage(stage_id, error.clone());
-        }
-        running_tasks
-    }
-
     /// Mark the job success
     fn succeed_job(&mut self) -> ballista_core::error::Result<()> {
         if !self.is_successful() {
