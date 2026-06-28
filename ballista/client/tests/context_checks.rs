@@ -520,12 +520,9 @@ mod supported {
         Ok(())
     }
 
-    // As mentioned in https://github.com/apache/datafusion-ballista/issues/1055
-    // "Left/full outer join incorrect for CollectLeft / broadcast"
-    //
-    // In order to make correct results (decreasing performance) CollectLeft
-    // has been disabled until fixed
-
+    // Ballista raises these DataFusion thresholds above zero so the adaptive
+    // join resolver can collect a small build side into a broadcast
+    // (CollectLeft) hash join instead of repartitioning it.
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]

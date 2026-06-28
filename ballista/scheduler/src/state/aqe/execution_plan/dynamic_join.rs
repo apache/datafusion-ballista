@@ -33,6 +33,29 @@ use log::debug;
 use std::sync::Arc;
 
 use crate::state::aqe::execution_plan::ExchangeExec;
+use crate::state::aqe::optimizer_rule::join_selection::SelectJoinRule;
+
+/// Whether a `CollectLeft` (broadcast) hash join is correct for `join_type` in
+/// Ballista's distributed execution.
+///
+/// `CollectLeft` replicates the build (left) side to every probe task, and each
+/// task processes only its own slice of the probe (right) side. Output rows that
+/// are determined by a single probe-side row are therefore produced exactly
+/// once. Join types that emit rows on behalf of the build side — unmatched outer
+/// rows, or semi/anti/mark rows that depend on a build row's global match status
+/// — would instead be emitted independently by every task, producing duplicate
+/// or spurious rows. Only join types whose output is driven entirely by the
+/// probe side are safe to broadcast.
+pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
+    matches!(
+        join_type,
+        JoinType::Inner
+            | JoinType::Right
+            | JoinType::RightSemi
+            | JoinType::RightAnti
+            | JoinType::RightMark
+    )
+}
 
 /// has children of this join been
 /// repartitioned
@@ -221,7 +244,7 @@ impl DynamicJoinSelectionExec {
         let threshold_collect_left_join_rows =
             config.optimizer.hash_join_single_partition_threshold_rows;
 
-        let partition_mode = if Self::supports_collect_by_thresholds(
+        let under_threshold = Self::supports_collect_by_thresholds(
             self.left.as_ref(),
             threshold_collect_left_join_bytes,
             threshold_collect_left_join_rows,
@@ -229,11 +252,30 @@ impl DynamicJoinSelectionExec {
             self.right.as_ref(),
             threshold_collect_left_join_bytes,
             threshold_collect_left_join_rows,
-        ) {
-            PartitionMode::CollectLeft
+        );
+
+        // The resolver collects the smaller side onto the build (left) input,
+        // swapping the join type when the right side is the smaller one (the
+        // `swap_inputs` calls in `SelectJoinRule`). A `CollectLeft` join then
+        // broadcasts that build side to every probe task, which is only correct
+        // for join types that never emit rows on behalf of the build side. Use
+        // the same swap decision as the resolver to determine the resulting join
+        // type and skip the broadcast when it would be unsafe.
+        let build_side_join_type = if SelectJoinRule::supports_swap_join_order(
+            self.left.as_ref(),
+            self.right.as_ref(),
+        )? {
+            self.join_type.swap()
         } else {
-            PartitionMode::Partitioned
+            self.join_type
         };
+
+        let partition_mode =
+            if under_threshold && collect_left_broadcast_safe(build_side_join_type) {
+                PartitionMode::CollectLeft
+            } else {
+                PartitionMode::Partitioned
+            };
 
         let stats_left = self.left.partition_statistics(None)?;
         let stats_right = self.right.partition_statistics(None)?;
