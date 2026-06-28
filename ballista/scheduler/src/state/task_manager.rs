@@ -28,6 +28,7 @@ use crate::state::executor_manager::ExecutorManager;
 use ballista_core::JobStatusSubscriber;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
+use ballista_core::execution_plans::ShuffleReaderExec;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
@@ -35,10 +36,11 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -163,12 +165,63 @@ impl JobInfoCache {
             encoded_stage_plans: HashMap::new(),
         }
     }
+    
+    fn partition_prune_helper(
+        partition_ids: &[usize],
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let n = plan.output_partitioning().partition_count();
+        let wanted: HashSet<usize> = partition_ids.iter().copied().collect();
+        Ok(plan
+            .clone()
+            .transform_up(|node| {
+                let Some(r) = node.as_any().downcast_ref::<ShuffleReaderExec>() else {
+                    return Ok(Transformed::no(node));
+                };
+                if r.broadcast || r.partition.len() != n {
+                    return Ok(Transformed::no(node));
+                }
+
+                let partition = r
+                    .partition
+                    .iter()
+                    .enumerate()
+                    .map(|(i, loc)| {
+                        if wanted.contains(&i) {
+                            loc.clone()
+                        } else {
+                            vec![]
+                        }
+                    })
+                    .collect();
+
+                let reader = match r.coalesce.clone() {
+                    Some(c) => ShuffleReaderExec::try_new_coalesced(
+                        r.stage_id,
+                        partition,
+                        c,
+                        r.schema(),
+                        r.properties().output_partitioning().clone(),
+                    )?,
+                    None => ShuffleReaderExec::try_new(
+                        r.stage_id,
+                        partition,
+                        r.schema(),
+                        r.properties().output_partitioning().clone(),
+                    )?,
+                };
+                Ok(Transformed::yes(Arc::new(reader) as Arc<dyn ExecutionPlan>))
+            })?
+            .data)
+    }
+
     #[cfg(not(feature = "disable-stage-plan-cache"))]
     fn encode_stage_plan<U: AsExecutionPlan>(
         &mut self,
         stage_id: usize,
         plan: &Arc<dyn ExecutionPlan>,
         codec: &dyn PhysicalExtensionCodec,
+        _partition_ids: &[usize],
     ) -> Result<Vec<u8>> {
         if let Some(plan) = self.encoded_stage_plans.get(&stage_id) {
             Ok(plan.clone())
@@ -177,7 +230,6 @@ impl JobInfoCache {
             let plan_proto = U::try_from_physical_plan(plan.clone(), codec)?;
             plan_proto.try_encode(&mut plan_buf)?;
             self.encoded_stage_plans.insert(stage_id, plan_buf.clone());
-
             Ok(plan_buf)
         }
     }
@@ -188,9 +240,11 @@ impl JobInfoCache {
         _stage_id: usize,
         plan: &Arc<dyn ExecutionPlan>,
         codec: &dyn PhysicalExtensionCodec,
+        partition_ids: &[usize],
     ) -> Result<Vec<u8>> {
         let mut plan_buf: Vec<u8> = vec![];
-        let plan_proto = U::try_from_physical_plan(plan.clone(), codec)?;
+        let pruned_plan = Self::partition_prune_helper(partition_ids, plan)?;
+        let plan_proto = U::try_from_physical_plan(pruned_plan, codec)?;
         plan_proto.try_encode(&mut plan_buf)?;
 
         Ok(plan_buf)
@@ -653,6 +707,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 stage_id,
                 &task.plan,
                 self.codec.physical_extension_codec(),
+                &[task.partition.partition_id],
             )?;
 
             let task_definition = TaskDefinition {
@@ -708,6 +763,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         tasks: Vec<TaskDescription>,
     ) -> Result<Vec<MultiTaskDefinition>> {
+        let partition_ids: Vec<usize> = tasks
+            .iter()
+            .map(|task| task.partition.partition_id)
+            .collect();
         if let Some(task) = tasks.first() {
             let session_id = task.session_id.clone();
             let job_id = task.partition.job_id.clone();
@@ -730,6 +789,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     stage_id,
                     &task.plan,
                     self.codec.physical_extension_codec(),
+                    &partition_ids,
                 )?;
 
                 let launch_time = SystemTime::now()
