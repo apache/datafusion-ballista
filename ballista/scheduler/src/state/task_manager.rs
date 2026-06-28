@@ -166,7 +166,7 @@ impl JobInfoCache {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "disable-stage-plan-cache")]
     fn partition_prune_helper(
         partition_ids: &[usize],
         plan: &Arc<dyn ExecutionPlan>,
