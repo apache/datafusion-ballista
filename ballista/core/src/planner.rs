@@ -20,14 +20,19 @@ use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec
 use crate::serde::BallistaLogicalExtensionCodec;
 
 use datafusion::arrow::datatypes::Schema;
-use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
+use datafusion::common::ScalarValue;
+use datafusion::common::tree_node::{
+    Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{QueryPlanner, SessionState};
-use datafusion::logical_expr::{LogicalPlan, TableScan};
+use datafusion::logical_expr::{Expr, LogicalPlan, Subquery, TableScan};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
+use futures::future::BoxFuture;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -151,10 +156,20 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                 _ => {
                     log::debug!("create_physical_plan - handling general statement");
 
+                    // Execute any uncorrelated scalar subqueries first and
+                    // substitute their values, so the plan sent to the scheduler
+                    // is subquery-free. See #1910.
+                    let logical_plan = self
+                        .materialize_scalar_subqueries(
+                            logical_plan.clone(),
+                            session_state,
+                        )
+                        .await?;
+
                     Ok(Arc::new(DistributedQueryExec::<T>::with_extension(
                         self.scheduler_url.clone(),
                         self.config.clone(),
-                        logical_plan.clone(),
+                        logical_plan,
                         self.extension_codec.clone(),
                         session_state.session_id().to_string(),
                     )))
@@ -162,6 +177,132 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
             }
         }
     }
+}
+
+impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
+    /// Execute every uncorrelated scalar subquery in `plan` and substitute its
+    /// single value as a literal, returning a subquery-free plan.
+    ///
+    /// DataFusion 54 plans an uncorrelated scalar subquery as a physical
+    /// `ScalarSubqueryExec` whose `ScalarSubqueryExpr` cannot be deserialized
+    /// once Ballista splits the plan into stages. Rather than decorrelating to a
+    /// join (correct but adds join work for what is logically a constant), the
+    /// subquery is run first and its value is inlined. See #1910.
+    fn materialize_scalar_subqueries<'a>(
+        &'a self,
+        plan: LogicalPlan,
+        session_state: &'a SessionState,
+    ) -> BoxFuture<'a, Result<LogicalPlan, DataFusionError>> {
+        Box::pin(async move {
+            let subqueries = collect_uncorrelated_scalar_subqueries(&plan)?;
+            if subqueries.is_empty() {
+                return Ok(plan);
+            }
+
+            // Map each subquery (keyed by the identity of its plan Arc) to its
+            // computed value.
+            let mut values: HashMap<usize, ScalarValue> = HashMap::new();
+            for subquery in subqueries {
+                let key = Arc::as_ptr(&subquery.subquery) as usize;
+                if values.contains_key(&key) {
+                    continue;
+                }
+                // A subquery may itself contain nested scalar subqueries; inline
+                // those before running it.
+                let inner = self
+                    .materialize_scalar_subqueries(
+                        subquery.subquery.as_ref().clone(),
+                        session_state,
+                    )
+                    .await?;
+                let value = self.execute_scalar_subquery(inner, session_state).await?;
+                values.insert(key, value);
+            }
+
+            substitute_scalar_subqueries(plan, &values)
+        })
+    }
+
+    /// Run a subquery plan as its own distributed query and reduce its result to
+    /// a single [`ScalarValue`]: 0 rows -> a typed null, 1 row -> the value,
+    /// more than one row -> an error.
+    async fn execute_scalar_subquery(
+        &self,
+        plan: LogicalPlan,
+        session_state: &SessionState,
+    ) -> Result<ScalarValue, DataFusionError> {
+        let data_type = plan.schema().field(0).data_type().clone();
+
+        let exec: Arc<dyn ExecutionPlan> =
+            Arc::new(DistributedQueryExec::<T>::with_extension(
+                self.scheduler_url.clone(),
+                self.config.clone(),
+                plan,
+                self.extension_codec.clone(),
+                session_state.session_id().to_string(),
+            ));
+
+        let batches =
+            datafusion::physical_plan::collect(exec, session_state.task_ctx()).await?;
+        let num_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        if num_rows > 1 {
+            return Err(DataFusionError::Execution(
+                "scalar subquery returned more than one row".to_string(),
+            ));
+        }
+        match batches.into_iter().find(|b| b.num_rows() == 1) {
+            Some(batch) => ScalarValue::try_from_array(batch.column(0), 0),
+            None => ScalarValue::try_from(&data_type),
+        }
+    }
+}
+
+/// Collect uncorrelated scalar subqueries from a plan's expressions, without
+/// descending into the subquery plans themselves (those are handled by
+/// recursion in [`BallistaQueryPlanner::materialize_scalar_subqueries`]).
+fn collect_uncorrelated_scalar_subqueries(
+    plan: &LogicalPlan,
+) -> Result<Vec<Subquery>, DataFusionError> {
+    let mut found = Vec::new();
+    let mut stack = vec![plan];
+    while let Some(node) = stack.pop() {
+        for expr in node.expressions() {
+            expr.apply(|e| {
+                if let Expr::ScalarSubquery(subquery) = e
+                    && subquery.outer_ref_columns.is_empty()
+                {
+                    found.push(subquery.clone());
+                    // Do not descend into the subquery's own plan here.
+                    return Ok(TreeNodeRecursion::Jump);
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })?;
+        }
+        stack.extend(node.inputs());
+    }
+    Ok(found)
+}
+
+/// Replace each uncorrelated scalar subquery (matched by the identity of its
+/// plan Arc) with its precomputed literal value.
+fn substitute_scalar_subqueries(
+    plan: LogicalPlan,
+    values: &HashMap<usize, ScalarValue>,
+) -> Result<LogicalPlan, DataFusionError> {
+    plan.transform_up(|node| {
+        node.map_expressions(|expr| {
+            expr.transform_up(|e| {
+                if let Expr::ScalarSubquery(subquery) = &e {
+                    let key = Arc::as_ptr(&subquery.subquery) as usize;
+                    if let Some(value) = values.get(&key) {
+                        return Ok(Transformed::yes(Expr::Literal(value.clone(), None)));
+                    }
+                }
+                Ok(Transformed::no(e))
+            })
+        })
+    })
+    .map(|transformed| transformed.data)
 }
 
 /// A Visitor which detect if query is using local tables,
@@ -315,5 +456,82 @@ mod test {
                 .is_some()
         );
         Ok(())
+    }
+
+    fn one_row_subquery() -> std::sync::Arc<LogicalPlan> {
+        use datafusion::logical_expr::{LogicalPlanBuilder, lit};
+        std::sync::Arc::new(
+            LogicalPlanBuilder::empty(true)
+                .project(vec![lit(42i64).alias("m")])
+                .unwrap()
+                .build()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn collect_finds_uncorrelated_scalar_subqueries() {
+        use datafusion::logical_expr::LogicalPlanBuilder;
+        use datafusion::logical_expr::expr_fn::scalar_subquery;
+
+        let subquery = one_row_subquery();
+        let plan = LogicalPlanBuilder::empty(true)
+            .project(vec![
+                scalar_subquery(std::sync::Arc::clone(&subquery)).alias("x"),
+            ])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let found = super::collect_uncorrelated_scalar_subqueries(&plan).unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn collect_skips_correlated_scalar_subqueries() {
+        use datafusion::logical_expr::{Expr, LogicalPlanBuilder, Subquery, col};
+
+        let correlated = Expr::ScalarSubquery(Subquery {
+            subquery: one_row_subquery(),
+            outer_ref_columns: vec![col("y")],
+            spans: Default::default(),
+        });
+        let plan = LogicalPlanBuilder::empty(true)
+            .project(vec![correlated.alias("x")])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let found = super::collect_uncorrelated_scalar_subqueries(&plan).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn substitute_replaces_scalar_subqueries_with_literals() {
+        use datafusion::common::ScalarValue;
+        use datafusion::logical_expr::LogicalPlanBuilder;
+        use datafusion::logical_expr::expr_fn::scalar_subquery;
+        use std::collections::HashMap;
+
+        let subquery = one_row_subquery();
+        let plan = LogicalPlanBuilder::empty(true)
+            .project(vec![
+                scalar_subquery(std::sync::Arc::clone(&subquery)).alias("x"),
+            ])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let mut values = HashMap::new();
+        values.insert(
+            std::sync::Arc::as_ptr(&subquery) as usize,
+            ScalarValue::Int64(Some(42)),
+        );
+
+        let rewritten = super::substitute_scalar_subqueries(plan, &values).unwrap();
+        // No scalar subquery should remain after substitution.
+        let remaining =
+            super::collect_uncorrelated_scalar_subqueries(&rewritten).unwrap();
+        assert!(remaining.is_empty());
     }
 }

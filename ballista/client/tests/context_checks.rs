@@ -77,6 +77,40 @@ mod supported {
         Ok(())
     }
 
+    // An uncorrelated scalar subquery is executed first and its value inlined
+    // into the outer plan (rather than decorrelated to a join), so the outer
+    // query distributes without a `ScalarSubqueryExec`. See #1910.
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_uncorrelated_scalar_subquery(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        // Exactly the row holding the maximum id matches the inlined subquery
+        // value, so the count is 1.
+        let result = ctx
+            .sql("select count(*) as cnt from test where id = (select max(id) from test)")
+            .await?
+            .collect()
+            .await?;
+        let expected = ["+-----+", "| cnt |", "+-----+", "| 1   |", "+-----+"];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
     // tests if client will collect statistics for
     // collect/show operation
     #[rstest]
