@@ -102,3 +102,17 @@ debug = false
 debug-assertions = false
 strip = "debuginfo"
 incremental = false
+
+# Build profile for the TPC-H integration CI job. That job only checks that the
+# distributed suite runs correctly (no timing gate), so it trades some runtime
+# speed for much faster compilation: opt-level 1 keeps queries fast enough while
+# compiling dependencies far quicker than the opt-level 3 release profiles. Do
+# not use this for performance numbers — use release-nonlto / release-lto.
+[profile.tpch-ci]
+inherits = "release"
+opt-level = 1
+codegen-units = 256
+lto = false
+debug = false
+debug-assertions = false
+incremental = false

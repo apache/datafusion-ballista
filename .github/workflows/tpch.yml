@@ -71,7 +71,7 @@ jobs:
 
       - name: Build Ballista binaries
         run: |
-          cargo build --profile release-nonlto --locked \
+          cargo build --profile tpch-ci --locked \
             -p ballista-scheduler \
             -p ballista-executor \
             -p ballista-benchmarks
@@ -101,12 +101,12 @@ jobs:
 
           mkdir -p "$WORK_DIR"
 
-          ./target/release-nonlto/ballista-scheduler \
+          ./target/tpch-ci/ballista-scheduler \
             --bind-host 127.0.0.1 \
             > "$SCHEDULER_LOG" 2>&1 &
           SCHEDULER_PID=$!
 
-          ./target/release-nonlto/ballista-executor \
+          ./target/tpch-ci/ballista-executor \
             --bind-host 127.0.0.1 \
             --bind-port 50051 \
             --scheduler-host 127.0.0.1 \
@@ -156,7 +156,7 @@ jobs:
             # q16 omitted: still unsupported (matches benchmarks/run.sh).
             for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
               echo "::group::[$label] Query $q"
-              ./target/release-nonlto/tpch benchmark ballista \
+              ./target/tpch-ci/tpch benchmark ballista \
                 --host 127.0.0.1 --port 50050 \
                 --query "$q" \
                 --path "$DATA_DIR" \
