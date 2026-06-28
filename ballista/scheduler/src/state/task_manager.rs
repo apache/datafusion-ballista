@@ -165,7 +165,8 @@ impl JobInfoCache {
             encoded_stage_plans: HashMap::new(),
         }
     }
-    
+
+    #[warn(dead_code)]
     fn partition_prune_helper(
         partition_ids: &[usize],
         plan: &Arc<dyn ExecutionPlan>,
