@@ -1027,7 +1027,9 @@ mod test {
     // re-applying the defaults would discard them. See #1901.
     #[test]
     fn should_preserve_user_overrides_on_upgrade() {
-        // Ballista defaults these to prefer_hash_join=false and threshold=0.
+        // Ballista defaults these to prefer_hash_join=false and the threshold to
+        // 10 MB. The overrides below differ from those defaults so the assertions
+        // prove the user's values survived `upgrade_for_ballista`.
         let mut config = SessionConfig::new_with_ballista();
         config
             .options_mut()
@@ -1037,7 +1039,7 @@ mod test {
             .options_mut()
             .set(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                "10485760",
+                "5242880",
             )
             .unwrap();
 
@@ -1049,7 +1051,7 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            10485760
+            5242880
         );
     }
 
@@ -1065,7 +1067,14 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            0
+            10 * 1024 * 1024
+        );
+        assert_eq!(
+            config
+                .options()
+                .optimizer
+                .hash_join_single_partition_threshold_rows,
+            1_000_000
         );
     }
 
