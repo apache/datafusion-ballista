@@ -32,30 +32,9 @@ use datafusion::{
 use log::debug;
 use std::sync::Arc;
 
+use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::optimizer_rule::join_selection::SelectJoinRule;
-
-/// Whether a `CollectLeft` (broadcast) hash join is correct for `join_type` in
-/// Ballista's distributed execution.
-///
-/// `CollectLeft` replicates the build (left) side to every probe task, and each
-/// task processes only its own slice of the probe (right) side. Output rows that
-/// are determined by a single probe-side row are therefore produced exactly
-/// once. Join types that emit rows on behalf of the build side — unmatched outer
-/// rows, or semi/anti/mark rows that depend on a build row's global match status
-/// — would instead be emitted independently by every task, producing duplicate
-/// or spurious rows. Only join types whose output is driven entirely by the
-/// probe side are safe to broadcast.
-pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
-    matches!(
-        join_type,
-        JoinType::Inner
-            | JoinType::Right
-            | JoinType::RightSemi
-            | JoinType::RightAnti
-            | JoinType::RightMark
-    )
-}
 
 /// has children of this join been
 /// repartitioned
@@ -472,10 +451,112 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::test::exec::StatisticsExec;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+    }
+
+    fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Inexact(num_rows * 16),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
+        ))
+    }
+
+    /// Run the resolver's join-strategy decision for `join_type` with `left_rows`
+    /// and `right_rows` on the two sides, both small enough to be collectable.
+    fn actual_join_for(
+        join_type: JoinType,
+        left_rows: usize,
+        right_rows: usize,
+        prefer_hash_join: bool,
+    ) -> JoinSelectionAction {
+        let left = stats_exec(left_rows);
+        let right = stats_exec(right_rows);
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+        let dj = DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Unknown,
+            null_aware: false,
+            plan_id: 0,
+        };
+        let mut config = ConfigOptions::new();
+        config.optimizer.prefer_hash_join = prefer_hash_join;
+        config.optimizer.hash_join_single_partition_threshold = 10 * 1024 * 1024;
+        config.optimizer.hash_join_single_partition_threshold_rows = 1_000_000;
+        dj.to_actual_join(&config).unwrap()
+    }
+
+    fn is_collected(action: &JoinSelectionAction) -> bool {
+        matches!(
+            action,
+            JoinSelectionAction::CollectLeft(_) | JoinSelectionAction::LateCollectLeft(_)
+        )
+    }
+
+    // With equal-sized sides (no swap) the resolver must collect a small build
+    // side into a CollectLeft broadcast only for join types whose output is
+    // driven by the probe side; everything that emits build-side rows must be
+    // repartitioned instead. `prefer_hash_join` only selects the repartitioned
+    // fallback (hash vs sort-merge), so the broadcast-safety decision must be
+    // identical under both settings.
+    #[test]
+    fn to_actual_join_collects_only_broadcast_safe_join_types() {
+        for prefer_hash_join in [true, false] {
+            for join_type in [
+                JoinType::Inner,
+                JoinType::Left,
+                JoinType::Right,
+                JoinType::Full,
+                JoinType::LeftSemi,
+                JoinType::RightSemi,
+                JoinType::LeftAnti,
+                JoinType::RightAnti,
+                JoinType::LeftMark,
+                JoinType::RightMark,
+            ] {
+                let action = actual_join_for(join_type, 100, 100, prefer_hash_join);
+                assert_eq!(
+                    is_collected(&action),
+                    collect_left_broadcast_safe(join_type),
+                    "join_type {join_type:?} (prefer_hash_join={prefer_hash_join}): collected={}, expected safe={}",
+                    is_collected(&action),
+                    collect_left_broadcast_safe(join_type),
+                );
+            }
+        }
+    }
+
+    // Safety is evaluated on the join type *after* the build-side swap. A LEFT
+    // join with the smaller side on the right swaps to a (safe) RIGHT join and is
+    // collected; a RIGHT join with the smaller side on the right swaps to an
+    // (unsafe) LEFT join and must be repartitioned.
+    #[test]
+    fn to_actual_join_uses_post_swap_join_type() {
+        assert!(
+            is_collected(&actual_join_for(JoinType::Left, 1000, 10, true)),
+            "LEFT with small right swaps to a safe RIGHT join and should collect"
+        );
+        assert!(
+            !is_collected(&actual_join_for(JoinType::Right, 1000, 10, true)),
+            "RIGHT with small right swaps to an unsafe LEFT join and must repartition"
+        );
     }
 
     /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.

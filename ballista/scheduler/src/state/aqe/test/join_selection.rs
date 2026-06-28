@@ -173,61 +173,6 @@ async fn test_left_join_not_collected_left() -> datafusion::common::Result<()> {
     Ok(())
 }
 
-// A LEFT ANTI join emits a left row when it has no match anywhere on the right.
-// With the left side broadcast, a task only sees its slice of the right side, so
-// it would emit left rows that actually match in another task's slice. Must stay
-// repartitioned.
-#[tokio::test]
-async fn test_left_anti_join_not_collected_left() -> datafusion::common::Result<()> {
-    let ctx = make_ctx(true);
-    register_2tables(&ctx);
-
-    let lp = ctx
-        .sql("SELECT t1.id FROM t1 WHERE t1.id NOT IN (SELECT t2.id FROM t2)")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
-    let plan = planner.current_plan();
-    let rendered = datafusion::physical_plan::displayable(plan)
-        .indent(true)
-        .to_string();
-    assert!(
-        !rendered.contains("mode=CollectLeft"),
-        "LEFT ANTI join must not be broadcast as CollectLeft, got:\n{rendered}"
-    );
-    Ok(())
-}
-
-// A RIGHT join emits all right/probe rows; the probe side stays partitioned so
-// each row is emitted by exactly one task. Broadcasting the left/build side is
-// safe, so the guard must still allow CollectLeft here.
-#[tokio::test]
-async fn test_right_join_still_collected_left() -> datafusion::common::Result<()> {
-    let ctx = make_ctx(true);
-    register_2tables(&ctx);
-
-    let lp = ctx
-        .sql("SELECT t1.id, t2.val FROM t1 RIGHT JOIN t2 ON t1.id = t2.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
-    let plan = planner.current_plan();
-    let rendered = datafusion::physical_plan::displayable(plan)
-        .indent(true)
-        .to_string();
-    assert!(
-        rendered.contains("mode=CollectLeft"),
-        "RIGHT join is broadcast-safe and should be collected left, got:\n{rendered}"
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<()> {
     let ctx = make_ctx_without_collect_left(true);
