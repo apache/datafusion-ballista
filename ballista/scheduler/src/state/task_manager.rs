@@ -166,7 +166,7 @@ impl JobInfoCache {
         }
     }
 
-    #[warn(dead_code)]
+    #[allow(dead_code)]
     fn partition_prune_helper(
         partition_ids: &[usize],
         plan: &Arc<dyn ExecutionPlan>,
