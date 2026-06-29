@@ -58,6 +58,12 @@ Table of content
    user-guide/spark-compatible-functions
    user-guide/extensions-example
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Changelog
+
+   changelog/index
+
 .. _toc.contributors:
 
 .. toctree::
