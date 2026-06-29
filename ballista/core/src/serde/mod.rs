@@ -810,6 +810,55 @@ mod test {
         ]))
     }
 
+    // Regression coverage for #1838 and the removed `make_filter_projection_serde_safe`
+    // workaround: a `FilterExec` that projects to zero columns must survive physical
+    // plan serialization with its empty projection intact. datafusion-proto 53.1.0
+    // could not distinguish `Some(vec![])` (empty projection) from `None` (full
+    // projection) and decoded the former back as `None`, shifting column indices.
+    // DataFusion 54 preserves the distinction, so no Ballista-side rewrite is needed.
+    #[tokio::test]
+    async fn filter_exec_empty_projection_survives_physical_serde() {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::expressions::lit;
+        use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
+        use datafusion_proto::physical_plan::{
+            AsExecutionPlan, DefaultPhysicalExtensionCodec,
+        };
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let filter = FilterExecBuilder::new(lit(true), input)
+            .apply_projection(Some(vec![]))
+            .unwrap()
+            .build()
+            .unwrap();
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(filter);
+        assert_eq!(
+            plan.schema().fields().len(),
+            0,
+            "precondition: filter projects to zero columns"
+        );
+
+        let codec = DefaultPhysicalExtensionCodec {};
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = proto.try_into_physical_plan(&ctx, &codec).unwrap();
+
+        assert_eq!(
+            decoded.schema().fields().len(),
+            0,
+            "decoded FilterExec must still project zero columns"
+        );
+        let filter = decoded
+            .downcast_ref::<FilterExec>()
+            .expect("decoded plan must be a FilterExec");
+        assert_eq!(
+            filter.projection().as_ref().map(|p| p.is_empty()),
+            Some(true),
+            "empty projection must round-trip as Some(vec![]), not None"
+        );
+    }
+
     #[tokio::test]
     async fn test_unresolved_shuffle_exec_roundtrip() {
         let schema = create_test_schema();
