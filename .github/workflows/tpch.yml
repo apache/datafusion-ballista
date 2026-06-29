@@ -48,7 +48,7 @@ on:
 
 jobs:
   tpch-sf10:
-    name: TPC-H SF10 (all queries)
+    name: TPC-H SF10 (all queries, AQE off + on)
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -71,7 +71,7 @@ jobs:
 
       - name: Build Ballista binaries
         run: |
-          cargo build --profile release-nonlto --locked \
+          cargo build --profile tpch-ci --locked \
             -p ballista-scheduler \
             -p ballista-executor \
             -p ballista-benchmarks
@@ -101,12 +101,12 @@ jobs:
 
           mkdir -p "$WORK_DIR"
 
-          ./target/release-nonlto/ballista-scheduler \
+          ./target/tpch-ci/ballista-scheduler \
             --bind-host 127.0.0.1 \
             > "$SCHEDULER_LOG" 2>&1 &
           SCHEDULER_PID=$!
 
-          ./target/release-nonlto/ballista-executor \
+          ./target/tpch-ci/ballista-executor \
             --bind-host 127.0.0.1 \
             --bind-port 50051 \
             --scheduler-host 127.0.0.1 \
@@ -147,19 +147,32 @@ jobs:
           done
           nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
 
-          # q16 omitted: still unsupported (matches benchmarks/run.sh).
-          for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
-            echo "::group::Query $q"
-            ./target/release-nonlto/tpch benchmark ballista \
-              --host 127.0.0.1 --port 50050 \
-              --query "$q" \
-              --path "$DATA_DIR" \
-              --format parquet \
-              --partitions 16 \
-              --iterations 1 \
-              -c datafusion.optimizer.prefer_hash_join=false
-            echo "::endgroup::"
-          done
+          # Run the suite once per planner mode against the same data and
+          # cluster. AQE on/off is a per-query session setting, so the scheduler
+          # picks the planner per job; no need to regenerate data or restart the
+          # cluster.
+          run_suite() {
+            local label="$1"; shift
+            # q16 omitted: still unsupported (matches benchmarks/run.sh).
+            for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
+              echo "::group::[$label] Query $q"
+              ./target/tpch-ci/tpch benchmark ballista \
+                --host 127.0.0.1 --port 50050 \
+                --query "$q" \
+                --path "$DATA_DIR" \
+                --format parquet \
+                --partitions 16 \
+                --iterations 1 \
+                "$@"
+              echo "::endgroup::"
+            done
+          }
+
+          run_suite "AQE off" \
+            -c datafusion.optimizer.prefer_hash_join=false
+          run_suite "AQE on" \
+            -c datafusion.optimizer.prefer_hash_join=false \
+            -c ballista.planner.adaptive.enabled=true
 
       - name: Upload cluster logs on failure
         if: failure()
