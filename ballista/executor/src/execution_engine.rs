@@ -27,6 +27,7 @@ use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::{JobId, utils};
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder,
 };
@@ -36,6 +37,7 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::prelude::SessionConfig;
+use log::warn;
 use std::any::Any;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
@@ -120,13 +122,28 @@ impl DefaultExecutionEngine {
 /// Returns `None` for any node that is not a file-backed `DataSourceExec`, and
 /// for a `partition_id` outside the source's file groups (e.g. when an operator
 /// between the scan and the stage output changed the partition count).
+///
+/// Only `FileScanConfig` distributes work from the shared queue. Other data
+/// sources (e.g. `MemorySourceConfig`) isolate partitions in their own
+/// `open(partition)` and need no restriction, so they are left unchanged. An
+/// unrecognized source type is warned about, since a future source that
+/// distributes work across partitions would over-read here without handling.
 fn restrict_scan_to_partition(
     plan: &Arc<dyn ExecutionPlan>,
     partition_id: usize,
 ) -> Option<Arc<dyn ExecutionPlan>> {
     let exec = plan.downcast_ref::<DataSourceExec>()?;
     let source: &dyn Any = exec.data_source().as_ref();
-    let config = source.downcast_ref::<FileScanConfig>()?;
+    let Some(config) = source.downcast_ref::<FileScanConfig>() else {
+        if source.downcast_ref::<MemorySourceConfig>().is_none() {
+            warn!(
+                "restrict_scan_to_partition: unrecognized DataSourceExec source type \
+                 left unrestricted; if it distributes work across partitions from a \
+                 shared queue, a single-partition task could over-read"
+            );
+        }
+        return None;
+    };
     if partition_id >= config.file_groups.len() {
         return None;
     }
