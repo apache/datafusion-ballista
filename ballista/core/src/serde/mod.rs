@@ -382,7 +382,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )
             })?;
         let converter = DefaultPhysicalProtoConverter {};
-        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self.default_codec.as_ref());
+        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
