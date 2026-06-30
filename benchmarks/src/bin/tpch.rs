@@ -125,6 +125,11 @@ struct BallistaBenchmarkOpt {
     /// -c datafusion.execution.target_partitions=16
     #[structopt(short = "c", long = "config", number_of_values = 1)]
     config_overrides: Vec<String>,
+
+    /// Verify each Ballista result against single-process DataFusion over the
+    /// same data.
+    #[structopt(long = "verify")]
+    verify: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -415,6 +420,23 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .map(|q| vec![q])
         .unwrap_or_else(|| (1..=22).collect());
 
+    let oracle_ctx = if opt.verify {
+        let cfg = SessionConfig::new()
+            .with_target_partitions(opt.partitions)
+            .with_batch_size(opt.batch_size);
+        let ctx = SessionContext::new_with_config(cfg);
+        register_datafusion_tables(
+            &ctx,
+            opt.path.to_str().unwrap(),
+            opt.file_format.as_str(),
+            opt.partitions,
+        )
+        .await?;
+        Some(ctx)
+    } else {
+        None
+    };
+
     let mut benchmark_run = BenchmarkRun::new();
     let mut total_elapsed = 0.0;
 
@@ -506,6 +528,16 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                 let expected = get_expected_results(query, expected_results_path).await?;
                 compare_results(&expected, &batches)?;
             }
+        }
+
+        if let Some(oracle_ctx) = &oracle_ctx {
+            let expected = execute_query_capturing_answer(oracle_ctx, &sqls).await?;
+            compare_results(&expected, &batches).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "query {query} verification failed: {e}"
+                ))
+            })?;
+            println!("Query {query} verified against DataFusion: OK");
         }
 
         if opt.iterations > 1 {
@@ -649,6 +681,42 @@ fn get_query_sql_by_path(query: usize, mut sql_path: String) -> Result<String> {
             "invalid query. Expected value between 1 and 22".to_owned(),
         ))
     }
+}
+
+/// Registers all TPC-H tables on a single-process DataFusion context (the
+/// correctness oracle for `--verify`).
+async fn register_datafusion_tables(
+    ctx: &SessionContext,
+    path: &str,
+    file_format: &str,
+    partitions: usize,
+) -> Result<()> {
+    for table in TABLES {
+        let table_provider = {
+            let mut session_state = ctx.state();
+            get_table(&mut session_state, path, table, file_format, partitions).await?
+        };
+        ctx.register_table(*table, table_provider)?;
+    }
+    Ok(())
+}
+
+/// Executes all statements of a query in order and returns the batches of the
+/// answer statement (see `answer_statement_index`).
+async fn execute_query_capturing_answer(
+    ctx: &SessionContext,
+    statements: &[String],
+) -> Result<Vec<RecordBatch>> {
+    let answer_idx = answer_statement_index(statements);
+    let mut answer = vec![];
+    for (idx, sql) in statements.iter().enumerate() {
+        let df = ctx.sql(sql).await?;
+        let collected = df.collect().await?;
+        if idx == answer_idx {
+            answer = collected;
+        }
+    }
+    Ok(answer)
 }
 
 async fn register_tables(
@@ -1861,26 +1929,22 @@ mod tests {
     }
 
     fn f64_batch(values: Vec<f64>) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "x",
-            DataType::Float64,
-            false,
-        )]));
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)]));
         RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(values))]).unwrap()
     }
 
     fn i64_batch(values: Vec<i64>) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "n",
-            DataType::Int64,
-            false,
-        )]));
+        let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, false)]));
         RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap()
     }
 
     #[test]
     fn compare_results_equal_ok() {
-        assert!(super::compare_results(&[i64_batch(vec![1, 2])], &[i64_batch(vec![1, 2])]).is_ok());
+        assert!(
+            super::compare_results(&[i64_batch(vec![1, 2])], &[i64_batch(vec![1, 2])])
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1902,20 +1966,21 @@ mod tests {
     #[test]
     fn compare_results_floats_within_tolerance_ok() {
         // differ only beyond the tolerance's significant digits
-        assert!(super::compare_results(
-            &[f64_batch(vec![123.4567890])],
-            &[f64_batch(vec![123.4567891])]
-        )
-        .is_ok());
+        assert!(
+            super::compare_results(
+                &[f64_batch(vec![123.4567890])],
+                &[f64_batch(vec![123.4567891])]
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn compare_results_floats_outside_tolerance_err() {
-        assert!(super::compare_results(
-            &[f64_batch(vec![100.0])],
-            &[f64_batch(vec![100.5])]
-        )
-        .is_err());
+        assert!(
+            super::compare_results(&[f64_batch(vec![100.0])], &[f64_batch(vec![100.5])])
+                .is_err()
+        );
     }
 
     #[test]
