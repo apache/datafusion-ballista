@@ -88,48 +88,47 @@ GitHub dependency.
 
 ### Change Log
 
-We maintain a `CHANGELOG.md` so our users know what has been changed between releases.
+We maintain per-release changelogs under
+[`docs/source/changelog/`](../../docs/source/changelog/). They are surfaced
+in the Sphinx site through `docs/source/changelog/index.md`.
 
-You will need a GitHub Personal Access Token for the following steps. Follow
+You will need a GitHub Personal Access Token for the following steps.
+Follow
 [these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
-to generate one if you do not already have one.
-
-The changelog is generated using a Python script. There is a dependency on `PyGitHub`, which can be installed using pip:
+to generate one if you do not already have one. The changelog script
+depends on `PyGitHub`:
 
 ```bash
 pip3 install PyGitHub
 ```
 
-Run the following command to generate the changelog content.
+Run the generator from the repo root, pointing at the previous release
+tag and the new release tag (or `HEAD`):
 
 ```bash
-$ GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py apache/datafusion-ballista 0.11.0 HEAD > 0.12.0.md
+GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py \
+    52.0.0 HEAD 53.0.0 \
+    > docs/source/changelog/53.0.0.md
 ```
 
-This script creates a changelog from GitHub PRs based on the labels associated with them as well as looking for
-titles starting with `feat:`, `fix:`, or `docs:` . The script will produce output similar to:
+The script writes a fully-formed file: ASF header, version title, commit /
+contributor summary, categorized PR list, and a Credits section. The only
+remaining manual step is to prepend the new version to the toctree at the
+top of `docs/source/changelog/index.md`:
 
+````
+```{toctree}
+:maxdepth: 1
+
+53.0.0
+52.0.0
+...
 ```
-Fetching list of commits between 0.11.0 and HEAD
-Fetching pull requests
-Categorizing pull requests
-Generating changelog content
-```
+````
 
-This process is not fully automated, so there are some additional manual steps:
-
-- Add the ASF header to the generated file
-- Add the following content (copy from the previous version's changelog and update as appropriate:
-
-```
-## [0.12.0](https://github.com/apache/datafusion-ballista/tree/0.12.0) (2024-01-14)
-
-[Full Changelog](https://github.com/apache/datafusion-ballista/compare/0.11.0...0.12.0)
-```
-
-Send a PR to get these changes merged into the release branch (e.g. `branch-0.12`). If new commits that could change the
-change log content landed in the release branch before you could merge the PR, you need to rerun the changelog update
-script to regenerate the changelog and update the PR accordingly.
+Send a PR with the new file and the updated index to the release branch
+(e.g. `branch-53`). If new commits land in the release branch before
+merge, rerun the generator to refresh the file.
 
 ## Prepare release candidate artifacts
 
