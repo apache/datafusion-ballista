@@ -347,13 +347,18 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         for i in 0..opt.iterations {
             let start = Instant::now();
             // Execute each SQL statement sequentially (required for queries like q15
-            // that create views and then reference them)
-            for sql in &sqls {
+            // that create views and then reference them), but keep the result of
+            // the answer statement, not a trailing DROP VIEW.
+            let answer_idx = answer_statement_index(&sqls);
+            for (idx, sql) in sqls.iter().enumerate() {
                 if opt.debug {
                     println!("Executing: {sql}");
                 }
                 let df = ctx.sql(sql).await?;
-                result = df.collect().await?;
+                let collected = df.collect().await?;
+                if idx == answer_idx {
+                    result = collected;
+                }
             }
             let elapsed = start.elapsed().as_secs_f64();
             if opt.debug {
@@ -456,9 +461,10 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             println!("Running benchmark with query {}:\n {:?}", query, sqls);
         }
         let mut batches = vec![];
+        let answer_idx = answer_statement_index(&sqls);
         for i in 0..opt.iterations {
             let start = Instant::now();
-            for sql in &sqls {
+            for (idx, sql) in sqls.iter().enumerate() {
                 let df = ctx
                     .sql(sql)
                     .await
@@ -468,11 +474,14 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                 if opt.debug {
                     println!("=== Optimized logical plan ===\n{plan:?}\n");
                 }
-                batches = df
+                let collected = df
                     .collect()
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
+                if idx == answer_idx {
+                    batches = collected;
+                }
             }
             let elapsed = start.elapsed().as_secs_f64();
             secs.push(elapsed);
@@ -714,6 +723,20 @@ fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
             "Could not find {ext} files at {path1} or {path2}"
         )))
     }
+}
+
+/// Index of the statement whose result is the query answer: the last `SELECT`
+/// or `WITH` statement, or the last statement if none qualifies. TPC-H query
+/// files may wrap the answer in setup/teardown statements (e.g. q15 creates and
+/// drops a view); only the query statement's result is the answer.
+fn answer_statement_index(statements: &[String]) -> usize {
+    statements
+        .iter()
+        .rposition(|s| {
+            let head = s.trim_start().to_ascii_lowercase();
+            head.starts_with("select") || head.starts_with("with")
+        })
+        .unwrap_or_else(|| statements.len().saturating_sub(1))
 }
 
 /// Get the SQL statements from the specified query file
@@ -1763,6 +1786,28 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn answer_statement_index_picks_select_not_drop() {
+        let stmts = vec![
+            "create view revenue0 as select 1".to_string(),
+            "select * from revenue0 order by a".to_string(),
+            "drop view revenue0".to_string(),
+        ];
+        assert_eq!(super::answer_statement_index(&stmts), 1);
+    }
+
+    #[test]
+    fn answer_statement_index_single_select() {
+        let stmts = vec!["select 1".to_string()];
+        assert_eq!(super::answer_statement_index(&stmts), 0);
+    }
+
+    #[test]
+    fn answer_statement_index_with_cte() {
+        let stmts = vec!["WITH t AS (select 1) select * from t".to_string()];
+        assert_eq!(super::answer_statement_index(&stmts), 0);
     }
 }
 
