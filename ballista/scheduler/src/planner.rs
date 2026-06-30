@@ -1031,7 +1031,7 @@ order by
                 let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                     vec![stage.clone() as Arc<dyn ExecutionPlan>];
                 while let Some(node) = walker.pop() {
-                    if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>()
+                    if let Some(hj) = node.downcast_ref::<HashJoinExec>()
                         && *hj.partition_mode() == PartitionMode::CollectLeft
                     {
                         assert!(
@@ -1074,7 +1074,7 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     assert_ne!(
                         *hj.partition_mode(),
                         PartitionMode::CollectLeft,
@@ -1082,7 +1082,7 @@ order by
                     );
                 }
                 if let Some(unresolved) =
-                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
+                    node.downcast_ref::<UnresolvedShuffleExec>()
                 {
                     assert!(
                         !unresolved.broadcast,
@@ -1121,7 +1121,7 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     assert_ne!(
                         *hj.partition_mode(),
                         PartitionMode::CollectLeft,
@@ -1129,7 +1129,7 @@ order by
                     );
                 }
                 if let Some(unresolved) =
-                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
+                    node.downcast_ref::<UnresolvedShuffleExec>()
                 {
                     assert!(
                         !unresolved.broadcast,
