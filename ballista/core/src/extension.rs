@@ -786,6 +786,22 @@ impl SessionConfigHelperExt for SessionConfig {
             //
             // See https://github.com/apache/datafusion-ballista/issues/1648
             .set_bool("datafusion.optimizer.prefer_hash_join", false)
+            //
+            // DataFusion 54 plans uncorrelated scalar subqueries as a physical
+            // `ScalarSubqueryExec` wrapping a `ScalarSubqueryExpr` that reads an
+            // in-process shared results container. That container cannot cross
+            // process or stage boundaries, and `datafusion-proto` can only
+            // deserialize the expr inside its surrounding exec, so when Ballista
+            // splits a plan into stages the expr is serialized without its exec
+            // and the executor fails to decode it. Disabling this option makes
+            // the optimizer rewrite uncorrelated scalar subqueries to joins,
+            // which Ballista distributes correctly.
+            //
+            // See https://github.com/apache/datafusion-ballista/issues/1909
+            .set_bool(
+                "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery",
+                false,
+            )
     }
 }
 
@@ -1075,6 +1091,21 @@ mod test {
                 .optimizer
                 .hash_join_single_partition_threshold_rows,
             1_000_000
+        );
+    }
+
+    // Uncorrelated scalar subqueries must be rewritten to joins rather than
+    // planned as a physical `ScalarSubqueryExec`, whose `ScalarSubqueryExpr`
+    // cannot be deserialized once Ballista splits the plan into stages. See
+    // #1909.
+    #[test]
+    fn should_disable_physical_uncorrelated_scalar_subquery() {
+        let config = SessionConfig::new().upgrade_for_ballista();
+        assert!(
+            !config
+                .options()
+                .optimizer
+                .enable_physical_uncorrelated_scalar_subquery
         );
     }
 

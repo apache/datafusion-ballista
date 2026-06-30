@@ -1633,14 +1633,12 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
         plan: &dyn ExecutionPlan,
     ) -> std::result::Result<bool, Self::Error> {
         // Handle both ShuffleWriterExec and SortShuffleWriterExec
-        if let Some(shuffle_write) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+        if let Some(shuffle_write) = plan.downcast_ref::<ShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
-        } else if let Some(shuffle_write) =
-            plan.as_any().downcast_ref::<SortShuffleWriterExec>()
-        {
+        } else if let Some(shuffle_write) = plan.downcast_ref::<SortShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(unresolved_shuffle) =
-            plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
+            plan.downcast_ref::<UnresolvedShuffleExec>()
         {
             if let Some(output_links) =
                 self.output_links.get_mut(&unresolved_shuffle.stage_id)
@@ -1710,18 +1708,14 @@ impl TaskDescription {
     /// Returns the number of output partitions this task will produce.
     pub fn get_output_partition_number(&self) -> usize {
         // Try ShuffleWriterExec first
-        if let Some(shuffle_writer) =
-            self.plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
+        if let Some(shuffle_writer) = self.plan.downcast_ref::<ShuffleWriterExec>() {
             return shuffle_writer
                 .shuffle_output_partitioning()
                 .map(|partitioning| partitioning.partition_count())
                 .unwrap_or(1);
         }
         // Try SortShuffleWriterExec
-        if let Some(shuffle_writer) =
-            self.plan.as_any().downcast_ref::<SortShuffleWriterExec>()
-        {
+        if let Some(shuffle_writer) = self.plan.downcast_ref::<SortShuffleWriterExec>() {
             return shuffle_writer
                 .shuffle_output_partitioning()
                 .partition_count();
