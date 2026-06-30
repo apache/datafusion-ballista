@@ -301,19 +301,19 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let ctx = SessionContext::new_with_config(config);
 
     // register tables
-    for table in TABLES {
-        let table_provider = {
-            let mut session_state = ctx.state();
-            get_table(
-                &mut session_state,
-                opt.path.to_str().unwrap(),
-                table,
-                opt.file_format.as_str(),
-                opt.partitions,
-            )
-            .await?
-        };
-        if opt.mem_table {
+    if opt.mem_table {
+        for table in TABLES {
+            let table_provider = {
+                let mut session_state = ctx.state();
+                get_table(
+                    &mut session_state,
+                    opt.path.to_str().unwrap(),
+                    table,
+                    opt.file_format.as_str(),
+                    opt.partitions,
+                )
+                .await?
+            };
             println!("Loading table '{table}' into memory");
             let start = Instant::now();
             let memtable =
@@ -325,9 +325,15 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                 start.elapsed().as_millis()
             );
             ctx.register_table(*table, Arc::new(memtable))?;
-        } else {
-            ctx.register_table(*table, table_provider)?;
         }
+    } else {
+        register_datafusion_tables(
+            &ctx,
+            opt.path.to_str().unwrap(),
+            opt.file_format.as_str(),
+            opt.partitions,
+        )
+        .await?;
     }
 
     // Determine which queries to run
@@ -352,19 +358,9 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         for i in 0..opt.iterations {
             let start = Instant::now();
             // Execute each SQL statement sequentially (required for queries like q15
-            // that create views and then reference them), but keep the result of
+            // that create views and then reference them), keeping the result of
             // the answer statement, not a trailing DROP VIEW.
-            let answer_idx = answer_statement_index(&sqls);
-            for (idx, sql) in sqls.iter().enumerate() {
-                if opt.debug {
-                    println!("Executing: {sql}");
-                }
-                let df = ctx.sql(sql).await?;
-                let collected = df.collect().await?;
-                if idx == answer_idx {
-                    result = collected;
-                }
-            }
+            result = execute_query_capturing_answer(&ctx, &sqls, opt.debug).await?;
             let elapsed = start.elapsed().as_secs_f64();
             if opt.debug {
                 pretty::print_batches(&result)?;
@@ -531,7 +527,8 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         }
 
         if let Some(oracle_ctx) = &oracle_ctx {
-            let expected = execute_query_capturing_answer(oracle_ctx, &sqls).await?;
+            let expected =
+                execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug).await?;
             compare_results(&expected, &batches).map_err(|e| {
                 DataFusionError::Execution(format!(
                     "query {query} verification failed: {e}"
@@ -706,10 +703,14 @@ async fn register_datafusion_tables(
 async fn execute_query_capturing_answer(
     ctx: &SessionContext,
     statements: &[String],
+    debug: bool,
 ) -> Result<Vec<RecordBatch>> {
     let answer_idx = answer_statement_index(statements);
     let mut answer = vec![];
     for (idx, sql) in statements.iter().enumerate() {
+        if debug {
+            println!("Executing: {sql}");
+        }
         let df = ctx.sql(sql).await?;
         let collected = df.collect().await?;
         if idx == answer_idx {
@@ -1213,11 +1214,20 @@ impl BenchmarkRun {
 /// queries can differ in their last digits.
 const FLOAT_TOLERANCE: f64 = 1e-6;
 
-#[derive(PartialEq)]
 enum Cell {
     Null,
     Float(f64),
     Text(String),
+}
+
+impl std::fmt::Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cell::Null => f.write_str("NULL"),
+            Cell::Float(x) => write!(f, "{x}"),
+            Cell::Text(s) => f.write_str(s),
+        }
+    }
 }
 
 fn cell_at(column: &ArrayRef, row: usize) -> Cell {
@@ -1266,14 +1276,6 @@ fn cells_equal(a: &Cell, b: &Cell) -> bool {
         (Cell::Float(x), Cell::Float(y)) => floats_close(*x, *y),
         (Cell::Text(x), Cell::Text(y)) => x == y,
         _ => false,
-    }
-}
-
-fn cell_display(c: &Cell) -> String {
-    match c {
-        Cell::Null => "NULL".to_string(),
-        Cell::Float(x) => x.to_string(),
-        Cell::Text(s) => s.clone(),
     }
 }
 
@@ -1328,9 +1330,7 @@ fn compare_results(expected: &[RecordBatch], actual: &[RecordBatch]) -> Result<(
         for (j, (ecell, acell)) in erow.iter().zip(arow.iter()).enumerate() {
             if !cells_equal(ecell, acell) {
                 return Err(DataFusionError::Execution(format!(
-                    "result mismatch at row {i}, column {j}: expected `{}`, got `{}`",
-                    cell_display(ecell),
-                    cell_display(acell)
+                    "result mismatch at row {i}, column {j}: expected `{ecell}`, got `{acell}`"
                 )));
             }
         }
