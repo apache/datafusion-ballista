@@ -23,6 +23,7 @@ use crate::serde::scheduler::PartitionStats;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::arrow::array::Array;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::{SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;

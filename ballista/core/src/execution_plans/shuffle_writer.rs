@@ -137,6 +137,28 @@ pub struct ShuffleWriteResult {
     pub column_stats: Vec<TaskColumnStats>,
 }
 
+/// Fold the per-column null counts of `batch` into `null_counts` (indexed by column position).
+/// Shared by every shuffle-write path so stats are collected consistently.
+pub(crate) fn accumulate_null_counts(null_counts: &mut [u64], batch: &RecordBatch) {
+    for (i, col) in batch.columns().iter().enumerate() {
+        null_counts[i] += col.null_count() as u64;
+    }
+}
+
+/// Convert folded per-column null counts into the wire representation sent to the scheduler.
+/// `hll_sketch` is left empty until NDV (HyperLogLog) collection is implemented.
+pub(crate) fn null_counts_to_column_stats(null_counts: Vec<u64>) -> Vec<TaskColumnStats> {
+    null_counts
+        .into_iter()
+        .enumerate()
+        .map(|(column, null_count)| TaskColumnStats {
+            column: column as u32,
+            null_count,
+            hll_sketch: vec![], // TODO : collect NDV
+        })
+        .collect()
+}
+
 impl ShuffleWriteMetrics {
     fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
@@ -383,9 +405,7 @@ impl ShuffleWriterExec {
                         match stream.next().await {
                             Some(Ok(batch)) => {
                                 write_metrics.input_rows.add(batch.num_rows());
-                                for (i, col) in batch.columns().iter().enumerate() {
-                                    null_counts[i] += col.null_count() as u64
-                                }
+                                accumulate_null_counts(&mut null_counts, &batch);
                                 if tx.send(batch).await.is_err() {
                                     break None;
                                 }
@@ -410,15 +430,7 @@ impl ShuffleWriterExec {
                         return Err(e);
                     }
                     let partitions = write_result?;
-                    let column_stats = null_counts
-                        .into_iter()
-                        .enumerate()
-                        .map(|(column, null_count)| TaskColumnStats {
-                            column: column as u32,
-                            null_count,
-                            hll_sketch: vec![], // TODO : collect NDV
-                        })
-                        .collect();
+                    let column_stats = null_counts_to_column_stats(null_counts);
                     Ok(ShuffleWriteResult {
                         partitions,
                         column_stats,

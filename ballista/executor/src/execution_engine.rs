@@ -23,8 +23,7 @@
 
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
-use ballista_core::serde::protobuf::ShuffleWritePartition;
+use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriteResult, ShuffleWriterExec};
 use ballista_core::{JobId, utils};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::memory::MemorySourceConfig;
