@@ -33,15 +33,11 @@ use ballista_core::{
     serde::scheduler::PartitionLocation,
 };
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
-use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
@@ -111,10 +107,8 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
         debug!("Planning query stages for job: [{job_id}]");
-        // Workaround until DF 54 migration : <https://github.com/apache/datafusion/pull/21885>
-        let serde_safe_plan = make_filter_projection_serde_safe(execution_plan)?;
         let (new_plan, mut stages) =
-            self.plan_query_stages_internal(job_id, serde_safe_plan, config)?;
+            self.plan_query_stages_internal(job_id, execution_plan, config)?;
         stages.push(create_shuffle_writer_with_config(
             job_id,
             self.next_stage_id(),
@@ -146,15 +140,13 @@ impl DefaultDistributedPlanner {
 
         // Broadcast-join lowering: HashJoinExec(CollectLeft) gets its own
         // controlled recursion so the build side is written as a broadcast stage.
-        if let Some(hash_join) = execution_plan.as_any().downcast_ref::<HashJoinExec>()
+        if let Some(hash_join) = execution_plan.downcast_ref::<HashJoinExec>()
             && *hash_join.partition_mode() == PartitionMode::CollectLeft
         {
             // Build subtree: peel CoalescePartitionsExec if present, then
             // recurse to lower its internal stages.
             let mut build = hash_join.left().clone();
-            if let Some(coalesce) =
-                build.as_any().downcast_ref::<CoalescePartitionsExec>()
-            {
+            if let Some(coalesce) = build.downcast_ref::<CoalescePartitionsExec>() {
                 build = coalesce.children()[0].clone();
             }
             let (build, mut stages) =
@@ -198,10 +190,7 @@ impl DefaultDistributedPlanner {
             stages.append(&mut child_stages);
         }
 
-        if let Some(_coalesce) = execution_plan
-            .as_any()
-            .downcast_ref::<CoalescePartitionsExec>()
-        {
+        if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
             let input = self.optimizer_enforce_sorting.optimize(input, config)?;
             let shuffle_writer = create_shuffle_writer_with_config(
@@ -218,10 +207,9 @@ impl DefaultDistributedPlanner {
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
-        } else if let Some(_sort_preserving_merge) = execution_plan
-            .as_any()
-            .downcast_ref::<SortPreservingMergeExec>(
-        ) {
+        } else if let Some(_sort_preserving_merge) =
+            execution_plan.downcast_ref::<SortPreservingMergeExec>()
+        {
             let shuffle_writer = create_shuffle_writer_with_config(
                 job_id,
                 self.next_stage_id(),
@@ -235,9 +223,7 @@ impl DefaultDistributedPlanner {
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
-        } else if let Some(repart) =
-            execution_plan.as_any().downcast_ref::<RepartitionExec>()
-        {
+        } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
                     let input = children[0].clone();
@@ -295,7 +281,7 @@ impl DefaultDistributedPlanner {
             debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
-        let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() else {
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
             return Ok(plan);
         };
         debug!(
@@ -398,7 +384,6 @@ impl DefaultDistributedPlanner {
         };
 
         let promoted_join = promoted
-            .as_any()
             .downcast_ref::<HashJoinExec>()
             .expect("promoted plan must still be a HashJoinExec");
         let new_left: Arc<dyn ExecutionPlan> = if promoted_join
@@ -420,40 +405,6 @@ impl DefaultDistributedPlanner {
     }
 }
 
-/// Workaround until DF 54 migration: <https://github.com/apache/datafusion/pull/21885>
-/// datafusion-proto 53.1.0 encodes both `Some([])` (zero cols) and `None` (all cols)
-/// as an empty list, decoding back to `None` and shifting column indices (#1838).
-/// Rewrite `FilterExec(Some([]))` → empty `ProjectionExec` wrapped `FilterExec(None)`
-fn make_filter_projection_serde_safe(
-    plan: Arc<dyn ExecutionPlan>,
-) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-    Ok(plan
-        .transform_up(|node| {
-            if let Some(filter) = node.as_any().downcast_ref::<FilterExec>() {
-                let empty_projection = filter
-                    .projection()
-                    .as_ref()
-                    .map(|p| p.is_empty())
-                    .unwrap_or(false);
-                if empty_projection {
-                    let orig_filter_exec = FilterExecBuilder::from(filter)
-                        .apply_projection(None)?
-                        .build()?;
-                    let zero_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = vec![];
-                    let proj = ProjectionExec::try_new(
-                        zero_expr,
-                        Arc::new(orig_filter_exec) as Arc<dyn ExecutionPlan>,
-                    )?;
-                    return Ok(
-                        Transformed::yes(Arc::new(proj) as Arc<dyn ExecutionPlan>),
-                    );
-                }
-            }
-            Ok(Transformed::no(node))
-        })?
-        .data)
-}
-
 fn create_unresolved_shuffle(
     shuffle_writer: &dyn ShuffleWriter,
 ) -> Arc<UnresolvedShuffleExec> {
@@ -470,9 +421,7 @@ fn create_unresolved_shuffle(
 pub fn find_unresolved_shuffles(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Vec<UnresolvedShuffleExec>> {
-    if let Some(unresolved_shuffle) =
-        plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
-    {
+    if let Some(unresolved_shuffle) = plan.downcast_ref::<UnresolvedShuffleExec>() {
         Ok(vec![unresolved_shuffle.clone()])
     } else {
         Ok(plan
@@ -495,9 +444,7 @@ pub fn remove_unresolved_shuffles(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
-        if let Some(unresolved_shuffle) =
-            child.as_any().downcast_ref::<UnresolvedShuffleExec>()
-        {
+        if let Some(unresolved_shuffle) = child.downcast_ref::<UnresolvedShuffleExec>() {
             let p = partition_locations
                 .get(&unresolved_shuffle.stage_id)
                 .ok_or_else(|| {
@@ -558,7 +505,7 @@ pub fn rollback_resolved_shuffles(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
-        if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
+        if let Some(shuffle_reader) = child.downcast_ref::<ShuffleReaderExec>() {
             let stage_id = shuffle_reader.stage_id;
             let unresolved = if shuffle_reader.broadcast {
                 Arc::new(UnresolvedShuffleExec::new_broadcast(
@@ -636,15 +583,13 @@ mod test {
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::expressions::lit;
+
     use datafusion::physical_plan::filter::FilterExec;
-    use datafusion::physical_plan::filter::FilterExecBuilder;
+
     use datafusion::physical_plan::joins::HashJoinExec;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
@@ -660,66 +605,14 @@ mod test {
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
-            $exec.as_any().downcast_ref::<$ty>().expect(&format!(
-                "Downcast to {} failed. Got {:?}",
-                stringify!($ty),
-                $exec
-            ))
+            ($exec.as_ref() as &dyn ExecutionPlan)
+                .downcast_ref::<$ty>()
+                .expect(&format!(
+                    "Downcast to {} failed. Got {:?}",
+                    stringify!($ty),
+                    $exec
+                ))
         };
-    }
-
-    /// Regression test for issue #1838: a `FilterExec` projecting to zero columns
-    /// is not serialization-safe in datafusion-proto 53.1.0 (the empty projection
-    /// decodes back as `None`, shifting downstream column indices). The planner
-    /// must rewrite it into a serde-safe equivalent that still emits zero columns.
-    #[test]
-    fn empty_projection_filter_is_rewritten_serde_safe() -> Result<(), BallistaError> {
-        // 1-column input feeding a FilterExec that projects to ZERO columns
-        // (mirrors TPC-DS Q9's `FROM reason WHERE r_reason_sk = 1`).
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "r_reason_sk",
-            DataType::Int32,
-            false,
-        )]));
-        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
-        let filter = FilterExecBuilder::new(lit(true), input)
-            .apply_projection(Some(vec![]))?
-            .build()?;
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(filter);
-        assert_eq!(
-            plan.schema().fields().len(),
-            0,
-            "precondition: filter projects to zero columns"
-        );
-
-        let serde_safe_plan = super::make_filter_projection_serde_safe(plan)?;
-
-        // schema is preserved
-        assert_eq!(
-            serde_safe_plan.schema().fields().len(),
-            0,
-            "rewrite must preserve the zero-column output schema"
-        );
-
-        // FilterExec does not retain an empty projection
-        let mut has_empty_filter_projection = false;
-        serde_safe_plan.apply(|node| {
-            if let Some(f) = node.as_any().downcast_ref::<FilterExec>()
-                && f.projection()
-                    .as_ref()
-                    .map(|p| p.is_empty())
-                    .unwrap_or(false)
-            {
-                has_empty_filter_projection = true;
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        assert!(
-            !has_empty_filter_projection,
-            "FilterExec with empty projection must be rewritten to be serde-safe"
-        );
-
-        Ok(())
     }
 
     #[tokio::test]
@@ -1017,11 +910,10 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     assert_eq!(*hj.partition_mode(), PartitionMode::CollectLeft);
                     let left = hj.children()[0].clone();
                     let unresolved = left
-                        .as_any()
                         .downcast_ref::<UnresolvedShuffleExec>()
                         .expect("left input should be UnresolvedShuffleExec");
                     assert!(unresolved.broadcast, "left input should be broadcast");
@@ -1062,15 +954,13 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(unresolved) =
-                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
-                {
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>() {
                     assert!(
                         !unresolved.broadcast,
                         "no broadcast reader expected with threshold=0"
                     );
                 }
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     assert_ne!(
                         *hj.partition_mode(),
                         PartitionMode::CollectLeft,
@@ -1113,8 +1003,7 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(unresolved) =
-                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>()
                     && unresolved.broadcast
                 {
                     max_upstream = max_upstream.max(unresolved.upstream_partition_count);
@@ -1184,7 +1073,6 @@ order by
 
         let resolved_child = resolved.children()[0].clone();
         let reader = resolved_child
-            .as_any()
             .downcast_ref::<ShuffleReaderExec>()
             .expect("expected resolved ShuffleReaderExec");
         assert!(reader.broadcast);
@@ -1214,7 +1102,6 @@ order by
         let rolled_back = crate::planner::rollback_resolved_shuffles(parent)?;
         let child = rolled_back.children()[0].clone();
         let unresolved = child
-            .as_any()
             .downcast_ref::<UnresolvedShuffleExec>()
             .expect("expected rolled-back UnresolvedShuffleExec");
         assert!(unresolved.broadcast);
@@ -1290,7 +1177,7 @@ order by
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
-                [col] => col.as_any().downcast_ref::<Column>(),
+                [col] => col.downcast_ref::<Column>(),
                 _ => None,
             },
             _ => None,
@@ -1304,7 +1191,7 @@ order by
         let window = downcast_exec!(filter.children()[0], BoundedWindowAggExec);
         let partition_by = window.partition_keys();
         let partition_by = match partition_by[..] {
-            [ref col] => col.as_any().downcast_ref::<Column>(),
+            [ref col] => col.downcast_ref::<Column>(),
             _ => None,
         };
         assert_eq!(Some(&Column::new("l_shipmode", 1)), partition_by);
@@ -1321,7 +1208,7 @@ order by
                 );
                 assert_eq!(
                     Some(&Column::new("l_shipmode", 1)),
-                    expr1.expr.as_any().downcast_ref()
+                    expr1.expr.downcast_ref()
                 );
                 assert_eq!(
                     SortOptions {
@@ -1332,7 +1219,7 @@ order by
                 );
                 assert_eq!(
                     Some(&Column::new("l_shipdate", 0)),
-                    expr2.expr.as_any().downcast_ref()
+                    expr2.expr.downcast_ref()
                 );
             }
             _ => panic!("invalid sort {sort:?}"),

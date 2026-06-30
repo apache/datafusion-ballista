@@ -177,7 +177,7 @@ mod tests {
             let mut count = 0usize;
             result
                 .apply(|node| {
-                    if node.as_any().downcast_ref::<ChaosExec>().is_some() {
+                    if node.downcast_ref::<ChaosExec>().is_some() {
                         count += 1;
                     }
                     Ok(TreeNodeRecursion::Continue)
@@ -193,7 +193,6 @@ mod tests {
         let plan = leaf_exec();
         let result = rule.optimize(plan, &chaos_config(0.42, 42)).unwrap();
         let chaos = result
-            .as_any()
             .downcast_ref::<ChaosExec>()
             .expect("single-node plan always wraps root");
         assert!(

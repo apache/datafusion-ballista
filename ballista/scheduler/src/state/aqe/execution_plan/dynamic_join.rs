@@ -65,10 +65,6 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
         "DynamicJoinSelectionExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
@@ -383,16 +379,14 @@ impl DynamicJoinSelectionExec {
     /// its children.
     pub(crate) fn upstream_resolved(&self) -> bool {
         fn has_join_or_unresolved_exchange(plan: &Arc<dyn ExecutionPlan>) -> bool {
-            if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+            if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
                 // this should be fine, once we find first resolved
                 // exchange it should not have any unresolved shuffles later
                 // nor dynamic joins
                 return !exchange.shuffle_created();
             };
 
-            plan.as_any()
-                .downcast_ref::<DynamicJoinSelectionExec>()
-                .is_some()
+            plan.downcast_ref::<DynamicJoinSelectionExec>().is_some()
                 || plan
                     .children()
                     .iter()

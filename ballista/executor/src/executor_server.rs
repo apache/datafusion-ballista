@@ -398,6 +398,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task.session_id,
                         task.session_config,
                         function_registry.scalar_functions.clone(),
+                        function_registry.higher_order_functions.clone(),
                         function_registry.aggregate_functions.clone(),
                         function_registry.window_functions.clone(),
                         runtime,
@@ -824,6 +825,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                         self.executor.function_registry.scalar_functions.clone(),
                         self.executor.function_registry.aggregate_functions.clone(),
                         self.executor.function_registry.window_functions.clone(),
+                        self.executor
+                            .function_registry
+                            .higher_order_functions
+                            .clone(),
                         self.codec.clone(),
                     )
                     .map_err(|e| Status::invalid_argument(format!("{e}")))?,
@@ -853,6 +858,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 self.executor.function_registry.scalar_functions.clone(),
                 self.executor.function_registry.aggregate_functions.clone(),
                 self.executor.function_registry.window_functions.clone(),
+                self.executor
+                    .function_registry
+                    .higher_order_functions
+                    .clone(),
                 self.codec.clone(),
             )
             .map_err(|e| Status::invalid_argument(format!("{e}")))?;
