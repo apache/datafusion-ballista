@@ -504,7 +504,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
 
             if let Some(expected_results_path) = opt.expected_results.as_ref() {
                 let expected = get_expected_results(query, expected_results_path).await?;
-                assert_expected_results(&expected, &batches)
+                compare_results(&expected, &batches)?;
             }
         }
 
@@ -1139,25 +1139,114 @@ impl BenchmarkRun {
     }
 }
 
-/// Compare actual results against expected results at scale factor 1
-fn assert_expected_results(expected: &[RecordBatch], actual: &[RecordBatch]) {
-    // assert schema equality without comparing nullable values
-    assert_eq!(
-        nullable_schema(expected[0].schema()),
-        nullable_schema(actual[0].schema())
-    );
+/// Maximum relative-or-absolute difference tolerated between floating-point
+/// cells. Distributed (Ballista) and single-process (DataFusion) execution
+/// aggregate in different orders, and float `sum` is non-associative, so ratio
+/// queries can differ in their last digits.
+const FLOAT_TOLERANCE: f64 = 1e-6;
 
-    // convert both datasets to Vec<Vec<String>> for simple comparison
-    let expected_vec = result_vec(expected);
-    let actual_vec = result_vec(actual);
+#[derive(PartialEq)]
+enum Cell {
+    Null,
+    Float(f64),
+    Text(String),
+}
 
-    // basic result comparison
-    assert_eq!(expected_vec.len(), actual_vec.len());
-
-    // compare each row. this works as all TPC-H queries have deterministically ordered results
-    for i in 0..actual_vec.len() {
-        assert_eq!(expected_vec[i], actual_vec[i]);
+fn cell_at(column: &ArrayRef, row: usize) -> Cell {
+    if column.is_null(row) {
+        return Cell::Null;
     }
+    match column.data_type() {
+        DataType::Float64 => Cell::Float(
+            column
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(row),
+        ),
+        DataType::Float32 => Cell::Float(
+            column
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap()
+                .value(row) as f64,
+        ),
+        _ => Cell::Text(col_str(column, row)),
+    }
+}
+
+fn rows_as_cells(batches: &[RecordBatch]) -> Vec<Vec<Cell>> {
+    let mut rows = vec![];
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            rows.push(batch.columns().iter().map(|c| cell_at(c, row)).collect());
+        }
+    }
+    rows
+}
+
+fn floats_close(a: f64, b: f64) -> bool {
+    if a == b {
+        return true;
+    }
+    (a - b).abs() <= FLOAT_TOLERANCE * a.abs().max(b.abs()).max(1.0)
+}
+
+fn cells_equal(a: &Cell, b: &Cell) -> bool {
+    match (a, b) {
+        (Cell::Null, Cell::Null) => true,
+        (Cell::Float(x), Cell::Float(y)) => floats_close(*x, *y),
+        (Cell::Text(x), Cell::Text(y)) => x == y,
+        _ => false,
+    }
+}
+
+fn cell_display(c: &Cell) -> String {
+    match c {
+        Cell::Null => "NULL".to_string(),
+        Cell::Float(x) => x.to_string(),
+        Cell::Text(s) => s.clone(),
+    }
+}
+
+/// Compares two result sets, tolerating tiny floating-point differences.
+/// Returns an error describing the first mismatch instead of panicking, so the
+/// benchmark binary exits non-zero with a useful message.
+fn compare_results(expected: &[RecordBatch], actual: &[RecordBatch]) -> Result<()> {
+    let expected_rows = rows_as_cells(expected);
+    let actual_rows = rows_as_cells(actual);
+
+    if expected_rows.len() != actual_rows.len() {
+        return Err(DataFusionError::Execution(format!(
+            "result mismatch: expected {} rows, got {} rows",
+            expected_rows.len(),
+            actual_rows.len()
+        )));
+    }
+
+    if let (Some(e), Some(a)) = (expected.first(), actual.first()) {
+        let e_schema = nullable_schema(e.schema());
+        let a_schema = nullable_schema(a.schema());
+        if e_schema != a_schema {
+            return Err(DataFusionError::Execution(format!(
+                "schema mismatch:\n expected: {e_schema:?}\n actual:   {a_schema:?}"
+            )));
+        }
+    }
+
+    for (i, (erow, arow)) in expected_rows.iter().zip(actual_rows.iter()).enumerate() {
+        for (j, (ecell, acell)) in erow.iter().zip(arow.iter()).enumerate() {
+            if !cells_equal(ecell, acell) {
+                return Err(DataFusionError::Execution(format!(
+                    "result mismatch at row {i}, column {j}: expected `{}`, got `{}`",
+                    cell_display(ecell),
+                    cell_display(acell)
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Get the expected answer for a specific query at scale factor 1
@@ -1214,23 +1303,6 @@ fn nullable_schema(schema: Arc<Schema>) -> Schema {
             })
             .collect::<Vec<Field>>(),
     )
-}
-
-/// Converts the results into a 2d array of strings, `result[row][column]`
-/// Special cases nulls to NULL for testing
-fn result_vec(results: &[RecordBatch]) -> Vec<Vec<String>> {
-    let mut result = vec![];
-    for batch in results {
-        for row_index in 0..batch.num_rows() {
-            let row_vec = batch
-                .columns()
-                .iter()
-                .map(|column| col_str(column, row_index))
-                .collect();
-            result.push(row_vec);
-        }
-    }
-    result
 }
 
 fn get_answer_schema(n: usize) -> Schema {
@@ -1780,12 +1852,70 @@ mod tests {
             let expected_schema = get_answer_schema(n);
             let normalized = normalize_for_verification(actual, expected_schema).await?;
 
-            assert_expected_results(&expected, &normalized)
+            compare_results(&expected, &normalized)?;
         } else {
             println!("TPCH_DATA environment variable not set, skipping test");
         }
 
         Ok(())
+    }
+
+    fn f64_batch(values: Vec<f64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "x",
+            DataType::Float64,
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(values))]).unwrap()
+    }
+
+    fn i64_batch(values: Vec<i64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "n",
+            DataType::Int64,
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap()
+    }
+
+    #[test]
+    fn compare_results_equal_ok() {
+        assert!(super::compare_results(&[i64_batch(vec![1, 2])], &[i64_batch(vec![1, 2])]).is_ok());
+    }
+
+    #[test]
+    fn compare_results_row_count_mismatch() {
+        let err = super::compare_results(&[i64_batch(vec![1])], &[i64_batch(vec![1, 2])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected 1 rows, got 2 rows"), "{err}");
+    }
+
+    #[test]
+    fn compare_results_value_mismatch() {
+        let err = super::compare_results(&[i64_batch(vec![1])], &[i64_batch(vec![2])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("row 0, column 0"), "{err}");
+    }
+
+    #[test]
+    fn compare_results_floats_within_tolerance_ok() {
+        // differ only beyond the tolerance's significant digits
+        assert!(super::compare_results(
+            &[f64_batch(vec![123.4567890])],
+            &[f64_batch(vec![123.4567891])]
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn compare_results_floats_outside_tolerance_err() {
+        assert!(super::compare_results(
+            &[f64_batch(vec![100.0])],
+            &[f64_batch(vec![100.5])]
+        )
+        .is_err());
     }
 
     #[test]
