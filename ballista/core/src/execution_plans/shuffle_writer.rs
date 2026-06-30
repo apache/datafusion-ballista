@@ -39,10 +39,11 @@ use crate::execution_plans::create_shuffle_path;
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use crate::serde::scheduler::PartitionStats;
 use datafusion::arrow::array::{
-    ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
+    Array, ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder,
+    UInt64Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
@@ -126,6 +127,16 @@ struct ShuffleWriteMetrics {
     output_rows: metrics::Count,
 }
 
+/// ShuffleWriteResult represents the payload sent back to scheduler. This essentially consists of
+/// shuffle write partition information along with the column stats potentially useful for AQE
+#[derive(Debug, Clone)]
+pub struct ShuffleWriteResult {
+    /// partition shuffle write information
+    pub partitions: Vec<ShuffleWritePartition>,
+    /// column stats folded across all partitions for each column
+    pub column_stats: Vec<TaskColumnStats>,
+}
+
 impl ShuffleWriteMetrics {
     fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
@@ -204,7 +215,7 @@ impl ShuffleWriterExec {
         self,
         input_partition: usize,
         context: Arc<TaskContext>,
-    ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
+    ) -> impl Future<Output = Result<ShuffleWriteResult>> {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
@@ -256,15 +267,17 @@ impl ShuffleWriterExec {
                         now.elapsed().as_secs(),
                         stats
                     );
-
-                    Ok(vec![ShuffleWritePartition {
-                        partition_id: input_partition as u64,
-                        num_batches: stats.num_batches.unwrap_or(0),
-                        num_rows: stats.num_rows.unwrap_or(0),
-                        num_bytes: stats.num_bytes.unwrap_or(0),
-                        file_id: None,
-                        is_sort_shuffle: false,
-                    }])
+                    Ok(ShuffleWriteResult {
+                        partitions: vec![ShuffleWritePartition {
+                            partition_id: input_partition as u64,
+                            num_batches: stats.num_batches.unwrap_or(0),
+                            num_rows: stats.num_rows.unwrap_or(0),
+                            num_bytes: stats.num_bytes.unwrap_or(0),
+                            file_id: None,
+                            is_sort_shuffle: false,
+                        }],
+                        column_stats: vec![], // not collected on this path yet
+                    })
                 }
 
                 Some(Partitioning::Hash(exprs, num_output_partitions)) => {
@@ -365,10 +378,14 @@ impl ShuffleWriterExec {
                         Ok(part_locs)
                     });
 
+                    let mut null_counts = vec![0u64; stream.schema().fields().len()];
                     let stream_err = loop {
                         match stream.next().await {
                             Some(Ok(batch)) => {
                                 write_metrics.input_rows.add(batch.num_rows());
+                                for (i, col) in batch.columns().iter().enumerate() {
+                                    null_counts[i] += col.null_count() as u64
+                                }
                                 if tx.send(batch).await.is_err() {
                                     break None;
                                 }
@@ -377,20 +394,35 @@ impl ShuffleWriterExec {
                             None => break None,
                         }
                     };
+
                     drop(tx);
 
-                    let write_result = handle.await.map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Shuffle writer task failed: {e}"
-                        ))
-                    })?;
+                    let write_result: std::result::Result<_, DataFusionError> =
+                        handle.await.map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "Shuffle writer task failed: {e}"
+                            ))
+                        })?;
                     if let Some(e) = stream_err {
                         if let Err(write_err) = &write_result {
                             error!("Shuffle writer also failed: {write_err}");
                         }
                         return Err(e);
                     }
-                    write_result
+                    let partitions = write_result?;
+                    let column_stats = null_counts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(column, null_count)| TaskColumnStats {
+                            column: column as u32,
+                            null_count,
+                            hll_sketch: vec![], // TODO : collect NDV
+                        })
+                        .collect();
+                    Ok(ShuffleWriteResult {
+                        partitions,
+                        column_stats,
+                    })
                 }
 
                 _ => Err(DataFusionError::Execution(
@@ -492,8 +524,9 @@ impl ExecutionPlan for ShuffleWriterExec {
         let fut_stream = self
             .clone()
             .execute_shuffle_write(partition, context)
-            .and_then(move |part_loc| async move {
+            .and_then(move |shuffle_write_result| async move {
                 // build metadata result batch
+                let part_loc = shuffle_write_result.partitions;
                 let num_writers = part_loc.len();
                 let mut partition_builder = UInt32Builder::with_capacity(num_writers);
                 let mut path_builder =

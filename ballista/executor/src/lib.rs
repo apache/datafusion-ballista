@@ -56,10 +56,10 @@ pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
 
 use log::info;
-
+use ballista_core::execution_plans::ShuffleWriteResult;
 use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask, TaskStatus,
+    FailedTask, OperatorMetricsSet, SuccessfulTask, TaskStatus,
     task_status,
 };
 use ballista_core::serde::scheduler::PartitionId;
@@ -100,7 +100,7 @@ pub struct TaskExecutionTimes {
 /// along with timing and metrics information into a status message that
 /// can be sent back to the scheduler.
 pub fn as_task_status(
-    execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
+    execution_result: Result<ShuffleWriteResult, BallistaError>,
     executor_id: String,
     task_id: usize,
     stage_attempt_num: usize,
@@ -110,12 +110,14 @@ pub fn as_task_status(
 ) -> TaskStatus {
     let metrics = operator_metrics.unwrap_or_default();
     match execution_result {
-        Ok(partitions) => {
+        Ok(shuffle_write_result) => {
             debug!(
                 "Task {:?} finished with operator_metrics array size {}",
                 task_id,
                 metrics.len()
             );
+            let partition = shuffle_write_result.partitions;
+            let col_stats = shuffle_write_result.column_stats;
             TaskStatus {
                 task_id: task_id as u32,
                 job_id: partition_id.job_id,
@@ -128,7 +130,8 @@ pub fn as_task_status(
                 metrics,
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
-                    partitions,
+                    partitions: partition,
+                    task_column_stats: col_stats,
                 })),
             }
         }

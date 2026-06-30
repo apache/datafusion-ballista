@@ -27,7 +27,6 @@ use ballista_core::ConfigProducer;
 use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
 use ballista_core::registry::BallistaFunctionRegistry;
-use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
 use dashmap::DashMap;
@@ -42,6 +41,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use ballista_core::execution_plans::ShuffleWriteResult;
 
 /// A future that resolves when all active tasks on an executor have completed.
 ///
@@ -193,7 +193,7 @@ impl Executor {
         partition: PartitionId,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
-    ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
+    ) -> Result<ShuffleWriteResult, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
             query_stage_exec.execute_query_stage(partition.partition_id, task_ctx),
         );
