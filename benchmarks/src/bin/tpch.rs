@@ -423,14 +423,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     let oracle_ctx = if opt.verify {
         let cfg = SessionConfig::new()
             .with_target_partitions(opt.partitions)
-            .with_batch_size(opt.batch_size)
-            // Match Ballista's session defaults so the oracle reads Parquet
-            // strings as Utf8 (not Utf8View) and result schemas line up.
-            .set_bool(
-                "datafusion.execution.parquet.schema_force_view_types",
-                false,
-            )
-            .set_bool("datafusion.sql_parser.map_string_types_to_utf8view", false);
+            .with_batch_size(opt.batch_size);
         let ctx = SessionContext::new_with_config(cfg);
         register_datafusion_tables(
             &ctx,
@@ -1284,6 +1277,28 @@ fn cell_display(c: &Cell) -> String {
     }
 }
 
+/// Canonicalizes Arrow string/binary representation variants so that physical
+/// differences (e.g. `Utf8` vs `Utf8View`) are not treated as result
+/// differences: single-process DataFusion may infer Parquet strings as
+/// `Utf8View` while Ballista produces `Utf8`, but both stringify identically.
+fn canonical_type(dt: &DataType) -> DataType {
+    match dt {
+        DataType::Utf8View | DataType::LargeUtf8 => DataType::Utf8,
+        DataType::BinaryView | DataType::LargeBinary => DataType::Binary,
+        _ => dt.clone(),
+    }
+}
+
+/// Schema reduced to (name, canonical type) pairs, ignoring nullability and
+/// string/binary representation, for result comparison.
+fn comparable_schema(schema: &Schema) -> Vec<(String, DataType)> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| (f.name().clone(), canonical_type(f.data_type())))
+        .collect()
+}
+
 /// Compares two result sets, tolerating tiny floating-point differences.
 /// Returns an error describing the first mismatch instead of panicking, so the
 /// benchmark binary exits non-zero with a useful message.
@@ -1300,8 +1315,8 @@ fn compare_results(expected: &[RecordBatch], actual: &[RecordBatch]) -> Result<(
     }
 
     if let (Some(e), Some(a)) = (expected.first(), actual.first()) {
-        let e_schema = nullable_schema(e.schema());
-        let a_schema = nullable_schema(a.schema());
+        let e_schema = comparable_schema(&e.schema());
+        let a_schema = comparable_schema(&a.schema());
         if e_schema != a_schema {
             return Err(DataFusionError::Execution(format!(
                 "schema mismatch:\n expected: {e_schema:?}\n actual:   {a_schema:?}"
@@ -1364,20 +1379,6 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
             .collect::<Vec<Expr>>(),
     )?;
     df.collect().await
-}
-
-// convert the schema to the same but with all columns set to nullable=true.
-// this allows direct schema comparison ignoring nullable.
-fn nullable_schema(schema: Arc<Schema>) -> Schema {
-    Schema::new(
-        schema
-            .fields()
-            .iter()
-            .map(|field| {
-                Field::new(Field::name(field), Field::data_type(field).to_owned(), true)
-            })
-            .collect::<Vec<Field>>(),
-    )
 }
 
 fn get_answer_schema(n: usize) -> Schema {
@@ -2010,6 +2011,28 @@ mod tests {
     fn answer_statement_index_with_cte() {
         let stmts = vec!["WITH t AS (select 1) select * from t".to_string()];
         assert_eq!(super::answer_statement_index(&stmts), 0);
+    }
+
+    #[test]
+    fn compare_results_ignores_utf8view_vs_utf8() {
+        let view_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let utf8_schema =
+            Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+        let a = RecordBatch::try_new(
+            view_schema,
+            vec![Arc::new(StringViewArray::from(vec!["x", "y"]))],
+        )
+        .unwrap();
+        let b = RecordBatch::try_new(
+            utf8_schema,
+            vec![Arc::new(StringArray::from(vec!["x", "y"]))],
+        )
+        .unwrap();
+        assert!(super::compare_results(&[a], &[b]).is_ok());
     }
 }
 
