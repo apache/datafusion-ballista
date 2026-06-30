@@ -423,7 +423,14 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     let oracle_ctx = if opt.verify {
         let cfg = SessionConfig::new()
             .with_target_partitions(opt.partitions)
-            .with_batch_size(opt.batch_size);
+            .with_batch_size(opt.batch_size)
+            // Match Ballista's session defaults so the oracle reads Parquet
+            // strings as Utf8 (not Utf8View) and result schemas line up.
+            .set_bool(
+                "datafusion.execution.parquet.schema_force_view_types",
+                false,
+            )
+            .set_bool("datafusion.sql_parser.map_string_types_to_utf8view", false);
         let ctx = SessionContext::new_with_config(cfg);
         register_datafusion_tables(
             &ctx,
