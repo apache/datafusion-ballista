@@ -25,7 +25,6 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
-use ballista_core::JobStatusSubscriber;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
@@ -34,6 +33,7 @@ use ballista_core::serde::protobuf::{
     JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
+use ballista_core::{JobId, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
@@ -52,7 +52,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
-type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
+type ActiveJobCache = Arc<DashMap<JobId, JobInfoCache>>;
 
 /// Trait for launching tasks on executors.
 ///
@@ -254,7 +254,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Enqueue a job for scheduling
-    pub fn queue_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
+    pub fn queue_job(
+        &self,
+        job_id: &JobId,
+        job_name: &str,
+        queued_at: u64,
+    ) -> Result<()> {
         self.state.accept_job(job_id, job_name, queued_at)
     }
 
@@ -275,7 +280,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     #[allow(clippy::too_many_arguments)]
     pub async fn submit_job(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &str,
         ctx: Arc<SessionContext>,
         logical_plan: &LogicalPlan,
@@ -325,10 +330,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 .indent(false)
                 .to_string();
 
-        info!("Submitting execution graph for job_id: {job_id}:\n\n{string_plan}");
+        info!("Submitting execution graph for job_id [{job_id}]:\n{string_plan}");
 
         self.state
-            .submit_job(job_id.to_string(), &graph, subscriber)
+            .submit_job(job_id.to_owned(), &graph, subscriber)
             .await?;
         graph.revive();
         self.active_job_cache
@@ -338,7 +343,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Returns a snapshot of currently running jobs from the cache.
-    pub fn get_running_job_cache(&self) -> Arc<HashMap<String, JobInfoCache>> {
+    pub fn get_running_job_cache(&self) -> Arc<HashMap<JobId, JobInfoCache>> {
         let ret = self
             .active_job_cache
             .iter()
@@ -399,7 +404,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     _ => (0, 0),
                 };
                 jobs.push(JobOverview {
-                    job_id: job_status.job_id.clone(),
+                    job_id: job_status.job_id.clone().into(),
                     job_name: job_status.job_name.clone(),
                     status: job_status,
                     start_time,
@@ -418,7 +423,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get the status of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs, and then in Failed jobs
-    pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
+    pub async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
         if let Some(graph) = self.get_active_execution_graph(job_id) {
             let guard = graph.read().await;
 
@@ -432,7 +437,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// If no one found, then in the Active/Completed jobs.
     pub(crate) async fn get_job_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Result<Option<ExecutionGraphBox>> {
         if let Some(cached) = self.get_active_execution_graph(job_id) {
             let guard = cached.read().await;
@@ -446,7 +451,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Get the session configuration for a job.
-    pub async fn get_job_config(&self, job_id: &str) -> Result<Arc<SessionConfig>> {
+    pub async fn get_job_config(&self, job_id: &JobId) -> Result<Arc<SessionConfig>> {
         let graph = self
             .get_job_execution_graph(job_id)
             .await?
@@ -478,7 +483,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             // let graph = self.get_active_execution_graph(&job_id).await;
             let job_events = if let Some(cached) =
-                self.get_active_execution_graph(&job_id)
+                self.get_active_execution_graph(&job_id.clone().into())
             {
                 let mut graph = cached.write().await;
                 graph.update_task_status(
@@ -505,7 +510,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
     /// and remove the job from ActiveJobs
-    pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
+    pub(crate) async fn succeed_job(&self, job_id: &JobId) -> Result<()> {
         debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
@@ -526,7 +531,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Cancel the job and return a Vec of running tasks need to cancel
     pub(crate) async fn cancel_job(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         self.abort_job(job_id, "Cancelled".to_owned()).await
     }
@@ -534,7 +539,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Abort the job and return a Vec of running tasks need to cancel
     pub(crate) async fn abort_job(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         failure_reason: String,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
@@ -571,7 +576,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// and remove the job from ActiveJobs or QueuedJobs
     pub async fn fail_unscheduled_job(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         failure_reason: String,
     ) -> Result<()> {
         self.state
@@ -580,7 +585,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Updates the job state and returns the number of new available tasks.
-    pub async fn update_job(&self, job_id: &str) -> Result<usize> {
+    pub async fn update_job(&self, job_id: &JobId) -> Result<usize> {
         debug!("Update active job {job_id}");
         if let Some(graph) = self.get_active_execution_graph(job_id) {
             let mut graph = graph.write().await;
@@ -588,8 +593,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let curr_available_tasks = graph.available_tasks();
 
             graph.revive();
-
-            info!("Saving job with status {:?}", graph.status());
+            let status = graph.status();
+            debug!(
+                "Saving status, job_id: [{}], status: {:?}",
+                status.job_id, status.status
+            );
 
             self.state.save_job(job_id, &graph).await?;
 
@@ -627,7 +635,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Retrieves the number of available tasks for the given job.
     ///
     /// The value returned is a point-in-time snapshot and may change immediately.
-    pub async fn get_available_task_count(&self, job_id: &str) -> Result<usize> {
+    pub async fn get_available_task_count(&self, job_id: &JobId) -> Result<usize> {
         if let Some(graph) = self.get_active_execution_graph(job_id) {
             let available_tasks = graph.read().await.available_tasks();
             Ok(available_tasks)
@@ -658,7 +666,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let task_definition = TaskDefinition {
                 task_id: task.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
-                job_id,
+                job_id: job_id.into(),
                 stage_id: stage_id as u32,
                 stage_attempt_num: task.stage_attempt_num as u32,
                 partition_id: task.partition.partition_id as u32,
@@ -749,7 +757,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .collect();
                 multi_tasks.push(MultiTaskDefinition {
                     task_ids,
-                    job_id,
+                    job_id: job_id.into(),
                     stage_id: stage_id as u32,
                     stage_attempt_num: stage_attempt_num as u32,
                     plan,
@@ -774,7 +782,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Get the `ExecutionGraph` for the given job ID from cache
     pub(crate) fn get_active_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Option<Arc<RwLock<ExecutionGraphBox>>> {
         self.active_job_cache
             .get(job_id)
@@ -785,7 +793,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Remove the `ExecutionGraph` for the given job ID from cache
     pub(crate) fn remove_active_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Option<Arc<RwLock<ExecutionGraphBox>>> {
         self.active_job_cache
             .remove(job_id)
@@ -793,17 +801,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Generates a new random 7-character alphanumeric job ID.
-    pub fn generate_job_id(&self) -> String {
+    pub fn generate_job_id(&self) -> JobId {
         let mut rng = rng();
         std::iter::repeat(())
             .map(|()| rng.sample(Alphanumeric))
             .map(char::from)
             .take(7)
-            .collect()
+            .collect::<String>()
+            .into()
     }
 
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
-    pub(crate) fn clean_up_job_delayed(&self, job_id: String, clean_up_interval: u64) {
+    pub(crate) fn clean_up_job_delayed(&self, job_id: JobId, clean_up_interval: u64) {
         if clean_up_interval == 0 {
             info!(
                 "The interval is 0 and the clean up for the failed job state {job_id} will not triggered"
@@ -824,7 +833,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 /// Summary information about a job for display purposes.
 pub struct JobOverview {
     /// Unique identifier for this job.
-    pub job_id: String,
+    pub job_id: JobId,
     /// Human-readable name for this job.
     pub job_name: String,
     /// Current status of the job.
@@ -844,8 +853,8 @@ impl From<&ExecutionGraphBox> for JobOverview {
         let completed_stages = value.completed_stages();
 
         Self {
-            job_id: value.job_id().to_string(),
-            job_name: value.job_name().to_string(),
+            job_id: value.job_id().to_owned(),
+            job_name: value.job_name().to_owned(),
             status: value.status().clone(),
             start_time: value.start_time(),
             end_time: value.end_time(),

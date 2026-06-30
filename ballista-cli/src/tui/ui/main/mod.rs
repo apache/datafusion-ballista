@@ -23,13 +23,16 @@ pub use executors::{executor_details_popup, render_executors};
 #[cfg(not(feature = "web"))]
 pub use executors::{load_executor_details_popup, load_executors_data};
 #[cfg(not(feature = "web"))]
-pub use jobs::{load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data};
+pub use jobs::{
+    load_job_config_popup, load_job_details, load_job_dot, load_job_stages_popup,
+    load_jobs_data, load_stage_plan,
+};
 
 #[cfg(feature = "web")]
 pub(crate) use jobs::dot_parser;
 pub use jobs::{
-    job_dot_popup, job_plan_popup, job_stages_popup, render_jobs, stage_plan_popup,
-    stage_tasks_popup,
+    job_config_popup, job_dot_popup, job_plan_popup, job_stages_popup, render_jobs,
+    stage_plan_popup, stage_tasks_popup,
 };
 #[cfg(not(feature = "web"))]
 pub use metrics::load_metrics_data;

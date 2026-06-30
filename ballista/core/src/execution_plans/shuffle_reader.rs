@@ -47,7 +47,6 @@ use itertools::Itertools;
 use log::{debug, error, trace};
 use rand::prelude::SliceRandom;
 use rand::rng;
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::File;
@@ -311,10 +310,6 @@ impl ExecutionPlan for ShuffleReaderExec {
         "ShuffleReaderExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -426,7 +421,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         if self.broadcast {
             if let Some(idx) = partition
                 && idx != 0
@@ -445,7 +440,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "broadcast shuffle reader at stage {} returned aggregated statistics: {:?}",
                 self.stage_id, stats
             );
-            return Ok(stats);
+            return Ok(Arc::new(stats));
         }
         if let Some(idx) = partition {
             let partition_count = self.properties().partitioning.partition_count();
@@ -474,7 +469,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "shuffle reader at stage: {} and partition {} returned statistics: {:?}",
                 self.stage_id, idx, stat_for_partition
             );
-            stat_for_partition
+            stat_for_partition.map(Arc::new)
         } else {
             let stats_for_partitions = stats_for_partitions(
                 self.schema.fields().len(),
@@ -487,7 +482,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "shuffle reader at stage: {} returned statistics for all partitions: {:?}",
                 self.stage_id, stats_for_partitions
             );
-            Ok(stats_for_partitions)
+            Ok(Arc::new(stats_for_partitions))
         }
     }
 }
@@ -1018,7 +1013,7 @@ mod tests {
                 vec![PartitionLocation {
                     map_partition_id: 0,
                     partition_id: PartitionId {
-                        job_id: job_id.to_string(),
+                        job_id: job_id.into(),
                         stage_id,
                         partition_id: i,
                     },
@@ -1137,7 +1132,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1188,7 +1183,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1240,7 +1235,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1292,7 +1287,7 @@ mod tests {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: job_id.to_string(),
+                    job_id: job_id.into(),
                     stage_id: input_stage_id,
                     partition_id,
                 },
@@ -1350,7 +1345,7 @@ mod tests {
         let task_ctx = session_ctx.task_ctx();
         let work_dir = TempDir::new().unwrap();
         let input = ShuffleWriterExec::try_new(
-            "local_file".to_owned(),
+            "local_file".into(),
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
@@ -1401,7 +1396,8 @@ mod tests {
         let work_dir = tmp_dir.path();
 
         // job name and stage id are hard-coded
-        let file_path = create_shuffle_path(work_dir, "job", 1, 0, None, false).unwrap();
+        let file_path =
+            create_shuffle_path(work_dir, &"job".into(), 1, 0, None, false).unwrap();
 
         std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
 
@@ -1443,7 +1439,7 @@ mod tests {
         for p in 0..partition_num {
             // job name and stage id are hard-codded
             let file_path =
-                create_shuffle_path(work_dir, "job", 1, p, None, false).unwrap();
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
             // this unwrap should not be problem as
             // this function never return root dir
             std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
@@ -1482,7 +1478,7 @@ mod tests {
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "job".to_string(),
+                    job_id: "job".into(),
                     stage_id: 1,
                     partition_id,
                 },
@@ -1718,7 +1714,7 @@ mod tests {
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
-                    job_id: "j".to_string(),
+                    job_id: "j".into(),
                     stage_id: 7,
                     partition_id,
                 },

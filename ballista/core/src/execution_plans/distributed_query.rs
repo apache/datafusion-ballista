@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
@@ -48,7 +49,6 @@ use datafusion_proto::logical_plan::{
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{debug, error, info};
 use parking_lot::Mutex;
-use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -84,7 +84,7 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// - job_scheduling_in_ms: Time job waited in scheduler queue (started_at - queued_at)
     metrics: ExecutionPlanMetricsSet,
     /// The scheduler job id after the query has been accepted.
-    job_id: Arc<Mutex<Option<String>>>,
+    job_id: Arc<Mutex<Option<JobId>>>,
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
@@ -136,7 +136,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     }
 
     /// Returns the scheduler job id after the query has been accepted.
-    pub fn job_id(&self) -> Option<String> {
+    pub fn job_id(&self) -> Option<JobId> {
         self.job_id.lock().clone()
     }
 
@@ -174,10 +174,6 @@ impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
 impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn name(&self) -> &str {
         "DistributedQueryExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
@@ -336,7 +332,7 @@ async fn execute_query_pull(
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
     metrics: Arc<ExecutionPlanMetricsSet>,
-    job_id_handle: Arc<Mutex<Option<String>>>,
+    job_id_handle: Arc<Mutex<Option<JobId>>>,
     partition: usize,
     session_config: SessionConfig,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
@@ -394,7 +390,7 @@ async fn execute_query_pull(
         "Session id inconsistent between Client and Server side in DistributedQueryExec."
     );
 
-    let job_id = query_result.job_id;
+    let job_id: JobId = query_result.job_id.into();
     *job_id_handle.lock() = Some(job_id.clone());
     let mut prev_status: Option<job_status::Status> = None;
 
@@ -404,7 +400,7 @@ async fn execute_query_pull(
             flight_proxy,
         } = scheduler
             .get_job_status(GetJobStatusParams {
-                job_id: job_id.clone(),
+                job_id: job_id.clone().into(),
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
@@ -509,7 +505,7 @@ async fn execute_query_push(
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
     metrics: Arc<ExecutionPlanMetricsSet>,
-    job_id_handle: Arc<Mutex<Option<String>>>,
+    job_id_handle: Arc<Mutex<Option<JobId>>>,
     partition: usize,
     session_config: SessionConfig,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
@@ -568,11 +564,12 @@ async fn execute_query_push(
             status,
             flight_proxy,
         } = item;
-        let job_id = status
+        let job_id: JobId = status
             .as_ref()
             .map(|s| s.job_id.to_owned())
-            .unwrap_or("unknown_job_id".to_string()); // should not happen
-        if !job_id.starts_with("unknown_") {
+            .unwrap_or("unknown_job_id".to_string()) // should not happen
+            .into();
+        if !job_id.as_str().starts_with("unknown_") {
             let mut shared_job_id = job_id_handle.lock();
             if shared_job_id.is_none() {
                 *shared_job_id = Some(job_id.clone());
@@ -761,6 +758,7 @@ async fn fetch_partition(
 
 #[cfg(test)]
 mod test {
+    use crate::JobId;
     use crate::config::BallistaConfig;
     use crate::execution_plans::distributed_query::{
         DistributedQueryExec, get_client_host_port,
@@ -835,14 +833,13 @@ mod test {
             LogicalPlan::default(),
             "session".to_string(),
         ));
-        *exec.job_id.lock() = Some("job-123".to_string());
+        *exec.job_id.lock() = Some("job-123".into());
 
         let new_exec = exec.clone().with_new_children(vec![]).unwrap();
         let new_exec = new_exec
-            .as_any()
             .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
             .unwrap();
 
-        assert_eq!(new_exec.job_id().as_deref(), Some("job-123"));
+        assert_eq!(new_exec.job_id(), Some(JobId::new("job-123")));
     }
 }

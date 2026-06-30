@@ -120,7 +120,7 @@ pub fn as_task_status(
             let col_stats = shuffle_write_result.column_stats;
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id,
+                job_id: partition_id.job_id.into(),
                 stage_id: partition_id.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
                 partition_id: partition_id.partition_id as u32,
@@ -141,7 +141,7 @@ pub fn as_task_status(
 
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id,
+                job_id: partition_id.job_id.into(),
                 stage_id: partition_id.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
                 partition_id: partition_id.partition_id as u32,

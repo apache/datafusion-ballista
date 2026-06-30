@@ -55,16 +55,21 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
             df_version,
         );
     } else {
-        render_scheduler_state_down(f, area, scheduler_url);
+        render_scheduler_state_down(f, area, scheduler_url, app.theme.scheduler_down);
     }
 
     is_up
 }
 
-fn render_scheduler_state_down(f: &mut Frame, area: Rect, scheduler_url: &str) {
+fn render_scheduler_state_down(
+    f: &mut Frame,
+    area: Rect,
+    scheduler_url: &str,
+    style: Style,
+) {
     let scheduler_url_block = Block::default()
         .borders(Borders::ALL)
-        .style(Style::new().red())
+        .style(style)
         .title(" Scheduler down ");
     let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)

@@ -71,13 +71,10 @@ class RedefiningDataFrameMeta(type):
             return method_wrapper
 
         for base_name, base_value in bases[0].__dict__.items():
-            #
-            # TODO: could we not use 'DataFrame' as a string here?
-            #
             if (
                 callable(base_value)
                 and not base_name.startswith("__")
-                and base_value.__annotations__.get("return") == "DataFrame"
+                and base_value.__annotations__.get("return") == DataFrame.__name__
             ):
                 #
                 # functions which return DataFrame are redefined
@@ -111,13 +108,10 @@ class RedefiningSessionContextMeta(type):
             return method_wrapper
 
         for base_name, base_value in bases[0].__dict__.items():
-            #
-            # could we not use 'DataFrame' as a string here?
-            #
             if (
                 callable(base_value)
                 and not base_name.startswith("__")
-                and base_value.__annotations__.get("return") == "DataFrame"
+                and base_value.__annotations__.get("return") == DataFrame.__name__
             ):
                 #
                 # functions which return DataFrame are redefined

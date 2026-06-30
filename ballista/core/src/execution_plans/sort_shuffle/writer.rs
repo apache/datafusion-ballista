@@ -21,7 +21,6 @@
 //! per input partition, along with an index file mapping partition IDs to
 //! byte offsets.
 
-use std::any::Any;
 use std::fs::File;
 use std::future::Future;
 use std::io::{BufWriter, Seek, Write};
@@ -35,7 +34,8 @@ use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
-use crate::execution_plans::{ShuffleWriteResult, create_shuffle_path};
+use crate::JobId;
+use crate::execution_plans::create_shuffle_path;
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use datafusion::arrow::array::{
@@ -75,7 +75,7 @@ type FinalizeResult = (PathBuf, PathBuf, Vec<(usize, u64, u64, u64)>);
 #[derive(Debug, Clone)]
 pub struct SortShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of
-    job_id: String,
+    job_id: JobId,
     /// Unique query stage ID within the job
     stage_id: usize,
     /// Physical execution plan for this query stage
@@ -131,7 +131,7 @@ impl SortShuffleWriteMetrics {
 impl SortShuffleWriterExec {
     /// Create a new sort-based shuffle writer.
     pub fn try_new(
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,
@@ -168,7 +168,7 @@ impl SortShuffleWriterExec {
     }
 
     /// Get the Job ID for this query stage
-    pub fn job_id(&self) -> &str {
+    pub fn job_id(&self) -> &JobId {
         &self.job_id
     }
 
@@ -421,7 +421,7 @@ fn spill_all_partitions(
 #[allow(clippy::too_many_arguments)]
 fn finalize_output(
     work_dir: &str,
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     input_partition: usize,
     buffered: &mut BufferedBatches,
@@ -434,7 +434,7 @@ fn finalize_output(
     let mut partition_stats = Vec::with_capacity(num_partitions);
 
     let mut output_dir = PathBuf::from(work_dir);
-    output_dir.push(job_id);
+    output_dir.push(job_id.as_str());
     output_dir.push(format!("{stage_id}"));
     output_dir.push(format!("{input_partition}"));
     std::fs::create_dir_all(&output_dir)?;
@@ -541,10 +541,6 @@ impl ExecutionPlan for SortShuffleWriterExec {
         "SortShuffleWriterExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.plan.schema()
     }
@@ -591,7 +587,7 @@ impl ExecutionPlan for SortShuffleWriterExec {
         let schema = result_schema();
 
         let schema_captured = schema.clone();
-        let job_id = self.job_id.to_string();
+        let job_id = self.job_id.clone();
         let work_dir = self.work_dir.to_string();
         let stage_id = self.stage_id;
         let fut_stream = self
@@ -666,13 +662,13 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.plan.partition_statistics(partition)
     }
 }
 
 impl ShuffleWriter for SortShuffleWriterExec {
-    fn job_id(&self) -> &str {
+    fn job_id(&self) -> &JobId {
         &self.job_id
     }
 
@@ -843,7 +839,7 @@ mod tests {
         let config = SortShuffleConfig::default();
 
         let writer = SortShuffleWriterExec::try_new(
-            "job1".to_string(),
+            "job1".into(),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_string(),
@@ -940,7 +936,7 @@ mod tests {
         let work_dir = TempDir::new()?;
 
         let writer = SortShuffleWriterExec::try_new(
-            "round_trip_job".to_string(),
+            "round_trip_job".into(),
             1,
             input,
             work_dir.path().to_str().unwrap().to_string(),
@@ -1087,7 +1083,7 @@ mod tests {
 
         let num_partitions = 8;
         let writer = SortShuffleWriterExec::try_new(
-            "empty_partitions_job".to_string(),
+            "empty_partitions_job".into(),
             1,
             input,
             work_dir.path().to_str().unwrap().to_string(),
@@ -1167,7 +1163,8 @@ mod tests {
 
         // Reference: DataFusion's BatchPartitioner::new_hash_partitioner
         let mut ref_partitioner =
-            BatchPartitioner::new_hash_partitioner(exprs.clone(), 4, Time::default());
+            BatchPartitioner::new_hash_partitioner(exprs.clone(), 4, Time::default())
+                .unwrap();
         let mut ref_assignments = [usize::MAX; 10];
         ref_partitioner
             .partition(batch.clone(), |partition, sub_batch| {

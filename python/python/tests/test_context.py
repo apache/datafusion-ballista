@@ -16,6 +16,7 @@
 # under the License.
 
 from ballista import BallistaSessionContext, setup_test_cluster
+from ballista.extension import DataFrame, DistributedDataFrame, SessionContext
 from datafusion import col, lit
 import pytest
 import pyarrow as pa
@@ -138,3 +139,31 @@ def test_write_json(ctx, tmp_path):
     df.write_json(out_dir)
     json_files = list((tmp_path / "out").glob("*.json"))
     assert len(json_files) > 0
+
+
+def _assert_dataframe_returning_methods_wrapped(base_cls, sub_cls):
+    should_be_wrapped = {
+        name
+        for name, val in base_cls.__dict__.items()
+        if callable(val)
+        and not name.startswith("__")
+        and val.__annotations__.get("return") == DataFrame.__name__
+    }
+
+    assert should_be_wrapped
+    for name in should_be_wrapped:
+        assert name in sub_cls.__dict__, f"{name} not found in {sub_cls.__name__}"
+        assert callable(sub_cls.__dict__[name]), (
+            f"{name} is not callable in {sub_cls.__name__}"
+        )
+        assert sub_cls.__dict__[name] is not base_cls.__dict__[name], (
+            f"{name} was not replaced in {sub_cls.__name__}"
+        )
+
+
+def test_distributed_dataframe_wraps_dataframe_returning_methods():
+    _assert_dataframe_returning_methods_wrapped(DataFrame, DistributedDataFrame)
+
+
+def test_ballista_session_context_wraps_dataframe_returning_methods():
+    _assert_dataframe_returning_methods_wrapped(SessionContext, BallistaSessionContext)

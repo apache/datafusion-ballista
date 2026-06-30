@@ -42,6 +42,8 @@ pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
 
+use crate::JobId;
+
 /// Creates the file path for a shuffle output partition.
 ///
 /// The path structure depends on the shuffle type:
@@ -68,7 +70,7 @@ pub use unresolved_shuffle::UnresolvedShuffleExec;
 /// - `is_sort_shuffle` — selects between sort-shuffle and hash-shuffle path layout
 pub fn create_shuffle_path<P: AsRef<Path>>(
     work_dir: P,
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     partition_id: usize,
     file_id: Option<u64>,
@@ -77,7 +79,7 @@ pub fn create_shuffle_path<P: AsRef<Path>>(
     let mut path = PathBuf::new();
 
     path.push(work_dir);
-    path.push(job_id);
+    path.push(job_id.as_str());
     path.push(stage_id.to_string());
 
     match (file_id, is_sort_shuffle) {
@@ -107,25 +109,28 @@ mod test {
 
     #[test]
     fn test_regular_shuffle_with_file_id() {
-        let path = create_shuffle_path("/work", "job1", 2, 3, Some(42), false).unwrap();
+        let path =
+            create_shuffle_path("/work", &"job1".into(), 2, 3, Some(42), false).unwrap();
         assert_eq!(path, PathBuf::from("/work/job1/2/3/data-42.arrow"));
     }
 
     #[test]
     fn test_regular_shuffle_without_file_id() {
-        let path = create_shuffle_path("/work", "job1", 2, 3, None, false).unwrap();
+        let path =
+            create_shuffle_path("/work", &"job1".into(), 2, 3, None, false).unwrap();
         assert_eq!(path, PathBuf::from("/work/job1/2/3/data.arrow"));
     }
 
     #[test]
     fn test_sort_shuffle_with_file_id() {
-        let path = create_shuffle_path("/work", "job1", 2, 3, Some(42), true).unwrap();
+        let path =
+            create_shuffle_path("/work", &"job1".into(), 2, 3, Some(42), true).unwrap();
         assert_eq!(path, PathBuf::from("/work/job1/2/42/data.arrow"));
     }
 
     #[test]
     fn test_sort_shuffle_without_file_id_returns_error() {
-        let result = create_shuffle_path("/work", "job1", 2, 3, None, true);
+        let result = create_shuffle_path("/work", &"job1".into(), 2, 3, None, true);
         assert!(result.is_err());
     }
 
@@ -137,7 +142,8 @@ mod test {
             [(Some(1), false), (None, false), (Some(1), true)]
         {
             let path =
-                create_shuffle_path("/", "job1", 2, 3, file_id, is_sort_shuffle).unwrap();
+                create_shuffle_path("/", &"job1".into(), 2, 3, file_id, is_sort_shuffle)
+                    .unwrap();
             assert!(
                 path.parent().is_some(),
                 "path {path:?} (file_id={file_id:?}, is_sort_shuffle={is_sort_shuffle}) has no parent"

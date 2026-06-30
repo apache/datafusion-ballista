@@ -162,7 +162,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .executor_manager
                 .drain_pending_cleanup_jobs(&executor_id)
                 .into_iter()
-                .map(|job_id| CleanJobDataParams { job_id })
+                .map(|job_id| CleanJobDataParams {
+                    job_id: job_id.into_inner(),
+                })
                 .collect();
             Ok(Response::new(PollWorkResult {
                 tasks,
@@ -393,7 +395,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .and_then(|s| s.value.clone())
                 .unwrap_or_default();
 
-            info!(
+            debug!(
                 "execution query (PUSH) job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
             );
 
@@ -439,7 +441,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            info!(
+            debug!(
                 "execution query (PUSH) job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
             );
 
@@ -520,7 +522,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             Ok(Response::new(ExecuteQueryResult {
                 operation_id,
                 result: Some(execute_query_result::Result::Success(
-                    ExecuteQuerySuccessResult { job_id, session_id },
+                    ExecuteQuerySuccessResult {
+                        job_id: job_id.into(),
+                        session_id,
+                    },
                 )),
             }))
         } else {
@@ -532,7 +537,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<GetJobStatusParams>,
     ) -> Result<Response<GetJobStatusResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let job_id = request.into_inner().job_id.into();
         trace!("Received get_job_status request for job {}", job_id);
 
         let flight_proxy = self.flight_proxy_config();
@@ -555,7 +560,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<GetJobMetricsParams>,
     ) -> Result<Response<GetJobMetricsResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let job_id = request.into_inner().job_id.into();
         trace!("Received get_job_metrics request for job {}", job_id);
 
         let graph = self
@@ -714,7 +719,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<CancelJobParams>,
     ) -> Result<Response<CancelJobResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let job_id = request.into_inner().job_id.into();
         info!("Received cancellation request for job {}", job_id);
 
         self.cancel_job(job_id).await.map_err(|e| {
@@ -730,7 +735,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<CleanJobDataParams>,
     ) -> Result<Response<CleanJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let job_id = request.into_inner().job_id.into();
         info!("Received clean data request for job {}", job_id);
 
         self.query_stage_event_loop

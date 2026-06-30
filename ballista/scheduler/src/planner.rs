@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ballista_core::JobId;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::ShuffleWriter;
@@ -42,7 +43,7 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
-use log::{debug, info};
+use log::debug;
 
 use crate::physical_optimizer::join_selection::should_swap_join_order;
 
@@ -60,7 +61,7 @@ pub trait DistributedPlanner {
     /// partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
-        job_id: &'a str,
+        job_id: &'a JobId,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>>;
@@ -101,11 +102,11 @@ impl DistributedPlanner for DefaultDistributedPlanner {
     /// A shuffle writer is created whenever the partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
-        job_id: &'a str,
+        job_id: &'a JobId,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
-        info!("planning query stages for job {job_id}");
+        debug!("Planning query stages for job: [{job_id}]");
         let (new_plan, mut stages) =
             self.plan_query_stages_internal(job_id, execution_plan, config)?;
         stages.push(create_shuffle_writer_with_config(
@@ -125,7 +126,7 @@ impl DefaultDistributedPlanner {
     /// complete query stage (its parent might also belong to the same stage)
     fn plan_query_stages_internal<'a>(
         &'a mut self,
-        job_id: &'a str,
+        job_id: &'a JobId,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<PartialQueryStageResult> {
@@ -139,15 +140,13 @@ impl DefaultDistributedPlanner {
 
         // Broadcast-join lowering: HashJoinExec(CollectLeft) gets its own
         // controlled recursion so the build side is written as a broadcast stage.
-        if let Some(hash_join) = execution_plan.as_any().downcast_ref::<HashJoinExec>()
+        if let Some(hash_join) = execution_plan.downcast_ref::<HashJoinExec>()
             && *hash_join.partition_mode() == PartitionMode::CollectLeft
         {
             // Build subtree: peel CoalescePartitionsExec if present, then
             // recurse to lower its internal stages.
             let mut build = hash_join.left().clone();
-            if let Some(coalesce) =
-                build.as_any().downcast_ref::<CoalescePartitionsExec>()
-            {
+            if let Some(coalesce) = build.downcast_ref::<CoalescePartitionsExec>() {
                 build = coalesce.children()[0].clone();
             }
             let (build, mut stages) =
@@ -191,10 +190,7 @@ impl DefaultDistributedPlanner {
             stages.append(&mut child_stages);
         }
 
-        if let Some(_coalesce) = execution_plan
-            .as_any()
-            .downcast_ref::<CoalescePartitionsExec>()
-        {
+        if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
             let input = self.optimizer_enforce_sorting.optimize(input, config)?;
             let shuffle_writer = create_shuffle_writer_with_config(
@@ -211,10 +207,9 @@ impl DefaultDistributedPlanner {
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
-        } else if let Some(_sort_preserving_merge) = execution_plan
-            .as_any()
-            .downcast_ref::<SortPreservingMergeExec>(
-        ) {
+        } else if let Some(_sort_preserving_merge) =
+            execution_plan.downcast_ref::<SortPreservingMergeExec>()
+        {
             let shuffle_writer = create_shuffle_writer_with_config(
                 job_id,
                 self.next_stage_id(),
@@ -228,9 +223,7 @@ impl DefaultDistributedPlanner {
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
-        } else if let Some(repart) =
-            execution_plan.as_any().downcast_ref::<RepartitionExec>()
-        {
+        } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
                     let input = children[0].clone();
@@ -288,7 +281,7 @@ impl DefaultDistributedPlanner {
             debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
-        let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() else {
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
             return Ok(plan);
         };
         debug!(
@@ -391,7 +384,6 @@ impl DefaultDistributedPlanner {
         };
 
         let promoted_join = promoted
-            .as_any()
             .downcast_ref::<HashJoinExec>()
             .expect("promoted plan must still be a HashJoinExec");
         let new_left: Arc<dyn ExecutionPlan> = if promoted_join
@@ -429,9 +421,7 @@ fn create_unresolved_shuffle(
 pub fn find_unresolved_shuffles(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Vec<UnresolvedShuffleExec>> {
-    if let Some(unresolved_shuffle) =
-        plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
-    {
+    if let Some(unresolved_shuffle) = plan.downcast_ref::<UnresolvedShuffleExec>() {
         Ok(vec![unresolved_shuffle.clone()])
     } else {
         Ok(plan
@@ -454,9 +444,7 @@ pub fn remove_unresolved_shuffles(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
-        if let Some(unresolved_shuffle) =
-            child.as_any().downcast_ref::<UnresolvedShuffleExec>()
-        {
+        if let Some(unresolved_shuffle) = child.downcast_ref::<UnresolvedShuffleExec>() {
             let p = partition_locations
                 .get(&unresolved_shuffle.stage_id)
                 .ok_or_else(|| {
@@ -517,7 +505,7 @@ pub fn rollback_resolved_shuffles(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
-        if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
+        if let Some(shuffle_reader) = child.downcast_ref::<ShuffleReaderExec>() {
             let stage_id = shuffle_reader.stage_id;
             let unresolved = if shuffle_reader.broadcast {
                 Arc::new(UnresolvedShuffleExec::new_broadcast(
@@ -541,7 +529,7 @@ pub fn rollback_resolved_shuffles(
 }
 
 pub(crate) fn create_shuffle_writer_with_config(
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,
@@ -595,10 +583,13 @@ mod test {
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
+
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+
     use datafusion::physical_plan::filter::FilterExec;
+
     use datafusion::physical_plan::joins::HashJoinExec;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
@@ -614,11 +605,13 @@ mod test {
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
-            $exec.as_any().downcast_ref::<$ty>().expect(&format!(
-                "Downcast to {} failed. Got {:?}",
-                stringify!($ty),
-                $exec
-            ))
+            ($exec.as_ref() as &dyn ExecutionPlan)
+                .downcast_ref::<$ty>()
+                .expect(&format!(
+                    "Downcast to {} failed. Got {:?}",
+                    stringify!($ty),
+                    $exec
+                ))
         };
     }
 
@@ -644,7 +637,7 @@ mod test {
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(
-            &job_uuid.to_string(),
+            &job_uuid.to_string().into(),
             plan,
             ctx.state().config().options(),
         )?;
@@ -762,7 +755,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -905,7 +899,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -915,11 +910,10 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     assert_eq!(*hj.partition_mode(), PartitionMode::CollectLeft);
                     let left = hj.children()[0].clone();
                     let unresolved = left
-                        .as_any()
                         .downcast_ref::<UnresolvedShuffleExec>()
                         .expect("left input should be UnresolvedShuffleExec");
                     assert!(unresolved.broadcast, "left input should be broadcast");
@@ -953,21 +947,20 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
 
         for stage in &stages {
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(unresolved) =
-                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
-                {
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>() {
                     assert!(
                         !unresolved.broadcast,
                         "no broadcast reader expected with threshold=0"
                     );
                 }
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     assert_ne!(
                         *hj.partition_mode(),
                         PartitionMode::CollectLeft,
@@ -999,7 +992,8 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan, &options)?;
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -1009,8 +1003,7 @@ order by
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
                 vec![stage.clone() as Arc<dyn ExecutionPlan>];
             while let Some(node) = walker.pop() {
-                if let Some(unresolved) =
-                    node.as_any().downcast_ref::<UnresolvedShuffleExec>()
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>()
                     && unresolved.broadcast
                 {
                     max_upstream = max_upstream.max(unresolved.upstream_partition_count);
@@ -1044,7 +1037,7 @@ order by
         let make_loc = |partition_id: usize| PartitionLocation {
             map_partition_id: partition_id,
             partition_id: PartitionId {
-                job_id: "job".to_string(),
+                job_id: "job".into(),
                 stage_id: 42,
                 partition_id,
             },
@@ -1080,7 +1073,6 @@ order by
 
         let resolved_child = resolved.children()[0].clone();
         let reader = resolved_child
-            .as_any()
             .downcast_ref::<ShuffleReaderExec>()
             .expect("expected resolved ShuffleReaderExec");
         assert!(reader.broadcast);
@@ -1110,7 +1102,6 @@ order by
         let rolled_back = crate::planner::rollback_resolved_shuffles(parent)?;
         let child = rolled_back.children()[0].clone();
         let unresolved = child
-            .as_any()
             .downcast_ref::<UnresolvedShuffleExec>()
             .expect("expected rolled-back UnresolvedShuffleExec");
         assert!(unresolved.broadcast);
@@ -1148,7 +1139,7 @@ order by
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(
-            &job_uuid.to_string(),
+            &job_uuid.to_string().into(),
             plan,
             ctx.state().config().options(),
         )?;
@@ -1186,7 +1177,7 @@ order by
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
-                [col] => col.as_any().downcast_ref::<Column>(),
+                [col] => col.downcast_ref::<Column>(),
                 _ => None,
             },
             _ => None,
@@ -1200,7 +1191,7 @@ order by
         let window = downcast_exec!(filter.children()[0], BoundedWindowAggExec);
         let partition_by = window.partition_keys();
         let partition_by = match partition_by[..] {
-            [ref col] => col.as_any().downcast_ref::<Column>(),
+            [ref col] => col.downcast_ref::<Column>(),
             _ => None,
         };
         assert_eq!(Some(&Column::new("l_shipmode", 1)), partition_by);
@@ -1217,7 +1208,7 @@ order by
                 );
                 assert_eq!(
                     Some(&Column::new("l_shipmode", 1)),
-                    expr1.expr.as_any().downcast_ref()
+                    expr1.expr.downcast_ref()
                 );
                 assert_eq!(
                     SortOptions {
@@ -1228,7 +1219,7 @@ order by
                 );
                 assert_eq!(
                     Some(&Column::new("l_shipdate", 0)),
-                    expr2.expr.as_any().downcast_ref()
+                    expr2.expr.downcast_ref()
                 );
             }
             _ => panic!("invalid sort {sort:?}"),
@@ -1259,7 +1250,7 @@ order by
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(
-            &job_uuid.to_string(),
+            &job_uuid.to_string().into(),
             plan,
             ctx.state().config().options(),
         )?;

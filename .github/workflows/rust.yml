@@ -59,19 +59,17 @@ on:
 
 jobs:
   # Check crate compiles and base cargo check passes
-  linux-build-lib:
-    name: linux build test
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+  build-lib:
+    name: cargo check
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
+        uses: ./.github/actions/setup-macos-builder
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-      - name: Prepare cargo build
+      - name: cargo check
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
           # date with the manifest. When this fails, please make sure to commit
@@ -84,7 +82,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -99,18 +97,14 @@ jobs:
           cargo test --profile ci --features=testcontainers
 
   # Run `cargo doc` to ensure the rustdoc is clean
-  linux-rustdoc:
+  rustdoc:
     name: cargo doc
-    needs: linux-build-lib
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    needs: build-lib
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: stable
+        uses: ./.github/actions/setup-macos-builder
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
@@ -121,7 +115,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -141,7 +135,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
@@ -161,16 +155,13 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-        with:
-          # FIXME: temporary workaround, see: https://github.com/Swatinem/rust-cache/issues/341
-          cache-bin: false
       - name: Run tests
         shell: bash
         run: |
@@ -186,7 +177,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -200,7 +191,7 @@ jobs:
     name: Lint
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -218,7 +209,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -235,7 +226,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -244,7 +235,7 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
         with:
           tool: cargo-tomlfmt@0.2.1
 
@@ -270,7 +261,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v6.0.3
+#     - uses: actions/checkout@v7.0.0
 #       with:
 #         submodules: true
 #     - name: Cache Cargo
