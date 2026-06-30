@@ -802,6 +802,19 @@ impl SessionConfigHelperExt for SessionConfig {
                 "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery",
                 false,
             )
+            //
+            // DataFusion's dynamic filters are populated at runtime by an
+            // upstream operator (a hash join build side, a TopK heap, a partial
+            // aggregate) and read by a downstream scan within the same plan.
+            // Ballista splits a plan into stages at shuffle and broadcast
+            // boundaries that run as independent tasks, so when the producing
+            // operator and the consuming scan land in different stages the
+            // filter is never populated across the boundary and the scan blocks
+            // forever. Disable dynamic filter pushdown until Ballista can carry
+            // dynamic filters across stage boundaries.
+            //
+            // See https://github.com/apache/datafusion-ballista/issues/1375
+            .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
     }
 }
 
