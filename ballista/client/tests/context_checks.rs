@@ -520,17 +520,14 @@ mod supported {
         Ok(())
     }
 
-    // As mentioned in https://github.com/apache/datafusion-ballista/issues/1055
-    // "Left/full outer join incorrect for CollectLeft / broadcast"
-    //
-    // In order to make correct results (decreasing performance) CollectLeft
-    // has been disabled until fixed
-
+    // Ballista raises these DataFusion thresholds above zero so the adaptive
+    // join resolver can collect a small build side into a broadcast
+    // (CollectLeft) hash join instead of repartitioning it.
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    async fn should_disable_collect_left(
+    async fn should_set_collect_left_thresholds(
         #[future(awt)]
         #[case]
         ctx: SessionContext,
@@ -542,12 +539,12 @@ mod supported {
             .await?;
 
         let expected = [
-            "+----------------------------------------------------------------+-------+",
-            "| name                                                           | value |",
-            "+----------------------------------------------------------------+-------+",
-            "| datafusion.optimizer.hash_join_single_partition_threshold      | 0     |",
-            "| datafusion.optimizer.hash_join_single_partition_threshold_rows | 0     |",
-            "+----------------------------------------------------------------+-------+",
+            "+----------------------------------------------------------------+----------+",
+            "| name                                                           | value    |",
+            "+----------------------------------------------------------------+----------+",
+            "| datafusion.optimizer.hash_join_single_partition_threshold      | 10485760 |",
+            "| datafusion.optimizer.hash_join_single_partition_threshold_rows | 1000000  |",
+            "+----------------------------------------------------------------+----------+",
         ];
 
         assert_batches_eq!(expected, &result);
