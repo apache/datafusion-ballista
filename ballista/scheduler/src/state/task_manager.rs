@@ -28,6 +28,7 @@ use crate::state::executor_manager::ExecutorManager;
 use ballista_core::JobStatusSubscriber;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
+#[cfg(feature = "disable-stage-plan-cache")]
 use ballista_core::execution_plans::ShuffleReaderExec;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use ballista_core::serde::BallistaCodec;
@@ -36,11 +37,14 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
+#[cfg(feature = "disable-stage-plan-cache")]
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::ExecutionPlan;
+#[cfg(feature = "disable-stage-plan-cache")]
+use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
