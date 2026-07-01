@@ -45,7 +45,9 @@ use datafusion::physical_plan::{
 };
 use log::debug;
 
-use crate::physical_optimizer::join_selection::should_swap_join_order;
+use crate::physical_optimizer::join_selection::{
+    collect_left_broadcast_safe, should_swap_join_order,
+};
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -270,6 +272,29 @@ impl DefaultDistributedPlanner {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
+            return Ok(plan);
+        };
+
+        // DataFusion's own `JoinSelection` may have already stamped
+        // `CollectLeft` on this join (it does so for any build side under
+        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
+        // restricting by join type). A `CollectLeft` join replicates the build
+        // side to every probe task, which is only correct for probe-driven join
+        // types. If the join type is not broadcast-safe, demote it back to a
+        // partitioned (shuffle) join. This is a correctness guard, so it runs
+        // regardless of the Ballista broadcast threshold below.
+        if *hash_join.partition_mode() == PartitionMode::CollectLeft {
+            if collect_left_broadcast_safe(*hash_join.join_type()) {
+                return Ok(plan);
+            }
+            debug!(
+                "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
+                hash_join.join_type(),
+            );
+            return Self::demote_collect_left_to_partitioned(hash_join, config);
+        }
+
         let threshold_bytes = config
             .extensions
             .get::<BallistaConfig>()
@@ -281,9 +306,6 @@ impl DefaultDistributedPlanner {
             debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
-        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
-            return Ok(plan);
-        };
         debug!(
             "broadcast check: evaluating HashJoinExec mode={:?} join_type={:?} threshold={threshold_bytes}",
             hash_join.partition_mode(),
@@ -361,6 +383,22 @@ impl DefaultDistributedPlanner {
             right_under
         };
 
+        // A CollectLeft join broadcasts the build (left) side to every probe
+        // task, which is only correct for join types that never emit rows on
+        // behalf of the build side. The build side is the left input of the
+        // resulting join, so check the join type after the swap is applied.
+        let promoted_join_type = if swap {
+            hash_join.join_type().swap()
+        } else {
+            *hash_join.join_type()
+        };
+        if !collect_left_broadcast_safe(promoted_join_type) {
+            debug!(
+                "broadcast check: join type {promoted_join_type:?} is not broadcast-safe, skipping promotion"
+            );
+            return Ok(plan);
+        }
+
         debug!(
             "broadcast check: promoting to CollectLeft (left_under={left_under}, right_under={right_under}, swap={swap})"
         );
@@ -402,6 +440,36 @@ impl DefaultDistributedPlanner {
             promoted,
             vec![new_left, new_right],
         )?)
+    }
+
+    /// Rewrites a `HashJoinExec(CollectLeft)` as an equivalent
+    /// `HashJoinExec(Partitioned)`, hash-partitioning both inputs on the join
+    /// keys so the join is executed as a shuffle join rather than by
+    /// broadcasting the build side. Used to undo an unsafe `CollectLeft`
+    /// promotion that DataFusion's `JoinSelection` applied before the
+    /// distributed planner ran.
+    fn demote_collect_left_to_partitioned(
+        hash_join: &HashJoinExec,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let partitions = config.execution.target_partitions;
+        let left_keys: Vec<_> =
+            hash_join.on().iter().map(|(l, _)| Arc::clone(l)).collect();
+        let right_keys: Vec<_> =
+            hash_join.on().iter().map(|(_, r)| Arc::clone(r)).collect();
+        let new_left: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
+            hash_join.left().clone(),
+            Partitioning::Hash(left_keys, partitions),
+        )?);
+        let new_right: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
+            hash_join.right().clone(),
+            Partitioning::Hash(right_keys, partitions),
+        )?);
+        Ok(hash_join
+            .builder()
+            .with_partition_mode(PartitionMode::Partitioned)
+            .with_new_children(vec![new_left, new_right])?
+            .build_exec()?)
     }
 }
 
@@ -888,7 +956,7 @@ order by
     async fn distributed_broadcast_join_plan() -> Result<(), BallistaError> {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -936,7 +1004,7 @@ order by
     -> Result<(), BallistaError> {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(0, 1)?;
+        let (ctx, options) = make_broadcast_test_ctx(0, 1, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -974,6 +1042,243 @@ order by
         Ok(())
     }
 
+    // Across every expressible join type and both build-side orientations, any
+    // CollectLeft join the static planner promotes must be broadcast-safe: a
+    // CollectLeft join replicates the build (left) side to every probe task, so
+    // its (post-swap) join type must be driven by the probe side. `small` is
+    // under the threshold and `big` is not.
+    #[tokio::test]
+    async fn distributed_broadcast_only_promotes_safe_join_types()
+    -> Result<(), BallistaError> {
+        use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let sqls = [
+            "select * from big join small on big.k = small.k",
+            "select * from small join big on small.k = big.k",
+            "select * from big left join small on big.k = small.k",
+            "select * from small left join big on small.k = big.k",
+            "select * from big right join small on big.k = small.k",
+            "select * from small right join big on small.k = big.k",
+            "select * from big full join small on big.k = small.k",
+            "select * from small full join big on small.k = big.k",
+        ];
+
+        for sql in sqls {
+            let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
+            let plan = ctx.sql(sql).await?.into_optimized_plan()?;
+            let plan = ctx.state().create_physical_plan(&plan).await?;
+
+            let mut planner = DefaultDistributedPlanner::new();
+            let job_uuid = Uuid::new_v4();
+            let stages = planner.plan_query_stages(
+                &job_uuid.to_string().into(),
+                plan,
+                &options,
+            )?;
+
+            for stage in &stages {
+                let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                    vec![stage.clone() as Arc<dyn ExecutionPlan>];
+                while let Some(node) = walker.pop() {
+                    if let Some(hj) = node.downcast_ref::<HashJoinExec>()
+                        && *hj.partition_mode() == PartitionMode::CollectLeft
+                    {
+                        assert!(
+                            collect_left_broadcast_safe(*hj.join_type()),
+                            "unsafe CollectLeft join_type={:?} promoted for `{sql}`",
+                            hj.join_type()
+                        );
+                    }
+                    walker.extend(node.children().iter().map(|c| (*c).clone()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // When DataFusion's threshold is non-zero, DataFusion's own `JoinSelection`
+    // runs during `create_physical_plan` and can stamp `CollectLeft` on a LEFT
+    // join whose small side is already on the left (no swap, no join-type
+    // check). The distributed planner must demote such an unsafe `CollectLeft`
+    // join back to a partitioned join rather than broadcasting the outer side.
+    #[tokio::test]
+    async fn df_promoted_left_join_must_not_broadcast() -> Result<(), BallistaError> {
+        use ballista_core::extension::SessionConfigExt;
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::common::JoinType;
+        use datafusion::physical_plan::joins::PartitionMode;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("w", DataType::Int32, false),
+        ]));
+        let big_batch = RecordBatch::try_new(
+            big_schema,
+            vec![
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+        let small_batch = RecordBatch::try_new(
+            small_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![10, 20])),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        // Match the PR's production session config: DF and Ballista thresholds
+        // both at 10 MB so DF's `JoinSelection` can promote on its own.
+        let session_config = SessionConfig::new()
+            .with_target_partitions(2)
+            .set_bool("datafusion.optimizer.prefer_hash_join", true)
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                10 * 1024 * 1024,
+            )
+            .with_ballista_broadcast_join_threshold_bytes(10 * 1024 * 1024);
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+        ctx.register_batch("small", small_batch)?;
+        let options = ctx.state().config().options().clone();
+
+        let plan = ctx
+            .sql("select * from small left join big on small.k = big.k")
+            .await?
+            .into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    assert!(
+                        !(matches!(hj.join_type(), JoinType::Left)
+                            && *hj.partition_mode() == PartitionMode::CollectLeft),
+                        "LEFT join must not be CollectLeft (would broadcast the \
+                         outer side across probe tasks)"
+                    );
+                }
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>() {
+                    assert!(
+                        !unresolved.broadcast,
+                        "no broadcast reader expected for an unsafe LEFT join"
+                    );
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+        Ok(())
+    }
+
+    // A LEFT join with the small side on the left builds (broadcasts) the left
+    // side and emits a null-padded row for every unmatched left row; each probe
+    // task would emit those independently. The guard must keep it repartitioned
+    // even though the small side is under the broadcast threshold.
+    #[tokio::test]
+    async fn distributed_left_join_small_build_not_broadcast() -> Result<(), BallistaError>
+    {
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
+
+        let df = ctx
+            .sql("select * from small left join big on small.k = big.k")
+            .await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    assert_ne!(
+                        *hj.partition_mode(),
+                        PartitionMode::CollectLeft,
+                        "LEFT join with broadcast build side must not be CollectLeft"
+                    );
+                }
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>() {
+                    assert!(
+                        !unresolved.broadcast,
+                        "no broadcast reader expected for unsafe LEFT join"
+                    );
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+
+        Ok(())
+    }
+
+    // The static planner only promotes `HashJoinExec`. With prefer_hash_join
+    // disabled the join plans as a `SortMergeJoinExec`, so no broadcast happens
+    // even though the build side is under the threshold.
+    #[tokio::test]
+    async fn distributed_no_broadcast_when_sort_merge_join() -> Result<(), BallistaError>
+    {
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
+
+        let df = ctx
+            .sql("select count(*) from big join small on big.k = small.k")
+            .await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    assert_ne!(
+                        *hj.partition_mode(),
+                        PartitionMode::CollectLeft,
+                        "no CollectLeft expected when joins are sort-merge"
+                    );
+                }
+                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>() {
+                    assert!(
+                        !unresolved.broadcast,
+                        "no broadcast reader expected for sort-merge join"
+                    );
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn distributed_broadcast_join_plan_multi_partition_build()
     -> Result<(), BallistaError> {
@@ -981,7 +1286,7 @@ order by
         // broadcast build stage has 3 input partitions and writes 3 shuffle
         // files. The broadcast UnresolvedShuffleExec must report
         // upstream_partition_count = 3.
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1273,6 +1578,7 @@ order by
     fn make_broadcast_test_ctx(
         threshold_bytes: usize,
         small_partitions: usize,
+        prefer_hash_join: bool,
     ) -> Result<
         (
             datafusion::prelude::SessionContext,
@@ -1320,6 +1626,7 @@ order by
 
         let session_config = SessionConfig::new()
             .with_target_partitions(2)
+            .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join)
             .set_usize(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
                 0,
