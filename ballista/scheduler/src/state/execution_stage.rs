@@ -1121,7 +1121,7 @@ mod tests {
             status: Some(task_status::Status::Successful(SuccessfulTask {
                 executor_id: "executor-1".to_string(),
                 partitions: vec![],
-                task_column_stats: _,
+                task_column_stats: vec![],
             })),
             metrics: vec![],
         }

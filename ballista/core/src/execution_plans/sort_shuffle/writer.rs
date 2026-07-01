@@ -35,7 +35,7 @@ use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
 use crate::JobId;
-use crate::execution_plans::{create_shuffle_path, ShuffleWriteResult};
+use crate::execution_plans::{ShuffleWriteResult, create_shuffle_path};
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use datafusion::arrow::array::{

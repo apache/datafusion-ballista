@@ -55,15 +55,14 @@ pub use standalone::new_standalone_executor;
 pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
 
-use log::info;
-use ballista_core::execution_plans::ShuffleWriteResult;
 use crate::shutdown::Shutdown;
+use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, SuccessfulTask, TaskStatus,
-    task_status,
+    FailedTask, OperatorMetricsSet, SuccessfulTask, TaskStatus, task_status,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::utils::GrpcServerConfig;
+use log::info;
 
 /// [ArrowFlightServerProvider] provides a function which creates a new Arrow Flight server.
 ///

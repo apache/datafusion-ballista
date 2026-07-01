@@ -27,6 +27,7 @@ use ballista_core::ConfigProducer;
 use ballista_core::JobId;
 use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
@@ -42,7 +43,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use ballista_core::execution_plans::ShuffleWriteResult;
 
 /// A future that resolves when all active tasks on an executor have completed.
 ///
