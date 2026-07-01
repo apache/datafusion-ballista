@@ -169,8 +169,10 @@ jobs:
           }
 
           run_suite "AQE off" \
+            --verify \
             -c datafusion.optimizer.prefer_hash_join=false
           run_suite "AQE on" \
+            --verify \
             -c datafusion.optimizer.prefer_hash_join=false \
             -c ballista.planner.adaptive.enabled=true
 
