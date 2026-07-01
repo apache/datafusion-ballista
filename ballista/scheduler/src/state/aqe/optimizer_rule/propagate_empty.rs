@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 macro_rules! is_empty_exec {
     ($e:expr) => {
-        $e.as_any().downcast_ref::<EmptyExec>().is_some()
+        $e.downcast_ref::<EmptyExec>().is_some()
     };
 }
 
@@ -75,45 +75,45 @@ impl PropagateEmptyExecRule {
     fn transform(
         plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>()
+        if let Some(filter) = plan.downcast_ref::<FilterExec>()
             && is_empty_exec!(filter.input())
         {
             Ok(Transformed::yes(filter.input().clone()))
-        } else if let Some(coalesce) = plan.as_any().downcast_ref::<CoalesceBatchesExec>()
+        } else if let Some(coalesce) = plan.downcast_ref::<CoalesceBatchesExec>()
             && is_empty_exec!(coalesce.input())
         {
             Ok(Transformed::yes(coalesce.input().clone()))
-        } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>()
+        } else if let Some(exchange) = plan.downcast_ref::<ExchangeExec>()
             && is_empty_exec!(exchange.input())
         {
             Ok(Transformed::yes(exchange.input().clone()))
-        } else if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>()
+        } else if let Some(projection) = plan.downcast_ref::<ProjectionExec>()
             && is_empty_exec!(projection.input())
         {
             empty_exec!(projection)
-        } else if let Some(limit) = plan.as_any().downcast_ref::<GlobalLimitExec>()
+        } else if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>()
             && is_empty_exec!(limit.input())
         {
             Ok(Transformed::yes(limit.input().clone()))
-        } else if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>()
+        } else if let Some(limit) = plan.downcast_ref::<LocalLimitExec>()
             && is_empty_exec!(limit.input())
         {
             Ok(Transformed::yes(limit.input().clone()))
-        } else if let Some(aggregation) = plan.as_any().downcast_ref::<AggregateExec>()
+        } else if let Some(aggregation) = plan.downcast_ref::<AggregateExec>()
             && is_empty_exec!(aggregation.input())
         {
             empty_exec!(aggregation)
-        } else if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>()
+        } else if let Some(repartition) = plan.downcast_ref::<RepartitionExec>()
             && is_empty_exec!(repartition.input())
         {
             empty_exec!(repartition)
         } else if let Some(coalesce_partition) =
-            plan.as_any().downcast_ref::<CoalescePartitionsExec>()
+            plan.downcast_ref::<CoalescePartitionsExec>()
             && is_empty_exec!(coalesce_partition.input())
         {
             empty_exec!(coalesce_partition)
         } else if let Some(sort_preserving_merge) =
-            plan.as_any().downcast_ref::<SortPreservingMergeExec>()
+            plan.downcast_ref::<SortPreservingMergeExec>()
             && is_empty_exec!(sort_preserving_merge.input())
         {
             empty_exec!(sort_preserving_merge)
@@ -180,7 +180,7 @@ impl PropagateEmptyExecRule {
                 }
                 _ => Ok(Transformed::no(plan)),
             }
-        } else if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        } else if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
             let stats = exchange.partition_statistics(None)?;
             match stats.num_rows {
                 Precision::Exact(0) => empty_exec!(plan),
@@ -213,7 +213,7 @@ impl PhysicalOptimizerRule for PropagateEmptyExecRule {
 
 /// Extracting the physical join information from the incoming [ExecutionPlan]
 pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
-    let any = plan.as_any();
+    let any = plan.as_ref();
 
     if let Some(join) = any.downcast_ref::<HashJoinExec>() {
         return Some(JoinInfo {
@@ -422,7 +422,7 @@ mod tests {
     /// Assert the result is an EmptyExec.
     fn assert_empty(result: &Arc<dyn ExecutionPlan>) {
         assert!(
-            result.as_any().downcast_ref::<EmptyExec>().is_some(),
+            result.downcast_ref::<EmptyExec>().is_some(),
             "expected EmptyExec, got {:?}",
             result.name()
         );
@@ -431,7 +431,7 @@ mod tests {
     /// Assert the result is a ProjectionExec (null-padded surviving side).
     fn assert_projection(result: &Arc<dyn ExecutionPlan>) {
         assert!(
-            result.as_any().downcast_ref::<ProjectionExec>().is_some(),
+            result.downcast_ref::<ProjectionExec>().is_some(),
             "expected ProjectionExec, got {:?}",
             result.name()
         );
@@ -441,8 +441,8 @@ mod tests {
     /// i.e. the join was left untouched.
     fn assert_untouched(result: &Arc<dyn ExecutionPlan>) {
         assert!(
-            result.as_any().downcast_ref::<EmptyExec>().is_none()
-                && result.as_any().downcast_ref::<ProjectionExec>().is_none(),
+            result.downcast_ref::<EmptyExec>().is_none()
+                && result.downcast_ref::<ProjectionExec>().is_none(),
             "expected join to be untouched, got {:?}",
             result.name()
         );
@@ -732,7 +732,7 @@ mod tests {
         let plan = hash_join(Arc::clone(&left), empty_stats_exec(), JoinType::LeftAnti);
         let result = transform(plan);
         // Should be the left child itself, not wrapped in anything
-        assert!(result.as_any().downcast_ref::<StatisticsExec>().is_some());
+        assert!(result.downcast_ref::<StatisticsExec>().is_some());
     }
 
     #[test]
@@ -761,7 +761,7 @@ mod tests {
         let right = non_empty_stats_exec();
         let plan = hash_join(empty_stats_exec(), Arc::clone(&right), JoinType::RightAnti);
         let result = transform(plan);
-        assert!(result.as_any().downcast_ref::<StatisticsExec>().is_some());
+        assert!(result.downcast_ref::<StatisticsExec>().is_some());
     }
 
     #[test]
@@ -857,7 +857,7 @@ mod tests {
             JoinType::LeftAnti,
         );
         let result = transform(plan);
-        assert!(result.as_any().downcast_ref::<StatisticsExec>().is_some());
+        assert!(result.downcast_ref::<StatisticsExec>().is_some());
     }
 
     #[test]
@@ -868,7 +868,7 @@ mod tests {
             JoinType::RightAnti,
         );
         let result = transform(plan);
-        assert!(result.as_any().downcast_ref::<StatisticsExec>().is_some());
+        assert!(result.downcast_ref::<StatisticsExec>().is_some());
     }
 
     // ── unknown stats — never optimised ─────────────────────────────────────
@@ -945,7 +945,7 @@ mod tests {
             .optimize(plan.clone(), &ConfigOptions::default())
             .unwrap();
 
-        let empty_exec = result.as_any().downcast_ref::<EmptyExec>();
+        let empty_exec = result.downcast_ref::<EmptyExec>();
         assert!(empty_exec.is_some(), "expected EmptyExec");
         assert_eq!(
             empty_exec

@@ -84,43 +84,27 @@ fn build_exec_plan_diagram(
     id: &mut AtomicUsize,
     draw_entity: bool,
 ) -> Result<usize> {
-    let operator_str = if plan.as_any().downcast_ref::<AggregateExec>().is_some() {
+    let operator_str = if plan.downcast_ref::<AggregateExec>().is_some() {
         "AggregateExec"
-    } else if plan.as_any().downcast_ref::<SortExec>().is_some() {
+    } else if plan.downcast_ref::<SortExec>().is_some() {
         "SortExec"
-    } else if plan.as_any().downcast_ref::<ProjectionExec>().is_some() {
+    } else if plan.downcast_ref::<ProjectionExec>().is_some() {
         "ProjectionExec"
-    } else if plan.as_any().downcast_ref::<HashJoinExec>().is_some() {
+    } else if plan.downcast_ref::<HashJoinExec>().is_some() {
         "HashJoinExec"
-    } else if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
+    } else if plan.downcast_ref::<DataSourceExec>().is_some() {
         "DataSourceExec"
-    } else if plan.as_any().downcast_ref::<FilterExec>().is_some() {
+    } else if plan.downcast_ref::<FilterExec>().is_some() {
         "FilterExec"
-    } else if plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some() {
+    } else if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
         "ShuffleWriterExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<SortShuffleWriterExec>()
-        .is_some()
-    {
+    } else if plan.downcast_ref::<SortShuffleWriterExec>().is_some() {
         "SortShuffleWriterExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<UnresolvedShuffleExec>()
-        .is_some()
-    {
+    } else if plan.downcast_ref::<UnresolvedShuffleExec>().is_some() {
         "UnresolvedShuffleExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<CoalesceBatchesExec>()
-        .is_some()
-    {
+    } else if plan.downcast_ref::<CoalesceBatchesExec>().is_some() {
         "CoalesceBatchesExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<CoalescePartitionsExec>()
-        .is_some()
-    {
+    } else if plan.downcast_ref::<CoalescePartitionsExec>().is_some() {
         "CoalescePartitionsExec"
     } else {
         warn!("Unknown: {plan:?}");
@@ -137,7 +121,7 @@ fn build_exec_plan_diagram(
         )?;
     }
     for child in plan.children() {
-        if let Some(shuffle) = child.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+        if let Some(shuffle) = child.downcast_ref::<UnresolvedShuffleExec>() {
             if !draw_entity {
                 writeln!(
                     w,

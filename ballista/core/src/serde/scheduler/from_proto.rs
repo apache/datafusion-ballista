@@ -19,7 +19,7 @@ use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::logical_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, PruningMetrics, RatioMetrics, Time, Timestamp,
 };
@@ -338,6 +338,7 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
 ///
 /// This function deserializes the execution plan from the protobuf representation
 /// and constructs a complete task definition with the provided runtime configuration.
+#[allow(clippy::too_many_arguments)]
 pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     task: protobuf::TaskDefinition,
     produce_runtime: RuntimeProducer,
@@ -345,6 +346,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
+    higher_order_functions: HashMap<String, Arc<HigherOrderUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&task.props);
@@ -354,6 +356,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         scalar_functions: scalar_functions.clone(),
         aggregate_functions: aggregate_functions.clone(),
         window_functions: window_functions.clone(),
+        higher_order_functions: higher_order_functions.clone(),
     });
 
     let ctx = TaskContext::new(
@@ -361,6 +364,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         task.session_id.clone(),
         session_config.clone(),
         scalar_functions,
+        higher_order_functions,
         aggregate_functions,
         window_functions,
         runtime.clone(),
@@ -399,6 +403,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 ///
 /// This function handles batch task definitions where multiple partitions share
 /// the same execution plan, creating individual task definitions for each partition.
+#[allow(clippy::too_many_arguments)]
 pub fn get_task_definition_vec<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
@@ -409,6 +414,7 @@ pub fn get_task_definition_vec<
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
+    higher_order_functions: HashMap<String, Arc<HigherOrderUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&multi_task.props);
@@ -418,6 +424,7 @@ pub fn get_task_definition_vec<
         scalar_functions: scalar_functions.clone(),
         aggregate_functions: aggregate_functions.clone(),
         window_functions: window_functions.clone(),
+        higher_order_functions: higher_order_functions.clone(),
     });
 
     let ctx = TaskContext::new(
@@ -425,6 +432,7 @@ pub fn get_task_definition_vec<
         uuid::Uuid::new_v4().to_string(),
         session_config.clone(),
         scalar_functions,
+        higher_order_functions,
         aggregate_functions,
         window_functions,
         runtime.clone(),

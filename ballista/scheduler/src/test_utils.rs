@@ -19,7 +19,6 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::catalog::Session;
-use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -80,10 +79,6 @@ pub struct ExplodingTableProvider;
 
 #[async_trait::async_trait]
 impl TableProvider for ExplodingTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::new(Schema::empty())
     }
@@ -1016,7 +1011,7 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
 
 /// Creates a test execution graph with a join operation.
 pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
-    let mut config = SessionConfig::new().with_target_partitions(partition);
+    let mut config = SessionConfig::new_with_ballista().with_target_partitions(partition);
     config
         .options_mut()
         .optimizer
