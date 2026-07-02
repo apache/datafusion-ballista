@@ -767,18 +767,15 @@ impl SessionConfigHelperExt for SessionConfig {
             // same like previous comment
             .set_bool("datafusion.sql_parser.map_string_types_to_utf8view", false)
             //
-            // As mentioned in https://github.com/apache/datafusion-ballista/issues/1055
-            // "Left/full outer join incorrect for CollectLeft / broadcast"
-            //
-            // In order to make correct results (decreasing performance) CollectLeft
-            // has been disabled until fixed
+            // A build side smaller than these thresholds is collected into a
+            // CollectLeft (broadcast) hash join rather than being repartitioned.
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                0,
+                10 * 1024 * 1024,
             )
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-                0,
+                1_000_000,
             )
             //
             // DataFusion's hash join has no spill support, so each parallel
@@ -789,6 +786,19 @@ impl SessionConfigHelperExt for SessionConfig {
             //
             // See https://github.com/apache/datafusion-ballista/issues/1648
             .set_bool("datafusion.optimizer.prefer_hash_join", false)
+            //
+            // DataFusion's dynamic filters are populated at runtime by an
+            // upstream operator (a hash join build side, a TopK heap, a partial
+            // aggregate) and read by a downstream scan within the same plan.
+            // Ballista splits a plan into stages at shuffle and broadcast
+            // boundaries that run as independent tasks, so when the producing
+            // operator and the consuming scan land in different stages the
+            // filter is never populated across the boundary and the scan blocks
+            // forever. Disable dynamic filter pushdown until Ballista can carry
+            // dynamic filters across stage boundaries.
+            //
+            // See https://github.com/apache/datafusion-ballista/issues/1375
+            .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
     }
 }
 
@@ -1030,7 +1040,9 @@ mod test {
     // re-applying the defaults would discard them. See #1901.
     #[test]
     fn should_preserve_user_overrides_on_upgrade() {
-        // Ballista defaults these to prefer_hash_join=false and threshold=0.
+        // Ballista defaults these to prefer_hash_join=false and the threshold to
+        // 10 MB. The overrides below differ from those defaults so the assertions
+        // prove the user's values survived `upgrade_for_ballista`.
         let mut config = SessionConfig::new_with_ballista();
         config
             .options_mut()
@@ -1040,7 +1052,7 @@ mod test {
             .options_mut()
             .set(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                "10485760",
+                "5242880",
             )
             .unwrap();
 
@@ -1052,7 +1064,7 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            10485760
+            5242880
         );
     }
 
@@ -1068,7 +1080,14 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            0
+            10 * 1024 * 1024
+        );
+        assert_eq!(
+            config
+                .options()
+                .optimizer
+                .hash_join_single_partition_threshold_rows,
+            1_000_000
         );
     }
 

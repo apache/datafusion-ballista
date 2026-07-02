@@ -32,7 +32,9 @@ use datafusion::{
 use log::debug;
 use std::sync::Arc;
 
+use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
 use crate::state::aqe::execution_plan::ExchangeExec;
+use crate::state::aqe::optimizer_rule::join_selection::SelectJoinRule;
 
 /// has children of this join been
 /// repartitioned
@@ -217,7 +219,7 @@ impl DynamicJoinSelectionExec {
         let threshold_collect_left_join_rows =
             config.optimizer.hash_join_single_partition_threshold_rows;
 
-        let partition_mode = if Self::supports_collect_by_thresholds(
+        let under_threshold = Self::supports_collect_by_thresholds(
             self.left.as_ref(),
             threshold_collect_left_join_bytes,
             threshold_collect_left_join_rows,
@@ -225,11 +227,30 @@ impl DynamicJoinSelectionExec {
             self.right.as_ref(),
             threshold_collect_left_join_bytes,
             threshold_collect_left_join_rows,
-        ) {
-            PartitionMode::CollectLeft
+        );
+
+        // The resolver collects the smaller side onto the build (left) input,
+        // swapping the join type when the right side is the smaller one (the
+        // `swap_inputs` calls in `SelectJoinRule`). A `CollectLeft` join then
+        // broadcasts that build side to every probe task, which is only correct
+        // for join types that never emit rows on behalf of the build side. Use
+        // the same swap decision as the resolver to determine the resulting join
+        // type and skip the broadcast when it would be unsafe.
+        let build_side_join_type = if SelectJoinRule::supports_swap_join_order(
+            self.left.as_ref(),
+            self.right.as_ref(),
+        )? {
+            self.join_type.swap()
         } else {
-            PartitionMode::Partitioned
+            self.join_type
         };
+
+        let partition_mode =
+            if under_threshold && collect_left_broadcast_safe(build_side_join_type) {
+                PartitionMode::CollectLeft
+            } else {
+                PartitionMode::Partitioned
+            };
 
         let stats_left = self.left.partition_statistics(None)?;
         let stats_right = self.right.partition_statistics(None)?;
@@ -424,10 +445,112 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::test::exec::StatisticsExec;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+    }
+
+    fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Inexact(num_rows * 16),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
+        ))
+    }
+
+    /// Run the resolver's join-strategy decision for `join_type` with `left_rows`
+    /// and `right_rows` on the two sides, both small enough to be collectable.
+    fn actual_join_for(
+        join_type: JoinType,
+        left_rows: usize,
+        right_rows: usize,
+        prefer_hash_join: bool,
+    ) -> JoinSelectionAction {
+        let left = stats_exec(left_rows);
+        let right = stats_exec(right_rows);
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+        let dj = DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Unknown,
+            null_aware: false,
+            plan_id: 0,
+        };
+        let mut config = ConfigOptions::new();
+        config.optimizer.prefer_hash_join = prefer_hash_join;
+        config.optimizer.hash_join_single_partition_threshold = 10 * 1024 * 1024;
+        config.optimizer.hash_join_single_partition_threshold_rows = 1_000_000;
+        dj.to_actual_join(&config).unwrap()
+    }
+
+    fn is_collected(action: &JoinSelectionAction) -> bool {
+        matches!(
+            action,
+            JoinSelectionAction::CollectLeft(_) | JoinSelectionAction::LateCollectLeft(_)
+        )
+    }
+
+    // With equal-sized sides (no swap) the resolver must collect a small build
+    // side into a CollectLeft broadcast only for join types whose output is
+    // driven by the probe side; everything that emits build-side rows must be
+    // repartitioned instead. `prefer_hash_join` only selects the repartitioned
+    // fallback (hash vs sort-merge), so the broadcast-safety decision must be
+    // identical under both settings.
+    #[test]
+    fn to_actual_join_collects_only_broadcast_safe_join_types() {
+        for prefer_hash_join in [true, false] {
+            for join_type in [
+                JoinType::Inner,
+                JoinType::Left,
+                JoinType::Right,
+                JoinType::Full,
+                JoinType::LeftSemi,
+                JoinType::RightSemi,
+                JoinType::LeftAnti,
+                JoinType::RightAnti,
+                JoinType::LeftMark,
+                JoinType::RightMark,
+            ] {
+                let action = actual_join_for(join_type, 100, 100, prefer_hash_join);
+                assert_eq!(
+                    is_collected(&action),
+                    collect_left_broadcast_safe(join_type),
+                    "join_type {join_type:?} (prefer_hash_join={prefer_hash_join}): collected={}, expected safe={}",
+                    is_collected(&action),
+                    collect_left_broadcast_safe(join_type),
+                );
+            }
+        }
+    }
+
+    // Safety is evaluated on the join type *after* the build-side swap. A LEFT
+    // join with the smaller side on the right swaps to a (safe) RIGHT join and is
+    // collected; a RIGHT join with the smaller side on the right swaps to an
+    // (unsafe) LEFT join and must be repartitioned.
+    #[test]
+    fn to_actual_join_uses_post_swap_join_type() {
+        assert!(
+            is_collected(&actual_join_for(JoinType::Left, 1000, 10, true)),
+            "LEFT with small right swaps to a safe RIGHT join and should collect"
+        );
+        assert!(
+            !is_collected(&actual_join_for(JoinType::Right, 1000, 10, true)),
+            "RIGHT with small right swaps to an unsafe LEFT join and must repartition"
+        );
     }
 
     /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.

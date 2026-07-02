@@ -111,6 +111,31 @@ fn supports_collect_by_thresholds(
     }
 }
 
+/// Whether a `CollectLeft` (broadcast) hash join is correct for `join_type` in
+/// Ballista's distributed execution.
+///
+/// `CollectLeft` replicates the build (left) side to every probe task, and each
+/// task processes only its own slice of the probe (right) side. Output rows that
+/// are determined by a single probe-side row are therefore produced exactly
+/// once. Join types that emit rows on behalf of the build side — unmatched outer
+/// rows, or semi/anti/mark rows that depend on a build row's global match status
+/// — would instead be emitted independently by every task, producing duplicate
+/// or spurious rows. Only join types whose output is driven entirely by the
+/// probe side are safe to broadcast.
+///
+/// `join_type` must be the join type *after* any build-side swap, since the
+/// build side is always the left input of the resulting `HashJoinExec`.
+pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
+    matches!(
+        join_type,
+        JoinType::Inner
+            | JoinType::Right
+            | JoinType::RightSemi
+            | JoinType::RightAnti
+            | JoinType::RightMark
+    )
+}
+
 /// Predicate that checks whether the given join type supports input swapping.
 #[deprecated(since = "45.0.0", note = "use JoinType::supports_swap instead")]
 #[allow(dead_code)]
@@ -617,6 +642,7 @@ fn apply_subrules(
 mod test {
     use std::sync::Arc;
 
+    use super::collect_left_broadcast_safe;
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
         common::{ColumnStatistics, JoinSide, JoinType, Statistics, stats::Precision},
@@ -629,6 +655,41 @@ mod test {
             test::exec::StatisticsExec,
         },
     };
+
+    // A CollectLeft broadcast replicates the build (left) side to every probe
+    // task. Only join types whose output is driven entirely by the probe (right)
+    // side may be broadcast; any type that emits rows on behalf of the build side
+    // would duplicate them across tasks. This locks down the full set so a new or
+    // reclassified `JoinType` can't silently become broadcastable.
+    #[test]
+    fn collect_left_broadcast_safe_matches_probe_driven_join_types() {
+        let safe = [
+            JoinType::Inner,
+            JoinType::Right,
+            JoinType::RightSemi,
+            JoinType::RightAnti,
+            JoinType::RightMark,
+        ];
+        let unsafe_types = [
+            JoinType::Left,
+            JoinType::Full,
+            JoinType::LeftSemi,
+            JoinType::LeftAnti,
+            JoinType::LeftMark,
+        ];
+        for join_type in safe {
+            assert!(
+                collect_left_broadcast_safe(join_type),
+                "{join_type:?} should be safe to broadcast"
+            );
+        }
+        for join_type in unsafe_types {
+            assert!(
+                !collect_left_broadcast_safe(join_type),
+                "{join_type:?} must not be broadcast"
+            );
+        }
+    }
     //
     // join selection should not change order of joins for
     // nested loop join as we're not able to insert new CoalescePartitions
