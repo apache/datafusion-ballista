@@ -88,7 +88,7 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
 
 /// Configuration key to enable broadcasting a small build side of a
 /// `SortMergeJoinExec` by converting it to a `CollectLeft` hash join in the
-/// static distributed planner. Disabled by default.
+/// static distributed planner. Enabled by default.
 pub const BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED: &str =
     "ballista.optimizer.broadcast_sort_merge_join_enabled";
 
@@ -210,7 +210,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           to a CollectLeft hash join in the static distributed planner. \
                           The build side must also fit under broadcast_join_threshold_bytes.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -762,8 +762,8 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_sort_merge_join_disabled_by_default() {
+    fn broadcast_sort_merge_join_enabled_by_default() {
         let config = BallistaConfig::default();
-        assert!(!config.broadcast_sort_merge_join_enabled());
+        assert!(config.broadcast_sort_merge_join_enabled());
     }
 }
