@@ -41,7 +41,7 @@ classifiers = [
 ]
 dependencies = [
     "pyarrow>=21.0.0",
-    "datafusion==53",
+    "datafusion==54",
     "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]
