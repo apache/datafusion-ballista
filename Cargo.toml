@@ -26,16 +26,18 @@ edition = "2024"
 rust-version = "1.88.0"
 
 [workspace.dependencies]
-arrow = { version = "58.3", features = ["ipc_compression"] }
-arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
+arrow = { version = "59.1.0", features = ["ipc_compression"] }
+arrow-flight = { version = "59.1.0", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
-datafusion = "54"
-datafusion-cli = "54"
-datafusion-proto = "54"
-datafusion-proto-common = "54"
-datafusion-spark = "54"
-datafusion-substrait = "54"
+# DataFusion crates are pinned to a git rev of apache/datafusion main rather than
+# a crates.io release. Bump this rev to advance to newer DataFusion commits.
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
+datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
+datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
 
 insta = "1.47"
 itertools = "0.15"

@@ -36,7 +36,7 @@ use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::{
     DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
-    PhysicalPlanDecodeContext,
+    PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -292,7 +292,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     fn try_decode_table_provider(
         &self,
         buf: &[u8],
-        table_ref: &datafusion::sql::TableReference,
+        table_ref: &datafusion::common::TableReference,
         schema: datafusion::arrow::datatypes::SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
@@ -302,7 +302,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
 
     fn try_encode_table_provider(
         &self,
-        table_ref: &datafusion::sql::TableReference,
+        table_ref: &datafusion::common::TableReference,
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
@@ -367,6 +367,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
@@ -554,6 +555,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         &self,
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<(), DataFusionError> {
         if let Some(exec) = node.downcast_ref::<ShuffleWriterExec>() {
             // note that we use shuffle_output_partitioning() rather than output_partitioning()
@@ -874,11 +876,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded_exec = decoded_plan
             .downcast_ref::<UnresolvedShuffleExec>()
@@ -910,11 +918,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded_exec = decoded_plan
             .downcast_ref::<ShuffleReaderExec>()
@@ -953,11 +967,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded_exec = decoded_plan
             .downcast_ref::<ShuffleReaderExec>()
             .expect("Expected ShuffleReaderExec");
@@ -1006,11 +1026,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded_exec = decoded_plan
             .downcast_ref::<ShuffleReaderExec>()
             .expect("Expected ShuffleReaderExec");
@@ -1051,11 +1077,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded_exec = decoded_plan
             .downcast_ref::<UnresolvedShuffleExec>()
             .expect("Expected UnresolvedShuffleExec");
@@ -1101,11 +1133,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded_exec = decoded_plan
             .downcast_ref::<ShuffleReaderExec>()
             .expect("Expected ShuffleReaderExec");
@@ -1197,11 +1235,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded_exec = decoded_plan
             .downcast_ref::<UnresolvedShuffleExec>()
@@ -1223,11 +1267,17 @@ mod test {
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
         codec
-            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .try_encode(
+                Arc::new(original_exec.clone()),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded_exec = decoded_plan
             .downcast_ref::<ShuffleReaderExec>()

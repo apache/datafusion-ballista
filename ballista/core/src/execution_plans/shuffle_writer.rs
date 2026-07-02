@@ -55,7 +55,7 @@ use datafusion::physical_plan::metrics::{
 
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, displayable,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, displayable,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
@@ -556,8 +556,8 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        args.compute_child_statistics(&self.plan, args.partition())
     }
 }
 

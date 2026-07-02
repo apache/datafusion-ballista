@@ -35,7 +35,8 @@ use ballista_core::{
 use datafusion::arrow::datatypes::DataType;
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
+use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
+use datafusion::physical_plan::StatisticsArgs;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -75,8 +76,9 @@ pub trait DistributedPlanner {
 pub struct DefaultDistributedPlanner {
     /// Counter for generating unique stage IDs.
     next_stage_id: usize,
-    /// Optimizer rule for enforcing sort requirements after stage splitting.
-    optimizer_enforce_sorting: EnforceSorting,
+    /// Optimizer rule for re-enforcing distribution and sort requirements after
+    /// stage splitting.
+    optimizer_ensure_requirements: EnsureRequirements,
 }
 
 impl DefaultDistributedPlanner {
@@ -86,8 +88,8 @@ impl DefaultDistributedPlanner {
             next_stage_id: 0,
             // when plan is broken into stages some sorting information may get lost in the process
             // thus stage re-optimisation is needed to adjust sort information
-            optimizer_enforce_sorting:
-                datafusion::physical_optimizer::enforce_sorting::EnforceSorting::default(),
+            optimizer_ensure_requirements:
+                datafusion::physical_optimizer::ensure_requirements::EnsureRequirements::default(),
         }
     }
 }
@@ -194,7 +196,7 @@ impl DefaultDistributedPlanner {
 
         if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
-            let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+            let input = self.optimizer_ensure_requirements.optimize(input, config)?;
             let shuffle_writer = create_shuffle_writer_with_config(
                 job_id,
                 self.next_stage_id(),
@@ -229,7 +231,8 @@ impl DefaultDistributedPlanner {
             match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
                     let input = children[0].clone();
-                    let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+                    let input =
+                        self.optimizer_ensure_requirements.optimize(input, config)?;
 
                     let shuffle_writer = create_shuffle_writer_with_config(
                         job_id,
@@ -322,7 +325,7 @@ impl DefaultDistributedPlanner {
         let right = hash_join.right();
 
         fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
-            let Ok(stats) = plan.partition_statistics(None) else {
+            let Ok(stats) = plan.statistics_with_args(&StatisticsArgs::new()) else {
                 debug!(
                     "broadcast check: partition_statistics returned error for {}",
                     plan.name()

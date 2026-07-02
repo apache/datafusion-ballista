@@ -27,7 +27,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream, Statistics, StatisticsArgs,
 };
 use datafusion::{error::Result, physical_plan::RecordBatchStream};
 use futures::Stream;
@@ -121,8 +121,8 @@ impl ExecutionPlan for CollectExec {
         }))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        args.compute_child_statistics(&self.plan, args.partition())
     }
 }
 

@@ -59,7 +59,7 @@ use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, displayable,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, displayable,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use log::debug;
@@ -658,8 +658,8 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        args.compute_child_statistics(&self.plan, args.partition())
     }
 }
 

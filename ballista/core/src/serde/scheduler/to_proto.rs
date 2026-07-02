@@ -161,6 +161,14 @@ impl TryInto<protobuf::OperatorMetric> for &MetricValue {
                     value: gauge.value() as u64,
                 })),
             }),
+            MetricValue::PeakMemoryUsage { name, gauge } => {
+                Ok(protobuf::OperatorMetric {
+                    metric: Some(operator_metric::Metric::Gauge(NamedGauge {
+                        name: name.to_string(),
+                        value: gauge.value() as u64,
+                    })),
+                })
+            }
             MetricValue::Time { name, time } => Ok(protobuf::OperatorMetric {
                 metric: Some(operator_metric::Metric::Time(NamedTime {
                     name: name.to_string(),

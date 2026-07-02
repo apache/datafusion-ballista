@@ -181,8 +181,8 @@ impl<'n> TreeNodeVisitor<'n> for LocalRun {
     ) -> datafusion::error::Result<datafusion::common::tree_node::TreeNodeRecursion> {
         match node {
             LogicalPlan::TableScan(TableScan { table_name, .. }) => match table_name {
-                datafusion::sql::TableReference::Partial { schema, .. }
-                | datafusion::sql::TableReference::Full { schema, .. }
+                datafusion::common::TableReference::Partial { schema, .. }
+                | datafusion::common::TableReference::Full { schema, .. }
                     if schema.as_ref() == "information_schema" =>
                 {
                     self.can_be_local = true;

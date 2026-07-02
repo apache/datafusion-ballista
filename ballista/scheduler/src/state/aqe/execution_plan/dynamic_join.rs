@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::physical_plan::StatisticsArgs;
 use datafusion::{
     arrow::compute::SortOptions,
     common::{JoinType, NullEquality, Result, exec_err, internal_err},
@@ -204,8 +205,8 @@ impl DynamicJoinSelectionExec {
             .map(|(l, r)| (Arc::clone(l), Arc::clone(r)))
             .unzip();
         vec![
-            Distribution::HashPartitioned(left_expr),
-            Distribution::HashPartitioned(right_expr),
+            Distribution::KeyPartitioned(left_expr),
+            Distribution::KeyPartitioned(right_expr),
         ]
     }
 
@@ -252,8 +253,8 @@ impl DynamicJoinSelectionExec {
                 PartitionMode::Partitioned
             };
 
-        let stats_left = self.left.partition_statistics(None)?;
-        let stats_right = self.right.partition_statistics(None)?;
+        let stats_left = self.left.statistics_with_args(&StatisticsArgs::new())?;
+        let stats_right = self.right.statistics_with_args(&StatisticsArgs::new())?;
 
         debug!(
             "to_actual_join - plan_id: {}, decision: {:?} left: ({:?} | {:?}), right: ({:?} | {:?})",
@@ -345,7 +346,7 @@ impl DynamicJoinSelectionExec {
     ) -> bool {
         // Currently we do not trust the 0 value from stats, due to stats collection might have bug
         // TODO check the logic in datasource::get_statistics_with_limit()
-        let Ok(stats) = plan.partition_statistics(None) else {
+        let Ok(stats) = plan.statistics_with_args(&StatisticsArgs::new()) else {
             return false;
         };
 
