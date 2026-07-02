@@ -51,17 +51,33 @@ use tonic::codegen::{Body, Bytes, StdError};
 
 /// Main execution loop that polls the scheduler for available tasks.
 ///
-/// This function runs indefinitely, periodically asking the scheduler for
-/// work. When tasks are received, they are executed on a dedicated thread
-/// pool and results are reported back to the scheduler.
+/// Runs indefinitely, periodically asking the scheduler for work. When tasks
+/// are received they are executed concurrently and results are reported back
+/// to the scheduler.
 ///
-/// The loop respects the executor's concurrent task limit via a semaphore,
-/// ensuring no more than the configured number of tasks run simultaneously.
+/// Concurrency is bounded by a semaphore. Pass `available_task_slots` to
+/// supply your own semaphore — useful for sharing a single concurrency limit
+/// across multiple poll loops or for observing executor load from outside.
+/// Pass `None` to have the loop create a semaphore sized to the executor's
+/// configured task-slot count.
 ///
-/// `available_task_slots`, when provided, lets the caller supply the semaphore
-/// controlling task concurrency (e.g. to share it across poll loops or to
-/// observe executor busy state via `available_permits()`). When `None`, a
-/// semaphore sized to the executor's task slots is created internally.
+/// **Shared semaphores**: when one semaphore is shared across loops that
+/// connect to different schedulers, each scheduler independently sees the
+/// current free capacity and may dispatch up to that many tasks. The semaphore
+/// still caps total concurrent execution — tasks that cannot run immediately
+/// wait for capacity — but both schedulers may over-commit relative to what
+/// the semaphore can actually admit at once. This is intentional: the
+/// semaphore acts as an execution throttle, not a reservation system.
+///
+/// **Semaphore sizing**: if the provided semaphore allows more concurrent
+/// tasks than the executor's thread pool has threads, excess admitted tasks
+/// will queue behind running ones. The caller is responsible for sizing the
+/// semaphore appropriately for their thread pool.
+///
+/// # Panics
+///
+/// Panics on startup if `available_task_slots` is a semaphore with zero
+/// permits, which would cause the loop to deadlock immediately.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
@@ -84,6 +100,10 @@ where
     let available_task_slots = available_task_slots.unwrap_or_else(|| {
         Arc::new(Semaphore::new(executor_specification.task_slots as usize))
     });
+    assert!(
+        available_task_slots.available_permits() > 0,
+        "available_task_slots semaphore must have at least one permit; passing a closed or zero-permit semaphore would deadlock the poll loop"
+    );
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
@@ -94,7 +114,10 @@ where
 
     loop {
         // Wait for task slots to be available before asking for new work
-        let permit = available_task_slots.acquire().await.unwrap();
+        let permit = available_task_slots
+            .acquire()
+            .await
+            .map_err(|_| BallistaError::Internal("task slot semaphore closed".to_string()))?;
         // Make the slot available again
         drop(permit);
 
@@ -140,8 +163,15 @@ where
                     let task_status_sender = task_status_sender.clone();
 
                     // Acquire a permit/slot for the task
-                    let permit =
-                        available_task_slots.clone().acquire_owned().await.unwrap();
+                    let permit = available_task_slots
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| {
+                            BallistaError::Internal(
+                                "task slot semaphore closed".to_string(),
+                            )
+                        })?;
 
                     let start_exec_time = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
