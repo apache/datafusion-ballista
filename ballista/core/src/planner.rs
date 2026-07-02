@@ -483,27 +483,51 @@ mod test {
             .build()
             .unwrap();
 
+        // The uncorrelated subquery is collected, and its plan is what comes back.
         let found = super::collect_uncorrelated_scalar_subqueries(&plan).unwrap();
         assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].subquery.display_indent().to_string(),
+            "Projection: Int64(42) AS m\n  EmptyRelation: rows=1"
+        );
     }
 
     #[test]
     fn collect_skips_correlated_scalar_subqueries() {
-        use datafusion::logical_expr::{Expr, LogicalPlanBuilder, Subquery, col};
+        use datafusion::logical_expr::expr_fn::scalar_subquery;
+        use datafusion::logical_expr::{Expr, LogicalPlanBuilder, Subquery, col, lit};
 
+        // An uncorrelated subquery (eligible) sits next to a correlated one that
+        // references an outer column and must be skipped.
+        let uncorrelated = one_row_subquery();
         let correlated = Expr::ScalarSubquery(Subquery {
-            subquery: one_row_subquery(),
+            subquery: std::sync::Arc::new(
+                LogicalPlanBuilder::empty(true)
+                    .project(vec![lit(99i64).alias("m")])
+                    .unwrap()
+                    .build()
+                    .unwrap(),
+            ),
             outer_ref_columns: vec![col("y")],
             spans: Default::default(),
         });
         let plan = LogicalPlanBuilder::empty(true)
-            .project(vec![correlated.alias("x")])
+            .project(vec![
+                scalar_subquery(std::sync::Arc::clone(&uncorrelated)).alias("a"),
+                correlated.alias("b"),
+            ])
             .unwrap()
             .build()
             .unwrap();
 
+        // Only the uncorrelated subquery is collected. The plan that comes back
+        // is the `Int64(42)` one, not the correlated `Int64(99)` subquery.
         let found = super::collect_uncorrelated_scalar_subqueries(&plan).unwrap();
-        assert!(found.is_empty());
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].subquery.display_indent().to_string(),
+            "Projection: Int64(42) AS m\n  EmptyRelation: rows=1"
+        );
     }
 
     #[test]
@@ -528,10 +552,11 @@ mod test {
             ScalarValue::Int64(Some(42)),
         );
 
+        // The scalar subquery is replaced by its literal value in the plan.
         let rewritten = super::substitute_scalar_subqueries(plan, &values).unwrap();
-        // No scalar subquery should remain after substitution.
-        let remaining =
-            super::collect_uncorrelated_scalar_subqueries(&rewritten).unwrap();
-        assert!(remaining.is_empty());
+        assert_eq!(
+            rewritten.display_indent().to_string(),
+            "Projection: Int64(42) AS x\n  EmptyRelation: rows=1"
+        );
     }
 }
