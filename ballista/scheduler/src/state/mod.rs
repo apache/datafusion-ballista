@@ -17,7 +17,7 @@
 
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -28,7 +28,6 @@ use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
@@ -366,21 +365,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         job_id: &JobId,
         job_name: &str,
         session_ctx: Arc<SessionContext>,
-        logical_plan: &LogicalPlan,
+        plan: &SubmitPlan,
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let start = Instant::now();
 
         self.task_manager
-            .submit_job(
-                job_id,
-                job_name,
-                session_ctx,
-                logical_plan,
-                queued_at,
-                subscriber,
-            )
+            .submit_job(job_id, job_name, session_ctx, plan, queued_at, subscriber)
             .await?;
 
         let elapsed = start.elapsed();
