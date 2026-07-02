@@ -721,6 +721,7 @@ pub(crate) fn create_shuffle_writer_with_config(
 
 #[cfg(test)]
 mod test {
+    use crate::assert_plan;
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
@@ -1077,13 +1078,11 @@ order by
 
     #[tokio::test]
     async fn distributed_broadcast_sort_merge_join_plan() -> Result<(), BallistaError> {
-        use datafusion::physical_plan::joins::PartitionMode;
-        use datafusion::physical_plan::joins::SortMergeJoinExec;
-        use datafusion::physical_plan::sorts::sort::SortExec;
-
         // prefer_hash_join=false -> DataFusion plans a SortMergeJoinExec.
-        // broadcast_sort_merge_join_enabled=true -> the small side should be
-        // converted to a broadcast CollectLeft hash join.
+        // broadcast_sort_merge_join_enabled=true -> the small build side is
+        // converted to a broadcast CollectLeft hash join: the SortMergeJoinExec
+        // and its input SortExecs are gone, and the build input is an
+        // UnresolvedShuffleExec with broadcast=true.
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, true)?;
 
         let df = ctx
@@ -1097,39 +1096,18 @@ order by
         let job_uuid = Uuid::new_v4();
         let stages =
             planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
-        for (i, stage) in stages.iter().enumerate() {
-            println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
-        }
 
-        let mut found_broadcast_join = false;
-        for stage in &stages {
-            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
-                vec![stage.clone() as Arc<dyn ExecutionPlan>];
-            while let Some(node) = walker.pop() {
-                assert!(
-                    node.downcast_ref::<SortMergeJoinExec>().is_none(),
-                    "no SortMergeJoinExec should remain after broadcast conversion"
-                );
-                assert!(
-                    node.downcast_ref::<SortExec>().is_none(),
-                    "redundant SortExec should be stripped during conversion"
-                );
-                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
-                    assert_eq!(*hj.partition_mode(), PartitionMode::CollectLeft);
-                    let left = hj.children()[0].clone();
-                    let unresolved = left
-                        .downcast_ref::<UnresolvedShuffleExec>()
-                        .expect("left input should be UnresolvedShuffleExec");
-                    assert!(unresolved.broadcast, "left input should be broadcast");
-                    found_broadcast_join = true;
-                }
-                walker.extend(node.children().iter().map(|c| (*c).clone()));
-            }
-        }
-        assert!(
-            found_broadcast_join,
-            "expected a broadcast HashJoinExec converted from SortMergeJoinExec"
-        );
+        // Stage 1 holds the join: a broadcast CollectLeft hash join, no
+        // SortMergeJoinExec and no SortExec.
+        assert_plan!(stages[1].as_ref(), @r"
+        ShuffleWriterExec: partitioning: None
+          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+            ProjectionExec: expr=[]
+              ProjectionExec: expr=[k@1 as k, k@0 as k]
+                HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(k@0, k@0)]
+                  UnresolvedShuffleExec: broadcast=true, upstream_partitions: 1
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
 
         Ok(())
     }
@@ -1137,9 +1115,8 @@ order by
     #[tokio::test]
     async fn distributed_sort_merge_join_unchanged_when_flag_disabled()
     -> Result<(), BallistaError> {
-        use datafusion::physical_plan::joins::SortMergeJoinExec;
-
-        // SMJ planned (prefer_hash_join=false), flag OFF -> no conversion.
+        // SMJ planned (prefer_hash_join=false), flag OFF -> no conversion: the
+        // join stays a SortMergeJoinExec over sorted inputs.
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, false)?;
 
         let df = ctx
@@ -1153,24 +1130,18 @@ order by
         let stages =
             planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
 
-        let mut found_smj = false;
-        for stage in &stages {
-            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
-                vec![stage.clone() as Arc<dyn ExecutionPlan>];
-            while let Some(node) = walker.pop() {
-                if node.downcast_ref::<SortMergeJoinExec>().is_some() {
-                    found_smj = true;
-                }
-                if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>() {
-                    assert!(
-                        !unresolved.broadcast,
-                        "no broadcast expected when SMJ flag is disabled"
-                    );
-                }
-                walker.extend(node.children().iter().map(|c| (*c).clone()));
-            }
-        }
-        assert!(found_smj, "SortMergeJoinExec should be left unchanged");
+        // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
+        // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
+        assert_plan!(stages[0].as_ref(), @r"
+        ShuffleWriterExec: partitioning: None
+          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+            ProjectionExec: expr=[]
+              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
+                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
 
         Ok(())
     }
@@ -1178,9 +1149,8 @@ order by
     #[tokio::test]
     async fn distributed_sort_merge_join_unchanged_when_sides_too_large()
     -> Result<(), BallistaError> {
-        use datafusion::physical_plan::joins::SortMergeJoinExec;
-
-        // Flag ON but threshold tiny (1 byte) -> neither side qualifies.
+        // Flag ON but threshold tiny (1 byte) -> neither side qualifies, so the
+        // join stays a SortMergeJoinExec over sorted inputs.
         let (ctx, options) = make_broadcast_test_ctx(1, 1, false, true)?;
 
         let df = ctx
@@ -1194,21 +1164,18 @@ order by
         let stages =
             planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
 
-        let mut found_smj = false;
-        for stage in &stages {
-            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
-                vec![stage.clone() as Arc<dyn ExecutionPlan>];
-            while let Some(node) = walker.pop() {
-                if node.downcast_ref::<SortMergeJoinExec>().is_some() {
-                    found_smj = true;
-                }
-                walker.extend(node.children().iter().map(|c| (*c).clone()));
-            }
-        }
-        assert!(
-            found_smj,
-            "SortMergeJoinExec should be left unchanged when no side is under threshold"
-        );
+        // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
+        // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
+        assert_plan!(stages[0].as_ref(), @r"
+        ShuffleWriterExec: partitioning: None
+          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+            ProjectionExec: expr=[]
+              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
+                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
 
         Ok(())
     }
