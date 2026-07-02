@@ -86,6 +86,12 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
+/// Configuration key to enable broadcasting a small build side of a
+/// `SortMergeJoinExec` by converting it to a `CollectLeft` hash join in the
+/// static distributed planner. Enabled by default.
+pub const BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED: &str =
+    "ballista.optimizer.broadcast_sort_merge_join_enabled";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -199,6 +205,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           Set to 0 to disable promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED.to_string(),
+                         "Broadcast a small build side of a SortMergeJoinExec by converting it \
+                          to a CollectLeft hash join in the static distributed planner. \
+                          The build side must also fit under broadcast_join_threshold_bytes.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -496,6 +508,13 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
+    /// Returns whether broadcasting a small build side of a `SortMergeJoinExec`
+    /// (by converting it to a `CollectLeft` hash join) is enabled in the static
+    /// distributed planner.
+    pub fn broadcast_sort_merge_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED)
+    }
+
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
     pub fn coalesce_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_COALESCE_ENABLED)
@@ -740,5 +759,11 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_sort_merge_join_enabled_by_default() {
+        let config = BallistaConfig::default();
+        assert!(config.broadcast_sort_merge_join_enabled());
     }
 }
