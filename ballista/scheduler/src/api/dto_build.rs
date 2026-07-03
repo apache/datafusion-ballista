@@ -298,12 +298,8 @@ pub(crate) fn to_api_task_status(status: &task_status::Status) -> TaskStatus {
 /// by an executor for one task, e.g. `TaskStatus::metrics`) directly, with no
 /// partition filtering (a task already corresponds to exactly one partition),
 /// and additionally sums `elapsed_compute` (nanoseconds) alongside the row
-/// counts, matching `ballista_history::event::TaskEndMetrics` for Task 5's
-/// timeline events.
-///
-/// Not yet called from production code — the event-log writer that will
-/// consume it lands in a later task. Silence `dead_code` until then.
-#[allow(dead_code)]
+/// counts, matching `ballista_history::event::TaskEndMetrics` for the
+/// event-log's timeline events (see `scheduler_server::event_log`).
 pub(crate) fn task_row_counts(metrics: &[OperatorMetricsSet]) -> (u64, u64, u64) {
     let mut input_rows: u64 = 0;
     let mut output_rows: u64 = 0;

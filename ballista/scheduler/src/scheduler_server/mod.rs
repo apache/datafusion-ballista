@@ -54,6 +54,13 @@ pub mod externalscaler {
 
 /// Events for the scheduler event loop.
 pub mod event;
+/// Builds `HistoryEvent`s emitted from the event loop into the event log.
+///
+/// Depends on `crate::api::dto_build`, which is only compiled with the
+/// `rest-api` feature (the default), so this module -- and the event-log
+/// wiring into `QueryStageScheduler` below -- is gated the same way.
+#[cfg(feature = "rest-api")]
+mod event_log;
 #[cfg(feature = "keda-scaler")]
 mod external_scaler;
 mod grpc;
@@ -102,10 +109,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
+        #[cfg(feature = "rest-api")]
+        let event_log = config.event_log_dir.as_ref().map(|dir| {
+            ballista_history::writer::EventLogWriter::new(
+                std::path::PathBuf::from(dir),
+                config.event_loop_buffer_size as usize,
+            )
+        });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
+            #[cfg(feature = "rest-api")]
+            event_log,
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
@@ -141,10 +157,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
+        #[cfg(feature = "rest-api")]
+        let event_log = config.event_log_dir.as_ref().map(|dir| {
+            ballista_history::writer::EventLogWriter::new(
+                std::path::PathBuf::from(dir),
+                config.event_loop_buffer_size as usize,
+            )
+        });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
+            #[cfg(feature = "rest-api")]
+            event_log,
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),

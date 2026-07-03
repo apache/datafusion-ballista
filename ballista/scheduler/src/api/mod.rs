@@ -13,7 +13,10 @@
 #[cfg(feature = "rest-api")]
 pub(crate) mod dto_build;
 #[cfg(feature = "rest-api")]
-mod handlers;
+// `pub(crate)` (rather than private) so `scheduler_server::event_log` can reuse
+// `JobQueryParams`/`PlanFormat` to build event-log DTOs identical to the live
+// REST responses.
+pub(crate) mod handlers;
 #[cfg(feature = "rest-api")]
 mod routes;
 #[cfg(feature = "rest-api")]
