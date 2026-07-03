@@ -46,7 +46,7 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = []
+rest-api = ["dep:ballista-history"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -56,7 +56,7 @@ async-trait = { workspace = true }
 axum = "0.8.9"
 tower-http = { version = "0.7", features = ["cors"] }
 ballista-core = { path = "../core", version = "53.0.0" }
-ballista-history = { path = "../history", version = "53.0.0" }
+ballista-history = { path = "../history", version = "53.0.0", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
