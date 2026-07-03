@@ -11,6 +11,8 @@
 // limitations under the License.
 
 #[cfg(feature = "rest-api")]
+pub(crate) mod dto_build;
+#[cfg(feature = "rest-api")]
 mod handlers;
 #[cfg(feature = "rest-api")]
 mod routes;
