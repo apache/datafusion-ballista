@@ -20,13 +20,36 @@
 //! This module provides a broadcast-based notification system for job state changes.
 //! Consumers can subscribe to receive notifications when jobs change state, avoiding
 //! the need to poll for status updates.
+//!
+//! # Choosing between `JobStateEvent` and `JobStatusSubscriber`
+//!
+//! Ballista has two mechanisms for observing job progress:
+//!
+//! - **[`JobStateEvent`] / [`crate::scheduler_server::SchedulerServer::subscribe_job_updates`]**:
+//!   a `tokio::sync::broadcast` channel that delivers lifecycle events for *all* jobs
+//!   on this scheduler. Suited for cluster-wide observers such as metrics collectors,
+//!   audit logs, or HA state replication. Subscribers receive a lightweight event
+//!   containing only the job ID and new state; they must query the scheduler separately
+//!   for full job details. Slow subscribers may lag and miss events if the channel buffer fills;
+//!   see [`crate::config::SchedulerConfig::job_state_channel_capacity`] to tune this.
+//!
+//! - **`JobStatusSubscriber`** (`tokio::sync::mpsc::Sender<JobStatus>`): a per-job
+//!   `mpsc` channel threaded through [`crate::scheduler_server::SchedulerServer::submit_job`].
+//!   Suited for a single caller that submitted a job and wants rich status updates
+//!   (including partition locations on success) for that specific job. Backpressure
+//!   is applied to the scheduler if the subscriber is slow, so this is best used by
+//!   in-process callers that consume updates promptly.
 
+use ballista_core::serde::protobuf::job_status;
 use std::fmt;
 
 /// Represents the current state of a job in the scheduler.
 ///
-/// This enum mirrors the possible states from the protobuf `job_status::Status`
-/// but is designed to be lightweight for broadcasting.
+/// Mirrors the variants of the protobuf `job_status::Status` but is
+/// lightweight for broadcasting. When adding or renaming variants here,
+/// update the `From<job_status::Status>` impl below to keep them in sync.
+/// Note that `Cancelled` has no protobuf counterpart; cancelled jobs are
+/// represented as `Failed` in the wire format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobState {
     /// Job is queued and waiting to be scheduled.
@@ -49,6 +72,18 @@ impl fmt::Display for JobState {
             JobState::Completed => write!(f, "Completed"),
             JobState::Failed(msg) => write!(f, "Failed: {}", msg),
             JobState::Cancelled => write!(f, "Cancelled"),
+        }
+    }
+}
+
+impl From<job_status::Status> for JobState {
+    fn from(status: job_status::Status) -> Self {
+        match status {
+            job_status::Status::Queued(_) => JobState::Queued,
+            job_status::Status::Running(_) => JobState::Running,
+            job_status::Status::Failed(f) => JobState::Failed(f.error),
+            // Protobuf has no Cancelled variant; cancelled jobs surface as Failed on the wire.
+            job_status::Status::Successful(_) => JobState::Completed,
         }
     }
 }

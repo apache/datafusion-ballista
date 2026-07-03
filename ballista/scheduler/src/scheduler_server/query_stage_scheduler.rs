@@ -111,9 +111,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             } => {
                 info!("Job queued: [{job_id}]");
 
-                // Broadcast job queued state
-                self.broadcast_job_state(JobStateEvent::queued(&job_id));
-
                 if let Err(e) = self
                     .state
                     .task_manager
@@ -122,6 +119,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     error!("Fail to queue job {job_id} due to {e:?}");
                     return Ok(());
                 }
+
+                // Broadcast after state transition succeeds
+                self.broadcast_job_state(JobStateEvent::queued(&job_id));
 
                 let state = self.state.clone();
 
@@ -213,19 +213,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 error!("Job {job_id} failed: {fail_message}");
 
-                // Broadcast job failed state
-                self.broadcast_job_state(JobStateEvent::failed(&job_id, &fail_message));
-
                 if let Err(e) = self
                     .state
                     .task_manager
-                    .fail_unscheduled_job(&job_id, fail_message)
+                    .fail_unscheduled_job(&job_id, fail_message.clone())
                     .await
                 {
                     error!(
                         "Fail to invoke fail_unscheduled_job for job {job_id} due to {e:?}"
                     );
                 }
+
+                // Broadcast after state transition
+                self.broadcast_job_state(JobStateEvent::failed(&job_id, &fail_message));
             }
             QueryStageSchedulerEvent::JobFinished {
                 job_id,
@@ -237,11 +237,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 info!("Job finished successfully: [{job_id}]");
 
-                // Broadcast job completed state
-                self.broadcast_job_state(JobStateEvent::completed(&job_id));
-
                 if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
                     error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
+                } else {
+                    // Broadcast only after state transition succeeds
+                    self.broadcast_job_state(JobStateEvent::completed(&job_id));
                 }
                 self.state.clean_up_successful_job(job_id);
             }
@@ -256,16 +256,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 error!("Job failed: [{job_id}]");
 
-                // Broadcast job failed state
-                self.broadcast_job_state(JobStateEvent::failed(&job_id, &fail_message));
-
                 match self
                     .state
                     .task_manager
-                    .abort_job(&job_id, fail_message)
+                    .abort_job(&job_id, fail_message.clone())
                     .await
                 {
                     Ok((running_tasks, _pending_tasks)) => {
+                        // Broadcast only after state transition succeeds
+                        self.broadcast_job_state(JobStateEvent::failed(&job_id, &fail_message));
                         if !running_tasks.is_empty() {
                             event_sender
                                 .post_event(QueryStageSchedulerEvent::CancelTasks(
@@ -291,11 +290,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 info!("Job cancelled: [{job_id}]");
 
-                // Broadcast job cancelled state
-                self.broadcast_job_state(JobStateEvent::cancelled(&job_id));
-
                 match self.state.task_manager.cancel_job(&job_id).await {
                     Ok((running_tasks, _pending_tasks)) => {
+                        // Broadcast only after state transition succeeds
+                        self.broadcast_job_state(JobStateEvent::cancelled(&job_id));
                         event_sender
                             .post_event(QueryStageSchedulerEvent::CancelTasks(
                                 running_tasks,
@@ -404,6 +402,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 #[cfg(test)]
 mod tests {
     use crate::config::SchedulerConfig;
+    use crate::scheduler_server::job_state_event::{JobState, JobStateEvent};
     use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
@@ -463,6 +462,102 @@ mod tests {
             "Expected {} running jobs but found {}",
             expected,
             test.running_job_number()
+        );
+
+        Ok(())
+    }
+
+    /// Collects events from a broadcast receiver until `predicate` returns true or timeout elapses.
+    async fn collect_events_until(
+        rx: &mut tokio::sync::broadcast::Receiver<JobStateEvent>,
+        predicate: impl Fn(&[JobState]) -> bool,
+        timeout: Duration,
+    ) -> Vec<JobState> {
+        let mut states = vec![];
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(e)) => {
+                    states.push(e.state.clone());
+                    if predicate(&states) {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        states
+    }
+
+    #[tokio::test]
+    async fn test_job_state_broadcast_lifecycle_order() -> Result<()> {
+        let plan = test_plan(1);
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        let mut rx = test.subscribe_job_updates();
+        test.run("", &plan).await?;
+
+        let states = collect_events_until(
+            &mut rx,
+            |s| s.contains(&JobState::Completed),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let queued_pos = states.iter().position(|s| *s == JobState::Queued)
+            .expect("Expected Queued event");
+        let running_pos = states.iter().position(|s| *s == JobState::Running)
+            .expect("Expected Running event");
+        let completed_pos = states.iter().position(|s| *s == JobState::Completed)
+            .expect("Expected Completed event");
+        assert!(queued_pos < running_pos, "Queued should precede Running, got: {states:?}");
+        assert!(running_pos < completed_pos, "Running should precede Completed, got: {states:?}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_job_state_broadcast_cancel() -> Result<()> {
+        let plan = test_plan(10);
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        let mut rx = test.subscribe_job_updates();
+        let job_id = test.submit("", &plan).await?;
+        test.tick().await?;
+        test.cancel(&job_id).await?;
+
+        let states = collect_events_until(
+            &mut rx,
+            |s| s.contains(&JobState::Cancelled),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(
+            states.contains(&JobState::Cancelled),
+            "Expected Cancelled event, got: {states:?}"
         );
 
         Ok(())

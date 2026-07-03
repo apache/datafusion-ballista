@@ -96,12 +96,6 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
-    /// Default capacity for the job state broadcast channel.
-    ///
-    /// This determines how many job state events can be buffered before
-    /// slow receivers start lagging behind.
-    const JOB_STATE_CHANNEL_CAPACITY: usize = 256;
-
     /// Creates a new `SchedulerServer` with the given configuration.
     pub fn new(
         scheduler_name: String,
@@ -116,7 +110,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        let (job_state_sender, _) = broadcast::channel(Self::JOB_STATE_CHANNEL_CAPACITY);
+        let (job_state_sender, _) = broadcast::channel(config.job_state_channel_capacity);
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
@@ -158,7 +152,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
-        let (job_state_sender, _) = broadcast::channel(Self::JOB_STATE_CHANNEL_CAPACITY);
+        let (job_state_sender, _) = broadcast::channel(config.job_state_channel_capacity);
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,

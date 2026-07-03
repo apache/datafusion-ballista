@@ -269,6 +269,11 @@ pub struct SchedulerConfig {
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     pub stage_max_failures: usize,
+    /// Capacity of the job state broadcast channel.
+    ///
+    /// Controls how many job state events can be buffered before slow receivers
+    /// start lagging. Increase this for schedulers with high job throughput.
+    pub job_state_channel_capacity: usize,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -308,6 +313,7 @@ impl Default for SchedulerConfig {
             use_tls: false,
             task_max_failures: 4,
             stage_max_failures: 4,
+            job_state_channel_capacity: 256,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
             #[cfg(feature = "rest-api")]
@@ -449,6 +455,12 @@ impl SchedulerConfig {
         self.use_tls = use_tls;
         self
     }
+
+    /// Sets the capacity of the job state broadcast channel.
+    pub fn with_job_state_channel_capacity(mut self, capacity: usize) -> Self {
+        self.job_state_channel_capacity = capacity;
+        self
+    }
 }
 
 /// Policy of distributing tasks to available executor slots
@@ -540,6 +552,7 @@ impl TryFrom<Config> for SchedulerConfig {
             use_tls: false,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
+            job_state_channel_capacity: 256,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
             #[cfg(feature = "rest-api")]
