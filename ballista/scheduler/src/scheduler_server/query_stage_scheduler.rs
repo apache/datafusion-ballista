@@ -148,7 +148,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .get_job_execution_graph(job_id)
                         .await
                     {
-                        log.append(
+                        log.append_final(
                             job_id.as_str(),
                             event_log::job_end_event(
                                 &graph,
@@ -156,9 +156,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                 *queued_at,
                                 *completed_at,
                             ),
-                        );
+                        )
+                        .await;
                     }
-                    log.flush_job(job_id.as_str()).await;
+                    log.finish_job(job_id.as_str()).await;
                 }
                 QueryStageSchedulerEvent::JobRunningFailed {
                     job_id,
@@ -172,7 +173,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .get_job_execution_graph(job_id)
                         .await
                     {
-                        log.append(
+                        log.append_final(
                             job_id.as_str(),
                             event_log::job_end_event(
                                 &graph,
@@ -182,9 +183,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                 *queued_at,
                                 *failed_at,
                             ),
-                        );
+                        )
+                        .await;
                     }
-                    log.flush_job(job_id.as_str()).await;
+                    log.finish_job(job_id.as_str()).await;
                 }
                 _ => {}
             }

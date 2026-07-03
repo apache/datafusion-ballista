@@ -34,6 +34,10 @@ enum WriterMsg {
         job_id: String,
         done: oneshot::Sender<()>,
     },
+    Finish {
+        job_id: String,
+        done: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Clone)]
@@ -77,6 +81,46 @@ impl EventLogWriter {
             let _ = wait.await;
         }
     }
+
+    /// Enqueue a terminal event (e.g. `JobEnd`) for `job_id`. Unlike `append`, this
+    /// awaits channel capacity instead of dropping the event when the channel is
+    /// full, so the terminal record is never silently lost. Still best-effort at
+    /// the process boundary: if the channel is closed (background task gone) this
+    /// logs and returns rather than panicking.
+    pub async fn append_final(&self, job_id: &str, event: HistoryEvent) {
+        let msg = WriterMsg::Event {
+            job_id: job_id.to_string(),
+            event: Box::new(event),
+        };
+        if self.tx.send(msg).await.is_err() {
+            eprintln!(
+                "event-log writer: failed to enqueue terminal event for {job_id} (channel closed)"
+            );
+        }
+    }
+
+    /// Flush and close the per-job file handle for `job_id`. Must be called after
+    /// the terminal event has been enqueued (e.g. via `append_final`) so it is
+    /// ordered after it on the single-consumer FIFO channel. Best effort: if the
+    /// channel is closed this logs and returns.
+    pub async fn finish_job(&self, job_id: &str) {
+        let (done, wait) = oneshot::channel();
+        if self
+            .tx
+            .send(WriterMsg::Finish {
+                job_id: job_id.to_string(),
+                done,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = wait.await;
+        } else {
+            eprintln!(
+                "event-log writer: failed to enqueue finish for {job_id} (channel closed)"
+            );
+        }
+    }
 }
 
 async fn run(log_dir: PathBuf, mut rx: mpsc::Receiver<WriterMsg>) {
@@ -107,6 +151,13 @@ async fn run(log_dir: PathBuf, mut rx: mpsc::Receiver<WriterMsg>) {
             WriterMsg::Flush { job_id, done } => {
                 if let Some(file) = handles.get_mut(&job_id) {
                     let _ = file.flush().await;
+                }
+                let _ = done.send(());
+            }
+            WriterMsg::Finish { job_id, done } => {
+                if let Some(mut file) = handles.remove(&job_id) {
+                    let _ = file.flush().await;
+                    // Dropping `file` here closes the fd.
                 }
                 let _ = done.send(());
             }
@@ -142,7 +193,80 @@ async fn open_for<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{HistoryEvent, SCHEMA_VERSION};
+    use crate::dto::{JobResponse, QueryStagesResponse};
+    use crate::event::{HistoryEvent, JobEndStatus, SCHEMA_VERSION};
+    use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn terminal_job_end_is_not_dropped_on_a_saturated_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        // Tiny buffer so the non-blocking `append` path would readily drop events
+        // under load; `append_final` must still guarantee delivery.
+        let writer = EventLogWriter::new(dir.path().to_path_buf(), 1);
+
+        writer.append(
+            "job-1",
+            HistoryEvent::JobStart {
+                version: SCHEMA_VERSION,
+                job_id: "job-1".into(),
+                job_name: "q1".into(),
+                queued_at: 1,
+                submitted_at: 2,
+                logical_plan: None,
+                physical_plan: None,
+            },
+        );
+        for stage_id in 0..10 {
+            writer.append(
+                "job-1",
+                HistoryEvent::StageStart {
+                    stage_id,
+                    partitions: 4,
+                },
+            );
+        }
+
+        let job = JobResponse {
+            job_id: "job-1".into(),
+            job_name: "q1".into(),
+            job_status: "COMPLETED".into(),
+            status: "Successful".into(),
+            num_stages: 2,
+            completed_stages: 2,
+            percent_complete: 100,
+            start_time: 10,
+            end_time: 20,
+            logical_plan: Some("Projection".into()),
+            physical_plan: Some("ProjectionExec".into()),
+            stage_plan: Some("stage plan".into()),
+        };
+        let job_end = HistoryEvent::JobEnd {
+            version: SCHEMA_VERSION,
+            status: JobEndStatus::Succeeded,
+            queued_at: 1,
+            started_at: 2,
+            completed_at: 20,
+            job: Box::new(job),
+            stages: Box::new(QueryStagesResponse { stages: vec![] }),
+            config: BTreeMap::new(),
+            dot: "digraph {}".into(),
+        };
+        writer.append_final("job-1", job_end).await;
+        writer.finish_job("job-1").await;
+
+        let path = dir.path().join("job-1.eventlog");
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert!(
+            lines.iter().any(|l| l.contains("\"ev\":\"JobEnd\"")),
+            "expected a JobEnd line in the event log, got: {contents}"
+        );
+        assert_eq!(
+            lines.last().map(|l| l.contains("\"ev\":\"JobEnd\"")),
+            Some(true),
+            "JobEnd should be the last line written"
+        );
+    }
 
     #[tokio::test]
     async fn append_writes_one_jsonl_line_per_event() {
