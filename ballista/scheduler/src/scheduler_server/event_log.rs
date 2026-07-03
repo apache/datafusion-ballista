@@ -280,4 +280,56 @@ mod tests {
         assert!(lines[1].contains("\"ev\":\"JobEnd\""));
         assert!(lines[1].contains("DataSourceExec: (Memory)"));
     }
+
+    /// End-to-end DTO parity: the history server, replaying a real event log
+    /// through `EventLogWriter` + `HistoryStore::load`, must serve
+    /// byte-identical JSON to what the live scheduler would return for the
+    /// same job via `dto_build::{build_job_response, build_query_stages_response}`.
+    ///
+    /// This is `job_end_event`'s only round-trip coverage through the real
+    /// writer + `HistoryStore` (as opposed to the direct builder-output
+    /// assertions above), so it lives here as a crate-internal `#[cfg(test)]`
+    /// module rather than an integration test under `tests/`: `dto_build`'s
+    /// builders, `job_end_event` itself, and
+    /// `execution_graph_dot::tests::test_graph` are all `pub(crate)` /
+    /// cfg(test)-gated and therefore unreachable from a separate `tests/`
+    /// integration-test crate, which only sees the scheduler crate's public API.
+    #[tokio::test]
+    async fn history_store_serves_byte_identical_json_to_live_scheduler() {
+        use crate::api::handlers::JobQueryParams;
+        use crate::history::HistoryStore;
+
+        let graph = test_graph().await.unwrap();
+        let graph: ExecutionGraphBox = Box::new(graph);
+        let job_id = graph.job_id().to_string();
+
+        // The live DTOs a running scheduler would serve for this job right now,
+        // via the same builders the REST handlers call.
+        let live_job = build_job_response(&graph, true, PlanFormat::Default);
+        let live_stages = build_query_stages_response(&graph, &JobQueryParams::default());
+
+        // Produce the same `JobEnd` event the scheduler emits on completion,
+        // write it through the real async writer, then load it back via the
+        // history server's own `HistoryStore::load` -- exercising the full
+        // write -> read -> serve path, not just the event builder.
+        let event = job_end_event(&graph, JobEndStatus::Succeeded, 1, 2);
+        let dir = tempfile::tempdir().unwrap();
+        let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
+        writer.append(&job_id, event);
+        writer.flush_job(&job_id).await;
+
+        let store = HistoryStore::load(dir.path()).unwrap();
+        let replayed = store.jobs.get(&job_id).expect("job should be replayed");
+
+        // The core fidelity guarantee: the history server would return
+        // byte-identical JSON to what the live scheduler returned for this job.
+        assert_eq!(
+            serde_json::to_string(&replayed.job).unwrap(),
+            serde_json::to_string(&live_job).unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_string(&replayed.stages).unwrap(),
+            serde_json::to_string(&live_stages).unwrap(),
+        );
+    }
 }
