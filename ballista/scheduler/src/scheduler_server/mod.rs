@@ -25,7 +25,6 @@ use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::{JobId, JobStatusSubscriber};
 
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -36,7 +35,7 @@ use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{debug, error, warn};
 
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 
 use crate::state::executor_manager::ExecutorManager;
@@ -222,7 +221,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         &self,
         job_name: &str,
         ctx: Arc<SessionContext>,
-        plan: &LogicalPlan,
+        plan: &SubmitPlan,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
@@ -438,6 +437,7 @@ mod test {
         ExecutorSpecification,
     };
 
+    use crate::scheduler_server::event::SubmitPlan;
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
@@ -484,7 +484,14 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(&job_id, "", ctx, &plan, 0, None)
+            .submit_job(
+                &job_id,
+                "",
+                ctx,
+                &SubmitPlan::Logical(plan.clone()),
+                0,
+                None,
+            )
             .await
             .expect("submitting plan");
 

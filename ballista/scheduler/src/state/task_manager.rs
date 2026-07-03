@@ -18,7 +18,7 @@
 use crate::cluster::JobState;
 use crate::config::SchedulerConfig;
 use crate::planner::DefaultDistributedPlanner;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
@@ -37,7 +37,6 @@ use ballista_core::{JobId, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
@@ -283,47 +282,76 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_id: &JobId,
         job_name: &str,
         ctx: Arc<SessionContext>,
-        logical_plan: &LogicalPlan,
+        plan: &SubmitPlan,
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
         let session_state = ctx.state();
         let session_config = session_state.config();
-        let mut graph = if session_config.ballista_adaptive_query_planner_enabled() {
-            debug!("Using adaptive query planner (AQE) for job planning");
-            warn!(
-                "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
-            );
-            Box::new(
-                AdaptiveExecutionGraph::try_new(
+
+        let mut graph = match plan {
+            SubmitPlan::Logical(logical_plan) => {
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    debug!("Using adaptive query planner (AQE) for job planning");
+                    warn!(
+                        "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
+                    );
+                    Box::new(
+                        AdaptiveExecutionGraph::try_new(
+                            &self.scheduler_id,
+                            job_id,
+                            job_name,
+                            &ctx,
+                            logical_plan,
+                            queued_at,
+                        )
+                        .await?,
+                    ) as ExecutionGraphBox
+                } else {
+                    debug!("Using static query planner for job planning");
+                    let session_config = Arc::new(ctx.copied_config());
+
+                    let physical_plan =
+                        ctx.state().create_physical_plan(logical_plan).await?;
+                    let physical_plan =
+                        handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
+                            .await?;
+
+                    Box::new(StaticExecutionGraph::new(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx.session_id(),
+                        physical_plan,
+                        queued_at,
+                        session_config,
+                        &mut planner,
+                        Some(logical_plan.display_indent().to_string()),
+                    )?) as ExecutionGraphBox
+                }
+            }
+            SubmitPlan::Physical(physical_plan) => {
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    return Err(BallistaError::NotImplemented(
+                        "Adaptive query planning (AQE) does not support jobs submitted as an already-built physical plan; disable AQE for this session or submit a logical plan instead.".to_string(),
+                    ));
+                }
+                debug!("Using static query planner for physical-plan job submission");
+                let session_config = Arc::new(ctx.copied_config());
+
+                Box::new(StaticExecutionGraph::new(
                     &self.scheduler_id,
                     job_id,
                     job_name,
-                    &ctx,
-                    logical_plan,
+                    &ctx.session_id(),
+                    physical_plan.clone(),
                     queued_at,
-                )
-                .await?,
-            ) as ExecutionGraphBox
-        } else {
-            debug!("Using static query planner for job planning");
-            let session_config = Arc::new(ctx.copied_config());
-
-            let plan = ctx.state().create_physical_plan(logical_plan).await?;
-            let plan = handle_explain_plan(job_id, &ctx, logical_plan, plan).await?;
-
-            Box::new(StaticExecutionGraph::new(
-                &self.scheduler_id,
-                job_id,
-                job_name,
-                &ctx.session_id(),
-                plan,
-                queued_at,
-                session_config,
-                &mut planner,
-                Some(logical_plan.display_indent().to_string()),
-            )?) as ExecutionGraphBox
+                    session_config,
+                    &mut planner,
+                    None,
+                )?) as ExecutionGraphBox
+            }
         };
         let string_plan =
             datafusion::physical_plan::displayable(graph.physical_plan().as_ref())
