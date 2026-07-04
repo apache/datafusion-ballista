@@ -219,6 +219,18 @@ pub trait ExecutionGraph: Debug {
     /// fail job with error message
     fn fail_job(&mut self, error: String);
 
+    /// Abort a running job: fail it, transition every running stage to Failed,
+    /// and return the in-flight tasks that should be cancelled. Used for both the
+    /// failure and cancellation teardown paths.
+    fn abort_running(&mut self, error: String) -> Vec<RunningTaskInfo> {
+        let running_tasks = self.running_tasks();
+        self.fail_job(error.clone());
+        for stage_id in self.running_stages() {
+            self.fail_stage(stage_id, error.clone());
+        }
+        running_tasks
+    }
+
     /// Marks the job as successfully completed.
     ///
     /// This should only be called after all stages have completed successfully.
@@ -1761,10 +1773,11 @@ mod test {
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
-        TaskKilled, failed_task, job_status,
+        TaskKilled, failed_task, job_status, task_status,
     };
 
     use crate::state::execution_graph::ExecutionGraph;
+    use crate::state::execution_stage::ExecutionStage;
     use crate::test_utils::{
         mock_completed_task, mock_executor, mock_failed_task,
         revive_graph_and_complete_next_stage,
@@ -2151,6 +2164,72 @@ mod test {
         ));
         assert!(failure_reason.contains("IOError"));
         assert!(!agg_graph.is_successful());
+
+        Ok(())
+    }
+
+    // Aborting a running job (failure or cancellation) must transition every
+    // running stage to Failed and return its in-flight tasks for cancellation.
+    // `abort_running` is the shared teardown invoked by `abort_job`.
+    #[tokio::test]
+    async fn test_abort_running_cancels_stages_and_returns_inflight_tasks() -> Result<()>
+    {
+        let executor = mock_executor("executor-id1".to_string());
+        let mut graph = test_join_plan(2).await;
+
+        // Call revive to move the two leaf Resolved stages to Running
+        graph.revive();
+        assert!(
+            graph.running_stages().len() >= 2,
+            "expected two concurrently running leaf stages, found {:?}",
+            graph.running_stages()
+        );
+
+        // Dispatch a task so there is an in-flight task to cancel
+        let _task = graph.pop_next_task(&executor.id)?.unwrap();
+
+        // Aborting cancels every running stage and returns its in-flight tasks
+        let cancelled = graph.abort_running("job aborted".to_string());
+
+        assert!(
+            !cancelled.is_empty(),
+            "abort_running must return the in-flight tasks to cancel"
+        );
+        assert!(
+            graph.running_stages().is_empty(),
+            "every running stage must be cancelled, found {:?}",
+            graph.running_stages()
+        );
+        assert!(
+            matches!(
+                graph.status(),
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "the job must be Failed after abort"
+        );
+
+        // In-flight tasks of the cancelled stage are recorded as Failed(TaskKilled)
+        let has_killed_task = graph.stages.values().any(|stage| match stage {
+            ExecutionStage::Failed(failed) => {
+                failed.task_infos.iter().flatten().any(|info| {
+                    matches!(
+                        &info.task_status,
+                        task_status::Status::Failed(FailedTask {
+                            failed_reason: Some(failed_task::FailedReason::TaskKilled(_)),
+                            ..
+                        })
+                    )
+                })
+            }
+            _ => false,
+        });
+        assert!(
+            has_killed_task,
+            "in-flight tasks must be recorded as Failed(TaskKilled) after abort"
+        );
 
         Ok(())
     }
