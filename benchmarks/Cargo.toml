@@ -32,7 +32,9 @@ default = ["mimalloc"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "53.0.0" }
-ballista-core = { path = "../ballista/core", version = "53.0.0" }
+ballista-core = { path = "../ballista/core", version = "53.0.0", features = [
+    "build-binary",
+] }
 clap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }

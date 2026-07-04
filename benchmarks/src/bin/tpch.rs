@@ -19,6 +19,9 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
+use ballista_core::object_store::{
+    session_config_with_s3_support, session_state_with_s3_support,
+};
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -92,9 +95,11 @@ struct BallistaBenchmarkOpt {
     #[structopt(short = "s", long = "batch-size", default_value = "8192")]
     batch_size: usize,
 
-    /// Path to data files
-    #[structopt(parse(from_os_str), required = true, short = "p", long = "path")]
-    path: PathBuf,
+    /// Path to data files. May be a local path or an object-store URL such as
+    /// `s3://bucket/prefix` (credentials/endpoint via AWS_* env vars or
+    /// `-c s3.*` config overrides).
+    #[structopt(required = true, short = "p", long = "path")]
+    path: String,
 
     /// File format: `csv` or `parquet`
     #[structopt(short = "f", long = "format", default_value = "csv")]
@@ -423,7 +428,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         let ctx = SessionContext::new_with_config(cfg);
         register_datafusion_tables(
             &ctx,
-            opt.path.to_str().unwrap(),
+            opt.path.as_str(),
             opt.file_format.as_str(),
             opt.partitions,
         )
@@ -439,7 +444,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
 
-        let mut config = SessionConfig::new_with_ballista()
+        let mut config = session_config_with_s3_support()
             .with_target_partitions(opt.partitions)
             .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
             .with_batch_size(opt.batch_size)
@@ -459,14 +464,11 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             }
         }
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .build();
+        let state = session_state_with_s3_support(config)?;
         let ctx = SessionContext::remote_with_state(&address, state).await?;
 
         // register tables with Ballista context
-        let path = opt.path.to_str().unwrap();
+        let path = opt.path.as_str();
         let file_format = opt.file_format.as_str();
 
         register_tables(path, file_format, &ctx, opt.debug).await?;
@@ -781,6 +783,14 @@ async fn register_tables(
 }
 
 fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
+    // Object-store URLs (e.g. `s3://bucket/prefix`) cannot be probed with the
+    // local filesystem, so register the per-table directory under the base URL
+    // directly. The trailing slash marks it as a directory so the listing table
+    // enumerates the Parquet files inside (e.g. `s3://bucket/prefix/lineitem/`).
+    if path.contains("://") {
+        return Ok(format!("{path}/{table}/"));
+    }
+
     let path1 = format!("{path}/{table}.{ext}");
     let path2 = format!("{path}/{table}");
     if Path::new(&path1).exists() {
