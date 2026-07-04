@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ballista Development &#8212; Apache DataFusion Ballista  documentation</title>
+    <title>Upgrade Guides &#8212; Apache DataFusion Ballista  documentation</title>
   
   
   
@@ -42,12 +42,12 @@
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'contributors-guide/development';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'upgrading/54.0.0';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Communication" href="../community/communication.html" />
-    <link rel="prev" title="Ballista Code Organization" href="code-organization.html" />
+    <link rel="next" title="Ballista Architecture" href="../contributors-guide/architecture.html" />
+    <link rel="prev" title="Upgrade Guides" href="index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -290,17 +290,17 @@
 </details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Upgrade Guides</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">Ballista 54.0.0</a></li>
 </ul>
 </details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="architecture.html">Ballista Architecture</a></li>
-<li class="toctree-l1"><a class="reference internal" href="code-organization.html">Ballista Code Organization</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Ballista Development</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/development.html">Ballista Development</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
@@ -350,7 +350,10 @@
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Ballista Development</span></li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Upgrade Guides</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Upgrade Guides</span></li>
   </ul>
 </nav>
 </div>
@@ -385,136 +388,112 @@
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="ballista-development">
-<h1>Ballista Development<a class="headerlink" href="#ballista-development" title="Link to this heading">#</a></h1>
-<p>We welcome participation from everyone and encourage you to join us, ask
-questions, and get involved.</p>
-<p>All participation in the Apache DataFusion Ballista project is governed by the
-Apache Software Foundation’s <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">code of
-conduct</a>.</p>
-<section id="development-environment">
-<h2>Development Environment<a class="headerlink" href="#development-environment" title="Link to this heading">#</a></h2>
-<p>The easiest way to get started if you are using VSCode or IntelliJ IDEA is to open the provided <a class="reference external" href="https://containers.dev/overview">Dev Container</a>
-which will install all the required dependencies including Rust, Docker, Node.js and Yarn. A Dev Container is a
-development environment that runs in a Docker container. It is configured with all the required dependencies to
-build and test the project. It also includes VS Code and the Rust and Node.js extensions. Other supporting tools
-that use Dev Containers can be seen <a class="reference external" href="https://containers.dev/supporting">here</a></p>
-<p>To use the Dev Container, open the project in VS Code and then click the “Reopen in Container” button in the
-bottom right corner of the IDE.</p>
-<p>If you are not using the Dev Container or VScode, you will need to install these dependencies yourself.</p>
-<ul class="simple">
-<li><p><a class="reference external" href="https://www.rust-lang.org/tools/install">Rust</a></p></li>
-<li><p><a class="reference external" href="https://protobuf.dev/downloads/">Protobuf Compiler</a> is required to build the project.</p></li>
-<li><p><a class="reference external" href="https://nodejs.org/en/download/">Node.js</a> is required to build the project.</p></li>
-<li><p><a class="reference external" href="https://classic.yarnpkg.com/en/docs/install">Yarn</a> is required to build the UI.</p></li>
-<li><p><a class="reference external" href="https://docs.docker.com/get-docker/">Docker</a> is required to run the integration tests.</p></li>
-</ul>
+<section id="upgrade-guides">
+<h1>Upgrade Guides<a class="headerlink" href="#upgrade-guides" title="Link to this heading">#</a></h1>
+<section id="ballista-54-0-0">
+<h2>Ballista 54.0.0<a class="headerlink" href="#ballista-54-0-0" title="Link to this heading">#</a></h2>
+<p><strong>Note:</strong> Ballista <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code> has not been released yet. The information provided
+in this section pertains to features and changes that have already been merged
+to the main branch and are awaiting release in this version.</p>
+<section id="for-library-and-embedding-users">
+<h3>For library and embedding users<a class="headerlink" href="#for-library-and-embedding-users" title="Link to this heading">#</a></h3>
+<section id="upgrade-to-datafusion-54">
+<h4>Upgrade to DataFusion 54<a class="headerlink" href="#upgrade-to-datafusion-54" title="Link to this heading">#</a></h4>
+<p>Ballista <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code> upgrades its DataFusion dependency to <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code>. Code built on
+<code class="docutils literal notranslate"><span class="pre">ballista-core</span></code> / DataFusion APIs must move with it. See DataFusion’s own
+<a class="reference external" href="https://datafusion.apache.org/library-user-guide/upgrading/54.0.0.html">Upgrade Guide for 54.0.0</a>
+for the DataFusion-side API changes.</p>
 </section>
-<section id="build-the-project">
-<h2>Build the project<a class="headerlink" href="#build-the-project" title="Link to this heading">#</a></h2>
-<p>From the root of the project, build release binaries.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>build<span class="w"> </span>--release
-</pre></div>
-</div>
-</section>
-<section id="testing-the-project">
-<h2>Testing the project<a class="headerlink" href="#testing-the-project" title="Link to this heading">#</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span><span class="nb">test</span>
+<section id="job-id-is-now-a-newtype">
+<h4><code class="docutils literal notranslate"><span class="pre">job_id</span></code> is now a newtype<a class="headerlink" href="#job-id-is-now-a-newtype" title="Link to this heading">#</a></h4>
+<p>Scheduler job identifiers are no longer bare <code class="docutils literal notranslate"><span class="pre">String</span></code>s. <code class="docutils literal notranslate"><span class="pre">ballista-core</span></code> now
+exports a transparent <code class="docutils literal notranslate"><span class="pre">JobId</span></code> newtype (<code class="docutils literal notranslate"><span class="pre">ballista_core::JobId</span></code>) so a job id can
+no longer be confused with another string identifier at the type level. Public
+signatures that previously carried a <code class="docutils literal notranslate"><span class="pre">String</span></code>/<code class="docutils literal notranslate"><span class="pre">&amp;str</span></code> job id now carry a <code class="docutils literal notranslate"><span class="pre">JobId</span></code>
+/ <code class="docutils literal notranslate"><span class="pre">&amp;JobId</span></code> — for example <code class="docutils literal notranslate"><span class="pre">DistributedQueryExec::job_id()</span></code> now returns
+<code class="docutils literal notranslate"><span class="pre">Option&lt;JobId&gt;</span></code> instead of <code class="docutils literal notranslate"><span class="pre">Option&lt;String&gt;</span></code>. Construct one with
+<code class="docutils literal notranslate"><span class="pre">JobId::new(...)</span></code> or <code class="docutils literal notranslate"><span class="pre">.into()</span></code>, and recover the inner string with <code class="docutils literal notranslate"><span class="pre">.as_str()</span></code>
+or <code class="docutils literal notranslate"><span class="pre">.into_inner()</span></code>.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// before</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">query_exec</span><span class="p">.</span><span class="n">job_id</span><span class="p">();</span>
+
+<span class="c1">// after</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista_core</span><span class="p">::</span><span class="n">JobId</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">JobId</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">query_exec</span><span class="p">.</span><span class="n">job_id</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">id_str</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">id</span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">id</span><span class="o">|</span><span class="w"> </span><span class="n">id</span><span class="p">.</span><span class="n">into_inner</span><span class="p">());</span>
 </pre></div>
 </div>
 </section>
-<section id="running-the-examples">
-<h2>Running the examples<a class="headerlink" href="#running-the-examples" title="Link to this heading">#</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>examples
-cargo<span class="w"> </span>run<span class="w"> </span>--example<span class="w"> </span>standalone_sql<span class="w"> </span>--features<span class="o">=</span>ballista/standalone
+</section>
+<section id="for-cluster-operators">
+<h3>For cluster operators<a class="headerlink" href="#for-cluster-operators" title="Link to this heading">#</a></h3>
+<section id="cors-origins-and-methods-are-configured-via-cli-flags">
+<h4>CORS origins and methods are configured via CLI flags<a class="headerlink" href="#cors-origins-and-methods-are-configured-via-cli-flags" title="Link to this heading">#</a></h4>
+<p>The scheduler REST API no longer reads CORS configuration from environment
+variables. The <code class="docutils literal notranslate"><span class="pre">BALLISTA_CORS_ALLOWED_ORIGINS</span></code> and
+<code class="docutils literal notranslate"><span class="pre">BALLISTA_CORS_ALLOWED_METHODS</span></code> environment variables are removed and replaced
+by the <code class="docutils literal notranslate"><span class="pre">--cors-allowed-origins</span></code> and <code class="docutils literal notranslate"><span class="pre">--cors-allowed-methods</span></code> scheduler CLI
+flags (each a comma-separated list; <code class="docutils literal notranslate"><span class="pre">*</span></code> allows any). If you set these
+environment variables, move the values to the flags — otherwise the scheduler
+falls back to its defaults (origins <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> and
+<code class="docutils literal notranslate"><span class="pre">https://nightlies.apache.org</span></code>; methods <code class="docutils literal notranslate"><span class="pre">GET</span></code>, <code class="docutils literal notranslate"><span class="pre">PATCH</span></code>, <code class="docutils literal notranslate"><span class="pre">OPTIONS</span></code>).</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># before (environment variables)</span>
+<span class="n">BALLISTA_CORS_ALLOWED_ORIGINS</span><span class="o">=</span><span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">example</span><span class="o">.</span><span class="n">com</span> \
+<span class="n">BALLISTA_CORS_ALLOWED_METHODS</span><span class="o">=</span><span class="n">GET</span><span class="p">,</span><span class="n">PATCH</span> \
+  <span class="n">ballista</span><span class="o">-</span><span class="n">scheduler</span>
+
+<span class="c1"># after (scheduler CLI flags)</span>
+<span class="n">ballista</span><span class="o">-</span><span class="n">scheduler</span> \
+  <span class="o">--</span><span class="n">cors</span><span class="o">-</span><span class="n">allowed</span><span class="o">-</span><span class="n">origins</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">example</span><span class="o">.</span><span class="n">com</span> \
+  <span class="o">--</span><span class="n">cors</span><span class="o">-</span><span class="n">allowed</span><span class="o">-</span><span class="n">methods</span> <span class="n">GET</span><span class="p">,</span><span class="n">PATCH</span>
 </pre></div>
 </div>
 </section>
-<section id="building-the-python-client-from-source">
-<h2>Building the Python Client from Source<a class="headerlink" href="#building-the-python-client-from-source" title="Link to this heading">#</a></h2>
-<p>The Python client (<code class="docutils literal notranslate"><span class="pre">ballista</span></code> on PyPI) lives in the <code class="docutils literal notranslate"><span class="pre">python/</span></code> directory and is versioned and released
-independently from the main Ballista project, so it is intentionally not part of the default Cargo
-workspace. Building it from source uses <a class="reference external" href="https://www.maturin.rs/">maturin</a> to compile the Rust
-extension module and install it into a Python virtual environment.</p>
-<section id="prerequisites">
-<h3>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p>Python 3.10 or newer</p></li>
-<li><p>The Rust toolchain (see <a class="reference internal" href="#development-environment"><span class="xref myst">Development Environment</span></a>)</p></li>
-<li><p><a class="reference external" href="https://protobuf.dev/downloads/"><code class="docutils literal notranslate"><span class="pre">protoc</span></code></a> on your <code class="docutils literal notranslate"><span class="pre">PATH</span></code></p></li>
-</ul>
-<p>All commands in this section are run from the <code class="docutils literal notranslate"><span class="pre">python/</span></code> directory:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>python
-</pre></div>
-</div>
 </section>
-<section id="create-a-virtual-environment">
-<h3>Create a virtual environment<a class="headerlink" href="#create-a-virtual-environment" title="Link to this heading">#</a></h3>
-<p>Using <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv
-<span class="nb">source</span><span class="w"> </span>.venv/bin/activate
-pip3<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
-pip3<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt
-</pre></div>
-</div>
-<p>The <code class="docutils literal notranslate"><span class="pre">pip</span></code> upgrade is required because <code class="docutils literal notranslate"><span class="pre">maturin</span> <span class="pre">develop</span></code> invokes <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">--group</span></code>, which
-needs pip 25.1 or newer. The pip shipped with <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">venv</span></code> is often older than that.</p>
-<p>Using <a class="reference external" href="https://docs.astral.sh/uv/"><code class="docutils literal notranslate"><span class="pre">uv</span></code></a>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>sync<span class="w"> </span>--dev<span class="w"> </span>--no-install-package<span class="w"> </span>ballista
-</pre></div>
-</div>
+<section id="planner-and-execution-behavior-changes">
+<h3>Planner and execution behavior changes<a class="headerlink" href="#planner-and-execution-behavior-changes" title="Link to this heading">#</a></h3>
+<section id="the-static-planner-now-broadcasts-small-join-build-sides">
+<h4>The static planner now broadcasts small join build sides<a class="headerlink" href="#the-static-planner-now-broadcasts-small-join-build-sides" title="Link to this heading">#</a></h4>
+<p>Ballista previously disabled <code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code> broadcast joins entirely (both
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.hash_join_single_partition_threshold</span></code> and
+<code class="docutils literal notranslate"><span class="pre">hash_join_single_partition_threshold_rows</span></code> defaulted to <code class="docutils literal notranslate"><span class="pre">0</span></code>). In <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code>
+those defaults are raised to <code class="docutils literal notranslate"><span class="pre">10</span> <span class="pre">MB</span></code> (<code class="docutils literal notranslate"><span class="pre">10485760</span></code>) and <code class="docutils literal notranslate"><span class="pre">1000000</span></code> rows, and the
+static <code class="docutils literal notranslate"><span class="pre">DefaultDistributedPlanner</span></code> now converts a <code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> whose
+smaller side fits under <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code>
+(default <code class="docutils literal notranslate"><span class="pre">10</span> <span class="pre">MB</span></code>) into a broadcast <code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code> hash join. This conversion is
+governed by the new <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_sort_merge_join_enabled</span></code>
+config key, which defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code>.</p>
+<p>The consequence is that join plans — and therefore performance and shuffle
+behavior — change on upgrade <strong>even with AQE off</strong>. Broadcast is applied only
+to join types that are safe to broadcast (inner and right-side variants); other
+join types remain repartitioned. To restore the previous behavior, set
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_sort_merge_join_enabled</span> <span class="pre">=</span> <span class="pre">false</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span> <span class="pre">=</span> <span class="pre">0</span></code>,
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.hash_join_single_partition_threshold</span> <span class="pre">=</span> <span class="pre">0</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">hash_join_single_partition_threshold_rows</span> <span class="pre">=</span> <span class="pre">0</span></code>.</p>
 </section>
-<section id="build-and-install">
-<h3>Build and install<a class="headerlink" href="#build-and-install" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">maturin</span> <span class="pre">develop</span></code> compiles the Rust extension and installs it into the active virtual environment
-as an editable package, so subsequent Python imports pick up your local changes.</p>
-<p>Using <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>maturin<span class="w"> </span>develop<span class="w">            </span><span class="c1"># debug build</span>
-maturin<span class="w"> </span>develop<span class="w"> </span>--release<span class="w">  </span><span class="c1"># release build (slower to compile, faster at runtime)</span>
-</pre></div>
-</div>
-<p>Using <code class="docutils literal notranslate"><span class="pre">uv</span></code>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--no-project<span class="w"> </span>maturin<span class="w"> </span>develop<span class="w"> </span>--uv
-</pre></div>
-</div>
-<p>To produce a wheel without installing it (for example, to share or publish):</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--no-project<span class="w"> </span>maturin<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>--strip
-</pre></div>
-</div>
+<section id="serialized-empty-projections">
+<h4>Serialized empty projections<a class="headerlink" href="#serialized-empty-projections" title="Link to this heading">#</a></h4>
+<p>The plan serialization for a filter that projects to zero columns changed. In
+<code class="docutils literal notranslate"><span class="pre">53.x</span></code> an empty projection (<code class="docutils literal notranslate"><span class="pre">Some([])</span></code>) and “all columns” (<code class="docutils literal notranslate"><span class="pre">None</span></code>) both encoded
+to an empty list and decoded back to <code class="docutils literal notranslate"><span class="pre">None</span></code>, shifting downstream column indices;
+the scheduler now rewrites such filters into a serde-safe form before
+serialization. Together with the DataFusion 54 protobuf bump, this means a
+<code class="docutils literal notranslate"><span class="pre">54.0.0</span></code> scheduler and a <code class="docutils literal notranslate"><span class="pre">53.x</span></code> executor (or vice versa) cannot reliably
+exchange serialized plans. Upgrade schedulers and executors together — do not
+run a mixed-version cluster across this upgrade.</p>
 </section>
-<section id="run-the-tests">
-<h3>Run the tests<a class="headerlink" href="#run-the-tests" title="Link to this heading">#</a></h3>
-<p>Using <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>pytest
-</pre></div>
-</div>
-<p>Using <code class="docutils literal notranslate"><span class="pre">uv</span></code>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--no-project<span class="w"> </span>pytest
-</pre></div>
-</div>
-<p>For more detail on the underlying workflow, including tips for improving build speed, see the
-<a class="reference external" href="https://datafusion.apache.org/python/contributor-guide/introduction.html">DataFusion Python contributor guide</a>.</p>
+<section id="aqe-join-behavior-opt-in">
+<h4>AQE join behavior (opt-in)<a class="headerlink" href="#aqe-join-behavior-opt-in" title="Link to this heading">#</a></h4>
+<p>If you have enabled <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span> <span class="pre">=</span> <span class="pre">true</span></code>, adaptive join
+selection now delays the join decision and can promote a small build side to a
+broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) hash join at runtime, and empty-join inputs are
+short-circuited by the propagate-empty rule. This changes the runtime join
+plans (and their results’ timing/shape) for adaptive clusters; it is gated by
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive_join.enabled</span></code> (default <code class="docutils literal notranslate"><span class="pre">true</span></code>). Clusters using the
+default (AQE off) are unaffected.</p>
 </section>
 </section>
-<section id="benchmarking">
-<h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
-<p>For performance testing and benchmarking with TPC-H and other datasets, see the <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md">benchmarks README</a>.</p>
-<p>This includes instructions for:</p>
-<ul class="simple">
-<li><p>Generating TPC-H test data</p></li>
-<li><p>Running benchmarks against DataFusion and Ballista</p></li>
-<li><p>Comparing performance with Apache Spark</p></li>
-<li><p>Running load tests</p></li>
-</ul>
-</section>
-<section id="upgrade-notes">
-<h2>Upgrade notes<a class="headerlink" href="#upgrade-notes" title="Link to this heading">#</a></h2>
-<p>When a change breaks a public API, renames or removes a configuration key or CLI
-flag, changes a default that alters query plans or results, or changes the
-wire/serialization format, add an entry describing the change and the required
-action to the current unreleased page under
-<a class="reference internal" href="../upgrading/index.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/source/upgrading/</span></code></span></a>. This keeps the upgrade guide
-complete for the next release.</p>
 </section>
 </section>
 
@@ -529,20 +508,20 @@ complete for the next release.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="code-organization.html"
+       href="index.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Ballista Code Organization</p>
+        <p class="prev-next-title">Upgrade Guides</p>
       </div>
     </a>
     <a class="right-next"
-       href="../community/communication.html"
+       href="../contributors-guide/architecture.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Communication</p>
+        <p class="prev-next-title">Ballista Architecture</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -565,19 +544,24 @@ complete for the next release.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#development-environment">Development Environment</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-the-project">Build the project</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-the-project">Testing the project</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-examples">Running the examples</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-the-python-client-from-source">Building the Python Client from Source</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#create-a-virtual-environment">Create a virtual environment</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#build-and-install">Build and install</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-tests">Run the tests</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-54-0-0">Ballista 54.0.0</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#for-library-and-embedding-users">For library and embedding users</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrade-to-datafusion-54">Upgrade to DataFusion 54</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#job-id-is-now-a-newtype"><code class="docutils literal notranslate"><span class="pre">job_id</span></code> is now a newtype</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrade-notes">Upgrade notes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#for-cluster-operators">For cluster operators</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#cors-origins-and-methods-are-configured-via-cli-flags">CORS origins and methods are configured via CLI flags</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#planner-and-execution-behavior-changes">Planner and execution behavior changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-static-planner-now-broadcasts-small-join-build-sides">The static planner now broadcasts small join build sides</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#serialized-empty-projections">Serialized empty projections</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#aqe-join-behavior-opt-in">AQE join behavior (opt-in)</a></li>
+</ul>
+</li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
@@ -585,7 +569,7 @@ complete for the next release.</p>
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/contributors-guide/development.md">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/upgrading/54.0.0.md">
       <i class="fa-solid fa-pencil"></i>
       
       
@@ -600,7 +584,7 @@ complete for the next release.</p>
   <div class="sidebar-secondary-item">
 
   <div class="tocsection sourcelink">
-    <a href="../_sources/contributors-guide/development.md.txt">
+    <a href="../_sources/upgrading/54.0.0.md.txt">
       <i class="fa-solid fa-file-lines"></i> Show Source
     </a>
   </div>

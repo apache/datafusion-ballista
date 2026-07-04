@@ -156,3 +156,12 @@ This includes instructions for:
 - Running benchmarks against DataFusion and Ballista
 - Comparing performance with Apache Spark
 - Running load tests
+
+## Upgrade notes
+
+When a change breaks a public API, renames or removes a configuration key or CLI
+flag, changes a default that alters query plans or results, or changes the
+wire/serialization format, add an entry describing the change and the required
+action to the current unreleased page under
+[`docs/source/upgrading/`](../upgrading/index.rst). This keeps the upgrade guide
+complete for the next release.
