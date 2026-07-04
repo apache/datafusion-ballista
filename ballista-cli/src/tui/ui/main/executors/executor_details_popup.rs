@@ -17,10 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::executors::Executor;
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
-use ratatui::prelude::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.executor_details_popup else {
@@ -28,7 +28,7 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(35, 55, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let executor = &popup.executor;
     let title = " Executor details ";
@@ -37,9 +37,8 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().bold())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan))
+        .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);
 
     let paragraph = Paragraph::new(lines)
@@ -50,7 +49,7 @@ pub(crate) fn render_executor_details_popup(f: &mut Frame, app: &App) {
 }
 
 fn build_lines<'a>(app: &'a App, executor: &'a Executor) -> Vec<Line<'a>> {
-    let label_style = Style::default().fg(Color::Yellow);
+    let label_style = app.theme.detail_label;
 
     let mut lines = vec![
         Line::from(vec![

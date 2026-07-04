@@ -20,14 +20,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use async_trait::async_trait;
 use log::{error, info};
 use tokio::sync::mpsc;
 
 use crate::error::{BallistaError, Result};
 
 /// Trait defining actions to be performed in response to events in an event loop.
-#[async_trait]
+#[async_trait::async_trait]
 pub trait EventAction<E>: Send + Sync {
     /// Called when the event loop starts.
     fn on_start(&self);

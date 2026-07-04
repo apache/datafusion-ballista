@@ -18,6 +18,7 @@
 use crate::planner::create_shuffle_writer_with_config;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptiveStageInfo;
+use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleReaderExec;
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
@@ -44,7 +45,7 @@ impl BallistaAdapter {
         &mut self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
             let schema = exchange.schema().clone();
             let partitions = exchange.shuffle_partitions().ok_or_else(|| {
                 DataFusionError::Execution(
@@ -115,10 +116,10 @@ impl BallistaAdapter {
     /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
     pub fn adapt_to_ballista(
         plan: Arc<dyn ExecutionPlan>,
-        job_id: &str,
+        job_id: &JobId,
         config: &ConfigOptions,
     ) -> datafusion::error::Result<AdaptiveStageInfo> {
-        if let Some(root) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        if let Some(root) = plan.downcast_ref::<ExchangeExec>() {
             let mut adapter = BallistaAdapter::default();
             let plan = root
                 .input()
@@ -145,8 +146,7 @@ impl BallistaAdapter {
                 plan: writer,
                 inputs: adapter.inputs,
             })
-        } else if let Some(root) = plan.as_any().downcast_ref::<AdaptiveDatafusionExec>()
-        {
+        } else if let Some(root) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
             let mut adapter = BallistaAdapter::default();
             let plan = root
                 .input()

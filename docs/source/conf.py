@@ -85,7 +85,13 @@ autosummary_generate = True
 html_theme = 'pydata_sphinx_theme'
 
 html_theme_options = {
+    "logo": {
+        "image_light": "_static/images/ballista_black.svg",
+        "image_dark": "_static/images/ballista_white.svg",
+    },
     "use_edit_page_button": True,
+    "navbar_center": [],
+    "navbar_end": ["theme-switcher"],
 }
 
 html_context = {

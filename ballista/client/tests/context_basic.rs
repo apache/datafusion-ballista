@@ -436,8 +436,6 @@ mod basic {
         ];
         assert_result_eq(expected, &res);
     }
-    // enable when upgrading Datafusion to > 42
-    #[ignore]
     #[tokio::test]
     async fn test_aggregate_approx_percentile() {
         let context = create_test_context().await;
@@ -451,7 +449,7 @@ mod basic {
             "+-------------------------------------------------------------------+",
             "| approx_percentile_cont_with_weight(test.id,Int64(2),Float64(0.5)) |",
             "+-------------------------------------------------------------------+",
-            "| 1                                                                 |",
+            "| 3.5                                                               |",
             "+-------------------------------------------------------------------+",
         ];
         assert_result_eq(expected, &res);

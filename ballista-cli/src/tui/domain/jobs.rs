@@ -19,17 +19,37 @@ pub mod stages;
 
 use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Job {
     pub job_id: String,
     pub job_name: String,
-    pub status: String, // Running, Completed, Failed, Canceled
+    pub status: String,     // Running, Completed, Failed, Canceled
+    pub job_status: String, // human-readable status/failure detail, e.g. "Failed: <reason>"
     pub start_time: i64,
     pub end_time: i64,
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
+}
+
+impl Job {
+    pub fn is_queued(&self) -> bool {
+        self.status == "Queued"
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.status == "Running"
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.status == "Completed"
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.status == "Failed"
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,13 +239,120 @@ pub enum CancelJobResult {
     Failure { job_id: String, error: String },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PhysicalFormat {
+    Default,
+    Tree,
+}
+
 #[derive(Clone, Debug)]
 pub struct JobDetails {
     pub job_id: String,
     pub logical_plan: Option<String>,
     pub physical_plan: Option<String>,
+    pub physical_plan_tree: Option<String>,
     pub stage_plan: Option<String>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobConfigEntry {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct JobConfigPopup {
+    pub job_id: String,
+    pub entries: Vec<JobConfigEntry>,
+    pub search_term: String,
+    pub table_state: TableState,
+    pub scrollbar_state: ScrollbarState,
+}
+
+impl JobConfigPopup {
+    pub fn new(job_id: String, entries: Vec<JobConfigEntry>) -> Self {
+        let has_entries = !entries.is_empty();
+        let len = entries.len();
+        Self {
+            job_id,
+            entries,
+            search_term: String::new(),
+            table_state: TableState::default().with_selected(has_entries.then_some(0)),
+            scrollbar_state: ScrollbarState::new(len).position(0),
+        }
+    }
+
+    pub fn filtered_entries(&self) -> Vec<&JobConfigEntry> {
+        let search_term = self.search_term.to_lowercase();
+        if search_term.is_empty() {
+            self.entries.iter().collect()
+        } else {
+            self.entries
+                .iter()
+                .filter(|entry| {
+                    entry.key.to_lowercase().contains(&search_term)
+                        || entry.value.to_lowercase().contains(&search_term)
+                })
+                .collect()
+        }
+    }
+
+    pub fn scroll_down(&mut self) {
+        let len = self.filtered_entries().len();
+        if len == 0 {
+            self.table_state.select(None);
+            return;
+        }
+
+        let next = match self.table_state.selected() {
+            Some(selected) if selected + 1 < len => Some(selected + 1),
+            Some(_) => None,
+            None => Some(0),
+        };
+        self.table_state.select(next);
+        self.scrollbar_state = self.scrollbar_state.position(next.unwrap_or(0));
+    }
+
+    pub fn scroll_up(&mut self) {
+        let len = self.filtered_entries().len();
+        if len == 0 {
+            self.table_state.select(None);
+            return;
+        }
+
+        let next = match self.table_state.selected() {
+            Some(0) => None,
+            Some(selected) => Some(selected - 1),
+            None => Some(len - 1),
+        };
+        self.table_state.select(next);
+        self.scrollbar_state = self.scrollbar_state.position(next.unwrap_or(0));
+    }
+
+    pub fn push_search_char(&mut self, c: char) {
+        self.search_term.push(c);
+        self.reset_selection_for_filter();
+    }
+
+    pub fn pop_search_char(&mut self) {
+        self.search_term.pop();
+        self.reset_selection_for_filter();
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_term.clear();
+        self.reset_selection_for_filter();
+    }
+
+    fn reset_selection_for_filter(&mut self) {
+        let len = self.filtered_entries().len();
+        let selected = if len == 0 { None } else { Some(0) };
+        self.table_state.select(selected);
+        self.scrollbar_state = ScrollbarState::new(len).position(0);
+    }
+}
+
+pub type JobConfigResponse = BTreeMap<String, String>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PlanTab {
@@ -238,6 +365,7 @@ pub(crate) enum PlanTab {
 pub struct JobPlansPopup {
     pub details: JobDetails,
     tab: PlanTab,
+    physical_format: PhysicalFormat,
     vertical_scroll_position: u16,
     horizontal_scroll_position: u16,
 }
@@ -247,6 +375,7 @@ impl JobPlansPopup {
         Self {
             details,
             tab,
+            physical_format: PhysicalFormat::Default,
             vertical_scroll_position: 0,
             horizontal_scroll_position: 0,
         }
@@ -254,6 +383,24 @@ impl JobPlansPopup {
 
     pub fn get_tab(&self) -> &PlanTab {
         &self.tab
+    }
+
+    pub fn get_physical_format(&self) -> &PhysicalFormat {
+        &self.physical_format
+    }
+
+    /// Returns Some(()) if a fetch is needed (tree not cached yet), None if already available.
+    pub fn set_physical_format(&mut self, fmt: PhysicalFormat) -> Option<()> {
+        self.physical_format = fmt;
+        self.vertical_scroll_position = 0;
+        self.horizontal_scroll_position = 0;
+        if self.physical_format == PhysicalFormat::Tree
+            && self.details.physical_plan_tree.is_none()
+        {
+            Some(())
+        } else {
+            None
+        }
     }
 
     pub fn set_tab(&mut self, tab: PlanTab) {
@@ -293,7 +440,8 @@ impl JobPlansPopup {
 mod tests {
     use crate::tui::domain::SortOrder;
     use crate::tui::domain::jobs::{
-        Job, JobDetails, JobPlansPopup, JobsData, PlanTab, SortColumn,
+        Job, JobConfigEntry, JobConfigPopup, JobDetails, JobPlansPopup, JobsData,
+        PlanTab, SortColumn,
     };
 
     #[expect(clippy::too_many_arguments)]
@@ -311,6 +459,7 @@ mod tests {
             job_id: id.to_string(),
             job_name: name.to_string(),
             status: status.to_string(),
+            job_status: status.to_string(),
             start_time,
             end_time,
             num_stages,
@@ -553,6 +702,23 @@ mod tests {
     }
 
     #[test]
+    fn job_status_carries_failure_detail_independent_of_status() {
+        let job = Job {
+            job_id: "j1".to_string(),
+            job_name: "Job One".to_string(),
+            status: "Failed".to_string(),
+            job_status: "Failed: division by zero".to_string(),
+            start_time: 1,
+            end_time: 2,
+            num_stages: 1,
+            completed_stages: 0,
+            percent_complete: 0,
+        };
+        assert_eq!(job.status, "Failed");
+        assert_eq!(job.job_status, "Failed: division by zero");
+    }
+
+    #[test]
     fn selected_job_filters_by_search_term_on_id() {
         let jobs = vec![
             make_job("abc-123", "Job One", "Running", 1, 2, 1, 0, 0),
@@ -696,6 +862,7 @@ mod tests {
     fn make_job_details(id: &str) -> JobDetails {
         JobDetails {
             job_id: id.to_string(),
+            physical_plan_tree: None,
             logical_plan: None,
             physical_plan: None,
             stage_plan: None,
@@ -755,5 +922,59 @@ mod tests {
         popup.set_tab(PlanTab::Physical);
         assert_eq!(popup.vertical_scroll_position, 0);
         assert_eq!(popup.horizontal_scroll_position, 0);
+    }
+
+    #[test]
+    fn job_config_popup_filters_by_key_and_value() {
+        let popup = JobConfigPopup::new(
+            "j1".to_string(),
+            vec![
+                JobConfigEntry {
+                    key: "ballista.job.name".to_string(),
+                    value: "Remote SQL Example".to_string(),
+                },
+                JobConfigEntry {
+                    key: "datafusion.execution.batch_size".to_string(),
+                    value: "8192".to_string(),
+                },
+            ],
+        );
+
+        let mut popup = popup;
+        popup.push_search_char('8');
+        assert_eq!(popup.filtered_entries().len(), 1);
+        assert_eq!(
+            popup.filtered_entries()[0].key,
+            "datafusion.execution.batch_size"
+        );
+
+        popup.clear_search();
+        popup.push_search_char('n');
+        popup.push_search_char('a');
+        popup.push_search_char('m');
+        popup.push_search_char('e');
+        assert_eq!(popup.filtered_entries().len(), 1);
+        assert_eq!(popup.filtered_entries()[0].key, "ballista.job.name");
+    }
+
+    #[test]
+    fn job_config_popup_search_resets_selection() {
+        let mut popup = JobConfigPopup::new(
+            "j1".to_string(),
+            vec![
+                JobConfigEntry {
+                    key: "a".to_string(),
+                    value: "1".to_string(),
+                },
+                JobConfigEntry {
+                    key: "b".to_string(),
+                    value: "2".to_string(),
+                },
+            ],
+        );
+        popup.scroll_down();
+        assert_eq!(popup.table_state.selected(), Some(1));
+        popup.push_search_char('a');
+        assert_eq!(popup.table_state.selected(), Some(0));
     }
 }

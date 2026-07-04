@@ -21,18 +21,17 @@ mod jobs;
 
 use jobs::render_jobs;
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    widgets::Clear,
-};
-
+use crate::tui::ui::components::clear_area::clear_area;
 #[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
     event::{Event, UiData},
 };
 use crate::tui::{app::App, domain::executors::Executor};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+};
 
 #[cfg(not(feature = "web"))]
 pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
@@ -44,7 +43,7 @@ pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiRes
 }
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

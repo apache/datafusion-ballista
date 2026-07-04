@@ -19,6 +19,7 @@
 //! [`datafusion::physical_plan::display`] for examples of how to
 //! format
 
+use ballista_core::JobId;
 use ballista_core::utils::collect_plan_metrics;
 use datafusion::logical_expr::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;
@@ -51,7 +52,7 @@ fn merge_stage_metrics(
 
 /// Prints the physical plan for a completed stage with its aggregated metrics.
 pub fn print_stage_metrics(
-    job_id: &str,
+    job_id: &JobId,
     stage_id: usize,
     plan: &dyn ExecutionPlan,
     stage_metrics: &[MetricsSet],

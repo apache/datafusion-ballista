@@ -128,7 +128,7 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
         .into_optimized_plan()
         .unwrap();
 
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_string()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
     let plan = planner.current_plan();
     // TODO: we could probably push datasource to read single partition
     assert_plan!(plan, @ r"
@@ -137,6 +137,38 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
         ExchangeExec: partitioning=None, plan_id=1, stage_id=pending, stage_resolved=false, broadcast=true
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
         DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
+    Ok(())
+}
+
+// A `CollectLeft` join broadcasts (replicates) the build/left side to every
+// probe task, each of which sees only its slice of the probe/right side. For a
+// LEFT join that emits a null-padded row for every unmatched left row, each
+// task would emit those rows independently, producing duplicate/spurious rows
+// (apache/datafusion-ballista#1055). The resolver must therefore keep an
+// unsafe-to-broadcast join type repartitioned instead of collecting it.
+#[tokio::test]
+async fn test_left_join_not_collected_left() -> datafusion::common::Result<()> {
+    let ctx = make_ctx(true);
+    register_2tables(&ctx);
+
+    let lp = ctx
+        .sql("SELECT t1.id, t2.val FROM t1 LEFT JOIN t2 ON t1.id = t2.id")
+        .await
+        .unwrap()
+        .into_optimized_plan()
+        .unwrap();
+
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let plan = planner.current_plan();
+    assert_plan!(plan, @ r"
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
+      ProjectionExec: expr=[id@0 as id, val@2 as val]
+        DynamicJoinSelectionExec: plan_id=0, join_type=Left, on=[(id@0, id@0)] repartitioned=true
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
     Ok(())
 }
@@ -153,7 +185,7 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
         .into_optimized_plan()
         .unwrap();
 
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_string()).await?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
@@ -214,7 +246,7 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
         .into_optimized_plan()
         .unwrap();
 
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_string()).await?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
@@ -280,7 +312,7 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_string()).await?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -351,7 +383,7 @@ async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_string()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -382,7 +414,7 @@ async fn test_sort_merge_join_three_tables_repartition() -> datafusion::common::
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_string()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"

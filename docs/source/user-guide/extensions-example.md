@@ -347,7 +347,7 @@ transformation is performed using implementing `ExtensionPlanner` trait:
 #[derive(Debug, Clone, Default)]
 pub struct CustomPlannerExtension {}
 
-#[async_trait]
+#[async_trait::async_trait]
 impl ExtensionPlanner for CustomPlannerExtension {
     async fn plan_extension(
         &self,

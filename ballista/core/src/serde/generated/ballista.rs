@@ -958,7 +958,7 @@ pub struct ExecuteQueryParams {
     /// client and scheduler
     #[prost(string, tag = "5")]
     pub operation_id: ::prost::alloc::string::String,
-    #[prost(oneof = "execute_query_params::Query", tags = "1, 6")]
+    #[prost(oneof = "execute_query_params::Query", tags = "1, 6, 7")]
     pub query: ::core::option::Option<execute_query_params::Query>,
 }
 /// Nested message and enum types in `ExecuteQueryParams`.
@@ -969,6 +969,12 @@ pub mod execute_query_params {
         LogicalPlan(::prost::alloc::vec::Vec<u8>),
         #[prost(bytes, tag = "6")]
         SubstraitPlan(::prost::alloc::vec::Vec<u8>),
+        /// An already-built physical plan, serialized with the scheduler's
+        /// physical extension codec. Lets clients bypass logical-plan creation
+        /// on the scheduler, e.g. for plans containing custom operators that
+        /// have no logical-plan representation.
+        #[prost(bytes, tag = "7")]
+        PhysicalPlan(::prost::alloc::vec::Vec<u8>),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

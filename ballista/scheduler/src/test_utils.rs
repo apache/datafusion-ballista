@@ -15,17 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::JobStatusSubscriber;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
+use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::catalog::Session;
-use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-
-use async_trait::async_trait;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -57,7 +54,7 @@ use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
 use crate::cluster::BallistaCluster;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
@@ -80,12 +77,8 @@ const TEST_SCHEDULER_NAME: &str = "localhost:50050";
 #[derive(Debug)]
 pub struct ExplodingTableProvider;
 
-#[async_trait]
+#[async_trait::async_trait]
 impl TableProvider for ExplodingTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::new(Schema::empty())
     }
@@ -346,7 +339,7 @@ impl VirtualExecutor {
 #[derive(Default)]
 pub struct BlackholeTaskLauncher {}
 
-#[async_trait]
+#[async_trait::async_trait]
 impl TaskLauncher for BlackholeTaskLauncher {
     async fn launch_tasks(
         &self,
@@ -501,7 +494,7 @@ impl SchedulerTest {
     }
 
     /// Submits a job and returns its ID.
-    pub async fn submit(&mut self, job_name: &str, plan: &LogicalPlan) -> Result<String> {
+    pub async fn submit(&mut self, job_name: &str, plan: &LogicalPlan) -> Result<JobId> {
         println!("{:?}", self.session_config);
         let ctx = self
             .scheduler
@@ -510,7 +503,10 @@ impl SchedulerTest {
             .create_or_update_session("session_id", &self.session_config)
             .await?;
 
-        let job_id = self.scheduler.submit_job(job_name, ctx, plan, None).await?;
+        let job_id = self
+            .scheduler
+            .submit_job(job_name, ctx, &SubmitPlan::Logical(plan.clone()), None)
+            .await?;
 
         Ok(job_id)
     }
@@ -547,7 +543,7 @@ impl SchedulerTest {
     }
 
     /// Cancels a job by ID.
-    pub async fn cancel(&self, job_id: &str) -> Result<()> {
+    pub async fn cancel(&self, job_id: &JobId) -> Result<()> {
         self.scheduler
             .query_stage_event_loop
             .get_sender()?
@@ -558,7 +554,7 @@ impl SchedulerTest {
     /// Waits for job completion with a timeout in milliseconds.
     pub async fn await_completion_timeout(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         timeout_ms: u64,
     ) -> Result<JobStatus> {
         let mut time = 0;
@@ -597,7 +593,7 @@ impl SchedulerTest {
     }
 
     /// Waits for job completion indefinitely.
-    pub async fn await_completion(&self, job_id: &str) -> Result<JobStatus> {
+    pub async fn await_completion(&self, job_id: &JobId) -> Result<JobStatus> {
         let final_status: Result<JobStatus> = loop {
             let status = self
                 .scheduler
@@ -630,7 +626,7 @@ impl SchedulerTest {
         &mut self,
         job_name: &str,
         plan: &LogicalPlan,
-    ) -> Result<(JobStatus, String)> {
+    ) -> Result<(JobStatus, JobId)> {
         self.run_with_subscriber(job_name, plan, None).await
     }
     /// Returns job status and job_id, with provided subscriber
@@ -639,7 +635,7 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
         subscriber: Option<JobStatusSubscriber>,
-    ) -> Result<(JobStatus, String)> {
+    ) -> Result<(JobStatus, JobId)> {
         let ctx = self
             .scheduler
             .state
@@ -649,7 +645,12 @@ impl SchedulerTest {
 
         let job_id = self
             .scheduler
-            .submit_job(job_name, ctx, plan, subscriber)
+            .submit_job(
+                job_name,
+                ctx,
+                &SubmitPlan::Logical(plan.clone()),
+                subscriber,
+            )
             .await?;
 
         let mut receiver = self.status_receiver.take().unwrap();
@@ -696,23 +697,23 @@ impl SchedulerTest {
 #[derive(Clone)]
 pub enum MetricEvent {
     /// Job submitted event (job_id, queued_at, submitted_at).
-    Submitted(String, u64, u64),
+    Submitted(JobId, u64, u64),
     /// Job completed event (job_id, queued_at, completed_at).
-    Completed(String, u64, u64),
+    Completed(JobId, u64, u64),
     /// Job cancelled event (job_id).
-    Cancelled(String),
+    Cancelled(JobId),
     /// Job failed event (job_id, queued_at, failed_at).
-    Failed(String, u64, u64),
+    Failed(JobId, u64, u64),
 }
 
 impl MetricEvent {
     /// Returns the job ID associated with this event.
-    pub fn job_id(&self) -> &str {
+    pub fn job_id(&self) -> &JobId {
         match self {
-            MetricEvent::Submitted(job, _, _) => job.as_str(),
-            MetricEvent::Completed(job, _, _) => job.as_str(),
-            MetricEvent::Cancelled(job) => job.as_str(),
-            MetricEvent::Failed(job, _, _) => job.as_str(),
+            MetricEvent::Submitted(job, _, _) => job,
+            MetricEvent::Completed(job, _, _) => job,
+            MetricEvent::Cancelled(job) => job,
+            MetricEvent::Failed(job, _, _) => job,
         }
     }
 }
@@ -726,7 +727,7 @@ pub struct TestMetricsCollector {
 
 impl TestMetricsCollector {
     /// Returns all events for the given job ID.
-    pub fn job_events(&self, job_id: &str) -> Vec<MetricEvent> {
+    pub fn job_events(&self, job_id: &JobId) -> Vec<MetricEvent> {
         let guard = self.events.lock();
 
         guard
@@ -743,7 +744,7 @@ impl TestMetricsCollector {
 }
 
 impl SchedulerMetricsCollector for TestMetricsCollector {
-    fn record_submitted(&self, job_id: &str, queued_at: u64, submitted_at: u64) {
+    fn record_submitted(&self, job_id: &JobId, queued_at: u64, submitted_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Submitted(
             job_id.to_owned(),
@@ -752,7 +753,7 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
         ));
     }
 
-    fn record_completed(&self, job_id: &str, queued_at: u64, completed_at: u64) {
+    fn record_completed(&self, job_id: &JobId, queued_at: u64, completed_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Completed(
             job_id.to_owned(),
@@ -761,12 +762,12 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
         ));
     }
 
-    fn record_failed(&self, job_id: &str, queued_at: u64, failed_at: u64) {
+    fn record_failed(&self, job_id: &JobId, queued_at: u64, failed_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Failed(job_id.to_owned(), queued_at, failed_at));
     }
 
-    fn record_cancelled(&self, job_id: &str) {
+    fn record_cancelled(&self, job_id: &JobId) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Cancelled(job_id.to_owned()));
     }
@@ -779,7 +780,7 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
 }
 
 /// Asserts that a submitted event was recorded for the job.
-pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -789,7 +790,7 @@ pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Asserts that no submitted event was recorded for the job.
-pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_no_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -799,7 +800,7 @@ pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector)
 }
 
 /// Asserts that a completed event was recorded for the job.
-pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_completed_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -809,7 +810,7 @@ pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Asserts that a cancelled event was recorded for the job.
-pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_cancelled_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -819,7 +820,7 @@ pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Asserts that a failed event was recorded for the job.
-pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
+pub fn assert_failed_event(job_id: &JobId, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
         .iter()
@@ -875,13 +876,13 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
 
 /// Creates a test execution graph with a simple aggregation plan.
 pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
-    test_aggregation_plan_with_job_id(partition, "job").await
+    test_aggregation_plan_with_job_id(partition, &"job".into()).await
 }
 
 /// Creates a test execution graph with a simple aggregation plan and custom job ID.
 pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
-    job_id: &str,
+    job_id: &JobId,
 ) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -963,7 +964,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
 
     StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1004,7 +1005,7 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
 
     StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1018,7 +1019,7 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
 
 /// Creates a test execution graph with a join operation.
 pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
-    let mut config = SessionConfig::new().with_target_partitions(partition);
+    let mut config = SessionConfig::new_with_ballista().with_target_partitions(partition);
     config
         .options_mut()
         .optimizer
@@ -1065,7 +1066,7 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1108,7 +1109,7 @@ pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1151,7 +1152,7 @@ pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
     let mut planner = DefaultDistributedPlanner::new();
     let graph = StaticExecutionGraph::new(
         "localhost:50050",
-        "job",
+        &"job".into(),
         "",
         "session",
         plan,
@@ -1199,7 +1200,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
     // Complete the task
     protobuf::TaskStatus {
         task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone(),
+        job_id: task.partition.job_id.clone().into(),
         stage_id: task.partition.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
         partition_id: task.partition.partition_id as u32,
@@ -1234,7 +1235,7 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
     // Fail the task
     protobuf::TaskStatus {
         task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone(),
+        job_id: task.partition.job_id.clone().into(),
         stage_id: task.partition.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
         partition_id: task.partition.partition_id as u32,

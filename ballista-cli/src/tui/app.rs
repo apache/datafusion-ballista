@@ -28,9 +28,9 @@ use crate::tui::{
             ExecutorDetailsPopup, ExecutorsData, SortColumn as ExecutorsSortColumn,
         },
         jobs::{
-            CancelJobResult, JobDetails, JobPlansPopup, JobsData, PlanTab,
-            SortColumn as JobsSortColumn,
-            stages::{JobStagesPopup, StagesGraph},
+            CancelJobResult, JobConfigPopup, JobDetails, JobPlansPopup, JobsData,
+            PhysicalFormat, PlanTab, SortColumn as JobsSortColumn,
+            stages::{JobStagesPopup, StagePlanTab, StagesGraph},
         },
         metrics::MetricsData,
         metrics::SortColumn as MetricsSortColumn,
@@ -49,10 +49,12 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
+use crate::tui::infrastructure::theme::Theme;
 #[cfg(not(feature = "web"))]
 use crate::tui::ui::{
-    load_executor_details_popup, load_executors_data, load_job_details, load_job_dot,
-    load_job_stages_popup, load_jobs_data, load_metrics_data,
+    load_executor_details_popup, load_executors_data, load_job_config_popup,
+    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
+    load_metrics_data, load_stage_plan,
 };
 
 const INVALID_DATE: &str = "Invalid date";
@@ -93,14 +95,17 @@ pub(crate) struct App {
     pub show_scheduler_info: bool,
     pub job_dot_popup: Option<StagesGraph>,
     pub job_plan_popup: Option<JobPlansPopup>,
+    pub job_config_popup: Option<JobConfigPopup>,
     pub job_stages_popup: Option<JobStagesPopup>,
     pub executor_details_popup: Option<ExecutorDetailsPopup>,
 
     pub http_client: Arc<HttpClient>,
+    pub theme: Theme,
 }
 
 impl App {
     pub fn new(config: Settings) -> TuiResult<Self> {
+        let theme = Theme::from_settings(&config.theme);
         Ok(Self {
             should_quit: false,
             event_tx: None,
@@ -113,12 +118,14 @@ impl App {
             job_details: None,
             job_dot_popup: None,
             job_plan_popup: None,
+            job_config_popup: None,
             job_stages_popup: None,
             executor_details_popup: None,
             executors_data: ExecutorsData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
             http_client: Arc::new(HttpClient::new(config)?),
+            theme,
         })
     }
 
@@ -140,6 +147,14 @@ impl App {
 
     pub fn is_edit_mode(&self) -> bool {
         self.input_mode == InputMode::Edit
+    }
+
+    pub fn is_main_search_edit_mode(&self) -> bool {
+        self.is_edit_mode() && self.job_config_popup.is_none()
+    }
+
+    pub fn is_job_config_search_edit_mode(&self) -> bool {
+        self.is_edit_mode() && self.job_config_popup.is_some()
     }
 
     #[cfg(not(feature = "web"))]
@@ -190,6 +205,23 @@ impl App {
     pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
         if self.is_edit_mode() {
+            if let Some(popup) = &mut self.job_config_popup {
+                match key.code {
+                    KeyCode::Esc => {
+                        popup.clear_search();
+                        self.input_mode = InputMode::View;
+                    }
+                    KeyCode::Backspace => {
+                        popup.pop_search_char();
+                    }
+                    KeyCode::Char(c) => {
+                        popup.push_search_char(c);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     self.search_term.clear();
@@ -221,13 +253,45 @@ impl App {
                     _ => {}
                 }
             } else if popup.is_plan_view() {
-                match key.code {
-                    KeyCode::Esc => popup.set_no_details_view(),
-                    KeyCode::Up => popup.scroll_up(),
-                    KeyCode::Down => popup.scroll_down(),
-                    KeyCode::Left => popup.scroll_left(),
-                    KeyCode::Right => popup.scroll_right(),
-                    _ => {}
+                // Collect job_id + tab to fetch while popup is still borrowed,
+                // then drop the borrow before the async call.
+                let fetch = match key.code {
+                    KeyCode::Char('d') => popup
+                        .set_tab(StagePlanTab::Default)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('t') => popup
+                        .set_tab(StagePlanTab::Tree)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('m') => popup
+                        .set_tab(StagePlanTab::Metrics)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Esc => {
+                        popup.set_no_details_view();
+                        None
+                    }
+                    KeyCode::Up => {
+                        popup.scroll_up();
+                        None
+                    }
+                    KeyCode::Down => {
+                        popup.scroll_down();
+                        None
+                    }
+                    KeyCode::Left => {
+                        popup.scroll_left();
+                        None
+                    }
+                    KeyCode::Right => {
+                        popup.scroll_right();
+                        None
+                    }
+                    _ => None,
+                };
+
+                if let Some((job_id, tab)) = fetch
+                    && let Err(e) = load_stage_plan(self, &job_id, &tab).await
+                {
+                    tracing::error!("Failed to load stage plan: {e:?}");
                 }
             } else if popup.is_no_details_view() {
                 match key.code {
@@ -265,23 +329,64 @@ impl App {
         }
 
         if let Some(ref mut plans_popup) = self.job_plan_popup {
+            let fetch_tree = if key.code == KeyCode::Char('t')
+                && plans_popup.get_tab() == &PlanTab::Physical
+            {
+                plans_popup
+                    .set_physical_format(PhysicalFormat::Tree)
+                    .map(|_| plans_popup.details.job_id.clone())
+            } else {
+                match key.code {
+                    KeyCode::Up => {
+                        plans_popup.scroll_up();
+                    }
+                    KeyCode::Down => {
+                        plans_popup.scroll_down();
+                    }
+                    KeyCode::Left => {
+                        plans_popup.scroll_left();
+                    }
+                    KeyCode::Right => {
+                        plans_popup.scroll_right();
+                    }
+                    KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
+                    KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
+                    KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
+                    KeyCode::Char('d') if plans_popup.get_tab() == &PlanTab::Physical => {
+                        plans_popup.set_physical_format(PhysicalFormat::Default);
+                    }
+                    KeyCode::Esc => {
+                        self.job_plan_popup = None;
+                    }
+                    _ => {}
+                }
+                None
+            };
+
+            if let Some(job_id) = fetch_tree {
+                match self
+                    .http_client
+                    .get_job_details(&job_id, &StagePlanTab::Tree)
+                    .await
+                {
+                    Ok(details) => {
+                        if let Some(p) = &mut self.job_plan_popup {
+                            p.details.physical_plan_tree = details.physical_plan;
+                        }
+                    }
+                    Err(e) => tracing::error!("Failed to load tree physical plan: {e:?}"),
+                }
+            }
+
+            return Ok(());
+        }
+
+        if let Some(ref mut config_popup) = self.job_config_popup {
             match key.code {
-                KeyCode::Up => plans_popup.scroll_up(),
-                KeyCode::Down => plans_popup.scroll_down(),
-                KeyCode::Left => plans_popup.scroll_left(),
-                KeyCode::Right => plans_popup.scroll_right(),
-                KeyCode::Char('s') => {
-                    plans_popup.set_tab(PlanTab::Stage);
-                }
-                KeyCode::Char('p') => {
-                    plans_popup.set_tab(PlanTab::Physical);
-                }
-                KeyCode::Char('l') => {
-                    plans_popup.set_tab(PlanTab::Logical);
-                }
-                KeyCode::Esc => {
-                    self.job_plan_popup = None;
-                }
+                KeyCode::Up => config_popup.scroll_up(),
+                KeyCode::Down => config_popup.scroll_down(),
+                KeyCode::Char('/') => self.input_mode = InputMode::Edit,
+                KeyCode::Esc => self.job_config_popup = None,
                 _ => {}
             }
             return Ok(());
@@ -326,6 +431,9 @@ impl App {
             }
             KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
+            }
+            KeyCode::Char('o') if self.is_jobs_view() => {
+                self.load_job_config_popup_data().await;
             }
             KeyCode::Char('e') if self.is_scheduler_up() => {
                 self.current_view = Views::Executors;
@@ -445,7 +553,7 @@ impl App {
     #[cfg(not(feature = "web"))]
     async fn load_job_dot_data(&self) {
         if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
-            if selected_job.status == "Completed"
+            if selected_job.is_completed()
                 && let Err(e) = load_job_dot(self, &selected_job.job_id).await
             {
                 tracing::error!("Failed to load job dot: {e:?}");
@@ -461,6 +569,16 @@ impl App {
             let job_id = job.job_id.clone();
             if let Err(e) = load_job_stages_popup(self, &job_id).await {
                 tracing::error!("Failed to load job stages popup for '{job_id}': {e:?}");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "web"))]
+    async fn load_job_config_popup_data(&self) {
+        if let Some(job) = self.jobs_data.selected_job(&self.search_term) {
+            let job_id = job.job_id.clone();
+            if let Err(e) = load_job_config_popup(self, &job_id).await {
+                tracing::error!("Failed to load job config popup for '{job_id}': {e:?}");
             }
         }
     }
@@ -551,7 +669,7 @@ impl App {
     #[cfg(not(feature = "web"))]
     async fn cancel_selected_job(&mut self) {
         if let Some(job) = self.jobs_data.selected_job(&self.search_term)
-            && (job.status == "Running" || job.status == "Queued")
+            && (job.is_running() || job.is_queued())
         {
             let job_id = job.job_id.clone();
             let cancel_job_result = match self.http_client.cancel_job(&job_id).await {
@@ -577,16 +695,16 @@ impl App {
         self.jobs_data.selected_job(&self.search_term).is_some()
     }
 
-    pub fn is_selected_job_completed_or_running(&self) -> bool {
+    pub fn does_job_have_plan(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Completed" || j.status == "Running")
+            .is_some_and(|j| !j.is_queued())
     }
 
     pub fn is_selected_job_cancelable(&self) -> bool {
         self.jobs_data
             .selected_job(&self.search_term)
-            .is_some_and(|j| j.status == "Running" || j.status == "Queued")
+            .is_some_and(|j| j.is_running() || j.is_queued())
     }
 
     pub fn has_more_than_one_job(&self) -> bool {
@@ -623,8 +741,12 @@ impl App {
             .is_some_and(|popup| popup.is_plan_view())
     }
 
+    pub fn is_job_config_popup_open(&self) -> bool {
+        self.job_config_popup.is_some()
+    }
+
     fn open_job_plan_popup(&mut self) {
-        if self.is_selected_job_completed_or_running()
+        if self.does_job_have_plan()
             && let Some(details) = &self.job_details
         {
             self.job_plan_popup =
@@ -789,13 +911,27 @@ impl App {
                 };
             }
             UiData::JobDetails(details) => {
-                self.job_details = Some(details);
+                if details.physical_plan_tree.is_some() {
+                    if let Some(popup) = &mut self.job_plan_popup {
+                        popup.details.physical_plan_tree = details.physical_plan_tree;
+                    }
+                } else {
+                    self.job_details = Some(details);
+                }
+            }
+            UiData::JobConfig(popup) => {
+                self.job_config_popup = Some(popup);
             }
             UiData::JobStagesGraph(graph) => {
                 self.job_dot_popup = Some(graph);
             }
             UiData::JobStagesData(job_id, stages) => {
                 self.job_stages_popup = Some(JobStagesPopup::new(job_id, stages));
+            }
+            UiData::JobStagesPlanData(tab, stages) => {
+                if let Some(popup) = &mut self.job_stages_popup {
+                    popup.cache_plan_response(tab, stages);
+                }
             }
             UiData::ExecutorDetails(executor) => {
                 self.executor_details_popup = Some(ExecutorDetailsPopup::new(executor));
@@ -811,6 +947,19 @@ impl App {
     #[cfg(feature = "web")]
     pub fn on_key_sync(&mut self, key: &KeyEvent) -> Option<WebKeyAsyncAction> {
         if self.is_edit_mode() {
+            if let Some(popup) = &mut self.job_config_popup {
+                match key.code {
+                    KeyCode::Esc => {
+                        popup.clear_search();
+                        self.input_mode = InputMode::View;
+                    }
+                    KeyCode::Backspace => popup.pop_search_char(),
+                    KeyCode::Char(c) => popup.push_search_char(c),
+                    _ => {}
+                }
+                return None;
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     self.search_term.clear();
@@ -841,14 +990,41 @@ impl App {
                     _ => {}
                 }
             } else if popup.is_plan_view() {
-                match key.code {
-                    KeyCode::Esc => popup.set_no_details_view(),
-                    KeyCode::Up => popup.scroll_up(),
-                    KeyCode::Down => popup.scroll_down(),
-                    KeyCode::Left => popup.scroll_left(),
-                    KeyCode::Right => popup.scroll_right(),
-                    _ => {}
-                }
+                let fetch = match key.code {
+                    KeyCode::Char('d') => popup
+                        .set_tab(StagePlanTab::Default)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('t') => popup
+                        .set_tab(StagePlanTab::Tree)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Char('m') => popup
+                        .set_tab(StagePlanTab::Metrics)
+                        .map(|tab| (popup.job_id.clone(), tab)),
+                    KeyCode::Esc => {
+                        popup.set_no_details_view();
+                        None
+                    }
+                    KeyCode::Up => {
+                        popup.scroll_up();
+                        None
+                    }
+                    KeyCode::Down => {
+                        popup.scroll_down();
+                        None
+                    }
+                    KeyCode::Left => {
+                        popup.scroll_left();
+                        None
+                    }
+                    KeyCode::Right => {
+                        popup.scroll_right();
+                        None
+                    }
+                    _ => None,
+                };
+
+                return fetch
+                    .map(|(job_id, tab)| WebKeyAsyncAction::LoadStagePlan(job_id, tab));
             } else if popup.is_no_details_view() {
                 match key.code {
                     KeyCode::Up => popup.scroll_up(),
@@ -879,15 +1055,47 @@ impl App {
         }
 
         if let Some(ref mut plans_popup) = self.job_plan_popup {
+            let fetch_tree = if key.code == KeyCode::Char('t')
+                && plans_popup.get_tab() == &PlanTab::Physical
+            {
+                plans_popup
+                    .set_physical_format(PhysicalFormat::Tree)
+                    .map(|_| plans_popup.details.job_id.clone())
+            } else {
+                match key.code {
+                    KeyCode::Up => {
+                        plans_popup.scroll_up();
+                    }
+                    KeyCode::Down => {
+                        plans_popup.scroll_down();
+                    }
+                    KeyCode::Left => {
+                        plans_popup.scroll_left();
+                    }
+                    KeyCode::Right => {
+                        plans_popup.scroll_right();
+                    }
+                    KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
+                    KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
+                    KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
+                    KeyCode::Char('d') if plans_popup.get_tab() == &PlanTab::Physical => {
+                        plans_popup.set_physical_format(PhysicalFormat::Default);
+                    }
+                    KeyCode::Esc => self.job_plan_popup = None,
+                    _ => {}
+                }
+                None
+            };
+
+            return fetch_tree.map(WebKeyAsyncAction::LoadJobPlanTree);
+        }
+
+        if let Some(ref mut config_popup) = self.job_config_popup {
             match key.code {
-                KeyCode::Up => plans_popup.scroll_up(),
-                KeyCode::Down => plans_popup.scroll_down(),
-                KeyCode::Left => plans_popup.scroll_left(),
-                KeyCode::Right => plans_popup.scroll_right(),
-                KeyCode::Char('s') => plans_popup.set_tab(PlanTab::Stage),
-                KeyCode::Char('p') => plans_popup.set_tab(PlanTab::Physical),
-                KeyCode::Char('l') => plans_popup.set_tab(PlanTab::Logical),
-                KeyCode::Esc => self.job_plan_popup = None,
+                KeyCode::Up => config_popup.scroll_up(),
+                KeyCode::Down => config_popup.scroll_down(),
+                KeyCode::Char('/') => self.input_mode = InputMode::Edit,
+                KeyCode::Esc => self.job_config_popup = None,
                 _ => {}
             }
             return None;
@@ -940,13 +1148,20 @@ impl App {
                 let job_id = self
                     .jobs_data
                     .selected_job(&self.search_term)
-                    .filter(|j| j.status == "Completed")
+                    .filter(|j| j.is_completed())
                     .map(|j| j.job_id.clone());
                 job_id.map(WebKeyAsyncAction::LoadJobDot)
             }
             KeyCode::Char('p') if self.is_jobs_view() => {
                 self.open_job_plan_popup();
                 None
+            }
+            KeyCode::Char('o') if self.is_jobs_view() => {
+                let job_id = self
+                    .jobs_data
+                    .selected_job(&self.search_term)
+                    .map(|j| j.job_id.clone());
+                job_id.map(WebKeyAsyncAction::LoadJobConfig)
             }
             KeyCode::Char('e') if self.is_scheduler_up() => {
                 self.current_view = Views::Executors;
@@ -1028,7 +1243,7 @@ impl App {
                 let job_id = self
                     .jobs_data
                     .selected_job(&self.search_term)
-                    .filter(|j| j.status == "Running" || j.status == "Queued")
+                    .filter(|j| j.is_running() || j.is_queued())
                     .map(|j| j.job_id.clone());
                 job_id.map(WebKeyAsyncAction::CancelJob)
             }
@@ -1081,9 +1296,12 @@ pub enum WebKeyAsyncAction {
     LoadJobStages(String),
     LoadExecutorDetails(String),
     LoadJobDot(String),
+    LoadJobConfig(String),
     CancelJob(String),
     UpdateJobDetails(Option<String>),
     ReloadView,
+    LoadJobPlanTree(String),
+    LoadStagePlan(String, StagePlanTab),
 }
 
 #[cfg(test)]
@@ -1095,8 +1313,8 @@ mod tests {
     use crate::tui::domain::{
         SchedulerState, SortOrder,
         executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification},
-        jobs::Job,
         jobs::stages::{JobStagesPopup, JobStagesResponse},
+        jobs::{Job, JobConfigEntry, JobConfigPopup},
     };
     use crate::tui::infrastructure::Settings;
 
@@ -1111,6 +1329,7 @@ mod tests {
             job_id: id.to_string(),
             job_name: format!("Job {id}"),
             status: status.to_string(),
+            job_status: status.to_string(),
             start_time: 0,
             end_time: 1,
             num_stages: 1,
@@ -1199,8 +1418,25 @@ mod tests {
             job_id: job_id.to_string(),
             logical_plan: Some("logical".to_string()),
             physical_plan: Some("physical".to_string()),
+            physical_plan_tree: Some("tree".to_string()),
             stage_plan: Some("stage".to_string()),
         }
+    }
+
+    fn make_job_config_popup() -> JobConfigPopup {
+        JobConfigPopup::new(
+            "j1".to_string(),
+            vec![
+                JobConfigEntry {
+                    key: "ballista.job.name".to_string(),
+                    value: "Remote SQL Example".to_string(),
+                },
+                JobConfigEntry {
+                    key: "datafusion.execution.batch_size".to_string(),
+                    value: "8192".to_string(),
+                },
+            ],
+        )
     }
 
     #[test]
@@ -1428,6 +1664,26 @@ mod tests {
         assert!(app.is_executor_details_popup_open());
     }
 
+    #[test]
+    fn is_job_config_popup_open_false_when_none() {
+        let app = make_app();
+        assert!(!app.is_job_config_popup_open());
+    }
+
+    #[test]
+    fn is_job_config_popup_open_true_when_some() {
+        let mut app = make_app();
+        app.job_config_popup = Some(make_job_config_popup());
+        assert!(app.is_job_config_popup_open());
+    }
+
+    #[test]
+    fn apply_ui_data_sets_job_config_popup() {
+        let mut app = make_app();
+        app.apply_ui_data(crate::tui::event::UiData::JobConfig(make_job_config_popup()));
+        assert!(app.job_config_popup.is_some());
+    }
+
     // --- format_size tests ---
 
     #[test]
@@ -1487,35 +1743,35 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_completed() {
+    fn does_job_have_plan_for_completed() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Completed")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(app.is_selected_job_completed_or_running());
+        assert!(app.does_job_have_plan());
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_running() {
+    fn does_job_have_plan_for_running() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Running")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(app.is_selected_job_completed_or_running());
+        assert!(app.does_job_have_plan());
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_queued() {
+    fn does_job_have_plan_for_queued() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Queued")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.is_selected_job_completed_or_running());
+        assert!(!app.does_job_have_plan());
     }
 
     #[test]
-    fn is_selected_job_completed_or_running_for_failed() {
+    fn does_job_have_plan_for_failed() {
         let mut app = make_app();
         app.jobs_data.jobs = vec![make_job("j1", "Failed")];
         app.jobs_data.table_state.select(Some(0));
-        assert!(!app.is_selected_job_completed_or_running());
+        assert!(app.does_job_have_plan());
     }
 
     // --- has_selected_job with selection ---
