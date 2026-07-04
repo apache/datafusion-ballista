@@ -64,6 +64,12 @@ Table of content
 
    changelog/index
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Upgrade Guides
+
+   upgrading/index
+
 .. _toc.contributors:
 
 .. toctree::
