@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::client::BallistaClient;
-use crate::client_pool::BallistaClientPool;
+use crate::client_pool::{BallistaClientPool, PooledClient};
 use crate::error::BallistaError;
 use crate::execution_plans::sort_shuffle::{
     get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
@@ -576,6 +576,52 @@ impl RecordBatchStream for LocalShuffleStream {
     }
 }
 
+/// Wraps a remote shuffle-fetch stream and holds the [PooledClient] it was fetched
+/// over for the lifetime of the stream. This keeps the underlying connection
+/// checked out of the pool until the response body has been fully read, so it
+/// cannot be reused, evicted, or closed mid-stream. On a transport error the
+/// connection is discarded rather than returned, since it is no longer trustworthy.
+struct PooledPartitionStream {
+    inner: SendableRecordBatchStream,
+    /// `Some` until the stream errors. Dropping it returns the connection to the
+    /// pool for reuse; `discard()` on error prevents reuse of a broken connection.
+    pooled: Option<PooledClient>,
+}
+
+impl PooledPartitionStream {
+    fn new(inner: SendableRecordBatchStream, pooled: PooledClient) -> Self {
+        Self {
+            inner,
+            pooled: Some(pooled),
+        }
+    }
+}
+
+impl Stream for PooledPartitionStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let poll = self.inner.poll_next_unpin(cx);
+        // A transport/body error mid-stream leaves the connection in an unknown
+        // state; drop the guard via discard() so it is not returned to the pool.
+        if let Poll::Ready(Some(Err(_))) = &poll
+            && let Some(pooled) = self.pooled.take()
+        {
+            pooled.discard();
+        }
+        poll
+    }
+}
+
+impl RecordBatchStream for PooledPartitionStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
 /// Adapter for a tokio ReceiverStream that implements the SendableRecordBatchStream interface
 struct AbortableReceiverStream {
     inner: ReceiverStream<result::Result<SendableRecordBatchStream, BallistaError>>,
@@ -763,7 +809,7 @@ async fn fetch_partition_remote(
                 other => other,
             })?;
 
-        let result = pooled
+        match pooled
             .fetch_partition(
                 &metadata.id,
                 partition_id,
@@ -771,11 +817,22 @@ async fn fetch_partition_remote(
                 is_sort_shuffle,
                 prefer_flight,
             )
-            .await;
-        if result.is_err() {
-            pooled.discard();
+            .await
+        {
+            // Keep the pooled connection checked out for the lifetime of the
+            // response stream. Returning it to the pool here (the previous
+            // behavior) marked the connection idle/reusable/evictable while its
+            // body was still streaming, racing connection teardown against the
+            // in-flight read and causing intermittent broken-pipe FetchFailed at
+            // high target_partitions. The guard is dropped (connection returned to
+            // the pool, or discarded on a transport error) only once the stream
+            // finishes.
+            Ok(stream) => Ok(Box::pin(PooledPartitionStream::new(stream, pooled))),
+            Err(e) => {
+                pooled.discard();
+                Err(e)
+            }
         }
-        result
     } else {
         // TODO for shuffle client connections, we should avoid creating new connections again and again.
         // And we should also avoid to keep alive too many connections for long time.
