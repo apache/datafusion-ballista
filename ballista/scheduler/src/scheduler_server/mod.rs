@@ -25,6 +25,8 @@ use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::{JobId, JobStatusSubscriber};
 
 use datafusion::execution::context::SessionState;
+use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -216,8 +218,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
-    /// Submits a job to executor returning job_id
-    pub async fn submit_job(
+    /// Shared entry point for logical and physical submissions.
+    pub async fn submit_plan(
         &self,
         job_name: &str,
         ctx: Arc<SessionContext>,
@@ -239,6 +241,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .await?;
 
         Ok(job_id)
+    }
+
+    /// Submit a logical plan for distributed execution, returning the job id.
+    pub async fn submit_job(
+        &self,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<JobId> {
+        self.submit_plan(
+            job_name,
+            ctx,
+            &SubmitPlan::Logical(plan.clone()),
+            subscriber,
+        )
+        .await
+    }
+
+    /// Submit an already-built physical plan for distributed execution. The physical
+    /// plan is planned with the static distributed planner; adaptive query planning
+    /// (AQE) is not available for this path.
+    pub async fn submit_physical_plan(
+        &self,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: Arc<dyn ExecutionPlan>,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<JobId> {
+        self.submit_plan(job_name, ctx, &SubmitPlan::Physical(plan), subscriber)
+            .await
     }
 
     /// It just send task status update event to the channel,
@@ -437,7 +470,6 @@ mod test {
         ExecutorSpecification,
     };
 
-    use crate::scheduler_server::event::SubmitPlan;
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
@@ -484,14 +516,8 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(
-                &job_id,
-                "",
-                ctx,
-                &SubmitPlan::Logical(plan.clone()),
-                0,
-                None,
-            )
+            .task_manager
+            .submit_job(&job_id, "", ctx, &plan, 0, None)
             .await
             .expect("submitting plan");
 
@@ -560,6 +586,60 @@ mod test {
         for output_location in final_graph.output_locations() {
             assert_eq!(output_location.executor_meta.host, "localhost1".to_owned())
         }
+
+        Ok(())
+    }
+
+    // Verify a job can be submitted as an already-built physical plan.
+    #[tokio::test]
+    async fn test_submit_physical_plan() -> Result<()> {
+        let logical_plan = test_plan();
+        let task_slots = 4;
+
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
+
+        let executors = test_executors(task_slots);
+        for (executor_metadata, executor_data) in executors {
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(executor_metadata, executor_data)
+                .await?;
+        }
+
+        let config =
+            SessionConfig::new_with_ballista().with_target_partitions(task_slots);
+
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_or_update_session("session_id", &config)
+            .await?;
+
+        // Plan the logical plan into a physical plan and submit it directly.
+        let physical_plan = ctx.state().create_physical_plan(&logical_plan).await?;
+
+        let job_id: JobId = "physical_job".into();
+
+        scheduler
+            .state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+
+        scheduler
+            .state
+            .task_manager
+            .submit_physical_plan(&job_id, "", ctx, physical_plan, 0, None)
+            .await
+            .expect("submitting physical plan");
+
+        assert!(
+            scheduler
+                .state
+                .task_manager
+                .get_active_execution_graph(&job_id)
+                .is_some()
+        );
 
         Ok(())
     }

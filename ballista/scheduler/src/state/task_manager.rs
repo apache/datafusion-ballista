@@ -37,6 +37,7 @@ use ballista_core::{JobId, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
@@ -276,8 +277,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
+    ///
+    /// Shared entry point for logical and physical submissions.
     #[allow(clippy::too_many_arguments)]
-    pub async fn submit_job(
+    pub async fn submit_plan(
         &self,
         job_id: &JobId,
         job_name: &str,
@@ -368,6 +371,52 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .insert(job_id.to_owned(), JobInfoCache::new(graph));
 
         Ok(())
+    }
+
+    /// Submit a logical plan for distributed execution.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_job(
+        &self,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+        queued_at: u64,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()> {
+        self.submit_plan(
+            job_id,
+            job_name,
+            ctx,
+            &SubmitPlan::Logical(plan.clone()),
+            queued_at,
+            subscriber,
+        )
+        .await
+    }
+
+    /// Submit an already-built physical plan for distributed execution. The physical
+    /// plan is planned with the static distributed planner; adaptive query planning
+    /// (AQE) is not available for this path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_physical_plan(
+        &self,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()> {
+        self.submit_plan(
+            job_id,
+            job_name,
+            ctx,
+            &SubmitPlan::Physical(plan),
+            queued_at,
+            subscriber,
+        )
+        .await
     }
 
     /// Returns a snapshot of currently running jobs from the cache.
