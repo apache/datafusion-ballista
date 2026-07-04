@@ -429,7 +429,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             });
 
             let job_id = self
-                .submit_job(&job_name, session_ctx, &plan, Some(subscriber))
+                .submit_plan(&job_name, session_ctx, &plan, Some(subscriber))
                 .await
                 .map_err(|e| {
                     let msg =
@@ -504,7 +504,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             log::trace!("setting job name: {job_name}");
             let job_id = self
-                .submit_job(&job_name, session_ctx, &plan, None)
+                .submit_plan(&job_name, session_ctx, &plan, None)
                 .await
                 .map_err(|e| {
                     let msg =

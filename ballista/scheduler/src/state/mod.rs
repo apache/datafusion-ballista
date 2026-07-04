@@ -372,7 +372,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let start = Instant::now();
 
         self.task_manager
-            .submit_job(job_id, job_name, session_ctx, plan, queued_at, subscriber)
+            .submit_plan(job_id, job_name, session_ctx, plan, queued_at, subscriber)
             .await?;
 
         let elapsed = start.elapsed();
