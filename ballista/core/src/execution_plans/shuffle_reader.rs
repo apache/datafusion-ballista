@@ -50,12 +50,14 @@ use rand::rng;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::File;
+use std::future::Future;
 use std::io::BufReader;
 use std::path::Path;
 use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -795,17 +797,21 @@ fn send_fetch_partitions(
                 .await
                 .unwrap();
 
-            let r = fetch_partition_remote(
-                &p,
-                grpc_config,
-                prefer_flight,
-                customize_endpoint,
-                client_pool,
-            )
+            let io_retries = grpc_config.io_retries_times;
+            let io_wait = grpc_config.io_retry_wait_time_ms;
+            let r = with_retry(io_retries, io_wait, || {
+                fetch_partition_buffered(
+                    &p,
+                    grpc_config.clone(),
+                    prefer_flight,
+                    customize_endpoint.clone(),
+                    client_pool.clone(),
+                )
+            })
             .await
-            .map(|stream| {
+            .map(|(schema, batches)| {
                 Box::pin(GovernedStream::new(
-                    stream,
+                    buffered_stream(schema, batches),
                     byte_permit,
                     req_permit,
                     addr_permit,
@@ -819,6 +825,84 @@ fn send_fetch_partitions(
     }
 
     AbortableReceiverStream::create(response_receiver, spawned_tasks)
+}
+
+/// Retry an idempotent async operation up to `retries` times after the initial
+/// attempt, sleeping `wait_ms` between tries. Shuffle partition fetches are
+/// idempotent (the server re-reads the file), so a transport error — including
+/// one mid-body — can be recovered by refetching the whole partition.
+async fn with_retry<T, F, Fut>(
+    retries: u8,
+    wait_ms: u64,
+    mut f: F,
+) -> result::Result<T, BallistaError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = result::Result<T, BallistaError>>,
+{
+    let mut attempt: u8 = 0;
+    loop {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if attempt >= retries {
+                    return Err(e);
+                }
+                attempt += 1;
+                debug!(
+                    "retrying shuffle fetch (attempt {attempt}/{retries}) after error: {e}"
+                );
+                if wait_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                }
+            }
+        }
+    }
+}
+
+/// Fetch a remote partition and buffer its entire body into memory, turning the
+/// open-ended stream into a discrete, refetchable unit. Buffering is what makes
+/// a mid-body transport failure retriable without emitting duplicate batches
+/// downstream. Total buffered memory across concurrent fetches is bounded by the
+/// governor's byte budget.
+async fn fetch_partition_buffered(
+    location: &PartitionLocation,
+    config: Arc<GrpcClientConfig>,
+    prefer_flight: bool,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
+) -> result::Result<(SchemaRef, Vec<RecordBatch>), BallistaError> {
+    let stream = fetch_partition_remote(
+        location,
+        config,
+        prefer_flight,
+        customize_endpoint,
+        client_pool,
+    )
+    .await?;
+    let schema = stream.schema();
+    let metadata = &location.executor_meta;
+    let partition_id = &location.partition_id;
+    let batches = stream.try_collect::<Vec<_>>().await.map_err(|e| {
+        BallistaError::FetchFailed(
+            metadata.id.clone(),
+            partition_id.stage_id,
+            partition_id.partition_id,
+            e.to_string(),
+        )
+    })?;
+    Ok((schema, batches))
+}
+
+/// Build an in-memory `SendableRecordBatchStream` from already-buffered batches.
+fn buffered_stream(
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> SendableRecordBatchStream {
+    Box::pin(RecordBatchStreamAdapter::new(
+        schema,
+        futures::stream::iter(batches.into_iter().map(Ok)),
+    ))
 }
 
 async fn new_ballista_client(
@@ -2003,5 +2087,38 @@ mod governor_tests {
         assert_eq!(byte_sem.available_permits(), 100);
         assert_eq!(req_sem.available_permits(), 4);
         assert_eq!(addr_sem.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn with_retry_succeeds_after_transient_failures() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let calls = AtomicU8::new(0);
+        let result: result::Result<u32, BallistaError> = with_retry(3, 0, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(BallistaError::General("transient".to_string()))
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn with_retry_gives_up_after_max_attempts() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let calls = AtomicU8::new(0);
+        let result: result::Result<u32, BallistaError> = with_retry(2, 0, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move { Err(BallistaError::General("always".to_string())) }
+        })
+        .await;
+        assert!(result.is_err());
+        // initial attempt + 2 retries = 3 calls
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }
