@@ -117,9 +117,16 @@ impl JobsData {
                 }
             }),
             SortColumn::StagesCompleted => jobs.sort_by(|a, b| {
-                let a_stages = a.completed_stages / a.num_stages;
-                let b_stages = b.completed_stages / b.num_stages;
-                let cmp = a_stages.cmp(&b_stages);
+                let stage_completion = |job: &Job| {
+                    if job.num_stages == 0 {
+                        (0_u128, 1_u128)
+                    } else {
+                        (job.completed_stages as u128, job.num_stages as u128)
+                    }
+                };
+                let (a_completed, a_total) = stage_completion(a);
+                let (b_completed, b_total) = stage_completion(b);
+                let cmp = (a_completed * b_total).cmp(&(b_completed * a_total));
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
@@ -586,6 +593,36 @@ mod tests {
         assert_eq!(refs[0].status, "Running");
         assert_eq!(refs[1].status, "Failed");
         assert_eq!(refs[2].status, "Completed");
+    }
+
+    #[test]
+    fn sort_by_stages_completed_uses_completion_ratio() {
+        let jobs = vec![
+            make_job("quarter", "A", "Running", 1, 2, 4, 1, 0),
+            make_job("three_quarters", "B", "Running", 2, 3, 4, 3, 0),
+            make_job("half", "C", "Running", 3, 4, 4, 2, 0),
+        ];
+        let data =
+            make_jobs_data(jobs, SortColumn::StagesCompleted, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "quarter");
+        assert_eq!(refs[1].job_id, "half");
+        assert_eq!(refs[2].job_id, "three_quarters");
+    }
+
+    #[test]
+    fn sort_by_stages_completed_handles_zero_stages() {
+        let jobs = vec![
+            make_job("zero", "A", "Running", 1, 2, 0, 0, 0),
+            make_job("half", "B", "Running", 2, 3, 2, 1, 0),
+        ];
+        let data =
+            make_jobs_data(jobs, SortColumn::StagesCompleted, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "zero");
+        assert_eq!(refs[1].job_id, "half");
     }
 
     #[test]
