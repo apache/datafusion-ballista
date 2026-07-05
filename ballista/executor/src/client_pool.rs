@@ -17,17 +17,15 @@
 
 //! Connection pool for `BallistaClient` instances.
 //!
-//! `DefaultBallistaClientPool` maintains a `VecDeque` of idle clients per
-//! `(host, port, config)` key backed by a `DashMap`. Callers `BallistaClientPool::acquire`
-//! a `PooledClient` guard; when the guard is dropped the underlying client is
-//! returned to the idle deque automatically.
+//! `DefaultBallistaClientPool` keeps a small set of shared `BallistaClient`s per
+//! `(host, port, config)` endpoint in a `DashMap`. Callers `BallistaClientPool::acquire`
+//! a `PooledClient` that wraps a cheap clone of one of those clients (chosen
+//! round-robin); the underlying `tonic::Channel` multiplexes concurrent requests
+//! and reconnects transparently, so dropping the clone is a no-op and no new
+//! connection is opened per request.
 //!
-//! Connections could be discarded calling `PooledClient::discard` which will result
-//! of dropping connection rather than returning it to the pool. This could be
-//! used for error handling.
-//!
-//! A optional background tokio task evicts idle connections that have not been used
-//! within the configured `idle_timeout`.
+//! A optional background tokio task evicts endpoint connections that have not been
+//! used within the configured `idle_timeout`.
 
 use ballista_core::client::BallistaClient;
 use ballista_core::client_pool::{BallistaClientPool, PooledClient};
@@ -35,7 +33,6 @@ use ballista_core::error::Result;
 use ballista_core::extension::BallistaConfigGrpcEndpoint;
 use ballista_core::utils::GrpcClientConfig;
 use dashmap::DashMap;
-use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -44,21 +41,35 @@ use std::time::{Duration, Instant};
 // DefaultBallistaClientPool
 // ---------------------------------------------------------------------------
 
-struct IdleEntry {
-    client: BallistaClient,
-    idle_since: Instant,
+/// A small set of shared clients per endpoint. Each underlying `tonic::Channel`
+/// multiplexes concurrent requests and reconnects transparently; `acquire` hands
+/// out clones round-robin across the set. Keeping a few connections per
+/// `(host, port, config)` — rather than one per request — removes the connection
+/// churn that caused intermittent shuffle FetchFailures, while spreading load
+/// across enough connections that a single one does not stall under high
+/// shuffle-fetch concurrency.
+struct CachedEntry {
+    clients: Vec<BallistaClient>,
+    /// Round-robin cursor over `clients`.
+    next: usize,
+    last_used: Instant,
 }
 
-type IdleMap = DashMap<(String, u16, GrpcClientConfig), VecDeque<IdleEntry>>;
+type ClientMap = DashMap<(String, u16, GrpcClientConfig), CachedEntry>;
+
+/// Number of connections kept per endpoint.
+const CONNECTIONS_PER_ENDPOINT: usize = 8;
 
 struct Inner {
-    idle: IdleMap,
+    clients: ClientMap,
     idle_timeout: Duration,
 }
 
 /// Default pool implementation.
 ///
-/// Keeps `BallistaClients` as `VecDeque<IdleEntry>` per `(host, port, config)`.
+/// Keeps up to `CONNECTIONS_PER_ENDPOINT` shared `BallistaClient`s per
+/// `(host, port, config)` and hands out clones round-robin, each multiplexing
+/// over its connection.
 /// Idle clients are evicted by a background tokio task that runs at `idle_timeout / 3`
 /// intervals (minimum 15 s). The task exits automatically when the pool `Arc`
 /// is dropped.
@@ -89,7 +100,7 @@ impl DefaultBallistaClientPool {
     /// if `enable_eviction_thread` is enabled
     pub fn new(idle_timeout: Duration, enable_eviction_thread: bool) -> Self {
         let inner = Arc::new(Inner {
-            idle: DashMap::new(),
+            clients: DashMap::new(),
             idle_timeout,
         });
 
@@ -111,7 +122,7 @@ impl DefaultBallistaClientPool {
                         None => break,
                         Some(pool) => {
                             log::trace!("client connection pool - evicting connections");
-                            evict(&pool.idle, pool.idle_timeout)
+                            evict(&pool.clients, pool.idle_timeout)
                         }
                     }
                 }
@@ -123,26 +134,27 @@ impl DefaultBallistaClientPool {
     }
 
     #[cfg(test)]
-    /// Total number of idle connections currently held across all endpoints.
+    /// Number of cached endpoint connections currently held.
     pub fn idle_count(&self) -> usize {
-        self.inner.idle.iter().map(|e| e.value().len()).sum()
+        self.inner.clients.len()
     }
 }
 
-fn evict(idle: &IdleMap, timeout: Duration) {
+fn evict(clients: &ClientMap, timeout: Duration) {
     let deadline = Instant::now()
         .checked_sub(timeout)
         .unwrap_or_else(Instant::now);
 
-    // Drain expired entries from the front of each deque (oldest = front).
-    // This way pool can shrink in case of low utilization.
-    idle.retain(|_, deque| {
-        while deque.front().is_some_and(|e| e.idle_since < deadline) {
-            // evict from front of the queue
-            deque.pop_front();
-        }
-        !deque.is_empty()
-    });
+    // Drop cached clients whose endpoint has not been used within the timeout so
+    // the pool shrinks under low utilization.
+    clients.retain(|_, entry| entry.last_used >= deadline);
+}
+
+/// Wrap a clone of a shared, cached client in a [PooledClient] whose drop is a
+/// no-op: the master copy stays in the pool, so per-request clones are never
+/// returned to (or closed out of) the pool.
+fn shared(client: BallistaClient) -> PooledClient {
+    PooledClient::new(client, Box::new(|_| {}))
 }
 
 #[async_trait::async_trait]
@@ -156,60 +168,63 @@ impl BallistaClientPool for DefaultBallistaClientPool {
     ) -> Result<PooledClient> {
         let key = (host.to_string(), port, config.clone());
 
-        // Pop the most-recently-used idle client. The DashMap shard lock is
-        // held only for the duration of the pop — released before the async
-        // BallistaClient::try_new call below.
-        let maybe_idle_client = self
+        // Fast path: the endpoint already has its full set of connections —
+        // round-robin a clone. Cloning a BallistaClient clones its tonic Channel,
+        // which multiplexes this request over the existing connection
+        // (reconnecting transparently if it dropped) rather than opening a new
+        // one. The DashMap shard lock is held only to pick and clone.
+        if let Some(mut entry) = self.inner.clients.get_mut(&key)
+            && entry.clients.len() >= CONNECTIONS_PER_ENDPOINT
+        {
+            let idx = entry.next % entry.clients.len();
+            entry.next = entry.next.wrapping_add(1);
+            entry.last_used = Instant::now();
+            let client = entry.clients[idx].clone();
+            log::trace!(
+                "client connection pool - reusing shared connection {idx} - host:{host}, port:{port}"
+            );
+            return Ok(shared(client));
+        }
+
+        // Slow path: grow the endpoint's connection set (up to
+        // CONNECTIONS_PER_ENDPOINT). Create the connection without holding a shard
+        // lock across the await; a racing task may have filled the set meanwhile,
+        // in which case the extra connection is simply dropped.
+        log::trace!(
+            "client connection pool - opening NEW connection - host:{host}, port:{port}"
+        );
+        let client = BallistaClient::try_new(
+            host,
+            port,
+            config.max_message_size,
+            config.use_tls,
+            customize_endpoint,
+            config.io_retries_times,
+            config.io_retry_wait_time_ms,
+        )
+        .await?;
+
+        let mut entry = self
             .inner
-            .idle
-            .get_mut(&key)
-            .and_then(|mut deque| deque.pop_back()) // acquire from back of the queue
-            .map(|e| e.client);
-
-        let client = match maybe_idle_client {
-            Some(client) => {
-                log::trace!(
-                    "client connection pool - returning cached connection - host:{host}, port:{port}"
-                );
-                client
-            }
-            None => {
-                log::trace!(
-                    "client connection pool - returning NEW connection - host:{host}, port:{port}"
-                );
-                BallistaClient::try_new(
-                    host,
-                    port,
-                    config.max_message_size,
-                    config.use_tls,
-                    customize_endpoint,
-                    config.io_retries_times,
-                    config.io_retry_wait_time_ms,
-                )
-                .await?
-            }
-        };
-
-        // The return closure captures only an Arc — synchronous, safe for Drop.
-        let inner_ref = Arc::clone(&self.inner);
-        let return_key = key;
-        Ok(PooledClient::new(
-            client,
-            Box::new(move |c| {
-                inner_ref
-                    .idle
-                    .entry(return_key)
-                    .or_default()
-                    .push_back(IdleEntry {
-                        client: c,
-                        idle_since: Instant::now(),
-                    });
-            }),
-        ))
+            .clients
+            .entry(key)
+            .or_insert_with(|| CachedEntry {
+                clients: Vec::with_capacity(CONNECTIONS_PER_ENDPOINT),
+                next: 0,
+                last_used: Instant::now(),
+            });
+        entry.last_used = Instant::now();
+        if entry.clients.len() < CONNECTIONS_PER_ENDPOINT {
+            entry.clients.push(client);
+        }
+        let idx = entry.next % entry.clients.len();
+        entry.next = entry.next.wrapping_add(1);
+        let picked = entry.clients[idx].clone();
+        Ok(shared(picked))
     }
 
     async fn evict_idle(&self) {
-        evict(&self.inner.idle, self.inner.idle_timeout);
+        evict(&self.inner.clients, self.inner.idle_timeout);
     }
 }
 
@@ -232,14 +247,14 @@ mod tests {
         age: Duration,
     ) {
         let client = BallistaClient::new_for_test(host, port);
-        pool.inner
-            .idle
-            .entry((host.to_string(), port, GrpcClientConfig::default()))
-            .or_default()
-            .push_back(IdleEntry {
-                client,
-                idle_since: Instant::now() - age,
-            });
+        pool.inner.clients.insert(
+            (host.to_string(), port, GrpcClientConfig::default()),
+            CachedEntry {
+                clients: vec![client],
+                next: 0,
+                last_used: Instant::now() - age,
+            },
+        );
     }
 
     #[tokio::test]
@@ -293,14 +308,14 @@ mod tests {
         let guard = PooledClient::new(
             client,
             Box::new(move |c| {
-                inner_ref
-                    .idle
-                    .entry(return_key)
-                    .or_default()
-                    .push_back(IdleEntry {
-                        client: c,
-                        idle_since: Instant::now(),
-                    });
+                inner_ref.clients.insert(
+                    return_key,
+                    CachedEntry {
+                        clients: vec![c],
+                        next: 0,
+                        last_used: Instant::now(),
+                    },
+                );
             }),
         );
 
@@ -319,14 +334,14 @@ mod tests {
         let guard = PooledClient::new(
             client,
             Box::new(move |c| {
-                inner_ref
-                    .idle
-                    .entry(("host-d".to_string(), 4567u16, GrpcClientConfig::default()))
-                    .or_default()
-                    .push_back(IdleEntry {
-                        client: c,
-                        idle_since: Instant::now(),
-                    });
+                inner_ref.clients.insert(
+                    ("host-d".to_string(), 4567u16, GrpcClientConfig::default()),
+                    CachedEntry {
+                        clients: vec![c],
+                        next: 0,
+                        last_used: Instant::now(),
+                    },
+                );
             }),
         );
 
@@ -342,7 +357,7 @@ mod tests {
         let pool = make_pool(timeout);
 
         inject_idle(&pool, "host-e", 5678, timeout + Duration::from_millis(50)); // stale
-        inject_idle(&pool, "host-e", 5678, Duration::from_millis(10)); // fresh
+        inject_idle(&pool, "host-f", 6789, Duration::from_millis(10)); // fresh
         assert_eq!(pool.idle_count(), 2);
 
         pool.evict_idle().await;
