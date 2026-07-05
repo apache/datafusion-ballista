@@ -765,13 +765,24 @@ fn send_fetch_partitions(
     let customize_endpoint = config.ballista_override_create_grpc_client_endpoint();
     let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
 
+    // The reduce-side with_retry owns fetch retries; disable the client's inner
+    // establish-retry loop (set to a single attempt) so the two layers don't
+    // multiply. Read the retry budget BEFORE overriding it for the client.
+    let outer_retries = grpc_config.io_retries_times;
+    let io_wait = grpc_config.io_retry_wait_time_ms;
+    let client_grpc_config: Arc<GrpcClientConfig> = {
+        let mut c = (*grpc_config).clone();
+        c.io_retries_times = 1;
+        Arc::new(c)
+    };
+
     for p in remote_locations.into_iter() {
         let byte_sem = byte_sem.clone();
         let req_sem = req_sem.clone();
         let addr_sems = addr_sems.clone();
         let response_sender = response_sender.clone();
         let customize_endpoint = customize_endpoint.clone();
-        let grpc_config = grpc_config.clone();
+        let client_grpc_config = client_grpc_config.clone();
         let client_pool = client_pool.clone();
 
         spawned_tasks.push(SpawnedTask::spawn(async move {
@@ -797,12 +808,10 @@ fn send_fetch_partitions(
                 .await
                 .unwrap();
 
-            let io_retries = grpc_config.io_retries_times;
-            let io_wait = grpc_config.io_retry_wait_time_ms;
-            let r = with_retry(io_retries, io_wait, || {
+            let r = with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
                 fetch_partition_buffered(
                     &p,
-                    grpc_config.clone(),
+                    client_grpc_config.clone(),
                     prefer_flight,
                     customize_endpoint.clone(),
                     client_pool.clone(),
@@ -830,10 +839,13 @@ fn send_fetch_partitions(
 /// Retry an idempotent async operation up to `retries` times after the initial
 /// attempt, sleeping `wait_ms` between tries. Shuffle partition fetches are
 /// idempotent (the server re-reads the file), so a transport error — including
-/// one mid-body — can be recovered by refetching the whole partition.
+/// one mid-body — can be recovered by refetching the whole partition. Only
+/// errors accepted by `should_retry` are retried; anything else is returned
+/// immediately on the first failure.
 async fn with_retry<T, F, Fut>(
     retries: u8,
     wait_ms: u64,
+    should_retry: impl Fn(&BallistaError) -> bool,
     mut f: F,
 ) -> result::Result<T, BallistaError>
 where
@@ -845,7 +857,7 @@ where
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                if attempt >= retries {
+                if attempt >= retries || !should_retry(&e) {
                     return Err(e);
                 }
                 attempt += 1;
@@ -860,11 +872,25 @@ where
     }
 }
 
+/// Transport/fetch failures worth refetching an idempotent shuffle block for.
+/// Deterministic failures (bad config, schema/decoding logic errors) are not
+/// retried. Mirrors the transport-only retry policy of the client's inner loop.
+fn is_retriable_fetch_error(e: &BallistaError) -> bool {
+    matches!(
+        e,
+        BallistaError::GrpcConnectionError(_) | BallistaError::FetchFailed(..)
+    )
+}
+
 /// Fetch a remote partition and buffer its entire body into memory, turning the
 /// open-ended stream into a discrete, refetchable unit. Buffering is what makes
 /// a mid-body transport failure retriable without emitting duplicate batches
-/// downstream. Total buffered memory across concurrent fetches is bounded by the
-/// governor's byte budget.
+/// downstream. The governor charges each block its compressed (serialized) size,
+/// so the byte budget bounds concurrent in-flight **wire** bytes — which is the
+/// quantity the h2 window must accommodate. The decoded in-memory footprint is
+/// larger by the Arrow/compression expansion ratio, so peak buffered RAM exceeds
+/// the byte budget by that factor. Bounding decoded memory precisely is the
+/// deferred disk-spill work.
 async fn fetch_partition_buffered(
     location: &PartitionLocation,
     config: Arc<GrpcClientConfig>,
@@ -2093,17 +2119,18 @@ mod governor_tests {
     async fn with_retry_succeeds_after_transient_failures() {
         use std::sync::atomic::{AtomicU8, Ordering};
         let calls = AtomicU8::new(0);
-        let result: result::Result<u32, BallistaError> = with_retry(3, 0, || {
-            let n = calls.fetch_add(1, Ordering::SeqCst);
-            async move {
-                if n < 2 {
-                    Err(BallistaError::General("transient".to_string()))
-                } else {
-                    Ok(42)
+        let result: result::Result<u32, BallistaError> =
+            with_retry(3, 0, is_retriable_fetch_error, || {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n < 2 {
+                        Err(BallistaError::GrpcConnectionError("transient".to_string()))
+                    } else {
+                        Ok(42)
+                    }
                 }
-            }
-        })
-        .await;
+            })
+            .await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
@@ -2112,13 +2139,31 @@ mod governor_tests {
     async fn with_retry_gives_up_after_max_attempts() {
         use std::sync::atomic::{AtomicU8, Ordering};
         let calls = AtomicU8::new(0);
-        let result: result::Result<u32, BallistaError> = with_retry(2, 0, || {
-            calls.fetch_add(1, Ordering::SeqCst);
-            async move { Err(BallistaError::General("always".to_string())) }
-        })
-        .await;
+        let result: result::Result<u32, BallistaError> =
+            with_retry(2, 0, is_retriable_fetch_error, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Err(BallistaError::GrpcConnectionError("always".to_string()))
+                }
+            })
+            .await;
         assert!(result.is_err());
         // initial attempt + 2 retries = 3 calls
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn with_retry_does_not_retry_non_retriable() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let calls = AtomicU8::new(0);
+        let result: result::Result<u32, BallistaError> =
+            with_retry(3, 0, is_retriable_fetch_error, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move { Err(BallistaError::General("deterministic".to_string())) }
+            })
+            .await;
+        assert!(result.is_err());
+        // A non-retriable error must not trigger any retry attempts.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

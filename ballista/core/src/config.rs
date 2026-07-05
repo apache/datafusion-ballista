@@ -172,7 +172,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::Boolean,
                          Some((false).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT.to_string(),
-                         "Reduce-side shuffle governor: maximum total in-flight bytes across concurrent remote partition fetches. Mirrors Spark's spark.reducer.maxSizeInFlight.".to_string(),
+                         "Reduce-side shuffle governor: maximum total in-flight bytes across concurrent remote partition fetches. Mirrors Spark's spark.reducer.maxSizeInFlight. Values above 4 GiB are clamped to 4 GiB (u32 semaphore limit).".to_string(),
                          DataType::UInt64,
                          Some((50331648).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS.to_string(),
