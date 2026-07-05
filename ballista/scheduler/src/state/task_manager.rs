@@ -193,6 +193,10 @@ impl JobInfoCache {
                     return Ok(Transformed::no(node));
                 }
 
+                // Every requested id must index a real reader partition, else we'd
+                // silently prune away locations the task needs.
+                debug_assert!(wanted.iter().all(|&p| p < r.partition.len()));
+
                 let partition = r
                     .partition
                     .iter()
