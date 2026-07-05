@@ -616,7 +616,6 @@ impl Stream for AbortableReceiverStream {
 /// In-flight bytes charged to the governor for a block. Uses the partition's
 /// recorded byte size, falling back to `default` when stats carry none. Never 0,
 /// so every block occupies at least one permit.
-#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
 fn block_size(location: &PartitionLocation, default: u64) -> u64 {
     location
         .partition_stats
@@ -627,7 +626,6 @@ fn block_size(location: &PartitionLocation, default: u64) -> u64 {
 
 /// Size of the byte semaphore. tokio permits are `usize`; clamp so it is at least
 /// 1 and never exceeds `u32::MAX` (the `acquire_many` argument type).
-#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
 fn byte_permits_cap(max_bytes: u64) -> usize {
     max_bytes.clamp(1, u32::MAX as u64) as usize
 }
@@ -636,7 +634,6 @@ fn byte_permits_cap(max_bytes: u64) -> usize {
 /// `[1, u32::MAX]`. Capping at `max_bytes` means an oversized block requests the
 /// entire budget and can only proceed once all other fetches drain — the
 /// application-layer analog of Spark's `bytesInFlight == 0` progress clause.
-#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
 fn byte_permits_for(size: u64, max_bytes: u64) -> u32 {
     let cap = max_bytes.clamp(1, u32::MAX as u64);
     size.clamp(1, cap) as u32
@@ -646,7 +643,6 @@ fn byte_permits_for(size: u64, max_bytes: u64) -> u32 {
 /// lifetime. Dropping the stream — on normal end, consumer cancellation, or a
 /// mid-body error — releases all three permits, freeing budget for the next
 /// fetch. This is the release-on-body-completion behavior the governor needs.
-#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
 struct GovernedStream {
     inner: SendableRecordBatchStream,
     _byte_permit: OwnedSemaphorePermit,
@@ -655,7 +651,6 @@ struct GovernedStream {
 }
 
 impl GovernedStream {
-    #[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
     fn new(
         inner: SendableRecordBatchStream,
         byte_permit: OwnedSemaphorePermit,
@@ -712,11 +707,30 @@ fn send_fetch_partitions(
     config: &SessionConfig,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> AbortableReceiverStream {
-    let max_request_num = config.ballista_shuffle_reader_maximum_concurrent_requests();
+    let ballista_config = config.ballista_config();
+    let max_reqs = config.ballista_shuffle_reader_maximum_concurrent_requests();
+    let max_bytes = ballista_config.shuffle_reader_max_bytes_in_flight();
+    let max_blocks_per_addr =
+        ballista_config.shuffle_reader_max_blocks_in_flight_per_address();
+    let default_block_size = ballista_config.shuffle_reader_default_block_size_bytes();
     let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
 
-    let (response_sender, response_receiver) = mpsc::channel(max_request_num);
-    let semaphore = Arc::new(Semaphore::new(max_request_num));
+    let (response_sender, response_receiver) = mpsc::channel(max_reqs.max(1));
+
+    // Reduce-side in-flight governor. Each remote fetch acquires:
+    //   * `byte_sem`  — min(block_size, max_bytes) permits (in-flight-bytes budget)
+    //   * `req_sem`   — 1 permit (in-flight-request count)
+    //   * an addr semaphore — 1 permit (per-address in-flight cap)
+    // All three are held for the lifetime of the returned stream (see
+    // GovernedStream), so budget is released only when the body is fully
+    // consumed. Because total in-flight bytes stay <= the sized h2 window, the
+    // governor — not the 64 KB transport window — is the binding backpressure,
+    // which is what makes multiplexing over few connections safe.
+    let byte_sem = Arc::new(Semaphore::new(byte_permits_cap(max_bytes)));
+    let req_sem = Arc::new(Semaphore::new(max_reqs.max(1)));
+    let addr_sems: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+
     let mut spawned_tasks: Vec<SpawnedTask<()>> = vec![];
 
     let (local_locations, remote_locations): (Vec<_>, Vec<_>) = local_remote_read_split(
@@ -733,10 +747,6 @@ fn send_fetch_partitions(
 
     // keep local shuffle files reading in serial order for memory control.
     let response_sender_c = response_sender.clone();
-
-    //
-    // fetching local partitions (read from file)
-    //
     let work_dir = work_dir.to_string();
     spawned_tasks.push(SpawnedTask::spawn_blocking({
         move || {
@@ -749,38 +759,61 @@ fn send_fetch_partitions(
         }
     }));
 
-    //
-    // fetching remote partitions (uses grpc flight protocol)
-    //
     let grpc_config: Arc<GrpcClientConfig> = Arc::new((&config.ballista_config()).into());
     let customize_endpoint = config.ballista_override_create_grpc_client_endpoint();
     let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
 
     for p in remote_locations.into_iter() {
-        let semaphore = semaphore.clone();
+        let byte_sem = byte_sem.clone();
+        let req_sem = req_sem.clone();
+        let addr_sems = addr_sems.clone();
         let response_sender = response_sender.clone();
+        let customize_endpoint = customize_endpoint.clone();
+        let grpc_config = grpc_config.clone();
+        let client_pool = client_pool.clone();
 
-        spawned_tasks.push(SpawnedTask::spawn({
-            let customize_endpoint = customize_endpoint.clone();
-            let grpc_config = grpc_config.clone();
-            let client_pool = client_pool.clone();
-            async move {
-                // Block if exceeds max request number.
-                let permit = semaphore.acquire_owned().await.unwrap();
-                let r = fetch_partition_remote(
-                    &p,
-                    grpc_config,
-                    prefer_flight,
-                    customize_endpoint,
-                    client_pool,
-                )
-                .await;
-                // Block if the channel buffer is full.
-                if let Err(e) = response_sender.send(r).await {
-                    error!("Fail to send response event to the channel due to {e}");
-                }
-                // Increase semaphore by dropping existing permits.
-                drop(permit);
+        spawned_tasks.push(SpawnedTask::spawn(async move {
+            let addr = p.executor_meta.id.clone();
+            let size = block_size(&p, default_block_size);
+
+            // Acquire the cheap count/address gates first, then the byte budget
+            // last, so a fetch does not hold scarce byte permits while blocked
+            // on a per-address slot. All acquires are on Arc<Semaphore>s that
+            // are never closed, so `unwrap()` cannot panic.
+            let req_permit = req_sem.acquire_owned().await.unwrap();
+            let addr_sem = {
+                let mut map = addr_sems.lock().unwrap();
+                map.entry(addr.clone())
+                    .or_insert_with(|| {
+                        Arc::new(Semaphore::new(max_blocks_per_addr.max(1)))
+                    })
+                    .clone()
+            };
+            let addr_permit = addr_sem.acquire_owned().await.unwrap();
+            let byte_permit = byte_sem
+                .acquire_many_owned(byte_permits_for(size, max_bytes))
+                .await
+                .unwrap();
+
+            let r = fetch_partition_remote(
+                &p,
+                grpc_config,
+                prefer_flight,
+                customize_endpoint,
+                client_pool,
+            )
+            .await
+            .map(|stream| {
+                Box::pin(GovernedStream::new(
+                    stream,
+                    byte_permit,
+                    req_permit,
+                    addr_permit,
+                )) as SendableRecordBatchStream
+            });
+
+            if let Err(e) = response_sender.send(r).await {
+                error!("Fail to send response event to the channel due to {e}");
             }
         }));
     }
