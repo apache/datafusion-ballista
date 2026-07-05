@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::jobs::stages::StageTaskResponse;
+use crate::tui::domain::jobs::stages::{StageTaskResponse, StageTaskStatus};
 use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::Frame;
@@ -101,18 +101,16 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         app.theme.row_odd
     };
 
-    let status_style = match task.status.as_str() {
-        "Running" => app.theme.status_running,
-        "Queued" => app.theme.status_queued,
-        "Successful" | "Completed" => app.theme.status_completed,
-        "Failed" => app.theme.status_failed,
-        _ => app.theme.status_unknown,
+    let (status_label, status_style) = match &task.status {
+        StageTaskStatus::Running => ("Running", app.theme.status_running),
+        StageTaskStatus::Successful => ("Successful", app.theme.status_completed),
+        StageTaskStatus::Failed { reason } => (reason.as_str(), app.theme.status_failed),
     };
 
     Row::new(vec![
         Cell::from(Text::from(task.id.to_string()).right_aligned()),
         Cell::from(
-            Text::from(task.status.clone())
+            Text::from(status_label.to_string())
                 .style(status_style)
                 .centered(),
         ),
