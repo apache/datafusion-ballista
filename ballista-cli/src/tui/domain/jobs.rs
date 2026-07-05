@@ -119,14 +119,12 @@ impl JobsData {
             SortColumn::StagesCompleted => jobs.sort_by(|a, b| {
                 let stage_completion = |job: &Job| {
                     if job.num_stages == 0 {
-                        (0_u128, 1_u128)
+                        0.0
                     } else {
-                        (job.completed_stages as u128, job.num_stages as u128)
+                        job.completed_stages as f64 / job.num_stages as f64
                     }
                 };
-                let (a_completed, a_total) = stage_completion(a);
-                let (b_completed, b_total) = stage_completion(b);
-                let cmp = (a_completed * b_total).cmp(&(b_completed * a_total));
+                let cmp = stage_completion(a).total_cmp(&stage_completion(b));
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
