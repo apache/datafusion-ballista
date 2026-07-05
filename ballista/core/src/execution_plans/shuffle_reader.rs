@@ -56,7 +56,7 @@ use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Coalesce plan attached to a `ShuffleReaderExec` or `UnresolvedShuffleExec`.
@@ -612,6 +612,82 @@ impl Stream for AbortableReceiverStream {
             .map_err(|e| ArrowError::ExternalError(Box::new(e)))
     }
 }
+
+/// In-flight bytes charged to the governor for a block. Uses the partition's
+/// recorded byte size, falling back to `default` when stats carry none. Never 0,
+/// so every block occupies at least one permit.
+#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
+fn block_size(location: &PartitionLocation, default: u64) -> u64 {
+    location
+        .partition_stats
+        .num_bytes()
+        .unwrap_or(default)
+        .max(1)
+}
+
+/// Size of the byte semaphore. tokio permits are `usize`; clamp so it is at least
+/// 1 and never exceeds `u32::MAX` (the `acquire_many` argument type).
+#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
+fn byte_permits_cap(max_bytes: u64) -> usize {
+    max_bytes.clamp(1, u32::MAX as u64) as usize
+}
+
+/// Byte permits to acquire for a block: `min(size, max_bytes)`, clamped to
+/// `[1, u32::MAX]`. Capping at `max_bytes` means an oversized block requests the
+/// entire budget and can only proceed once all other fetches drain — the
+/// application-layer analog of Spark's `bytesInFlight == 0` progress clause.
+#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
+fn byte_permits_for(size: u64, max_bytes: u64) -> u32 {
+    let cap = max_bytes.clamp(1, u32::MAX as u64);
+    size.clamp(1, cap) as u32
+}
+
+/// Wraps a fetched partition stream and holds the governor permits for its
+/// lifetime. Dropping the stream — on normal end, consumer cancellation, or a
+/// mid-body error — releases all three permits, freeing budget for the next
+/// fetch. This is the release-on-body-completion behavior the governor needs.
+#[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
+struct GovernedStream {
+    inner: SendableRecordBatchStream,
+    _byte_permit: OwnedSemaphorePermit,
+    _req_permit: OwnedSemaphorePermit,
+    _addr_permit: OwnedSemaphorePermit,
+}
+
+impl GovernedStream {
+    #[allow(dead_code)] // consumed by send_fetch_partitions in a follow-up task
+    fn new(
+        inner: SendableRecordBatchStream,
+        byte_permit: OwnedSemaphorePermit,
+        req_permit: OwnedSemaphorePermit,
+        addr_permit: OwnedSemaphorePermit,
+    ) -> Self {
+        Self {
+            inner,
+            _byte_permit: byte_permit,
+            _req_permit: req_permit,
+            _addr_permit: addr_permit,
+        }
+    }
+}
+
+impl Stream for GovernedStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
+}
+
+impl RecordBatchStream for GovernedStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
 /// Splits the provided partition locations into local and remote partitions.
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
@@ -1845,5 +1921,54 @@ mod tests {
         assert_eq!(90, *stats1.total_byte_size.get_value().unwrap());
         assert_eq!(9, *stats1.num_rows.get_value().unwrap());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod governor_tests {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+
+    #[test]
+    fn byte_permits_for_caps_at_budget() {
+        // A block larger than the budget requests exactly the whole budget,
+        // so it can only run when all other fetches have drained.
+        assert_eq!(byte_permits_for(10, 100), 10);
+        assert_eq!(byte_permits_for(500, 100), 100);
+        // Never zero (a zero acquire is a no-op and would under-account).
+        assert_eq!(byte_permits_for(0, 100), 1);
+    }
+
+    #[test]
+    fn byte_permits_cap_is_nonzero_and_bounded() {
+        assert_eq!(byte_permits_cap(0), 1);
+        assert_eq!(byte_permits_cap(48 * 1024 * 1024), 48 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn governed_stream_releases_permits_on_drop() {
+        let byte_sem = Arc::new(Semaphore::new(100));
+        let req_sem = Arc::new(Semaphore::new(4));
+        let addr_sem = Arc::new(Semaphore::new(2));
+
+        let byte = byte_sem.clone().acquire_many_owned(30).await.unwrap();
+        let req = req_sem.clone().acquire_owned().await.unwrap();
+        let addr = addr_sem.clone().acquire_owned().await.unwrap();
+        assert_eq!(byte_sem.available_permits(), 70);
+        assert_eq!(req_sem.available_permits(), 3);
+        assert_eq!(addr_sem.available_permits(), 1);
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let empty = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::empty(),
+        )) as SendableRecordBatchStream;
+        let governed = GovernedStream::new(empty, byte, req, addr);
+        drop(governed);
+
+        assert_eq!(byte_sem.available_permits(), 100);
+        assert_eq!(req_sem.available_permits(), 4);
+        assert_eq!(addr_sem.available_permits(), 2);
     }
 }
