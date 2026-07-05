@@ -731,6 +731,8 @@ async fn new_ballista_client(
         customize_endpoint,
         io_retries_times,
         io_retry_wait_time_ms,
+        config.initial_connection_window_size,
+        config.initial_stream_window_size,
     )
     .await
 }
