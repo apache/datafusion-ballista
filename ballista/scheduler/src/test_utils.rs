@@ -54,7 +54,7 @@ use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
 use crate::cluster::BallistaCluster;
-use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
@@ -503,10 +503,7 @@ impl SchedulerTest {
             .create_or_update_session("session_id", &self.session_config)
             .await?;
 
-        let job_id = self
-            .scheduler
-            .submit_job(job_name, ctx, &SubmitPlan::Logical(plan.clone()), None)
-            .await?;
+        let job_id = self.scheduler.submit_job(job_name, ctx, plan, None).await?;
 
         Ok(job_id)
     }
@@ -645,12 +642,7 @@ impl SchedulerTest {
 
         let job_id = self
             .scheduler
-            .submit_job(
-                job_name,
-                ctx,
-                &SubmitPlan::Logical(plan.clone()),
-                subscriber,
-            )
+            .submit_job(job_name, ctx, plan, subscriber)
             .await?;
 
         let mut receiver = self.status_receiver.take().unwrap();
