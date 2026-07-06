@@ -298,7 +298,11 @@ impl ShuffleWriterExec {
                             file_id: None,
                             is_sort_shuffle: false,
                         }],
-                        column_stats: vec![], // not collected on this path yet
+                        // Column stats (null counts) are collected only on the
+                        // hash-repartition path below; this single-partition path
+                        // returns empty, so downstream stats coverage is partial.
+                        // TODO: collect column stats on the single-partition path.
+                        column_stats: vec![],
                     })
                 }
 
@@ -644,7 +648,9 @@ fn result_schema() -> SchemaRef {
 #[allow(dead_code, unused_imports)] // clippy false positive with local imports
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
+    use datafusion::arrow::array::{
+        Int32Array, StringArray, StructArray, UInt32Array, UInt64Array,
+    };
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -836,5 +842,39 @@ mod tests {
             Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
 
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+    }
+
+    fn create_test_batch() -> RecordBatch {
+        let col_a = Int32Array::from(vec![Some(1), None, Some(3)]); // 1 null
+        let col_b = Int32Array::from(vec![None, None, Some(9)]); // 2 nulls
+        RecordBatch::try_from_iter(vec![
+            ("a", Arc::new(col_a) as _),
+            ("b", Arc::new(col_b) as _),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_accumulate_null_counts_sums_per_column() {
+        let mut counts = vec![0u64; 2];
+        accumulate_null_counts(&mut counts, &create_test_batch());
+        assert_eq!(1, counts[0]);
+        assert_eq!(2, counts[1]);
+        accumulate_null_counts(&mut counts, &create_test_batch());
+        assert_eq!(counts, vec![2, 4]);
+    }
+
+    #[test]
+    fn test_right_col_mapping_null_count() {
+        let stats = null_counts_to_column_stats(vec![5, 0, 7]);
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats[0].null_count, 5);
+        assert_eq!(stats[1].null_count, 0);
+        assert_eq!(stats[2].null_count, 7);
+        assert!(stats.iter().enumerate().all(|(i, task_column_stats)| {
+            task_column_stats.column as usize == i
+                // TODO : NDV should be empty until implemented
+                && task_column_stats.hll_sketch.is_empty()
+        }));
     }
 }

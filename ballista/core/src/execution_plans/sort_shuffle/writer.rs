@@ -368,6 +368,11 @@ impl SortShuffleWriterExec {
                 }
             }
 
+            // Column stats (null counts) are collected only on the hash-repartition
+            // path in `ShuffleWriterExec`. This sort-based path returns empty, so a
+            // downstream consumer will see stats for some stages and none for others
+            // — coverage is intentionally partial.
+            // TODO: compute task stats for the sort_shuffle stage.
             Ok(ShuffleWriteResult {
                 partitions: results,
                 column_stats: vec![],
