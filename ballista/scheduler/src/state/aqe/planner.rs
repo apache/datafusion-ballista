@@ -31,6 +31,7 @@ use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionContext;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -87,6 +88,7 @@ impl AdaptivePlanner {
     /// # Arguments:
     ///
     /// * `session_config` - The session configuration for the job.
+    /// * `runtime_env` - runtime environment
     /// * `plan` - The physical execution plan for the job.
     /// * `job_name` - The name of the job.
     /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
@@ -95,12 +97,16 @@ impl AdaptivePlanner {
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
     pub fn try_new_with_optimizers(
         session_config: &SessionConfig,
+        runtime_env: Arc<RuntimeEnv>,
         plan: Arc<dyn ExecutionPlan>,
         job_name: String,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
-        let session_state =
-            Self::create_session_state(session_config, physical_optimizer_rules);
+        let session_state = Self::create_session_state(
+            session_config,
+            runtime_env,
+            physical_optimizer_rules,
+        );
         let planner = DefaultPhysicalPlanner::default();
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
@@ -133,6 +139,7 @@ impl AdaptivePlanner {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
         Self::try_new_with_optimizers(
             session_config,
+            RuntimeEnv::default().into(),
             plan,
             job_name,
             Self::default_optimizers(plan_id_generator),
@@ -159,12 +166,16 @@ impl AdaptivePlanner {
         // running standard set of optimizers, which will
         // after each stage.
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
-        let state = Self::create_session_state(
+        let runtime_env = ctx.runtime_env();
+        let plan_preparation_stage = Self::create_session_state(
             ctx.state().config(),
+            ctx.runtime_env(),
             Self::plan_preparation_optimizers(plan_id_generator.clone()),
         );
 
-        let plan = state.create_physical_plan(logical_plan).await?;
+        let plan = plan_preparation_stage
+            .create_physical_plan(logical_plan)
+            .await?;
 
         // Note: the signature requires a JobId, but we are passing a JobName. The below is a
         // dirty fix but this seems like a bug or a design flaw.
@@ -175,6 +186,7 @@ impl AdaptivePlanner {
 
         Self::try_new_with_optimizers(
             ctx.state().config(),
+            runtime_env,
             plan,
             job_name,
             Self::default_optimizers(plan_id_generator),
@@ -546,11 +558,13 @@ impl AdaptivePlanner {
     /// A new `SessionState` instance.
     fn create_session_state(
         session_config: &SessionConfig,
+        runtime_env: Arc<RuntimeEnv>,
         physical_optimizers: Vec<PhysicalOptimizerRuleRef>,
     ) -> SessionState {
         SessionStateBuilder::new_with_default_features()
             .with_physical_optimizer_rules(physical_optimizers)
             .with_config(session_config.clone())
+            .with_runtime_env(runtime_env)
             .build()
     }
     /// Recursively finds runnable exchanges in the execution plan.
