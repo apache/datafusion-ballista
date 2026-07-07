@@ -656,6 +656,7 @@ mod tests {
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
+    use prost::Message;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -876,5 +877,19 @@ mod tests {
                 // TODO : NDV should be empty until implemented
                 && task_column_stats.hll_sketch.is_empty()
         }));
+    }
+
+    #[test]
+    fn task_column_stats_proto_round_trip() {
+        let original = TaskColumnStats {
+            column: 2,
+            null_count: 42,
+            hll_sketch: vec![],
+        };
+        let mut buf = Vec::new();
+        original.encode(&mut buf).unwrap();
+        let decoded = TaskColumnStats::decode(&buf[..]).unwrap();
+
+        assert_eq!(original, decoded);
     }
 }
