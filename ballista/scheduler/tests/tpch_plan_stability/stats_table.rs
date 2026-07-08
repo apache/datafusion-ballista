@@ -25,7 +25,9 @@ use datafusion::common::{Result, Statistics};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, SchedulingType};
+use datafusion::physical_plan::execution_plan::{
+    Boundedness, EmissionType, SchedulingType,
+};
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -101,7 +103,8 @@ impl ExecutionPlan for StatsExec {
     }
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
         Ok(Arc::new(
-            Statistics::new_unknown(&self.schema).with_num_rows(Precision::Inexact(self.num_rows)),
+            Statistics::new_unknown(&self.schema)
+                .with_num_rows(Precision::Inexact(self.num_rows)),
         ))
     }
 }
@@ -141,6 +144,9 @@ impl TableProvider for TpchStatsTable {
         Ok(Arc::new(StatsExec::new(schema, self.num_rows)))
     }
     fn statistics(&self) -> Option<Statistics> {
-        Some(Statistics::new_unknown(&self.schema).with_num_rows(Precision::Inexact(self.num_rows)))
+        Some(
+            Statistics::new_unknown(&self.schema)
+                .with_num_rows(Precision::Inexact(self.num_rows)),
+        )
     }
 }

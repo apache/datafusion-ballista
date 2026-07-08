@@ -144,7 +144,8 @@ pub fn tpch_schema(table: &str) -> Schema {
 }
 
 fn make_ctx() -> SessionContext {
-    let config = SessionConfig::new_with_ballista().with_target_partitions(TARGET_PARTITIONS);
+    let config =
+        SessionConfig::new_with_ballista().with_target_partitions(TARGET_PARTITIONS);
     let ctx = SessionContext::new_with_config(config);
     for (table, rows) in SF100_ROWS {
         let schema = Arc::new(tpch_schema(table));
@@ -165,8 +166,8 @@ pub async fn staged_plan_text(query_name: &str) -> String {
         "{}/tests/tpch_plan_stability/queries/{query_name}.sql",
         env!("CARGO_MANIFEST_DIR")
     );
-    let sql =
-        std::fs::read_to_string(&sql_path).unwrap_or_else(|e| panic!("read {sql_path}: {e}"));
+    let sql = std::fs::read_to_string(&sql_path)
+        .unwrap_or_else(|e| panic!("read {sql_path}: {e}"));
 
     let ctx = make_ctx();
 

@@ -31,8 +31,11 @@ use stats_table::TpchStatsTable;
 async fn stats_table_reports_injected_rows() {
     let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
     let ctx = SessionContext::new();
-    ctx.register_table("t", Arc::new(TpchStatsTable::new(Arc::clone(&schema), 12_345)))
-        .unwrap();
+    ctx.register_table(
+        "t",
+        Arc::new(TpchStatsTable::new(Arc::clone(&schema), 12_345)),
+    )
+    .unwrap();
 
     let plan = ctx
         .sql("SELECT a FROM t")
@@ -104,6 +107,6 @@ macro_rules! plan_stability_test {
 }
 
 plan_stability_test!(
-    q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12,
-    q13, q14, q15, q16, q17, q18, q19, q20, q21, q22
+    q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16, q17, q18, q19,
+    q20, q21, q22
 );
