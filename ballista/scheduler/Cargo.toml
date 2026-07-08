@@ -79,6 +79,10 @@ tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }
 
+[[test]]
+name = "tpch_plan_stability"
+path = "tests/tpch_plan_stability/main.rs"
+
 [dev-dependencies]
 rstest = { workspace = true }
 
