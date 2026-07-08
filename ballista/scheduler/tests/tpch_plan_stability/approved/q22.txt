@@ -1,0 +1,35 @@
+=== Stage 1 ===
+SortShuffleWriterExec: partitioning=Hash([c_custkey@0], 16)
+  FilterExec: substr(c_phone@1, 1, 2) IN (SET) ([13, 31, 23, 29, 30, 18, 17])
+    StatsExec: rows=15000000
+
+=== Stage 2 ===
+SortShuffleWriterExec: partitioning=Hash([o_custkey@0], 16)
+  StatsExec: rows=150000000
+
+=== Stage 3 ===
+SortShuffleWriterExec: partitioning=Hash([cntrycode@0], 16)
+  AggregateExec: mode=Partial, gby=[cntrycode@0 as cntrycode], aggr=[count(Int64(1)), sum(custsale.c_acctbal)]
+    ProjectionExec: expr=[substr(c_phone@1, 1, 2) as cntrycode, c_acctbal@2 as c_acctbal]
+      NestedLoopJoinExec: join_type=Inner, filter=join_proj_push_down_1@1 > avg(customer.c_acctbal)@0, projection=[avg(customer.c_acctbal)@0, c_phone@1, c_acctbal@2]
+        AggregateExec: mode=Single, gby=[], aggr=[avg(customer.c_acctbal)]
+          FilterExec: c_acctbal@1 > Some(0),15,2 AND substr(c_phone@0, 1, 2) IN (SET) ([13, 31, 23, 29, 30, 18, 17]), projection=[c_acctbal@1]
+            StatsExec: rows=15000000
+        ProjectionExec: expr=[c_phone@1 as c_phone, c_acctbal@2 as c_acctbal, CAST(c_acctbal@2 AS Decimal128(19, 6)) as join_proj_push_down_1]
+          SortMergeJoinExec: join_type=LeftAnti, on=[(c_custkey@0, o_custkey@0)]
+            SortExec: expr=[c_custkey@0 ASC], preserve_partitioning=[true]
+              UnresolvedShuffleExec: partitioning: Hash([c_custkey@0], 16)
+            SortExec: expr=[o_custkey@0 ASC], preserve_partitioning=[true]
+              UnresolvedShuffleExec: partitioning: Hash([o_custkey@0], 16)
+
+=== Stage 4 ===
+ShuffleWriterExec: partitioning: None
+  SortExec: expr=[cntrycode@0 ASC NULLS LAST], preserve_partitioning=[true]
+    ProjectionExec: expr=[cntrycode@0 as cntrycode, count(Int64(1))@1 as numcust, sum(custsale.c_acctbal)@2 as totacctbal]
+      AggregateExec: mode=FinalPartitioned, gby=[cntrycode@0 as cntrycode], aggr=[count(Int64(1)), sum(custsale.c_acctbal)]
+        UnresolvedShuffleExec: partitioning: Hash([cntrycode@0], 16)
+
+=== Stage 5 ===
+ShuffleWriterExec: partitioning: None
+  SortPreservingMergeExec: [cntrycode@0 ASC NULLS LAST]
+    UnresolvedShuffleExec: partitioning: Hash([cntrycode@0], 16)
