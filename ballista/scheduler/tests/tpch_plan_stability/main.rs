@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod fixtures;
 mod stats_table;
 
 use std::sync::Arc;
@@ -42,4 +43,27 @@ async fn stats_table_reports_injected_rows() {
 
     let stats = plan.partition_statistics(None).unwrap();
     assert_eq!(stats.num_rows, Precision::Inexact(12_345));
+}
+
+#[tokio::test]
+async fn staged_plan_text_is_nonempty_and_shuffled() {
+    let text = fixtures::staged_plan_text("q1").await;
+    assert!(
+        text.contains("ShuffleWriterExec"),
+        "q1 plan should contain shuffle stages:\n{text}"
+    );
+    assert!(
+        !text.contains("plan_stability"),
+        "job id should be normalized out"
+    );
+    assert!(text.contains("=== Stage"), "stage banners present");
+}
+
+#[tokio::test]
+async fn multi_statement_q15_plans() {
+    let text = fixtures::staged_plan_text("q15").await;
+    assert!(
+        text.contains("=== Stage"),
+        "q15 (create/select/drop view) should plan:\n{text}"
+    );
 }

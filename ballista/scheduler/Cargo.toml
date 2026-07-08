@@ -84,6 +84,7 @@ name = "tpch_plan_stability"
 path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
+regex = "1"
 rstest = { workspace = true }
 
 [build-dependencies]

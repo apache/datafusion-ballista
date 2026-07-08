@@ -1195,6 +1195,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand 0.10.1",
+ "regex",
  "rstest",
  "serde",
  "tokio",
