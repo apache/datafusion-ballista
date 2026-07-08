@@ -742,7 +742,8 @@ impl ShuffleReadMetrics {
                 .subset_time("local_read_time", partition),
             permit_wait_time: MetricBuilder::new(metrics)
                 .subset_time("permit_wait_time", partition),
-            decoded_bytes: MetricBuilder::new(metrics).counter("decoded_bytes", partition),
+            decoded_bytes: MetricBuilder::new(metrics)
+                .counter("decoded_bytes", partition),
             fetch_requests: MetricBuilder::new(metrics)
                 .counter("fetch_requests", partition),
             fetch_retries: MetricBuilder::new(metrics)
@@ -1805,9 +1806,8 @@ mod tests {
         assert_eq!(partition_num, result.len());
 
         let metrics = metrics_set.clone_inner();
-        let count = |name: &str| {
-            metrics.sum_by_name(name).map(|v| v.as_usize()).unwrap_or(0)
-        };
+        let count =
+            |name: &str| metrics.sum_by_name(name).map(|v| v.as_usize()).unwrap_or(0);
         assert_eq!(count("local_partitions"), partition_num);
         assert_eq!(count("remote_partitions"), 0);
         assert!(
@@ -1838,11 +1838,15 @@ mod tests {
 
         let metrics = metrics_set.clone_inner();
         assert_eq!(
-            metrics.sum_by_name("remote_partitions").map(|v| v.as_usize()),
+            metrics
+                .sum_by_name("remote_partitions")
+                .map(|v| v.as_usize()),
             Some(2)
         );
         assert_eq!(
-            metrics.sum_by_name("local_partitions").map(|v| v.as_usize()),
+            metrics
+                .sum_by_name("local_partitions")
+                .map(|v| v.as_usize()),
             Some(0)
         );
     }

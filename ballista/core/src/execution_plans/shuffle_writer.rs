@@ -691,6 +691,10 @@ mod tests {
             rendered.contains("metrics="),
             "expected child-operator metrics in rendered plan:\n{rendered}"
         );
+        assert!(
+            rendered.contains("elapsed_compute"),
+            "expected populated elapsed_compute metric in rendered plan:\n{rendered}"
+        );
         Ok(())
     }
 
