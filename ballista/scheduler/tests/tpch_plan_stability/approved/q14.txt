@@ -1,0 +1,25 @@
+=== Stage 1 ===
+SortShuffleWriterExec: partitioning=Hash([l_partkey@0], 16)
+  FilterExec: l_shipdate@3 >= 1995-09-01 AND l_shipdate@3 < 1995-10-01, projection=[l_partkey@0, l_extendedprice@1, l_discount@2]
+    StatsExec: rows=600037902
+
+=== Stage 2 ===
+SortShuffleWriterExec: partitioning=Hash([p_partkey@0], 16)
+  StatsExec: rows=20000000
+
+=== Stage 3 ===
+ShuffleWriterExec: partitioning: None
+  AggregateExec: mode=Partial, gby=[], aggr=[sum(CASE WHEN part.p_type LIKE PROMO% THEN __common_expr_1 ELSE Some(0),38,4 END) as sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END), sum(__common_expr_1) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+    ProjectionExec: expr=[l_extendedprice@1 * (Some(1),20,0 - l_discount@2) as __common_expr_1, p_type@4 as p_type]
+      SortMergeJoinExec: join_type=Inner, on=[(l_partkey@0, p_partkey@0)]
+        SortExec: expr=[l_partkey@0 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: partitioning: Hash([l_partkey@0], 16)
+        SortExec: expr=[p_partkey@0 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: partitioning: Hash([p_partkey@0], 16)
+
+=== Stage 4 ===
+ShuffleWriterExec: partitioning: None
+  ProjectionExec: expr=[100 * CAST(sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END)@0 AS Float64) / CAST(sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 AS Float64) as promo_revenue]
+    AggregateExec: mode=Final, gby=[], aggr=[sum(CASE WHEN part.p_type LIKE PROMO% THEN __common_expr_1 ELSE Some(0),38,4 END) as sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END), sum(__common_expr_1) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+      CoalescePartitionsExec
+        UnresolvedShuffleExec: partitioning: Hash([p_partkey@3], 16)
