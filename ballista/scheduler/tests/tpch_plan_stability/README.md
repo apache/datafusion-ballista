@@ -32,10 +32,9 @@ shuffle/stage boundaries, or broadcast decisions.
 Scope: TPC-H only, static planner, Ballista default config (SortMergeJoin).
 Tables are dataless providers with injected SF100 cardinalities (`fixtures.rs`).
 
-Query SQL under `queries/` is copied verbatim from `benchmarks/queries/` so the
-suite is self-contained (the scheduler crate does not depend on the benchmark
-binary). The copies are a frozen snapshot; if `benchmarks/queries/` changes, update
-these to match and regenerate the approved plans.
+Query SQL is read directly from the canonical `benchmarks/queries/` at test time
+(not copied), so a change to a benchmark query flows into the planned plan and
+surfaces as a golden diff, prompting a deliberate regeneration.
 
 ## CI coverage
 
@@ -43,14 +42,11 @@ This suite is registered as a `[[test]]` target in `ballista/scheduler/Cargo.tom
 (`tpch_plan_stability`), so it already runs wherever CI exercises the workspace's
 default cargo tests — no dedicated job was added:
 
-- `.github/workflows/rust.yml` → `linux-test` (`cargo test --profile ci
-  --features=testcontainers`) and `macos-test` (`cargo test --profile ci
-  --locked`) both run from the workspace root without `-p`/`--workspace`
+- `.github/workflows/rust.yml` → `linux-test` (`cargo test --profile ci --features=testcontainers`) and `macos-test` (`cargo test --profile ci --locked`) both run from the workspace root without `-p`/`--workspace`
   scoping. Since the root `Cargo.toml` sets no `default-members`, this tests
   every workspace member, including `ballista-scheduler`, which picks up this
   target automatically.
-- `.github/workflows/rust.yml` → `clippy` already runs `cargo clippy
-  --all-targets --package ballista-scheduler --all-features -- -D warnings`,
+- `.github/workflows/rust.yml` → `clippy` already runs `cargo clippy --all-targets --package ballista-scheduler --all-features -- -D warnings`,
   which lints this test target too.
 - `.github/workflows/rust.yml` → `lint` runs `cargo fmt --all -- --check`,
   which covers these files as well.
@@ -60,5 +56,4 @@ compares their exact bytes), so they are excluded from the Apache RAT license
 check in `.github/workflows/dev.yml` via
 `ballista/scheduler/tests/tpch_plan_stability/approved/*` in
 `dev/release/rat_exclude_files.txt` — mirroring the existing
-`ballista/scheduler/testdata/*` exclusion. The `queries/*.sql` copies are covered
-by the pre-existing `**/*.sql` RAT exclusion.
+`ballista/scheduler/testdata/*` exclusion.

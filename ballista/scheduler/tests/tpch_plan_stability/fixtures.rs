@@ -162,8 +162,10 @@ fn is_query_stmt(stmt: &str) -> bool {
 
 /// Produce the normalized distributed staged-plan text for a TPC-H query.
 pub async fn staged_plan_text(query_name: &str) -> String {
+    // Read the query SQL directly from the canonical benchmark location rather
+    // than a copy, so a change to a benchmark query surfaces as a golden diff.
     let sql_path = format!(
-        "{}/tests/tpch_plan_stability/queries/{query_name}.sql",
+        "{}/../../benchmarks/queries/{query_name}.sql",
         env!("CARGO_MANIFEST_DIR")
     );
     let sql = std::fs::read_to_string(&sql_path)
