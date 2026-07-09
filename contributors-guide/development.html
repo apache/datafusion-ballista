@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -422,6 +422,28 @@ bottom right corner of the IDE.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span><span class="nb">test</span>
 </pre></div>
 </div>
+<section id="tpc-h-plan-stability-golden-files">
+<h3>TPC-H plan-stability golden files<a class="headerlink" href="#tpc-h-plan-stability-golden-files" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">tpch_plan_stability</span></code> test suite in the <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> crate guards the shape of the
+distributed physical plans that Ballista produces for the 22 TPC-H queries. For each query it plans
+the SQL and compares the staged plan text — the stage boundaries (<code class="docutils literal notranslate"><span class="pre">===</span> <span class="pre">Stage</span> <span class="pre">N</span> <span class="pre">===</span></code> banners),
+<code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> / <code class="docutils literal notranslate"><span class="pre">UnresolvedShuffleExec</span></code> nodes, and any exchange reuse — against an approved
+“golden” file. The queries are planned against a synthetic statistics-only table, so the suite is
+deterministic and runs without TPC-H data or a running cluster.</p>
+<p>The golden files live in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/tests/tpch_plan_stability/approved"><code class="docutils literal notranslate"><span class="pre">ballista/scheduler/tests/tpch_plan_stability/approved/</span></code></a>
+(<code class="docutils literal notranslate"><span class="pre">q1.txt</span></code> through <code class="docutils literal notranslate"><span class="pre">q22.txt</span></code>). When a change alters distributed planning, the suite fails with a
+plan-drift diff. Review the diff: if the change is unintended, fix the regression; if the new plans
+are correct, regenerate the golden files:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/update-tpch-plan-stability.sh
+</pre></div>
+</div>
+<p>This runs the suite in generate mode
+(<code class="docutils literal notranslate"><span class="pre">BALLISTA_GENERATE_GOLDEN=1</span> <span class="pre">cargo</span> <span class="pre">test</span> <span class="pre">-p</span> <span class="pre">ballista-scheduler</span> <span class="pre">--test</span> <span class="pre">tpch_plan_stability</span></code>) and
+rewrites the approved files. Review the resulting changes under
+<code class="docutils literal notranslate"><span class="pre">ballista/scheduler/tests/tpch_plan_stability/approved/</span></code> and commit them together with the code
+change that caused them.</p>
+</section>
 </section>
 <section id="running-the-examples">
 <h2>Running the examples<a class="headerlink" href="#running-the-examples" title="Link to this heading">#</a></h2>
@@ -567,7 +589,10 @@ complete for the next release.</p>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#development-environment">Development Environment</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-the-project">Build the project</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-the-project">Testing the project</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-the-project">Testing the project</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tpc-h-plan-stability-golden-files">TPC-H plan-stability golden files</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-examples">Running the examples</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-the-python-client-from-source">Building the Python Client from Source</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
@@ -619,8 +644,8 @@ complete for the next release.</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">
