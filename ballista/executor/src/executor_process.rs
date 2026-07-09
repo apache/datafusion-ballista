@@ -728,7 +728,7 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
         }
     }
 
-    info!("The work_dir {:?} will be deleted", &to_deleted);
+    info!("The work_dir {:?} will be deleted", to_deleted);
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
             error!("Fail to remove the directory {del:?} due to {e}");
