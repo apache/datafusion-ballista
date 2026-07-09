@@ -614,7 +614,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
         .split(',')
         .map(|s| s.parse().unwrap())
         .collect();
-    println!("query list: {:?} ", &query_list);
+    println!("query list: {:?} ", query_list);
 
     let total = Instant::now();
     let mut futures = vec![];
@@ -636,7 +636,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                         .unwrap();
                 println!(
                     "Client {} Round {} Query {} started",
-                    &client_id, &i, query_id
+                    client_id, i, query_id
                 );
                 let start = Instant::now();
                 let df = client
@@ -652,7 +652,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 println!(
                     "Client {} Round {} Query {} took {:.1} ms ",
-                    &client_id, &i, query_id, elapsed
+                    client_id, i, query_id, elapsed
                 );
                 if opt.debug && !batches.is_empty() {
                     pretty::print_batches(&batches).unwrap();
@@ -945,7 +945,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
 
         println!(
             "Converting '{}' to {} files in directory '{}'",
-            &input_path, &opt.file_format, &output_path
+            input_path, opt.file_format, output_path
         );
         match opt.file_format.as_str() {
             "csv" => ctx.write_csv(csv, output_path).await?,
