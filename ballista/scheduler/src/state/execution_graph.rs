@@ -32,6 +32,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
 };
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedJob, ShuffleWritePartition, job_status};
@@ -44,6 +45,7 @@ use ballista_core::serde::scheduler::{
 };
 
 use crate::display::print_stage_metrics;
+use crate::physical_optimizer::reuse_exchange::{Canonicalizer, reuse_shuffle_stages};
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
@@ -325,8 +327,47 @@ impl StaticExecutionGraph {
         planner: &mut dyn DistributedPlanner,
         logical_plan: Option<String>,
     ) -> Result<Self> {
+        Self::new_with_reuse(
+            scheduler_id,
+            job_id,
+            job_name,
+            session_id,
+            plan,
+            queued_at,
+            session_config,
+            planner,
+            logical_plan,
+            None,
+        )
+    }
+
+    /// Like [`Self::new`], but additionally accepts a `reuse_canonical` closure
+    /// used to deduplicate structurally-identical shuffle exchange stages when
+    /// `ballista.optimizer.reuse_exchange_enabled` is set on `session_config`.
+    /// Passing `None` (or leaving the config flag unset) preserves the exact
+    /// behavior of `new`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_reuse(
+        scheduler_id: &str,
+        job_id: &JobId,
+        job_name: &str,
+        session_id: &str,
+        plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
+        session_config: Arc<SessionConfig>,
+        planner: &mut dyn DistributedPlanner,
+        logical_plan: Option<String>,
+        reuse_canonical: Option<&Canonicalizer<'_>>,
+    ) -> Result<Self> {
         let shuffle_stages =
             planner.plan_query_stages(job_id, plan.clone(), session_config.options())?;
+
+        let shuffle_stages = match reuse_canonical {
+            Some(canonical) if session_config.ballista_reuse_exchange_enabled() => {
+                reuse_shuffle_stages(shuffle_stages, session_config.options(), canonical)?
+            }
+            _ => shuffle_stages,
+        };
 
         let builder = ExecutionStageBuilder::new(session_config.clone());
         let stages = builder.build(shuffle_stages)?;

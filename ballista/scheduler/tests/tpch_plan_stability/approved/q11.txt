@@ -33,22 +33,9 @@ ShuffleWriterExec: partitioning: None
           UnresolvedShuffleExec: stage=2, broadcast=true, upstream_partitions: 16
           UnresolvedShuffleExec: stage=5, partitioning: Hash([s_nationkey@2], 16)
 
-=== Stage 7 ===
-SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
-  FilterExec: n_name@1 = GERMANY, projection=[n_nationkey@0]
-    StatsExec: rows=25
-
-=== Stage 8 ===
-ShuffleWriterExec: partitioning: None
-  UnresolvedShuffleExec: stage=7, partitioning: Hash([n_nationkey@0], 16)
-
 === Stage 9 ===
 SortShuffleWriterExec: partitioning=Hash([ps_suppkey@1], 16)
   StatsExec: rows=80000000
-
-=== Stage 10 ===
-SortShuffleWriterExec: partitioning=Hash([s_suppkey@0], 16)
-  StatsExec: rows=1000000
 
 === Stage 11 ===
 SortShuffleWriterExec: partitioning=Hash([s_nationkey@3], 16)
@@ -57,7 +44,7 @@ SortShuffleWriterExec: partitioning=Hash([s_nationkey@3], 16)
       SortExec: expr=[ps_suppkey@1 ASC], preserve_partitioning=[true]
         UnresolvedShuffleExec: stage=9, partitioning: Hash([ps_suppkey@1], 16)
       SortExec: expr=[s_suppkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=10, partitioning: Hash([s_suppkey@0], 16)
+        UnresolvedShuffleExec: stage=4, partitioning: Hash([s_suppkey@0], 16)
 
 === Stage 12 ===
 SortShuffleWriterExec: partitioning=Hash([ps_partkey@0], 16)
@@ -65,7 +52,7 @@ SortShuffleWriterExec: partitioning=Hash([ps_partkey@0], 16)
     ProjectionExec: expr=[ps_partkey@0 as ps_partkey, ps_availqty@1 as ps_availqty, ps_supplycost@2 as ps_supplycost]
       ProjectionExec: expr=[ps_partkey@1 as ps_partkey, ps_availqty@2 as ps_availqty, ps_supplycost@3 as ps_supplycost, s_nationkey@4 as s_nationkey, n_nationkey@0 as n_nationkey]
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@3)]
-          UnresolvedShuffleExec: stage=8, broadcast=true, upstream_partitions: 16
+          UnresolvedShuffleExec: stage=2, broadcast=true, upstream_partitions: 16
           UnresolvedShuffleExec: stage=11, partitioning: Hash([s_nationkey@3], 16)
 
 === Stage 13 ===
