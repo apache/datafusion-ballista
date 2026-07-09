@@ -127,7 +127,7 @@ where
                         if let Err(e) =
                             remove_job_data(&work_dir, &job_id, &remove_stage_ids).await
                         {
-                            error!("failed to remove job dir {job_id}: {e}");
+                            error!("failed to remove job data {job_id}: {e}");
                         }
                     });
                 }
