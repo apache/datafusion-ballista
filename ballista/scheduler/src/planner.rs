@@ -800,11 +800,11 @@ mod test {
           SortExec: expr=[l_returnflag@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_returnflag@0 as l_returnflag, sum(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
               AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
-                UnresolvedShuffleExec: partitioning: Hash([l_returnflag@0], 2)
+                UnresolvedShuffleExec: stage=1, partitioning: Hash([l_returnflag@0], 2)
 
         ShuffleWriterExec: partitioning: None
           SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
-            UnresolvedShuffleExec: partitioning: Hash([l_returnflag@0], 2)
+            UnresolvedShuffleExec: stage=2, partitioning: Hash([l_returnflag@0], 2)
         */
 
         assert_eq!(3, stages.len());
@@ -918,18 +918,18 @@ order by
         ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
           AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
             HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
-              UnresolvedShuffleExec: partitioning: Hash([l_orderkey@0], 2)
-              UnresolvedShuffleExec: partitioning: Hash([o_orderkey@0], 2)
+              UnresolvedShuffleExec: stage=1, partitioning: Hash([l_orderkey@0], 2)
+              UnresolvedShuffleExec: stage=2, partitioning: Hash([o_orderkey@0], 2)
 
         ShuffleWriterExec: partitioning: None
           SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
             AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-              UnresolvedShuffleExec: partitioning: Hash([l_shipmode@0], 2)
+              UnresolvedShuffleExec: stage=3, partitioning: Hash([l_shipmode@0], 2)
 
         ShuffleWriterExec: partitioning: None
           SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
-            UnresolvedShuffleExec: partitioning: Hash([l_shipmode@0], 2)
+            UnresolvedShuffleExec: stage=4, partitioning: Hash([l_shipmode@0], 2)
         */
 
         assert_eq!(5, stages.len());
@@ -1099,13 +1099,13 @@ order by
 
         // Stage 1 holds the join: a broadcast CollectLeft hash join, no
         // SortMergeJoinExec and no SortExec.
-        assert_plan!(stages[1].as_ref(), @r"
+        assert_plan!(stages[1].as_ref(), @"
         ShuffleWriterExec: partitioning: None
           AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
             ProjectionExec: expr=[]
               ProjectionExec: expr=[k@1 as k, k@0 as k]
                 HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(k@0, k@0)]
-                  UnresolvedShuffleExec: broadcast=true, upstream_partitions: 1
+                  UnresolvedShuffleExec: stage=1, broadcast=true, upstream_partitions: 1
                   DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
@@ -1647,12 +1647,12 @@ order by
                 FilterExec: rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 <= 100
                   BoundedWindowAggExec: wdw=[rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
                     SortExec: expr=[l_shipmode@1 ASC NULLS LAST, l_shipdate@0 DESC], preserve_partitioning=[true]
-                      UnresolvedShuffleExec: partitioning: Hash([l_shipmode@1], 2)
+                      UnresolvedShuffleExec: stage=1, partitioning: Hash([l_shipmode@1], 2)
 
             Stage 2:
             ShuffleWriterExec: partitioning: None
               SortPreservingMergeExec: [l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST]
-                UnresolvedShuffleExec: partitioning: Hash([l_shipmode@0], 2)
+                UnresolvedShuffleExec: stage=2, partitioning: Hash([l_shipmode@0], 2)
 
         */
 

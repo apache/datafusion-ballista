@@ -13,9 +13,9 @@ SortShuffleWriterExec: partitioning=Hash([o_orderkey@0], 16)
   ProjectionExec: expr=[o_orderkey@1 as o_orderkey, o_orderdate@3 as o_orderdate, o_shippriority@4 as o_shippriority]
     SortMergeJoinExec: join_type=Inner, on=[(c_custkey@0, o_custkey@1)]
       SortExec: expr=[c_custkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: partitioning: Hash([c_custkey@0], 16)
+        UnresolvedShuffleExec: stage=1, partitioning: Hash([c_custkey@0], 16)
       SortExec: expr=[o_custkey@1 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: partitioning: Hash([o_custkey@1], 16)
+        UnresolvedShuffleExec: stage=2, partitioning: Hash([o_custkey@1], 16)
 
 === Stage 4 ===
 SortShuffleWriterExec: partitioning=Hash([l_orderkey@0], 16)
@@ -30,11 +30,11 @@ ShuffleWriterExec: partitioning: None
         ProjectionExec: expr=[o_orderdate@1 as o_orderdate, o_shippriority@2 as o_shippriority, l_orderkey@3 as l_orderkey, l_extendedprice@4 as l_extendedprice, l_discount@5 as l_discount]
           SortMergeJoinExec: join_type=Inner, on=[(o_orderkey@0, l_orderkey@0)]
             SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
-              UnresolvedShuffleExec: partitioning: Hash([o_orderkey@0], 16)
+              UnresolvedShuffleExec: stage=3, partitioning: Hash([o_orderkey@0], 16)
             SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-              UnresolvedShuffleExec: partitioning: Hash([l_orderkey@0], 16)
+              UnresolvedShuffleExec: stage=4, partitioning: Hash([l_orderkey@0], 16)
 
 === Stage 6 ===
 ShuffleWriterExec: partitioning: None
   SortPreservingMergeExec: [revenue@1 DESC, o_orderdate@2 ASC NULLS LAST], fetch=10
-    UnresolvedShuffleExec: partitioning: Hash([l_orderkey@0], 16)
+    UnresolvedShuffleExec: stage=5, partitioning: Hash([l_orderkey@0], 16)
