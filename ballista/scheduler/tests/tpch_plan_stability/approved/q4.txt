@@ -14,18 +14,18 @@ SortShuffleWriterExec: partitioning=Hash([o_orderpriority@0], 16)
     ProjectionExec: expr=[o_orderpriority@1 as o_orderpriority]
       SortMergeJoinExec: join_type=LeftSemi, on=[(o_orderkey@0, l_orderkey@0)]
         SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
-          UnresolvedShuffleExec: partitioning: Hash([o_orderkey@0], 16)
+          UnresolvedShuffleExec: stage=1, partitioning: Hash([o_orderkey@0], 16)
         SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-          UnresolvedShuffleExec: partitioning: Hash([l_orderkey@0], 16)
+          UnresolvedShuffleExec: stage=2, partitioning: Hash([l_orderkey@0], 16)
 
 === Stage 4 ===
 ShuffleWriterExec: partitioning: None
   SortExec: expr=[o_orderpriority@0 ASC NULLS LAST], preserve_partitioning=[true]
     ProjectionExec: expr=[o_orderpriority@0 as o_orderpriority, count(Int64(1))@1 as order_count]
       AggregateExec: mode=FinalPartitioned, gby=[o_orderpriority@0 as o_orderpriority], aggr=[count(Int64(1))]
-        UnresolvedShuffleExec: partitioning: Hash([o_orderpriority@0], 16)
+        UnresolvedShuffleExec: stage=3, partitioning: Hash([o_orderpriority@0], 16)
 
 === Stage 5 ===
 ShuffleWriterExec: partitioning: None
   SortPreservingMergeExec: [o_orderpriority@0 ASC NULLS LAST]
-    UnresolvedShuffleExec: partitioning: Hash([o_orderpriority@0], 16)
+    UnresolvedShuffleExec: stage=4, partitioning: Hash([o_orderpriority@0], 16)
