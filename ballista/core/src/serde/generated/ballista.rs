@@ -1188,6 +1188,10 @@ pub struct CancelJobResult {
 pub struct CleanJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
+    /// Specific stage ids to remove within the job dir.
+    /// Empty means remove the whole job dir (legacy behavior).
+    #[prost(uint32, repeated, tag = "2")]
+    pub remove_stage_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CleanJobDataResult {}
@@ -1233,6 +1237,10 @@ pub struct CancelTasksResult {
 pub struct RemoveJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
+    /// Specific stage ids to remove within the job dir.
+    /// Empty means remove the whole job dir (legacy behavior).
+    #[prost(uint32, repeated, tag = "2")]
+    pub remove_stage_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveJobDataResult {}
