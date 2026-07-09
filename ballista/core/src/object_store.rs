@@ -145,7 +145,7 @@ impl ObjectStoreRegistry for CustomObjectStoreRegistry {
 
     fn get_store(&self, url: &Url) -> Result<Arc<dyn ObjectStore>> {
         let scheme = url.scheme();
-        log::trace!("get_store: {:?}", &self.s3options.config.read());
+        log::trace!("get_store: {:?}", self.s3options.config.read());
         match scheme {
             "" | "file" => Ok(self.local.clone()),
             "http" | "https" => Ok(Arc::new(
