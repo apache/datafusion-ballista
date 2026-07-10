@@ -39,10 +39,11 @@ use crate::execution_plans::create_shuffle_path;
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use crate::serde::scheduler::PartitionStats;
 use datafusion::arrow::array::{
-    ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
+    Array, ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder,
+    UInt64Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
@@ -126,6 +127,38 @@ struct ShuffleWriteMetrics {
     output_rows: metrics::Count,
 }
 
+/// ShuffleWriteResult represents the payload sent back to scheduler. This essentially consists of
+/// shuffle write partition information along with the column stats potentially useful for AQE
+#[derive(Debug, Clone)]
+pub struct ShuffleWriteResult {
+    /// partition shuffle write information
+    pub partitions: Vec<ShuffleWritePartition>,
+    /// column stats folded across all partitions for each column
+    pub column_stats: Vec<TaskColumnStats>,
+}
+
+/// Fold the per-column null counts of `batch` into `null_counts` (indexed by column position).
+/// Shared by every shuffle-write path so stats are collected consistently.
+pub(crate) fn accumulate_null_counts(null_counts: &mut [u64], batch: &RecordBatch) {
+    for (i, col) in batch.columns().iter().enumerate() {
+        null_counts[i] += col.null_count() as u64;
+    }
+}
+
+/// Convert folded per-column null counts into the wire representation sent to the scheduler.
+/// `hll_sketch` is left empty until NDV (HyperLogLog) collection is implemented.
+pub(crate) fn null_counts_to_column_stats(null_counts: Vec<u64>) -> Vec<TaskColumnStats> {
+    null_counts
+        .into_iter()
+        .enumerate()
+        .map(|(column, null_count)| TaskColumnStats {
+            column: column as u32,
+            null_count,
+            hll_sketch: vec![], // TODO : collect NDV
+        })
+        .collect()
+}
+
 impl ShuffleWriteMetrics {
     fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
@@ -204,7 +237,7 @@ impl ShuffleWriterExec {
         self,
         input_partition: usize,
         context: Arc<TaskContext>,
-    ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
+    ) -> impl Future<Output = Result<ShuffleWriteResult>> {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
@@ -256,15 +289,21 @@ impl ShuffleWriterExec {
                         now.elapsed().as_secs(),
                         stats
                     );
-
-                    Ok(vec![ShuffleWritePartition {
-                        partition_id: input_partition as u64,
-                        num_batches: stats.num_batches.unwrap_or(0),
-                        num_rows: stats.num_rows.unwrap_or(0),
-                        num_bytes: stats.num_bytes.unwrap_or(0),
-                        file_id: None,
-                        is_sort_shuffle: false,
-                    }])
+                    Ok(ShuffleWriteResult {
+                        partitions: vec![ShuffleWritePartition {
+                            partition_id: input_partition as u64,
+                            num_batches: stats.num_batches.unwrap_or(0),
+                            num_rows: stats.num_rows.unwrap_or(0),
+                            num_bytes: stats.num_bytes.unwrap_or(0),
+                            file_id: None,
+                            is_sort_shuffle: false,
+                        }],
+                        // Column stats (null counts) are collected only on the
+                        // hash-repartition path below; this single-partition path
+                        // returns empty, so downstream stats coverage is partial.
+                        // TODO: collect column stats on the single-partition path.
+                        column_stats: vec![],
+                    })
                 }
 
                 Some(Partitioning::Hash(exprs, num_output_partitions)) => {
@@ -365,10 +404,12 @@ impl ShuffleWriterExec {
                         Ok(part_locs)
                     });
 
+                    let mut null_counts = vec![0u64; stream.schema().fields().len()];
                     let stream_err = loop {
                         match stream.next().await {
                             Some(Ok(batch)) => {
                                 write_metrics.input_rows.add(batch.num_rows());
+                                accumulate_null_counts(&mut null_counts, &batch);
                                 if tx.send(batch).await.is_err() {
                                     break None;
                                 }
@@ -377,20 +418,27 @@ impl ShuffleWriterExec {
                             None => break None,
                         }
                     };
+
                     drop(tx);
 
-                    let write_result = handle.await.map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Shuffle writer task failed: {e}"
-                        ))
-                    })?;
+                    let write_result: std::result::Result<_, DataFusionError> =
+                        handle.await.map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "Shuffle writer task failed: {e}"
+                            ))
+                        })?;
                     if let Some(e) = stream_err {
                         if let Err(write_err) = &write_result {
                             error!("Shuffle writer also failed: {write_err}");
                         }
                         return Err(e);
                     }
-                    write_result
+                    let partitions = write_result?;
+                    let column_stats = null_counts_to_column_stats(null_counts);
+                    Ok(ShuffleWriteResult {
+                        partitions,
+                        column_stats,
+                    })
                 }
 
                 _ => Err(DataFusionError::Execution(
@@ -488,8 +536,9 @@ impl ExecutionPlan for ShuffleWriterExec {
         let fut_stream = self
             .clone()
             .execute_shuffle_write(partition, context)
-            .and_then(move |part_loc| async move {
+            .and_then(move |shuffle_write_result| async move {
                 // build metadata result batch
+                let part_loc = shuffle_write_result.partitions;
                 let num_writers = part_loc.len();
                 let mut partition_builder = UInt32Builder::with_capacity(num_writers);
                 let mut path_builder =
@@ -599,12 +648,15 @@ fn result_schema() -> SchemaRef {
 #[allow(dead_code, unused_imports)] // clippy false positive with local imports
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
+    use datafusion::arrow::array::{
+        Int32Array, StringArray, StructArray, UInt32Array, UInt64Array,
+    };
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
+    use prost::Message;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -791,5 +843,53 @@ mod tests {
             Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
 
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+    }
+
+    fn create_test_batch() -> RecordBatch {
+        let col_a = Int32Array::from(vec![Some(1), None, Some(3)]); // 1 null
+        let col_b = Int32Array::from(vec![None, None, Some(9)]); // 2 nulls
+        RecordBatch::try_from_iter(vec![
+            ("a", Arc::new(col_a) as _),
+            ("b", Arc::new(col_b) as _),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_accumulate_null_counts_sums_per_column() {
+        let mut counts = vec![0u64; 2];
+        accumulate_null_counts(&mut counts, &create_test_batch());
+        assert_eq!(1, counts[0]);
+        assert_eq!(2, counts[1]);
+        accumulate_null_counts(&mut counts, &create_test_batch());
+        assert_eq!(counts, vec![2, 4]);
+    }
+
+    #[test]
+    fn test_right_col_mapping_null_count() {
+        let stats = null_counts_to_column_stats(vec![5, 0, 7]);
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats[0].null_count, 5);
+        assert_eq!(stats[1].null_count, 0);
+        assert_eq!(stats[2].null_count, 7);
+        assert!(stats.iter().enumerate().all(|(i, task_column_stats)| {
+            task_column_stats.column as usize == i
+                // TODO : NDV should be empty until implemented
+                && task_column_stats.hll_sketch.is_empty()
+        }));
+    }
+
+    #[test]
+    fn task_column_stats_proto_round_trip() {
+        let original = TaskColumnStats {
+            column: 2,
+            null_count: 42,
+            hll_sketch: vec![],
+        };
+        let mut buf = Vec::new();
+        original.encode(&mut buf).unwrap();
+        let decoded = TaskColumnStats::decode(&buf[..]).unwrap();
+
+        assert_eq!(original, decoded);
     }
 }

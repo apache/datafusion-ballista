@@ -35,7 +35,7 @@ use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
 use crate::JobId;
-use crate::execution_plans::create_shuffle_path;
+use crate::execution_plans::{ShuffleWriteResult, create_shuffle_path};
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use datafusion::arrow::array::{
@@ -200,7 +200,7 @@ impl SortShuffleWriterExec {
         self,
         input_partition: usize,
         context: Arc<TaskContext>,
-    ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
+    ) -> impl Future<Output = Result<ShuffleWriteResult>> {
         let metrics = SortShuffleWriteMetrics::new(input_partition, &self.metrics);
         let config = self.config.clone();
         let plan = self.plan.clone();
@@ -368,7 +368,15 @@ impl SortShuffleWriterExec {
                 }
             }
 
-            Ok(results)
+            // Column stats (null counts) are collected only on the hash-repartition
+            // path in `ShuffleWriterExec`. This sort-based path returns empty, so a
+            // downstream consumer will see stats for some stages and none for others
+            // — coverage is intentionally partial.
+            // TODO: compute task stats for the sort_shuffle stage.
+            Ok(ShuffleWriteResult {
+                partitions: results,
+                column_stats: vec![],
+            })
         }
     }
 }
@@ -590,8 +598,9 @@ impl ExecutionPlan for SortShuffleWriterExec {
         let fut_stream = self
             .clone()
             .execute_shuffle_write(partition, context)
-            .and_then(move |part_loc| async move {
+            .and_then(move |shuffle_write_result| async move {
                 // Build metadata result batch
+                let part_loc = shuffle_write_result.partitions;
                 let num_writers = part_loc.len();
                 let mut partition_builder = UInt32Builder::with_capacity(num_writers);
                 let mut path_builder =

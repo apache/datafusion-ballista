@@ -23,8 +23,9 @@
 
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
-use ballista_core::serde::protobuf::ShuffleWritePartition;
+use ballista_core::execution_plans::{
+    ShuffleReaderExec, ShuffleWriteResult, ShuffleWriterExec,
+};
 use ballista_core::{JobId, utils};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -80,7 +81,7 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
-    ) -> Result<Vec<ShuffleWritePartition>>;
+    ) -> Result<ShuffleWriteResult>;
 
     /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
@@ -303,7 +304,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
-    ) -> Result<Vec<ShuffleWritePartition>> {
+    ) -> Result<ShuffleWriteResult> {
         match &self.shuffle_writer {
             ShuffleWriterVariant::Hash(writer) => {
                 writer

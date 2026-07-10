@@ -739,6 +739,15 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TaskColumnStats {
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    #[prost(uint64, tag = "2")]
+    pub null_count: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub hll_sketch: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
     #[prost(string, tag = "1")]
@@ -747,6 +756,8 @@ pub struct SuccessfulTask {
     /// so we might want to think about some refactoring of the task definitions
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<ShuffleWritePartition>,
+    #[prost(message, repeated, tag = "3")]
+    pub task_column_stats: ::prost::alloc::vec::Vec<TaskColumnStats>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}

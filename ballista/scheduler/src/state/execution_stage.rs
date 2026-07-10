@@ -15,14 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::ColumnStatistics;
+use datafusion::common::stats::Precision;
+use datafusion::config::ConfigOptions;
+use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use datafusion::config::ConfigOptions;
-use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 //use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -213,6 +214,8 @@ pub struct SuccessfulStage {
     pub stage_metrics: Vec<MetricsSet>,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
+    /// container to store col stats per stage
+    pub output_column_stats: Vec<ColumnStatistics>,
 }
 
 /// If a stage fails, it will be with an error message
@@ -541,6 +544,24 @@ impl RunningStage {
             warn!("The metrics for stage {} should not be none", self.stage_id);
             vec![]
         });
+        let mut output_column_stats: Vec<ColumnStatistics> = vec![];
+        for info in self.task_infos.iter().flatten() {
+            if let task_status::Status::Successful(task_status) = &info.task_status {
+                if output_column_stats.is_empty() {
+                    output_column_stats = vec![
+                        ColumnStatistics::new_unknown();
+                        task_status.task_column_stats.len()
+                    ];
+                }
+                for col_stats in &task_status.task_column_stats {
+                    let slot = &mut output_column_stats[col_stats.column as usize];
+                    slot.null_count = slot
+                        .null_count
+                        .add(&Precision::Exact(col_stats.null_count as usize));
+                }
+            }
+        }
+
         SuccessfulStage {
             stage_id: self.stage_id,
             stage_attempt_num: self.stage_attempt_num,
@@ -551,6 +572,7 @@ impl RunningStage {
             task_infos,
             stage_metrics,
             session_config: self.session_config.clone(),
+            output_column_stats,
         }
     }
 
@@ -822,6 +844,7 @@ impl RunningStage {
                         task_status::Status::Successful(SuccessfulTask {
                             executor_id,
                             partitions: _,
+                            task_column_stats: _,
                         }),
                     ..
                 }) if *executor == *executor_id => {
@@ -1145,6 +1168,7 @@ mod tests {
             status: Some(task_status::Status::Successful(SuccessfulTask {
                 executor_id: "executor-1".to_string(),
                 partitions: vec![],
+                task_column_stats: vec![],
             })),
             metrics: vec![],
         }
