@@ -103,6 +103,9 @@ pub struct Config {
         help = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
     )]
     pub log_dir: Option<String>,
+    /// Directory to write per-job event logs to (enables the history server).
+    #[arg(long)]
+    pub event_log_dir: Option<String>,
     /// Whether to print thread IDs and names in log files.
     #[arg(
         long,
@@ -278,6 +281,8 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
+    /// Directory to write per-job event logs to. `None` disables event logging.
+    pub event_log_dir: Option<String>,
 }
 
 impl Default for SchedulerConfig {
@@ -314,6 +319,7 @@ impl Default for SchedulerConfig {
             cors_allowed_origins: String::default(),
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
+            event_log_dir: None,
         }
     }
 }
@@ -449,6 +455,12 @@ impl SchedulerConfig {
         self.use_tls = use_tls;
         self
     }
+
+    /// Sets the directory to write per-job event logs to.
+    pub fn with_event_log_dir(mut self, event_log_dir: Option<String>) -> Self {
+        self.event_log_dir = event_log_dir;
+        self
+    }
 }
 
 /// Policy of distributing tasks to available executor slots
@@ -546,8 +558,22 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_origins: opt.cors_allowed_origins,
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
+            event_log_dir: opt.event_log_dir,
         };
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_log_dir_defaults_to_none_and_is_settable() {
+        let config = SchedulerConfig::default();
+        assert!(config.event_log_dir.is_none());
+        let config = config.with_event_log_dir(Some("/tmp/history".to_string()));
+        assert_eq!(config.event_log_dir.as_deref(), Some("/tmp/history"));
     }
 }

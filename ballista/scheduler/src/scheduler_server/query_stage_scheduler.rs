@@ -34,6 +34,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+#[cfg(feature = "rest-api")]
+use crate::scheduler_server::event_log;
 
 use crate::state::SchedulerState;
 
@@ -44,6 +46,8 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     config: Arc<SchedulerConfig>,
+    #[cfg(feature = "rest-api")]
+    event_log: Option<ballista_history::writer::EventLogWriter>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
@@ -51,17 +55,41 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         config: Arc<SchedulerConfig>,
+        #[cfg(feature = "rest-api")] event_log: Option<
+            ballista_history::writer::EventLogWriter,
+        >,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             config,
+            #[cfg(feature = "rest-api")]
+            event_log,
         }
     }
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.metrics_collector.as_ref()
     }
+}
+
+/// Groups task status updates by job id, so a single `TaskUpdating` batch
+/// (which can span multiple jobs) can be appended to each job's own event log.
+#[cfg(feature = "rest-api")]
+fn group_by_job(
+    statuses: &[ballista_core::serde::protobuf::TaskStatus],
+) -> std::collections::HashMap<String, Vec<ballista_core::serde::protobuf::TaskStatus>> {
+    let mut by_job: std::collections::HashMap<
+        String,
+        Vec<ballista_core::serde::protobuf::TaskStatus>,
+    > = std::collections::HashMap::new();
+    for status in statuses {
+        by_job
+            .entry(status.job_id.clone())
+            .or_default()
+            .push(status.clone());
+    }
+    by_job
 }
 
 #[async_trait::async_trait]
@@ -82,6 +110,88 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
         _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
+        #[cfg(feature = "rest-api")]
+        if let Some(log) = &self.event_log {
+            match &event {
+                QueryStageSchedulerEvent::JobSubmitted {
+                    job_id,
+                    queued_at,
+                    submitted_at,
+                } => {
+                    if let Ok(Some(graph)) = self
+                        .state
+                        .task_manager
+                        .get_job_execution_graph(job_id)
+                        .await
+                    {
+                        log.append(
+                            job_id.as_str(),
+                            event_log::job_start_event(&graph, *queued_at, *submitted_at),
+                        );
+                    }
+                }
+                QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
+                    for (job_id, group) in group_by_job(statuses) {
+                        for ev in event_log::task_end_events(executor_id, &group) {
+                            log.append(&job_id, ev);
+                        }
+                    }
+                }
+                QueryStageSchedulerEvent::JobFinished {
+                    job_id,
+                    queued_at,
+                    completed_at,
+                } => {
+                    if let Ok(Some(graph)) = self
+                        .state
+                        .task_manager
+                        .get_job_execution_graph(job_id)
+                        .await
+                    {
+                        log.append_final(
+                            job_id.as_str(),
+                            event_log::job_end_event(
+                                &graph,
+                                ballista_history::event::JobEndStatus::Succeeded,
+                                *queued_at,
+                                *completed_at,
+                            ),
+                        )
+                        .await;
+                    }
+                    log.finish_job(job_id.as_str()).await;
+                }
+                QueryStageSchedulerEvent::JobRunningFailed {
+                    job_id,
+                    fail_message,
+                    queued_at,
+                    failed_at,
+                } => {
+                    if let Ok(Some(graph)) = self
+                        .state
+                        .task_manager
+                        .get_job_execution_graph(job_id)
+                        .await
+                    {
+                        log.append_final(
+                            job_id.as_str(),
+                            event_log::job_end_event(
+                                &graph,
+                                ballista_history::event::JobEndStatus::Failed(
+                                    fail_message.clone(),
+                                ),
+                                *queued_at,
+                                *failed_at,
+                            ),
+                        )
+                        .await;
+                    }
+                    log.finish_job(job_id.as_str()).await;
+                }
+                _ => {}
+            }
+        }
+
         let mut time_recorder = None;
         if self.config.scheduler_event_expected_processing_duration > 0 {
             time_recorder = Some((Instant::now(), event.clone()));

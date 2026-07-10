@@ -10,11 +10,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::display::format_stage_metrics;
+use crate::api::dto_build;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
-use crate::state::execution_stage::TaskInfo;
 use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
 use axum::extract::Query;
 use axum::{
@@ -22,19 +20,14 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
+use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
-use ballista_core::serde::protobuf::{
-    ExecutorMetric, executor_metric::Metric, task_status,
-};
+use ballista_core::serde::protobuf::{ExecutorMetric, executor_metric::Metric};
 use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
-use ballista_core::utils::get_current_time;
-use ballista_core::{BALLISTA_VERSION, JobId};
+use ballista_history::dto::JobResponse;
 use datafusion::DATAFUSION_VERSION;
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::displayable;
-use datafusion::physical_plan::metrics::{MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 #[cfg(feature = "graphviz-support")]
@@ -44,9 +37,7 @@ use graphviz_rust::{
     printer::PrinterContext,
 };
 use http::{StatusCode, header::CONTENT_TYPE};
-use serde::Serialize;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Debug, serde::Serialize)]
 struct SchedulerStateResponse {
@@ -108,99 +99,10 @@ impl ExecutorMetricResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct JobResponse {
-    pub job_id: JobId,
-    pub job_name: String,
-    pub job_status: String,
-    pub status: String,
-    pub num_stages: usize,
-    pub completed_stages: usize,
-    pub percent_complete: u8,
-    /// Timestamp when the job started.
-    pub start_time: u64,
-    /// Timestamp when the job ended (0 if still running).
-    pub end_time: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logical_plan: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub physical_plan: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stage_plan: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
 struct CancelJobResponse {
     pub cancelled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct TaskSummary {
-    /// task id
-    pub id: usize,
-    /// Task status
-    pub status: TaskStatus,
-    /// partition id
-    pub partition_id: u32,
-    /// Scheduler schedule time
-    pub scheduled_time: u64,
-    /// Scheduler launch time (ms since epoch)
-    pub launch_time: u64,
-    /// The time the Executor start to run the task (ms since epoch)
-    pub start_exec_time: u64,
-    /// The time the Executor finish the task (ms since epoch)
-    pub end_exec_time: u64,
-    /// total execution time (ms)
-    pub exec_duration: u64,
-    /// Scheduler side finish time (ms since epoch)
-    pub finish_time: u64,
-    /// Number of input rows
-    pub input_rows: usize,
-    /// Number of output rows
-    pub output_rows: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub enum TaskStatus {
-    Running,
-    Successful,
-    Failed,
-}
-
-impl From<&task_status::Status> for TaskStatus {
-    fn from(value: &task_status::Status) -> Self {
-        match value {
-            task_status::Status::Running(_) => TaskStatus::Running,
-            task_status::Status::Failed(_) => TaskStatus::Failed,
-            task_status::Status::Successful(_) => TaskStatus::Successful,
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct Percentiles {
-    pub min: u64,
-    pub p25: u64,
-    pub median: u64,
-    pub p75: u64,
-    pub max: u64,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct QueryStageSummary {
-    pub stage_id: String,
-    pub stage_status: String,
-    pub input_rows: usize,
-    pub output_rows: usize,
-    pub elapsed_compute: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stage_plan: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_duration_percentiles: Option<Percentiles>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_input_percentiles: Option<Percentiles>,
-    pub tasks: Vec<Option<TaskSummary>>,
 }
 
 #[derive(Debug, serde::Deserialize, Default)]
@@ -332,34 +234,7 @@ pub async fn get_jobs<
 
     let jobs: Vec<JobResponse> = jobs
         .iter()
-        .map(|job| {
-            let (plain_status, job_status) = format_job_status(
-                &job.status.status,
-                job_elapsed_ms(job.start_time, job.end_time),
-            );
-
-            // calculate progress based on completed stages for now, but we could use completed
-            // tasks in the future to make this more accurate
-            let percent_complete = if job.num_stages == 0 {
-                0
-            } else {
-                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8
-            };
-            JobResponse {
-                job_id: job.job_id.to_owned(),
-                job_name: job.job_name.to_owned(),
-                job_status,
-                status: plain_status,
-                start_time: job.start_time,
-                end_time: job.end_time,
-                num_stages: job.num_stages,
-                completed_stages: job.completed_stages,
-                percent_complete,
-                logical_plan: None,
-                physical_plan: None,
-                stage_plan: None,
-            }
-        })
+        .map(dto_build::build_job_response_from_overview)
         .collect();
 
     Ok(Json(jobs))
@@ -383,45 +258,14 @@ pub async fn get_job<
             SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}'"))
         })?
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
-    let stage_plan = format!("{:?}", graph);
-    let job = graph.as_ref();
-    let (plain_status, job_status) = format_job_status(
-        &job.status().status,
-        job_elapsed_ms(job.start_time(), job.end_time()),
-    );
-
-    let num_stages = job.stage_count();
-    let completed_stages = job.completed_stages();
-    let percent_complete =
-        ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
     let plan_format = query.plan_format.clone().unwrap_or_default();
 
-    let physical_plan = match plan_format {
-        PlanFormat::Default | PlanFormat::Metrics => {
-            DisplayableExecutionPlan::new(job.physical_plan().as_ref())
-                .indent(false)
-                .to_string()
-        }
-        PlanFormat::Tree => displayable(job.physical_plan().as_ref())
-            .tree_render()
-            .to_string(),
-    };
-
-    Ok(Json(JobResponse {
-        job_id: job.job_id().to_owned(),
-        job_name: job.job_name().to_owned(),
-        job_status,
-        status: plain_status,
-        start_time: job.start_time(),
-        end_time: job.end_time(),
-        num_stages,
-        completed_stages,
-        percent_complete,
-        logical_plan: job.logical_plan().map(str::to_owned),
-        physical_plan: Some(physical_plan),
-        stage_plan: Some(stage_plan),
-    }))
+    Ok(Json(dto_build::build_job_response(
+        &graph,
+        true,
+        plan_format,
+    )))
 }
 
 pub async fn cancel_job<
@@ -491,11 +335,6 @@ pub async fn cancel_job<
     }
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct QueryStagesResponse {
-    pub stages: Vec<QueryStageSummary>,
-}
-
 pub async fn get_query_stages<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -504,8 +343,6 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let plan_format = query.plan_format.clone().unwrap_or_default();
-
     if let Some(graph) = data_server
         .state
         .task_manager
@@ -519,308 +356,12 @@ pub async fn get_query_stages<
             )
         })?
     {
-        let stages = graph
-            .as_ref()
-            .stages()
-            .iter()
-            .map(|(id, stage)| {
-                let mut summary = QueryStageSummary {
-                    stage_id: id.to_string(),
-                    stage_status: stage.variant_name().to_string(),
-                    input_rows: 0,
-                    output_rows: 0,
-                    elapsed_compute: None,
-                    tasks: vec![],
-                    task_duration_percentiles: None,
-                    task_input_percentiles: None,
-                    stage_plan: None,
-                };
-                match stage {
-                    ExecutionStage::Running(running_stage) => {
-                        let metrics = running_stage.stage_metrics.as_deref().unwrap_or(&[]);
-                        summary.stage_plan = Some(match plan_format {
-                            PlanFormat::Default => displayable(running_stage.plan.as_ref()).indent(false).to_string(),
-                            PlanFormat::Tree    => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
-                            PlanFormat::Metrics => format_stage_metrics(running_stage.plan.as_ref(), metrics),
-                        });
-                        summary.input_rows = running_stage
-                            .stage_metrics
-                            .as_ref()
-                            .map(|m| get_combined_count(m.as_slice(), "input_rows"))
-                            .unwrap_or(0);
-                        summary.output_rows = running_stage
-                            .stage_metrics
-                            .as_ref()
-                            .map(|m| get_combined_count(m.as_slice(), "output_rows"))
-                            .unwrap_or(0);
-                        summary.elapsed_compute = get_running_stage_time(&running_stage
-                            .task_infos, get_current_time());
-                        summary.tasks = running_stage
-                            .task_infos
-                            .iter()
-                            .enumerate()
-                            .map(|(partition_id, task_info)| {
-                                task_info.as_ref().map(|info| {
-                                    let (input_rows, output_rows) = running_stage
-                                        .stage_metrics
-                                        .as_deref()
-                                        .map(|metrics| {
-                                            get_partition_counts(metrics, partition_id)
-                                        })
-                                        .unwrap_or((0, 0));
-
-                                    let start_exec_time = info.start_exec_time as u64;
-                                    let end_exec_time = info.end_exec_time as u64;
-
-                                    let task_status: TaskStatus = (&info.task_status).into();
-
-                                    TaskSummary {
-                                        id: info.task_id,
-                                        partition_id: partition_id as u32,
-                                        scheduled_time: info.scheduled_time as u64,
-                                        launch_time: info.launch_time as u64,
-                                        start_exec_time,
-                                        end_exec_time,
-                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
-                                        finish_time: info.finish_time as u64,
-                                        input_rows,
-                                        output_rows,
-                                        status: task_status
-                                    }
-                                })
-                            })
-                            .collect();
-                    }
-                    ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = Some(match plan_format {
-                            PlanFormat::Default => displayable(completed_stage.plan.as_ref()).indent(false).to_string(),
-                            PlanFormat::Tree    => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
-                            PlanFormat::Metrics => format_stage_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
-                        });
-                        summary.input_rows = get_combined_count(
-                            &completed_stage.stage_metrics,
-                            "input_rows",
-                        );
-                        summary.output_rows = get_combined_count(
-                            &completed_stage.stage_metrics,
-                            "output_rows",
-                        );
-                        summary.elapsed_compute =
-                            get_finished_stage_time(&completed_stage.task_infos);
-
-                        summary.tasks = completed_stage
-                            .task_infos
-                            .iter()
-                            .enumerate()
-                            .map(|(partition_id, task_info)| {
-                                let (input_rows, output_rows) = get_partition_counts(
-                                    &completed_stage.stage_metrics,
-                                    partition_id,
-                                );
-
-                                let start_exec_time = task_info.start_exec_time as u64;
-                                let end_exec_time = task_info.end_exec_time as u64;
-                                let task_status = (&task_info.task_status).into();
-                                Some(TaskSummary {
-                                    id: task_info.task_id,
-                                    partition_id: partition_id as u32,
-                                    scheduled_time: task_info.scheduled_time as u64,
-                                    launch_time: task_info.launch_time as u64,
-                                    start_exec_time,
-                                    end_exec_time,
-                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
-                                    finish_time: task_info.finish_time as u64,
-                                    input_rows,
-                                    output_rows,
-                                    status: task_status
-                                })
-                            })
-                            .collect();
-                    }
-                    _ => {}
-                }
-                summary.task_duration_percentiles = task_duration_percentiles(&summary.tasks);
-                summary.task_input_percentiles = task_input_percentiles(&summary.tasks);
-                summary
-            })
-            .collect();
-
-        Ok(Json(QueryStagesResponse { stages }))
+        Ok(Json(dto_build::build_query_stages_response(
+            &graph, &query,
+        )))
     } else {
         Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
-}
-
-fn percentile_duration(sorted: &[u64], pct: f64) -> u64 {
-    let idx = ((pct / 100.0) * (sorted.len() - 1) as f64).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn task_input_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentiles> {
-    let mut durations: Vec<u64> = tasks
-        .iter()
-        .flatten()
-        .map(|t| t.input_rows as u64)
-        .collect();
-
-    if durations.is_empty() {
-        return None;
-    }
-
-    durations.sort_unstable();
-
-    Some(Percentiles {
-        min: durations[0],
-        p25: percentile_duration(&durations, 25.0),
-        median: percentile_duration(&durations, 50.0),
-        p75: percentile_duration(&durations, 75.0),
-        max: *durations.last().unwrap(),
-    })
-}
-
-fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentiles> {
-    let mut durations: Vec<u64> =
-        tasks.iter().flatten().map(|t| t.exec_duration).collect();
-
-    if durations.is_empty() {
-        return None;
-    }
-
-    durations.sort_unstable();
-
-    Some(Percentiles {
-        min: durations[0],
-        p25: percentile_duration(&durations, 25.0),
-        median: percentile_duration(&durations, 50.0),
-        p75: percentile_duration(&durations, 75.0),
-        max: *durations.last().unwrap(),
-    })
-}
-
-/// Returns elapsed wall time in milliseconds for API formatting.
-///
-/// Uses saturating subtraction so inconsistent timestamps (e.g. failed jobs, or
-/// `end_time` still zero while `start_time` is set) do not panic on subtract.
-fn job_elapsed_ms(start_time: u64, end_time: u64) -> u64 {
-    end_time.saturating_sub(start_time)
-}
-
-fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, String) {
-    match status {
-        Some(Status::Queued(_)) => ("Queued".to_string(), "Queued".to_string()),
-        Some(Status::Running(_)) => ("Running".to_string(), "Running".to_string()),
-        Some(Status::Failed(error)) => {
-            ("Failed".to_string(), format!("Failed: {}", error.error))
-        }
-        Some(Status::Successful(completed)) => {
-            let num_rows = completed
-                .partition_location
-                .iter()
-                .map(|p| p.partition_stats.as_ref().map(|s| s.num_rows).unwrap_or(0))
-                .sum::<i64>();
-            let num_rows_term = if num_rows == 1 { "row" } else { "rows" };
-            let num_partitions = completed.partition_location.len();
-            let num_partitions_term = if num_partitions == 1 {
-                "partition"
-            } else {
-                "partitions"
-            };
-            (
-                "Completed".to_string(),
-                format!(
-                    "Completed. Produced {} {} containing {} {}. Elapsed time: {} ms.",
-                    num_partitions,
-                    num_partitions_term,
-                    num_rows,
-                    num_rows_term,
-                    elapsed_ms
-                ),
-            )
-        }
-        _ => ("Invalid".to_string(), "Invalid State".to_string()),
-    }
-}
-
-fn get_running_stage_time(
-    task_infos: &[Option<TaskInfo>],
-    current_time: u128,
-) -> Option<String> {
-    let min_start = task_infos
-        .iter()
-        .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
-        .filter(|t| *t > 0)
-        .min();
-
-    match (min_start, current_time) {
-        (Some(start), end) if end >= start => {
-            let time = Time::new();
-            time.add_duration(Duration::from_millis((end - start) as u64));
-            Some(time.to_string())
-        }
-        _ => None,
-    }
-}
-
-fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
-    let min_start = task_infos
-        .iter()
-        .map(|t| t.start_exec_time)
-        .filter(|t| *t > 0)
-        .min();
-
-    let max_end = task_infos
-        .iter()
-        .map(|t| t.end_exec_time)
-        .filter(|t| *t > 0)
-        .max();
-
-    match (min_start, max_end) {
-        (Some(start), Some(end)) if end >= start => {
-            let time = Time::new();
-            time.add_duration(Duration::from_millis((end - start) as u64));
-            Some(time.to_string())
-        }
-        _ => None,
-    }
-}
-
-fn get_partition_counts(metrics: &[MetricsSet], partition_id: usize) -> (usize, usize) {
-    let input_rows = get_partition_count(metrics, partition_id, "input_rows");
-    let output_rows = get_partition_count(metrics, partition_id, "output_rows");
-    (input_rows, output_rows)
-}
-
-fn get_partition_count(metrics: &[MetricsSet], partition_id: usize, name: &str) -> usize {
-    metrics
-        .iter()
-        .flat_map(|vec| {
-            vec.iter().map(|metric| {
-                let metric_value = metric.value();
-                if metric.partition() == Some(partition_id) && metric_value.name() == name
-                {
-                    metric_value.as_usize()
-                } else {
-                    0
-                }
-            })
-        })
-        .sum()
-}
-
-fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
-    metrics
-        .iter()
-        .flat_map(|vec| {
-            vec.iter().map(|metric| {
-                let metric_value = metric.value();
-                if metric_value.name() == name {
-                    metric_value.as_usize()
-                } else {
-                    0
-                }
-            })
-        })
-        .sum()
 }
 
 pub async fn get_job_dot_graph<
@@ -840,11 +381,10 @@ pub async fn get_job_dot_graph<
             SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
         })?
     {
-        ExecutionGraphDot::generate(graph.as_ref())
-            .map_err(|e|  {
-                tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
-                SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
-            })
+        dto_build::build_job_dot(&graph).map_err(|e| {
+            tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
+            SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+        })
     } else {
         Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
@@ -940,127 +480,4 @@ pub async fn get_job_config<
         .await
         .map(|e| Json(e.to_props()))
         .map_err(|_| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::execution_stage::TaskInfo;
-    use ballista_core::serde::protobuf::task_status;
-
-    fn make_task_info(start: u128, end: u128) -> TaskInfo {
-        TaskInfo {
-            task_id: 0,
-            scheduled_time: 0,
-            launch_time: 0,
-            start_exec_time: start,
-            end_exec_time: end,
-            finish_time: 0,
-            task_status: task_status::Status::Running(Default::default()),
-        }
-    }
-
-    #[test]
-    fn test_job_elapsed_saturates_when_end_precedes_start() {
-        assert_eq!(job_elapsed_ms(900, 100), 0);
-    }
-
-    // --- get_finished_stage_time ---
-
-    #[test]
-    fn test_finished_empty_slice_returns_none() {
-        assert_eq!(get_finished_stage_time(&[]), None);
-    }
-
-    #[test]
-    fn test_finished_all_zero_timestamps_returns_none() {
-        let tasks = vec![make_task_info(0, 0), make_task_info(0, 0)];
-        assert_eq!(get_finished_stage_time(&tasks), None);
-    }
-
-    #[test]
-    fn test_finished_single_task_elapsed() {
-        // 600 - 100 = 500 ms → "500.00ms"
-        let tasks = vec![make_task_info(100, 600)];
-        assert_eq!(
-            get_finished_stage_time(&tasks),
-            Some("500.00ms".to_string())
-        );
-    }
-
-    #[test]
-    fn test_finished_picks_earliest_start_and_latest_end() {
-        // min start = 100, max end = 900 → 800 ms
-        let tasks = vec![
-            make_task_info(100, 500),
-            make_task_info(200, 900),
-            make_task_info(300, 700),
-        ];
-        assert_eq!(
-            get_finished_stage_time(&tasks),
-            Some("800.00ms".to_string())
-        );
-    }
-
-    #[test]
-    fn test_finished_end_before_start_returns_none() {
-        let tasks = vec![make_task_info(900, 100)];
-        assert_eq!(get_finished_stage_time(&tasks), None);
-    }
-
-    // --- get_running_stage_time ---
-
-    #[test]
-    fn test_running_empty_slice_returns_none() {
-        assert_eq!(get_running_stage_time(&[], 1000), None);
-    }
-
-    #[test]
-    fn test_running_all_none_returns_none() {
-        let tasks: Vec<Option<TaskInfo>> = vec![None, None];
-        assert_eq!(get_running_stage_time(&tasks, 1000), None);
-    }
-
-    #[test]
-    fn test_running_future_start_returns_none() {
-        // start_exec_time beyond current time → elapsed clamped to 0
-        let tasks = vec![Some(make_task_info(u128::MAX, 0))];
-        assert_eq!(get_running_stage_time(&tasks, 1000), None);
-    }
-
-    #[test]
-    fn test_running_past_start_returns_some() {
-        let now = 4_000;
-        let start = 1_000;
-        let tasks = vec![Some(make_task_info(start, 0))];
-        assert_eq!(
-            get_running_stage_time(&tasks, now),
-            Some("3.00s".to_string())
-        );
-    }
-
-    #[test]
-    fn test_running_mixed_some_none_uses_earliest_some() {
-        let now = 3_000;
-        let earlier = 1_000;
-        let later = 2_000;
-        let tasks = vec![
-            None,
-            Some(make_task_info(later, 0)),
-            Some(make_task_info(earlier, 0)),
-            None,
-        ];
-        let result = get_running_stage_time(&tasks, now);
-        assert_eq!(result, Some("2.00s".to_string()));
-    }
-
-    #[test]
-    fn test_job_elapsed_ms_normal() {
-        assert_eq!(super::job_elapsed_ms(100, 500), 400);
-    }
-
-    #[test]
-    fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
-        assert_eq!(super::job_elapsed_ms(500, 100), 0);
-    }
 }

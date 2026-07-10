@@ -32,6 +32,11 @@ name = "ballista-scheduler"
 path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
+[[bin]]
+name = "ballista-history-server"
+path = "src/bin/history_server.rs"
+required-features = ["build-binary", "rest-api"]
+
 [features]
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary", "rest-api"]
@@ -41,7 +46,7 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = []
+rest-api = ["dep:ballista-history", "dep:serde_json"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -51,6 +56,7 @@ async-trait = { workspace = true }
 axum = "0.8.9"
 tower-http = { version = "0.7", features = ["cors"] }
 ballista-core = { path = "../core", version = "53.0.0" }
+ballista-history = { path = "../history", version = "53.0.0", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
@@ -70,6 +76,7 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["router"] }
@@ -86,6 +93,9 @@ path = "tests/tpch_plan_stability/main.rs"
 [dev-dependencies]
 regex = "1"
 rstest = { workspace = true }
+serde_json = "1"
+tempfile = { workspace = true }
+tower = "0.5"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true, optional = true }

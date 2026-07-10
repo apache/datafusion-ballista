@@ -406,7 +406,7 @@ fn get_file_scan(scan: &FileScanConfig) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::planner::DefaultDistributedPlanner;
     use crate::state::execution_graph::StaticExecutionGraph;
     use crate::state::execution_graph_dot::ExecutionGraphDot;
@@ -578,7 +578,7 @@ filter_expr="]
         Ok(())
     }
 
-    async fn test_graph() -> Result<StaticExecutionGraph> {
+    pub(crate) async fn test_graph() -> Result<StaticExecutionGraph> {
         let mut config = SessionConfig::new()
             .with_target_partitions(48)
             .with_batch_size(4096);
