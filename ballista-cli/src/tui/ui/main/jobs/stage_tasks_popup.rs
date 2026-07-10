@@ -101,19 +101,19 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         app.theme.row_odd
     };
 
-    let (status_label, status_style) = match &task.status {
-        StageTaskStatus::Running => ("Running", app.theme.status_running),
-        StageTaskStatus::Successful => ("Successful", app.theme.status_completed),
-        StageTaskStatus::Failed { reason } => (reason.as_str(), app.theme.status_failed),
+    let status_text = match &task.status {
+        StageTaskStatus::Running => Text::from("Running").style(app.theme.status_running),
+        StageTaskStatus::Successful => {
+            Text::from("Successful").style(app.theme.status_completed)
+        }
+        StageTaskStatus::Failed { reason } => {
+            Text::from(reason.clone()).style(app.theme.status_failed)
+        }
     };
 
     Row::new(vec![
         Cell::from(Text::from(task.id.to_string()).right_aligned()),
-        Cell::from(
-            Text::from(status_label.to_string())
-                .style(status_style)
-                .centered(),
-        ),
+        Cell::from(status_text.centered()),
         Cell::from(Text::from(app.format_count(task.input_rows)).right_aligned()),
         Cell::from(Text::from(app.format_count(task.output_rows)).right_aligned()),
         Cell::from(Text::from(task.partition_id.to_string()).right_aligned()),

@@ -22,7 +22,9 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use ballista_core::serde::protobuf::failed_task::FailedReason::*;
+use ballista_core::serde::protobuf::failed_task::FailedReason::{
+    ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
+};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     ExecutorMetric, FailedTask, executor_metric::Metric, task_status,
@@ -645,7 +647,7 @@ pub async fn get_query_stages<
                         let metrics = failed_stage.stage_metrics.as_deref().unwrap_or(&[]);
                         summary.stage_plan = Some(match plan_format {
                             PlanFormat::Default => displayable(failed_stage.plan.as_ref()).indent(false).to_string(),
-                            PlanFormat::Tree    => displayable(failed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Tree => displayable(failed_stage.plan.as_ref()).tree_render().to_string(),
                             PlanFormat::Metrics => format_stage_metrics(failed_stage.plan.as_ref(), metrics),
                         });
                         summary.input_rows = get_combined_count(metrics, "input_rows");
