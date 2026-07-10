@@ -30,7 +30,12 @@ mod common;
 mod sort_shuffle_tests {
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
-        BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+        BALLISTA_ADAPTIVE_PLANNER_ENABLED,
+        BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE,
+        BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE,
+        BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+        BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS,
+        BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT,
         BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
         BALLISTA_SHUFFLE_SORT_BASED_ENABLED,
     };
@@ -87,6 +92,28 @@ mod sort_shuffle_tests {
             .with_default_features()
             .build();
 
+        SessionContext::standalone_with_state(state).await.unwrap()
+    }
+
+    /// Remote-flight sort-shuffle context with a deliberately tiny governor
+    /// budget (64 KiB in-flight, 2 blocks/address) but a large connection window
+    /// (8 MiB). This forces many partition fetches to serialize through the
+    /// governor while multiplexing over the pooled connection — the scenario
+    /// that deadlocked before the governor existed. The query must still
+    /// complete and return correct results.
+    async fn create_tiny_budget_remote_context() -> SessionContext {
+        let config = SessionConfig::new_with_ballista()
+            .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
+            .set_str(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, "true")
+            .set_str(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, "true")
+            .set_str(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT, "65536")
+            .set_str(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS, "2")
+            .set_str(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE, "8388608")
+            .set_str(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE, "8388608");
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .build();
         SessionContext::standalone_with_state(state).await.unwrap()
     }
 
@@ -564,6 +591,32 @@ mod sort_shuffle_tests {
 
         let expected = vec![
             "+----+", "| id |", "+----+", "| 0  |", "| 1  |", "| 2  |", "+----+",
+        ];
+        assert_result_eq(expected, &results);
+        Ok(())
+    }
+
+    // ==================== Governor Budget ====================
+
+    #[tokio::test]
+    async fn test_shuffle_completes_under_tiny_governor_budget() -> Result<()> {
+        let ctx = create_tiny_budget_remote_context().await;
+        register_test_data(&ctx).await;
+
+        // GROUP BY forces a shuffle; the reducer fetches every upstream partition
+        // remotely under the tiny in-flight budget.
+        let df = ctx
+            .sql("SELECT bool_col, COUNT(*) as cnt FROM test GROUP BY bool_col ORDER BY bool_col")
+            .await?;
+        let results = df.collect().await?;
+
+        let expected = vec![
+            "+----------+-----+",
+            "| bool_col | cnt |",
+            "+----------+-----+",
+            "| false    | 4   |",
+            "| true     | 4   |",
+            "+----------+-----+",
         ];
         assert_result_eq(expected, &results);
         Ok(())

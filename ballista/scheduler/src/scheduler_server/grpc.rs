@@ -51,9 +51,8 @@ use {
 
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use std::ops::Deref;
@@ -118,7 +117,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .map_err(|e| {
                     let msg = format!(
                         "Fail to update tasks status from executor {:?} due to {:?}",
-                        &executor_id, e
+                        executor_id, e
                     );
                     error!("{msg}");
                     Status::internal(msg)
@@ -327,7 +326,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .map_err(|e| {
                 let msg = format!(
                     "Fail to update tasks status from executor {:?} due to {:?}",
-                    &executor_id, e
+                    executor_id, e
                 );
                 error!("{msg}");
                 Status::internal(msg)
@@ -414,8 +413,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             })?;
 
             debug!(
-                "Decoded logical plan for execution:\n{}",
-                plan.display_indent()
+                "Decoded plan for execution:\n{}",
+                Self::describe_submitted_plan(&plan)
             );
             log::trace!("setting job name: {job_name}");
 
@@ -430,7 +429,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             });
 
             let job_id = self
-                .submit_job(&job_name, session_ctx, &plan, Some(subscriber))
+                .submit_plan(&job_name, session_ctx, &plan, Some(subscriber))
                 .await
                 .map_err(|e| {
                     let msg =
@@ -499,13 +498,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             };
 
             debug!(
-                "Decoded logical plan for execution:\n{}",
-                plan.display_indent()
+                "Decoded plan for execution:\n{}",
+                Self::describe_submitted_plan(&plan)
             );
 
             log::trace!("setting job name: {job_name}");
             let job_id = self
-                .submit_job(&job_name, session_ctx, &plan, None)
+                .submit_plan(&job_name, session_ctx, &plan, None)
                 .await
                 .map_err(|e| {
                     let msg =
@@ -785,7 +784,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         &self,
         query: Query,
         session_ctx: &SessionContext,
-    ) -> BResult<LogicalPlan> {
+    ) -> BResult<SubmitPlan> {
         match query {
             Query::LogicalPlan(message) => T::try_decode(message.as_slice())
                 .and_then(|m| {
@@ -794,7 +793,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                         self.state.codec.logical_extension_codec(),
                     )
                 })
+                .map(SubmitPlan::Logical)
                 .map_err(|e| e.into()),
+
+            Query::PhysicalPlan(message) => {
+                let task_ctx = session_ctx.task_ctx();
+                U::try_decode(message.as_slice())
+                    .and_then(|m| {
+                        m.try_into_physical_plan(
+                            task_ctx.as_ref(),
+                            self.state.codec.physical_extension_codec(),
+                        )
+                    })
+                    .map(SubmitPlan::Physical)
+                    .map_err(|e| e.into())
+            }
 
             #[cfg(not(feature = "substrait"))]
             Query::SubstraitPlan(_) => {
@@ -807,7 +820,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 let ctx = session_ctx.clone();
                 from_substrait_plan(&ctx.state(), &plan)
                     .await
+                    .map(SubmitPlan::Logical)
                     .map_err(|e| e.into())
+            }
+        }
+    }
+
+    /// Returns a human-readable representation of a submitted plan, for logging.
+    fn describe_submitted_plan(plan: &SubmitPlan) -> String {
+        match plan {
+            SubmitPlan::Logical(plan) => plan.display_indent().to_string(),
+            SubmitPlan::Physical(plan) => {
+                datafusion::physical_plan::displayable(plan.as_ref())
+                    .indent(false)
+                    .to_string()
             }
         }
     }

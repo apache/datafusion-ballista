@@ -1120,7 +1120,7 @@ mod supported {
             "|                  | ShuffleWriterExec: partitioning: None                                                                                                                                            |",
             "|                  |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                               |",
             "|                  |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                               |",
-            "|                  |       UnresolvedShuffleExec: partitioning: Hash([id@0], 16)                                                                                                                      |",
+            "|                  |       UnresolvedShuffleExec: stage=1, partitioning: Hash([id@0], 16)                                                                                                             |",
             "|                  |                                                                                                                                                                                  |",
             "|                  |                                                                                                                                                                                  |",
             "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
