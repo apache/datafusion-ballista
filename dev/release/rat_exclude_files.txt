@@ -34,6 +34,7 @@ requirements.txt
 .gitattributes
 benchmarks/queries/q*.sql
 ballista/scheduler/testdata/*
+ballista/scheduler/tests/tpch_plan_stability/approved/*
 **/yarn.lock
 python/requirements*.txt
 **/testdata/*

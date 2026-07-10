@@ -18,7 +18,7 @@
 use crate::cluster::JobState;
 use crate::config::SchedulerConfig;
 use crate::planner::DefaultDistributedPlanner;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
@@ -277,53 +277,84 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
+    ///
+    /// Shared entry point for logical and physical submissions.
     #[allow(clippy::too_many_arguments)]
-    pub async fn submit_job(
+    pub async fn submit_plan(
         &self,
         job_id: &JobId,
         job_name: &str,
         ctx: Arc<SessionContext>,
-        logical_plan: &LogicalPlan,
+        plan: &SubmitPlan,
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
         let session_state = ctx.state();
         let session_config = session_state.config();
-        let mut graph = if session_config.ballista_adaptive_query_planner_enabled() {
-            debug!("Using adaptive query planner (AQE) for job planning");
-            warn!(
-                "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
-            );
-            Box::new(
-                AdaptiveExecutionGraph::try_new(
+
+        let mut graph = match plan {
+            SubmitPlan::Logical(logical_plan) => {
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    debug!("Using adaptive query planner (AQE) for job planning");
+                    warn!(
+                        "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
+                    );
+                    Box::new(
+                        AdaptiveExecutionGraph::try_new(
+                            &self.scheduler_id,
+                            job_id,
+                            job_name,
+                            &ctx,
+                            logical_plan,
+                            queued_at,
+                        )
+                        .await?,
+                    ) as ExecutionGraphBox
+                } else {
+                    debug!("Using static query planner for job planning");
+                    let session_config = Arc::new(ctx.copied_config());
+
+                    let physical_plan =
+                        ctx.state().create_physical_plan(logical_plan).await?;
+                    let physical_plan =
+                        handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
+                            .await?;
+
+                    Box::new(StaticExecutionGraph::new(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx.session_id(),
+                        physical_plan,
+                        queued_at,
+                        session_config,
+                        &mut planner,
+                        Some(logical_plan.display_indent().to_string()),
+                    )?) as ExecutionGraphBox
+                }
+            }
+            SubmitPlan::Physical(physical_plan) => {
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    return Err(BallistaError::NotImplemented(
+                        "Adaptive query planning (AQE) does not support jobs submitted as an already-built physical plan; disable AQE for this session or submit a logical plan instead.".to_string(),
+                    ));
+                }
+                debug!("Using static query planner for physical-plan job submission");
+                let session_config = Arc::new(ctx.copied_config());
+
+                Box::new(StaticExecutionGraph::new(
                     &self.scheduler_id,
                     job_id,
                     job_name,
-                    &ctx,
-                    logical_plan,
+                    &ctx.session_id(),
+                    physical_plan.clone(),
                     queued_at,
-                )
-                .await?,
-            ) as ExecutionGraphBox
-        } else {
-            debug!("Using static query planner for job planning");
-            let session_config = Arc::new(ctx.copied_config());
-
-            let plan = ctx.state().create_physical_plan(logical_plan).await?;
-            let plan = handle_explain_plan(job_id, &ctx, logical_plan, plan).await?;
-
-            Box::new(StaticExecutionGraph::new(
-                &self.scheduler_id,
-                job_id,
-                job_name,
-                &ctx.session_id(),
-                plan,
-                queued_at,
-                session_config,
-                &mut planner,
-                Some(logical_plan.display_indent().to_string()),
-            )?) as ExecutionGraphBox
+                    session_config,
+                    &mut planner,
+                    None,
+                )?) as ExecutionGraphBox
+            }
         };
         let string_plan =
             datafusion::physical_plan::displayable(graph.physical_plan().as_ref())
@@ -340,6 +371,52 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .insert(job_id.to_owned(), JobInfoCache::new(graph));
 
         Ok(())
+    }
+
+    /// Submit a logical plan for distributed execution.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_job(
+        &self,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+        queued_at: u64,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()> {
+        self.submit_plan(
+            job_id,
+            job_name,
+            ctx,
+            &SubmitPlan::Logical(plan.clone()),
+            queued_at,
+            subscriber,
+        )
+        .await
+    }
+
+    /// Submit an already-built physical plan for distributed execution. The physical
+    /// plan is planned with the static distributed planner; adaptive query planning
+    /// (AQE) is not available for this path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_physical_plan(
+        &self,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()> {
+        self.submit_plan(
+            job_id,
+            job_name,
+            ctx,
+            &SubmitPlan::Physical(plan),
+            queued_at,
+            subscriber,
+        )
+        .await
     }
 
     /// Returns a snapshot of currently running jobs from the cache.
@@ -548,15 +625,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let mut guard = graph.write().await;
 
             let pending_tasks = guard.available_tasks();
-            let running_tasks = guard.running_tasks();
+            let running_tasks = guard.abort_running(failure_reason);
 
             info!(
                 "Cancelling {} running tasks for job {}",
                 running_tasks.len(),
                 job_id
             );
-
-            guard.fail_job(failure_reason);
 
             self.state.save_job(job_id, &guard).await?;
 

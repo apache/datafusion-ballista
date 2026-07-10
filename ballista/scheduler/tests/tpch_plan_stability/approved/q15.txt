@@ -1,0 +1,57 @@
+=== Stage 1 ===
+SortShuffleWriterExec: partitioning=Hash([l_suppkey@0], 16)
+  AggregateExec: mode=Partial, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+    FilterExec: l_shipdate@3 >= 1996-01-01 AND l_shipdate@3 < 1996-04-01, projection=[l_suppkey@0, l_extendedprice@1, l_discount@2]
+      StatsExec: rows=600037902
+
+=== Stage 2 ===
+ShuffleWriterExec: partitioning: None
+  AggregateExec: mode=Partial, gby=[], aggr=[max(revenue0.total_revenue)]
+    ProjectionExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as total_revenue]
+      AggregateExec: mode=FinalPartitioned, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+        UnresolvedShuffleExec: stage=1, partitioning: Hash([l_suppkey@0], 16)
+
+=== Stage 3 ===
+SortShuffleWriterExec: partitioning=Hash([max(revenue0.total_revenue)@0], 16)
+  AggregateExec: mode=Final, gby=[], aggr=[max(revenue0.total_revenue)]
+    CoalescePartitionsExec
+      UnresolvedShuffleExec: stage=2, partitioning: Hash([l_suppkey@0], 16)
+
+=== Stage 4 ===
+ShuffleWriterExec: partitioning: None
+  UnresolvedShuffleExec: stage=3, partitioning: Hash([max(revenue0.total_revenue)@0], 16)
+
+=== Stage 5 ===
+SortShuffleWriterExec: partitioning=Hash([s_suppkey@0], 16)
+  StatsExec: rows=1000000
+
+=== Stage 6 ===
+SortShuffleWriterExec: partitioning=Hash([l_suppkey@0], 16)
+  AggregateExec: mode=Partial, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+    FilterExec: l_shipdate@3 >= 1996-01-01 AND l_shipdate@3 < 1996-04-01, projection=[l_suppkey@0, l_extendedprice@1, l_discount@2]
+      StatsExec: rows=600037902
+
+=== Stage 7 ===
+SortShuffleWriterExec: partitioning=Hash([total_revenue@4], 16)
+  ProjectionExec: expr=[s_suppkey@0 as s_suppkey, s_name@1 as s_name, s_address@2 as s_address, s_phone@3 as s_phone, total_revenue@5 as total_revenue]
+    SortMergeJoinExec: join_type=Inner, on=[(s_suppkey@0, supplier_no@0)]
+      SortExec: expr=[s_suppkey@0 ASC], preserve_partitioning=[true]
+        UnresolvedShuffleExec: stage=5, partitioning: Hash([s_suppkey@0], 16)
+      SortExec: expr=[supplier_no@0 ASC], preserve_partitioning=[true]
+        ProjectionExec: expr=[l_suppkey@0 as supplier_no, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as total_revenue]
+          AggregateExec: mode=FinalPartitioned, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+            UnresolvedShuffleExec: stage=6, partitioning: Hash([l_suppkey@0], 16)
+
+=== Stage 8 ===
+ShuffleWriterExec: partitioning: None
+  SortExec: expr=[s_suppkey@0 ASC NULLS LAST], preserve_partitioning=[true]
+    ProjectionExec: expr=[s_suppkey@0 as s_suppkey, s_name@1 as s_name, s_address@2 as s_address, s_phone@3 as s_phone, total_revenue@4 as total_revenue]
+      ProjectionExec: expr=[s_suppkey@1 as s_suppkey, s_name@2 as s_name, s_address@3 as s_address, s_phone@4 as s_phone, total_revenue@5 as total_revenue, max(revenue0.total_revenue)@0 as max(revenue0.total_revenue)]
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(max(revenue0.total_revenue)@0, total_revenue@4)]
+          UnresolvedShuffleExec: stage=4, broadcast=true, upstream_partitions: 16
+          UnresolvedShuffleExec: stage=7, partitioning: Hash([total_revenue@4], 16)
+
+=== Stage 9 ===
+ShuffleWriterExec: partitioning: None
+  SortPreservingMergeExec: [s_suppkey@0 ASC NULLS LAST]
+    UnresolvedShuffleExec: stage=8, partitioning: Hash([total_revenue@4], 16)

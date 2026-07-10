@@ -146,7 +146,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             }
                         }
 
-                        error!("{}", &fail_message);
+                        error!("{}", fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
                             fail_message,

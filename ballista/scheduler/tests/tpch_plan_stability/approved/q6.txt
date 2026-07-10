@@ -1,0 +1,6 @@
+=== Stage 1 ===
+ShuffleWriterExec: partitioning: None
+  ProjectionExec: expr=[sum(lineitem.l_extendedprice * lineitem.l_discount)@0 as revenue]
+    AggregateExec: mode=Single, gby=[], aggr=[sum(lineitem.l_extendedprice * lineitem.l_discount)]
+      FilterExec: l_shipdate@3 >= 1994-01-01 AND l_shipdate@3 < 1995-01-01 AND l_discount@2 >= Some(5),15,2 AND l_discount@2 <= Some(7),15,2 AND l_quantity@0 < Some(2400),15,2, projection=[l_extendedprice@1, l_discount@2]
+        StatsExec: rows=600037902

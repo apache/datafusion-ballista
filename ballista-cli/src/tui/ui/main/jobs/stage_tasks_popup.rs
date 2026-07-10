@@ -77,7 +77,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(format!(
                 " Tasks for stage '{}' of job '{}' ",
-                stage.id, &popup.job_id
+                stage.id, popup.job_id
             ))
             .borders(Borders::ALL)
             .border_style(app.theme.popup_border_alt)
