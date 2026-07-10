@@ -218,14 +218,14 @@ implemented:
 The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
-- Executor failure handling on the AQE path
-- Dynamic coalescing of shuffle partitions
-- Switching from hash join to sort-merge join based on runtime statistics
-- Switching from streaming aggregation to hash aggregation based on runtime statistics
+- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
+- Dynamic coalescing of shuffle partitions ([#1987](https://github.com/apache/datafusion-ballista/issues/1987))
+- Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
+- Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
 Until these gaps are closed, AQE should be used for testing and experimentation
-rather than production workloads. See [issue #387](https://github.com/apache/datafusion-ballista/issues/387)
-for the tracking issue and ongoing work.
+rather than production workloads. See [issue #1359](https://github.com/apache/datafusion-ballista/issues/1359)
+for the tracking epic and ongoing work.
 
 ## Push-based vs Pull-based Task Scheduling
 
