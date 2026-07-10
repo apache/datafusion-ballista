@@ -778,14 +778,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 if let Some(curator_task) = maybe_task {
                     let task_identity = format!(
                         "TID {} {}/{}.{}/{}.{}",
-                        &curator_task.task.task_id,
-                        &curator_task.task.job_id,
-                        &curator_task.task.stage_id,
-                        &curator_task.task.stage_attempt_num,
-                        &curator_task.task.partition_id,
-                        &curator_task.task.task_attempt_num,
+                        curator_task.task.task_id,
+                        curator_task.task.job_id,
+                        curator_task.task.stage_id,
+                        curator_task.task.stage_attempt_num,
+                        curator_task.task.partition_id,
+                        curator_task.task.task_attempt_num,
                     );
-                    debug!("Received task {:?}", &task_identity);
+                    debug!("Received task {:?}", task_identity);
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {

@@ -20,17 +20,17 @@ ShuffleWriterExec: partitioning: None
         ProjectionExec: expr=[l_quantity@1 as l_quantity, l_extendedprice@2 as l_extendedprice, p_partkey@3 as p_partkey]
           SortMergeJoinExec: join_type=Inner, on=[(l_partkey@0, p_partkey@0)]
             SortExec: expr=[l_partkey@0 ASC], preserve_partitioning=[true]
-              UnresolvedShuffleExec: partitioning: Hash([l_partkey@0], 16)
+              UnresolvedShuffleExec: stage=1, partitioning: Hash([l_partkey@0], 16)
             SortExec: expr=[p_partkey@0 ASC], preserve_partitioning=[true]
-              UnresolvedShuffleExec: partitioning: Hash([p_partkey@0], 16)
+              UnresolvedShuffleExec: stage=2, partitioning: Hash([p_partkey@0], 16)
         SortExec: expr=[l_partkey@1 ASC], preserve_partitioning=[true]
           ProjectionExec: expr=[CAST(0.2 * CAST(avg(lineitem.l_quantity)@1 AS Float64) AS Decimal128(30, 15)) as Float64(0.2) * avg(lineitem.l_quantity), l_partkey@0 as l_partkey]
             AggregateExec: mode=FinalPartitioned, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
-              UnresolvedShuffleExec: partitioning: Hash([l_partkey@0], 16)
+              UnresolvedShuffleExec: stage=3, partitioning: Hash([l_partkey@0], 16)
 
 === Stage 5 ===
 ShuffleWriterExec: partitioning: None
   ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
     AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice)]
       CoalescePartitionsExec
-        UnresolvedShuffleExec: partitioning: Hash([l_partkey@4], 16)
+        UnresolvedShuffleExec: stage=4, partitioning: Hash([l_partkey@4], 16)

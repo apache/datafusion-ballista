@@ -791,7 +791,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -800,17 +800,17 @@ impl ExecutionGraph for StaticExecutionGraph {
                             task_stage_attempt_num,
                             partition_id
                         );
-                        let operator_metrics = task_status.metrics.clone();
-
-                        if !running_stage
-                            .update_task_info(partition_id, task_status.clone())
-                        {
+                        if !running_stage.update_task_info(partition_id, &task_status) {
                             continue;
                         }
 
-                        if let Some(task_status::Status::Failed(failed_task)) =
-                            task_status.status
-                        {
+                        let TaskStatus {
+                            status,
+                            metrics: operator_metrics,
+                            ..
+                        } = task_status;
+
+                        if let Some(task_status::Status::Failed(failed_task)) = status {
                             let failed_reason = failed_task.failed_reason;
 
                             match failed_reason {
@@ -915,7 +915,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                             }
                         } else if let Some(task_status::Status::Successful(
                             successful_task,
-                        )) = task_status.status
+                        )) = status
                         {
                             // update task metrics for successfu task
                             running_stage
@@ -966,7 +966,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                     for task_status in stage_task_statuses.into_iter() {
                         let task_stage_attempt_num =
                             task_status.stage_attempt_num as usize;
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,

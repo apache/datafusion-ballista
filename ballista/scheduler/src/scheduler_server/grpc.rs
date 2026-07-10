@@ -117,7 +117,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .map_err(|e| {
                     let msg = format!(
                         "Fail to update tasks status from executor {:?} due to {:?}",
-                        &executor_id, e
+                        executor_id, e
                     );
                     error!("{msg}");
                     Status::internal(msg)
@@ -326,7 +326,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .map_err(|e| {
                 let msg = format!(
                     "Fail to update tasks status from executor {:?} due to {:?}",
-                    &executor_id, e
+                    executor_id, e
                 );
                 error!("{msg}");
                 Status::internal(msg)
