@@ -49,4 +49,4 @@ crate-type = ["cdylib"]
 name = "ballista"
 
 [build-dependencies]
-pyo3-build-config = "0.28"
+pyo3-build-config = "0.29"
