@@ -1159,6 +1159,7 @@ dependencies = [
  "futures",
  "libc",
  "log",
+ "lru 0.18.0",
  "memory-stats",
  "mimalloc",
  "parking_lot",
