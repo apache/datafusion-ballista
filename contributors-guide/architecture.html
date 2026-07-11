@@ -549,6 +549,61 @@ stage. This mechanism is known as an Exchange or a Shuffle. The logic for this c
 and <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs">ShuffleReaderExec</a> operators.</p>
 </section>
 </section>
+<section id="adaptive-query-execution-aqe">
+<h2>Adaptive Query Execution (AQE)<a class="headerlink" href="#adaptive-query-execution-aqe" title="Link to this heading">#</a></h2>
+<p>The scheduling described above is <em>static</em>: the full set of query stages is computed once, at job
+submission time, from the plan-time cost estimates. Adaptive Query Execution (AQE) is an experimental
+alternative in which the stage DAG is built <em>incrementally</em>, re-optimizing the remaining plan using the
+exact row counts and byte sizes observed as each shuffle stage completes. It is disabled by default and
+enabled with the <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> configuration setting.</p>
+<section id="static-vs-adaptive-execution-graphs">
+<h3>Static vs adaptive execution graphs<a class="headerlink" href="#static-vs-adaptive-execution-graphs" title="Link to this heading">#</a></h3>
+<p>Job scheduling revolves around an <code class="docutils literal notranslate"><span class="pre">ExecutionGraph</span></code>, which translates a physical plan into a set of stages.
+There are two implementations, selected by configuration when a job is submitted:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">StaticExecutionGraph</span></code></strong> — the default. All stages are planned up front by the <code class="docutils literal notranslate"><span class="pre">DistributedPlanner</span></code>,
+which returns a static list of stages.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">AdaptiveExecutionGraph</span></code></strong> — the adaptive counterpart. It is driven by the <code class="docutils literal notranslate"><span class="pre">AdaptivePlanner</span></code>, which runs
+a set of pluggable physical optimizer rules after each stage completes and returns only the stages that are
+currently runnable. Because decisions are deferred, stages come back already resolved, so the
+<code class="docutils literal notranslate"><span class="pre">UnResolved</span></code> stage state used by the static path is not needed here.</p></li>
+</ul>
+<p>Keeping the two graphs side by side lets the adaptive implementation mature without destabilizing the static
+path.</p>
+</section>
+<section id="how-re-optimization-works">
+<h3>How re-optimization works<a class="headerlink" href="#how-re-optimization-works" title="Link to this heading">#</a></h3>
+<p>As each shuffle stage finishes, its exact output statistics are attached to the remaining plan and the
+optimizer rules are re-run. This is the key difference from DataFusion’s normal single-shot physical
+optimization, where each rule runs once per plan. Running the full rule set repeatedly means the rules must be
+<strong>idempotent</strong> — otherwise they would keep inserting redundant exec nodes on each pass.</p>
+<p>Two adaptive optimizations are implemented today:</p>
+<ul class="simple">
+<li><p><strong>Join reordering</strong> — runtime row counts are used so the smaller side drives the join.</p></li>
+<li><p><strong>Empty stage elimination</strong> — when a completed stage produces zero rows, its downstream exchange is
+replaced with an empty execution node and emptiness is propagated up the plan so dependent stages are
+skipped entirely.</p></li>
+</ul>
+</section>
+<section id="code-layout">
+<h3>Code layout<a class="headerlink" href="#code-layout" title="Link to this heading">#</a></h3>
+<p>The adaptive scheduler code lives under <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/state/aqe"><code class="docutils literal notranslate"><span class="pre">ballista/scheduler/src/state/aqe</span></code></a>, with the
+<code class="docutils literal notranslate"><span class="pre">AdaptiveExecutionGraph</span></code> in <code class="docutils literal notranslate"><span class="pre">mod.rs</span></code>, the planner in <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code>, and the optimizer rules in
+<code class="docutils literal notranslate"><span class="pre">optimizer_rule.rs</span></code>.</p>
+</section>
+<section id="current-limitations">
+<h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
+<p>The adaptive path currently covers the happy path only. Known gaps, each with a tracking issue:</p>
+<ul class="simple">
+<li><p>Executor failure handling on the AQE path (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1986">#1986</a>)</p></li>
+<li><p>Dynamic coalescing of shuffle partitions (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1987">#1987</a>)</p></li>
+<li><p>Switching from hash join to sort-merge join based on runtime statistics (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1988">#1988</a>)</p></li>
+<li><p>Switching from streaming aggregation to hash aggregation based on runtime statistics (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1989">#1989</a>)</p></li>
+</ul>
+<p>Design and progress are tracked in the AQE epic (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1359">#1359</a>). See also the
+<a class="reference internal" href="../user-guide/tuning-guide.html"><span class="std std-doc">AQE section of the tuning guide</span></a> for the user-facing description.</p>
+</section>
+</section>
 </section>
 
 
@@ -615,6 +670,13 @@ and <a class="reference external" href="https://github.com/apache/datafusion-bal
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#distributed-query-scheduling">Distributed Query Scheduling</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#producing-a-distributed-query-plan">Producing a Distributed Query Plan</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-query-execution-aqe">Adaptive Query Execution (AQE)</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#static-vs-adaptive-execution-graphs">Static vs adaptive execution graphs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-re-optimization-works">How re-optimization works</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#code-layout">Code layout</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current limitations</a></li>
 </ul>
 </li>
 </ul>
