@@ -23,6 +23,7 @@ use crate::execution_engine::QueryStageExecutor;
 use crate::execution_loop::any_to_string;
 use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
+use crate::runtime_cache::SessionRuntimeCache;
 use ballista_core::ConfigProducer;
 use ballista_core::JobId;
 use ballista_core::RuntimeProducer;
@@ -97,6 +98,11 @@ pub struct Executor {
     /// Execution engine that the executor will delegate to
     /// for executing query stages
     pub(crate) execution_engine: Arc<dyn ExecutionEngine>,
+
+    /// Optional session-keyed cache of shared base runtime envs. When set,
+    /// `produce_runtime_for_session` reuses read-side state across a session's
+    /// tasks; when `None`, each task builds a runtime from `runtime_producer`.
+    session_runtime_cache: Option<Arc<SessionRuntimeCache>>,
 }
 
 impl Executor {
@@ -144,6 +150,7 @@ impl Executor {
             concurrent_tasks,
             abort_handles: Default::default(),
             execution_engine,
+            session_runtime_cache: None,
         }
     }
     /// Creates new Executor with default `ExecutionEngine`.
@@ -167,6 +174,7 @@ impl Executor {
             concurrent_tasks,
             abort_handles: Default::default(),
             execution_engine: Arc::new(DefaultExecutionEngine::new()),
+            session_runtime_cache: None,
         }
     }
 }
@@ -178,6 +186,31 @@ impl Executor {
         config: &SessionConfig,
     ) -> datafusion::error::Result<Arc<RuntimeEnv>> {
         (self.runtime_producer)(config)
+    }
+
+    /// Attaches (or clears) the session-keyed runtime cache. Cloning the
+    /// `Executor` shares the same cache via `Arc`.
+    pub fn with_session_runtime_cache(
+        mut self,
+        cache: Option<Arc<SessionRuntimeCache>>,
+    ) -> Self {
+        self.session_runtime_cache = cache;
+        self
+    }
+
+    /// Produces the runtime for a task, reusing the session's shared read-side
+    /// state when a cache is attached. Falls back to the per-task
+    /// `runtime_producer` when caching is disabled or an override producer is in
+    /// use.
+    pub fn produce_runtime_for_session(
+        &self,
+        session_id: &str,
+        config: &SessionConfig,
+    ) -> datafusion::error::Result<Arc<RuntimeEnv>> {
+        match &self.session_runtime_cache {
+            Some(cache) => cache.produce_runtime(session_id, config),
+            None => (self.runtime_producer)(config),
+        }
     }
 
     /// Creates a default [`SessionConfig`] using the configured config producer.
@@ -269,6 +302,7 @@ impl Executor {
 mod test {
     use crate::execution_engine::{DefaultQueryStageExec, ShuffleWriterVariant};
     use crate::executor::Executor;
+    use crate::runtime_cache::{MemoryPoolPolicy, SessionRuntimeCache};
     use ballista_core::RuntimeProducer;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
@@ -278,11 +312,13 @@ mod test {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
+    use datafusion::execution::runtime_env::RuntimeEnv;
 
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream,
     };
+    use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
     use futures::Stream;
     use std::pin::Pin;
@@ -458,5 +494,72 @@ mod test {
         // Make sure the actual task failed
         let inner_result = result.unwrap().unwrap();
         assert!(inner_result.is_err());
+    }
+
+    #[test]
+    fn produce_runtime_for_session_shares_read_side_state() {
+        let executor_registration = ExecutorRegistration {
+            id: "executor".to_string(),
+            port: 0,
+            grpc_port: 0,
+            specification: None,
+            host: None,
+            os_info: None,
+        };
+        let config_producer = Arc::new(default_config_producer);
+
+        // A base producer that builds a fresh env each call, plus an identity
+        // pool policy, so shared read-side state is observable via ptr equality.
+        let base_producer: RuntimeProducer =
+            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
+        let identity: MemoryPoolPolicy = Arc::new(|base, _| Ok(base));
+        let cache =
+            Arc::new(SessionRuntimeCache::new(base_producer.clone(), identity, 4));
+
+        let executor = Executor::new_basic(
+            executor_registration,
+            "/tmp",
+            base_producer,
+            config_producer,
+            2,
+        )
+        .with_session_runtime_cache(Some(cache));
+
+        let cfg = SessionConfig::new();
+        let e1 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
+        let e2 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
+        let e3 = executor.produce_runtime_for_session("s2", &cfg).unwrap();
+
+        assert!(Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
+        assert!(!Arc::ptr_eq(&e1.cache_manager, &e3.cache_manager));
+    }
+
+    #[test]
+    fn produce_runtime_for_session_falls_back_without_cache() {
+        let executor_registration = ExecutorRegistration {
+            id: "executor".to_string(),
+            port: 0,
+            grpc_port: 0,
+            specification: None,
+            host: None,
+            os_info: None,
+        };
+        let config_producer = Arc::new(default_config_producer);
+        let base_producer: RuntimeProducer =
+            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
+
+        // No cache attached: each call builds a fresh env.
+        let executor = Executor::new_basic(
+            executor_registration,
+            "/tmp",
+            base_producer,
+            config_producer,
+            2,
+        );
+
+        let cfg = SessionConfig::new();
+        let e1 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
+        let e2 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
+        assert!(!Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
     }
 }
