@@ -51,4 +51,8 @@ This section provides links to the source code for major areas of functionality.
 ### PyBallista
 
 - [Source](https://github.com/apache/datafusion-ballista/tree/main/python)
-- [Context](https://github.com/apache/datafusion-ballista/blob/main/python/src/context.rs)
+- [PyO3 module entry point](https://github.com/apache/datafusion-ballista/blob/main/python/src/lib.rs)
+- [Scheduler / executor PyO3 wrappers](https://github.com/apache/datafusion-ballista/blob/main/python/src/cluster.rs)
+- [`BallistaSessionContext` and `DistributedDataFrame`](https://github.com/apache/datafusion-ballista/blob/main/python/python/ballista/extension.py)
+- See [Python Client Design](python-client.md) for an overview of how the
+  wheel relates to `datafusion-python`.
