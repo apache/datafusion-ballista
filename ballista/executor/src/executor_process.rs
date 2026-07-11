@@ -70,7 +70,9 @@ use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
-use crate::runtime_cache::{MemoryPoolPolicy, SessionRuntimeCache};
+use crate::runtime_cache::{
+    DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
+};
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
@@ -352,15 +354,16 @@ pub async fn start_executor_process(
     // Session caching applies only to the default runtime producer. With an
     // override producer we cannot split base + pool, so we serve per-task as
     // before by leaving the cache unset.
-    let session_runtime_cache = if opt.override_runtime_producer.is_none() {
-        Some(Arc::new(SessionRuntimeCache::new(
-            base_runtime_producer.clone(),
-            pool_policy.clone(),
-            opt.session_runtime_cache_capacity,
-        )))
-    } else {
-        None
-    };
+    let session_runtime_cache: Option<Arc<dyn SessionRuntimeCache>> =
+        if opt.override_runtime_producer.is_none() {
+            Some(Arc::new(DefaultSessionRuntimeCache::new(
+                base_runtime_producer.clone(),
+                pool_policy.clone(),
+                opt.session_runtime_cache_capacity,
+            )))
+        } else {
+            None
+        };
 
     let executor = Arc::new(
         Executor::new(

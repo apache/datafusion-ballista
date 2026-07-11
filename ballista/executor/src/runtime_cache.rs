@@ -38,6 +38,23 @@ pub type MemoryPoolPolicy = Arc<
         + Sync,
 >;
 
+/// Produces a task's [`RuntimeEnv`], optionally reusing read-side state across
+/// the tasks of a session.
+///
+/// The executor calls [`produce_runtime`](Self::produce_runtime) for every task;
+/// implementors decide whether and how to share base runtime state (object-store
+/// clients, file-metadata cache) between a session's tasks.
+/// [`DefaultSessionRuntimeCache`] is the built-in implementation — provide a
+/// custom one to change the caching/sharing strategy.
+pub trait SessionRuntimeCache: Send + Sync {
+    /// Returns the per-task runtime for `session_id`.
+    fn produce_runtime(
+        &self,
+        session_id: &str,
+        config: &SessionConfig,
+    ) -> datafusion::error::Result<Arc<RuntimeEnv>>;
+}
+
 /// A bounded, session-keyed cache of shared *base* [`RuntimeEnv`]s.
 ///
 /// A base env carries the read-side state safe to share across all tasks of a
@@ -54,13 +71,13 @@ pub type MemoryPoolPolicy = Arc<
 /// The cache is bounded by an LRU of `capacity` sessions. A capacity of `0`
 /// disables caching entirely: every call builds a fresh base env, matching the
 /// behavior of building a runtime per task.
-pub struct SessionRuntimeCache {
+pub struct DefaultSessionRuntimeCache {
     base_producer: RuntimeProducer,
     pool_policy: MemoryPoolPolicy,
     cache: Option<Mutex<LruCache<String, Arc<RuntimeEnv>>>>,
 }
 
-impl SessionRuntimeCache {
+impl DefaultSessionRuntimeCache {
     /// Creates a new cache that produces per-task runtimes from `base_producer`
     /// (invoked at most once per cached session) and `pool_policy` (invoked on
     /// every call). `capacity` bounds the number of distinct sessions kept in
@@ -77,10 +94,12 @@ impl SessionRuntimeCache {
             cache,
         }
     }
+}
 
+impl SessionRuntimeCache for DefaultSessionRuntimeCache {
     /// Returns the per-task runtime for `session_id`, reusing a cached base env
     /// when present and building + caching one on miss.
-    pub fn produce_runtime(
+    fn produce_runtime(
         &self,
         session_id: &str,
         config: &SessionConfig,
@@ -133,7 +152,8 @@ mod tests {
 
     #[test]
     fn same_session_shares_cache_manager() {
-        let cache = SessionRuntimeCache::new(base_producer(), identity_policy(), 4);
+        let cache =
+            DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 4);
         let cfg = SessionConfig::new();
         let e1 = cache.produce_runtime("s1", &cfg).unwrap();
         let e2 = cache.produce_runtime("s1", &cfg).unwrap();
@@ -142,7 +162,8 @@ mod tests {
 
     #[test]
     fn different_sessions_get_different_base() {
-        let cache = SessionRuntimeCache::new(base_producer(), identity_policy(), 4);
+        let cache =
+            DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 4);
         let cfg = SessionConfig::new();
         let e1 = cache.produce_runtime("s1", &cfg).unwrap();
         let e2 = cache.produce_runtime("s2", &cfg).unwrap();
@@ -151,7 +172,8 @@ mod tests {
 
     #[test]
     fn per_task_pool_shares_footer_cache_but_not_env() {
-        let cache = SessionRuntimeCache::new(base_producer(), per_task_pool_policy(), 4);
+        let cache =
+            DefaultSessionRuntimeCache::new(base_producer(), per_task_pool_policy(), 4);
         let cfg = SessionConfig::new();
         let e1 = cache.produce_runtime("s1", &cfg).unwrap();
         let e2 = cache.produce_runtime("s1", &cfg).unwrap();
@@ -173,7 +195,8 @@ mod tests {
 
     #[test]
     fn capacity_zero_disables_cache() {
-        let cache = SessionRuntimeCache::new(base_producer(), identity_policy(), 0);
+        let cache =
+            DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 0);
         let cfg = SessionConfig::new();
         let e1 = cache.produce_runtime("s1", &cfg).unwrap();
         let e2 = cache.produce_runtime("s1", &cfg).unwrap();
@@ -182,7 +205,8 @@ mod tests {
 
     #[test]
     fn evicts_least_recently_used() {
-        let cache = SessionRuntimeCache::new(base_producer(), identity_policy(), 2);
+        let cache =
+            DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 2);
         let cfg = SessionConfig::new();
         let s1_a = cache.produce_runtime("s1", &cfg).unwrap();
         cache.produce_runtime("s2", &cfg).unwrap();

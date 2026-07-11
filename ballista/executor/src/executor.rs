@@ -102,7 +102,7 @@ pub struct Executor {
     /// Optional session-keyed cache of shared base runtime envs. When set,
     /// `produce_runtime_for_session` reuses read-side state across a session's
     /// tasks; when `None`, each task builds a runtime from `runtime_producer`.
-    session_runtime_cache: Option<Arc<SessionRuntimeCache>>,
+    session_runtime_cache: Option<Arc<dyn SessionRuntimeCache>>,
 }
 
 impl Executor {
@@ -192,7 +192,7 @@ impl Executor {
     /// `Executor` shares the same cache via `Arc`.
     pub fn with_session_runtime_cache(
         mut self,
-        cache: Option<Arc<SessionRuntimeCache>>,
+        cache: Option<Arc<dyn SessionRuntimeCache>>,
     ) -> Self {
         self.session_runtime_cache = cache;
         self
@@ -301,7 +301,9 @@ impl Executor {
 mod test {
     use crate::execution_engine::{DefaultQueryStageExec, ShuffleWriterVariant};
     use crate::executor::Executor;
-    use crate::runtime_cache::{MemoryPoolPolicy, SessionRuntimeCache};
+    use crate::runtime_cache::{
+        DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
+    };
     use ballista_core::RuntimeProducer;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
@@ -512,8 +514,9 @@ mod test {
         let base_producer: RuntimeProducer =
             Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
         let identity: MemoryPoolPolicy = Arc::new(|base, _| Ok(base));
-        let cache =
-            Arc::new(SessionRuntimeCache::new(base_producer.clone(), identity, 4));
+        let cache: Arc<dyn SessionRuntimeCache> = Arc::new(
+            DefaultSessionRuntimeCache::new(base_producer.clone(), identity, 4),
+        );
 
         let executor = Executor::new_basic(
             executor_registration,
