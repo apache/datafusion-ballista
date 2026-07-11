@@ -1017,6 +1017,7 @@ dependencies = [
  "tokio",
  "tonic",
  "url",
+ "uuid",
 ]
 
 [[package]]
