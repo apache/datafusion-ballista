@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{MemoryRefreshKind, System};
 use tokio::sync::mpsc;
 
@@ -407,6 +407,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
                 info!("Execute task  : [{task_identity}]");
 
+                let task_start = Instant::now();
                 let execution_result = self
                     .executor
                     .execute_query_stage(
@@ -416,7 +417,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task_context,
                     )
                     .await;
-                info!("Finished task : [{task_identity}]");
+                info!(
+                    "Finished task : [{task_identity}] in {:?}",
+                    task_start.elapsed()
+                );
                 debug!(
                     "Task [{task_identity}], execution statistics: {execution_result:?}"
                 );
