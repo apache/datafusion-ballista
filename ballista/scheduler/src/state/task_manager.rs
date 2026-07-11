@@ -655,24 +655,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(events)
     }
 
-    /// Mark a job to success. This will create a key under the CompletedJobs keyspace
-    /// and remove the job from ActiveJobs
-    pub(crate) async fn succeed_job(&self, job_id: &JobId) -> Result<()> {
+    /// Move a job from Active to Success and return the ids of its intermediate
+    /// (non-final) stages so their shuffle data can be reclaimed immediately.
+    /// Returns an empty vec if the job is not found or not successful.
+    pub(crate) async fn succeed_job(&self, job_id: &JobId) -> Result<Vec<u32>> {
         debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
             let graph = graph.read().await;
             if graph.is_successful() {
                 self.state.save_job(job_id, &graph).await?;
+                Ok(graph.intermediate_stage_ids())
             } else {
                 error!("Job {job_id} has not finished and cannot be completed");
-                return Ok(());
+                Ok(vec![])
             }
         } else {
             warn!("Fail to find job {job_id} in the cache");
+            Ok(vec![])
         }
-
-        Ok(())
     }
 
     /// Cancel the job and return a Vec of running tasks need to cancel

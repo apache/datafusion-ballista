@@ -117,7 +117,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .map_err(|e| {
                     let msg = format!(
                         "Fail to update tasks status from executor {:?} due to {:?}",
-                        &executor_id, e
+                        executor_id, e
                     );
                     error!("{msg}");
                     Status::internal(msg)
@@ -161,8 +161,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .executor_manager
                 .drain_pending_cleanup_jobs(&executor_id)
                 .into_iter()
-                .map(|job_id| CleanJobDataParams {
+                .map(|(job_id, remove_stage_ids)| CleanJobDataParams {
                     job_id: job_id.into_inner(),
+                    remove_stage_ids,
                 })
                 .collect();
             Ok(Response::new(PollWorkResult {
@@ -326,7 +327,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .map_err(|e| {
                 let msg = format!(
                     "Fail to update tasks status from executor {:?} due to {:?}",
-                    &executor_id, e
+                    executor_id, e
                 );
                 error!("{msg}");
                 Status::internal(msg)

@@ -146,7 +146,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             }
                         }
 
-                        error!("{}", &fail_message);
+                        error!("{}", fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
                             fail_message,
@@ -211,10 +211,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_completed(&job_id, queued_at, completed_at);
 
                 info!("Job finished successfully: [{job_id}]");
-                if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
-                    error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
-                }
-                self.state.clean_up_successful_job(job_id);
+                let intermediate_stage_ids =
+                    match self.state.task_manager.succeed_job(&job_id).await {
+                        Ok(ids) => ids,
+                        Err(e) => {
+                            error!(
+                                "Fail to invoke succeed_job for job {job_id} due to {e:?}"
+                            );
+                            vec![]
+                        }
+                    };
+                self.state
+                    .clean_up_successful_job(job_id, intermediate_stage_ids);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,

@@ -240,6 +240,16 @@ pub trait ExecutionGraph: Debug {
     /// Exposes executions stages and stage id's
     fn stages(&self) -> &HashMap<usize, ExecutionStage>;
 
+    /// Stage ids of all non-final (intermediate) stages — those whose
+    /// `output_links` is non-empty. The final stage(s) are excluded.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        self.stages()
+            .iter()
+            .filter(|(_, stage)| !stage.output_links().is_empty())
+            .map(|(stage_id, _)| *stage_id as u32)
+            .collect()
+    }
+
     /// returns next task to run
     /// (used for testing only)
     #[cfg(test)]
@@ -791,7 +801,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -800,17 +810,17 @@ impl ExecutionGraph for StaticExecutionGraph {
                             task_stage_attempt_num,
                             partition_id
                         );
-                        let operator_metrics = task_status.metrics.clone();
-
-                        if !running_stage
-                            .update_task_info(partition_id, task_status.clone())
-                        {
+                        if !running_stage.update_task_info(partition_id, &task_status) {
                             continue;
                         }
 
-                        if let Some(task_status::Status::Failed(failed_task)) =
-                            task_status.status
-                        {
+                        let TaskStatus {
+                            status,
+                            metrics: operator_metrics,
+                            ..
+                        } = task_status;
+
+                        if let Some(task_status::Status::Failed(failed_task)) = status {
                             let failed_reason = failed_task.failed_reason;
 
                             match failed_reason {
@@ -915,7 +925,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                             }
                         } else if let Some(task_status::Status::Successful(
                             successful_task,
-                        )) = task_status.status
+                        )) = status
                         {
                             // update task metrics for successfu task
                             running_stage
@@ -966,7 +976,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                     for task_status in stage_task_statuses.into_iter() {
                         let task_stage_attempt_num =
                             task_status.stage_attempt_num as usize;
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -1785,6 +1795,33 @@ mod test {
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
+
+    #[tokio::test]
+    async fn test_intermediate_stage_ids() {
+        // A simple aggregation produces a 2-stage graph: one intermediate
+        // stage (non-empty output_links) feeding one final stage (empty
+        // output_links).
+        let graph = test_aggregation_plan(4).await;
+
+        assert_eq!(graph.stages().len(), 2);
+
+        // Exactly one final stage.
+        let final_count = graph
+            .stages()
+            .values()
+            .filter(|s| s.output_links().is_empty())
+            .count();
+        assert_eq!(final_count, 1);
+
+        // Intermediate = all - final = exactly one stage, and none of the
+        // returned ids is a final stage.
+        let intermediate = graph.intermediate_stage_ids();
+        assert_eq!(intermediate.len(), 1);
+        for id in &intermediate {
+            let stage = graph.stages().get(&(*id as usize)).unwrap();
+            assert!(!stage.output_links().is_empty());
+        }
+    }
 
     #[tokio::test]
     async fn test_fail_job_sets_end_time_and_failed_metadata() -> Result<()> {
