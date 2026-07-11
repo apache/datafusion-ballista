@@ -206,10 +206,10 @@ information on supported SQL.
 
 The following organizations use Ballista. To add yours, open a pull request.
 
-| Organization | |
-| --- | --- |
-| <a href="https://spice.ai"><img src="docs/source/_static/images/adopters/spiceai.png" height="36" alt="Spice AI"/></a> | [Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
-| <a href="https://coralogix.com"><img src="docs/source/_static/images/adopters/coralogix.png" height="36" alt="Coralogix"/></a> | [Coralogix](https://coralogix.com/) |
+| Organization                                                                                                                   |                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| <a href="https://spice.ai"><img src="docs/source/_static/images/adopters/spiceai.png" height="36" alt="Spice AI"/></a>         | [Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
+| <a href="https://coralogix.com"><img src="docs/source/_static/images/adopters/coralogix.png" height="36" alt="Coralogix"/></a> | [Coralogix](https://coralogix.com/)                           |
 
 ## Contribution Guide
 
