@@ -107,6 +107,18 @@ impl ExecutionStage {
             ExecutionStage::Failed(stage) => stage.plan.as_ref(),
         }
     }
+
+    /// Get the output links for this stage. An empty slice means this is a
+    /// final stage in the `ExecutionGraph`.
+    pub fn output_links(&self) -> &[usize] {
+        match self {
+            ExecutionStage::UnResolved(stage) => &stage.output_links,
+            ExecutionStage::Resolved(stage) => &stage.output_links,
+            ExecutionStage::Running(stage) => &stage.output_links,
+            ExecutionStage::Successful(stage) => &stage.output_links,
+            ExecutionStage::Failed(stage) => &stage.output_links,
+        }
+    }
 }
 
 /// For a stage whose input stages are not all completed, we say it's a unresolved stage
@@ -669,7 +681,7 @@ impl RunningStage {
     }
 
     /// Update the TaskInfo for task partition
-    pub fn update_task_info(&mut self, partition_id: usize, status: TaskStatus) -> bool {
+    pub fn update_task_info(&mut self, partition_id: usize, status: &TaskStatus) -> bool {
         debug!("Updating TaskInfo for partition {partition_id}");
         let Some(task_info) = self.task_infos[partition_id].as_ref() else {
             warn!(
@@ -686,7 +698,7 @@ impl RunningStage {
             return false;
         }
         let scheduled_time = task_info.scheduled_time;
-        let task_status = status.status.unwrap();
+        let task_status = status.status.as_ref().unwrap();
         let updated_task_info = TaskInfo {
             task_id,
             scheduled_time,
@@ -1178,7 +1190,7 @@ mod tests {
         // Simulates receiving a status update for a task that was already
         // reset (e.g., executor heartbeat timed out).
         let status = make_task_status(0, 0);
-        let result = stage.update_task_info(0, status);
+        let result = stage.update_task_info(0, &status);
 
         // Should return false (update rejected), not panic.
         assert!(!result);
@@ -1203,7 +1215,7 @@ mod tests {
         });
 
         let status = make_task_status(0, 0);
-        let result = stage.update_task_info(0, status);
+        let result = stage.update_task_info(0, &status);
 
         assert!(result);
         assert!(matches!(
@@ -1240,7 +1252,7 @@ mod tests {
 
         // Executor sends a late status update for partition 0.
         let status = make_task_status(0, 0);
-        let result = stage.update_task_info(0, status);
+        let result = stage.update_task_info(0, &status);
 
         // Should gracefully reject the update, not panic.
         assert!(!result);
