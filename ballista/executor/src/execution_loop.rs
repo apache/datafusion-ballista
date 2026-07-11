@@ -44,7 +44,7 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
@@ -297,6 +297,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             partition_id: partition_id as usize,
         };
 
+        let task_start = Instant::now();
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
             task_id as usize,
             part.clone(),
@@ -314,7 +315,10 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             }
         };
 
-        info!("Finished task : [{task_identity}]");
+        info!(
+            "Finished task : [{task_identity}] in {:?}",
+            task_start.elapsed()
+        );
         debug!("Task statistics: [{task_identity}] {execution_result:?}");
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
