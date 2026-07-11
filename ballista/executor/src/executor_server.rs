@@ -63,7 +63,7 @@ use tokio::task::JoinHandle;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::{ExecutorProcessConfig, remove_job_dir};
+use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskExecutionTimes, as_task_status};
@@ -933,9 +933,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id.into();
+        let params = request.into_inner();
+        let job_id = params.job_id.into();
 
-        remove_job_dir(&self.executor.work_dir, &job_id)
+        remove_job_data(&self.executor.work_dir, &job_id, &params.remove_stage_ids)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
