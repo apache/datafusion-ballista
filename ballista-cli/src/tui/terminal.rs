@@ -90,7 +90,7 @@ mod tui {
 mod web {
     use crate::tui::TuiResult;
     use ratatui::Terminal;
-    use ratzilla::WebGl2Backend;
+    use ratzilla::backend::webgl2::WebGl2Backend;
 
     pub type WebTui = Terminal<WebGl2Backend>;
 

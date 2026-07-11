@@ -185,6 +185,8 @@ impl BallistaClientPool for DefaultBallistaClientPool {
                     customize_endpoint,
                     config.io_retries_times,
                     config.io_retry_wait_time_ms,
+                    config.initial_connection_window_size,
+                    config.initial_stream_window_size,
                 )
                 .await?
             }

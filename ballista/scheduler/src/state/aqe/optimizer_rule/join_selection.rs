@@ -61,13 +61,11 @@ impl PhysicalOptimizerRule for DelayJoinSelectionRule {
             .unwrap_or_default();
         if bc.adaptive_join_enabled() {
             let result = plan.transform_up(|node| {
-                if let Some(hj) = node.as_any().downcast_ref::<HashJoinExec>() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
                     let dynamic =
                         DynamicJoinSelectionExec::from_hash_join(hj, self.plan_id())?;
                     Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
-                } else if let Some(smj) =
-                    node.as_any().downcast_ref::<SortMergeJoinExec>()
-                {
+                } else if let Some(smj) = node.downcast_ref::<SortMergeJoinExec>() {
                     let dynamic =
                         DynamicJoinSelectionExec::from_sort_join(smj, self.plan_id())?;
                     Ok(Transformed::yes(dynamic as Arc<dyn ExecutionPlan>))
@@ -146,7 +144,7 @@ impl PhysicalOptimizerRule for SelectJoinRule {
         if bc.adaptive_join_enabled() {
             let result = plan.transform_up(|node| {
                 if let Some(dynamic_join) =
-                    node.as_any().downcast_ref::<DynamicJoinSelectionExec>()
+                    node.downcast_ref::<DynamicJoinSelectionExec>()
                 {
                     if dynamic_join.upstream_resolved() {
                         match dynamic_join.to_actual_join(config)? {
@@ -161,7 +159,6 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     let right = hash_join_exec.right.clone();
 
                                     let right = right
-                                    .as_any()
                                     .downcast_ref::<ExchangeExec>()
                                     .ok_or(DataFusionError::Execution(
                                         "ExchangeExec is expected at this point (right)"
@@ -174,19 +171,17 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                         .with_new_children(vec![left, right])?;
 
                                     let join = join
-                                    .as_any()
-                                    .downcast_ref::<HashJoinExec>()
-                                    .ok_or(DataFusionError::Execution(
-                                    "HashJoinExec is expected at this point (right)"
-                                        .to_owned(),
-                                ))?;
+                                        .downcast_ref::<HashJoinExec>()
+                                        .ok_or(DataFusionError::Execution(
+                                        "HashJoinExec is expected at this point (right)"
+                                            .to_owned(),
+                                    ))?;
                                     let join =
                                         join.swap_inputs(PartitionMode::CollectLeft)?;
                                     Ok(Transformed::yes(join))
                                 } else {
                                     let left = hash_join_exec
                                     .left
-                                    .as_any()
                                     .downcast_ref::<ExchangeExec>()
                                     .ok_or(DataFusionError::Execution(
                                         "ExchangeExec is expected at this point (left)"
@@ -216,7 +211,7 @@ impl PhysicalOptimizerRule for SelectJoinRule {
 
                                 let exec = plan.transform_up(|p| {
                                     if let Some(hash_join) =
-                                        p.as_any().downcast_ref::<HashJoinExec>()
+                                        p.downcast_ref::<HashJoinExec>()
                                         && matches!(
                                             hash_join.partition_mode(),
                                             PartitionMode::CollectLeft
@@ -224,10 +219,9 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     {
                                         if let Some(data_source) = hash_join
                                             .left
-                                            .as_any()
-                                            .downcast_ref::<DataSourceExec>()
-                                            && let Ok(Some(left)) =
-                                                data_source.repartitioned(1, config)
+                                            .downcast_ref::<DataSourceExec>(
+                                        ) && let Ok(Some(left)) =
+                                            data_source.repartitioned(1, config)
                                         {
                                             let right = hash_join.right.clone();
                                             let p =
@@ -242,7 +236,6 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                         {
                                             let left = if let Some(exchange) = hash_join
                                                 .left
-                                                .as_any()
                                                 .downcast_ref::<ExchangeExec>()
                                             {
                                                 Arc::new(

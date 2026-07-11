@@ -172,7 +172,7 @@ impl Extension {
             "hostname should be provided".to_string(),
         ))?;
         let port = url.port().unwrap_or(DEFAULT_SCHEDULER_PORT);
-        let scheduler_url = format!("http://{}:{}", &host, port);
+        let scheduler_url = format!("http://{}:{}", host, port);
 
         Ok(scheduler_url)
     }

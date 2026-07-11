@@ -398,6 +398,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task.session_id,
                         task.session_config,
                         function_registry.scalar_functions.clone(),
+                        function_registry.higher_order_functions.clone(),
                         function_registry.aggregate_functions.clone(),
                         function_registry.window_functions.clone(),
                         runtime,
@@ -777,14 +778,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 if let Some(curator_task) = maybe_task {
                     let task_identity = format!(
                         "TID {} {}/{}.{}/{}.{}",
-                        &curator_task.task.task_id,
-                        &curator_task.task.job_id,
-                        &curator_task.task.stage_id,
-                        &curator_task.task.stage_attempt_num,
-                        &curator_task.task.partition_id,
-                        &curator_task.task.task_attempt_num,
+                        curator_task.task.task_id,
+                        curator_task.task.job_id,
+                        curator_task.task.stage_id,
+                        curator_task.task.stage_attempt_num,
+                        curator_task.task.partition_id,
+                        curator_task.task.task_attempt_num,
                     );
-                    debug!("Received task {:?}", &task_identity);
+                    debug!("Received task {:?}", task_identity);
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {
@@ -824,6 +825,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                         self.executor.function_registry.scalar_functions.clone(),
                         self.executor.function_registry.aggregate_functions.clone(),
                         self.executor.function_registry.window_functions.clone(),
+                        self.executor
+                            .function_registry
+                            .higher_order_functions
+                            .clone(),
                         self.codec.clone(),
                     )
                     .map_err(|e| Status::invalid_argument(format!("{e}")))?,
@@ -853,6 +858,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 self.executor.function_registry.scalar_functions.clone(),
                 self.executor.function_registry.aggregate_functions.clone(),
                 self.executor.function_registry.window_functions.clone(),
+                self.executor
+                    .function_registry
+                    .higher_order_functions
+                    .clone(),
                 self.codec.clone(),
             )
             .map_err(|e| Status::invalid_argument(format!("{e}")))?;
@@ -906,7 +915,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 .executor
                 .cancel_task(
                     task.task_id as usize,
-                    task.job_id,
+                    task.job_id.into(),
                     task.stage_id as usize,
                     task.partition_id as usize,
                 )
@@ -924,7 +933,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let job_id = request.into_inner().job_id.into();
 
         remove_job_dir(&self.executor.work_dir, &job_id)
             .await

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -17,12 +17,9 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-
-# some issues are just documentation
-add-sections={"documentation":{"prefix":"**Documentation updates:**","labels":["documentation"]},"performance":{"prefix":"**Performance improvements:**","labels":["performance"]}}
-# uncomment to not show PRs. TBD if we shown them or not.
-#pull-requests=false
-# so that the component is shown associated with the issue
-issue-line-labels=sql
-exclude-labels=development-process,invalid
-breaking-labels=api change
+# Regenerate the approved TPC-H distributed plans for the plan-stability suite.
+# Run after an intended planner/plan-shape change, then review the diff.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+BALLISTA_GENERATE_GOLDEN=1 cargo test -p ballista-scheduler --test tpch_plan_stability
+echo "Regenerated. Review changes under ballista/scheduler/tests/tpch_plan_stability/approved/"

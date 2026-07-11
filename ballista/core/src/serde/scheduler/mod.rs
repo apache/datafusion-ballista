@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::registry::BallistaFunctionRegistry;
@@ -41,7 +42,7 @@ pub enum Action {
     /// Collect a shuffle partition
     FetchPartition {
         /// The job identifier.
-        job_id: String,
+        job_id: JobId,
         /// The stage identifier within the job.
         stage_id: usize,
         /// The partition identifier within the stage.
@@ -61,7 +62,7 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionId {
     /// The job identifier.
-    pub job_id: String,
+    pub job_id: JobId,
     /// The stage identifier within the job.
     pub stage_id: usize,
     /// The partition identifier within the stage.
@@ -70,9 +71,9 @@ pub struct PartitionId {
 
 impl PartitionId {
     /// Creates a new partition ID with the given job, stage, and partition identifiers.
-    pub fn new(job_id: &str, stage_id: usize, partition_id: usize) -> Self {
+    pub fn new(job_id: &JobId, stage_id: usize, partition_id: usize) -> Self {
         Self {
-            job_id: job_id.to_string(),
+            job_id: job_id.to_owned(),
             stage_id,
             partition_id,
         }
@@ -387,7 +388,7 @@ impl PartitionStats {
 #[derive(Debug, Clone)]
 pub struct ExecutePartition {
     /// Unique ID representing this query execution
-    pub job_id: String,
+    pub job_id: JobId,
     /// Unique ID representing this query stage within the overall query
     pub stage_id: usize,
     /// The partitions to execute. The same plan could be sent to multiple executors and each
@@ -404,7 +405,7 @@ pub struct ExecutePartition {
 impl ExecutePartition {
     /// Creates a new execute partition task.
     pub fn new(
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         partition_id: Vec<usize>,
         plan: Arc<dyn ExecutionPlan>,
@@ -464,7 +465,7 @@ pub struct TaskDefinition {
     /// Current attempt number for this task.
     pub task_attempt_num: usize,
     /// Job identifier this task belongs to.
-    pub job_id: String,
+    pub job_id: JobId,
     /// Stage identifier within the job.
     pub stage_id: usize,
     /// Current attempt number for the stage.

@@ -15,8 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::{ThemeName, ThemeOverride};
 use config::{Config, ConfigError, File, FileFormat};
 use serde::Deserialize;
+
+/// Theme configuration: built-in preset name plus optional color overrides.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ThemeSettings {
+    #[serde(default)]
+    pub(super) name: ThemeName,
+    #[serde(default)]
+    pub(super) overrides: ThemeOverride,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SchedulerSettings {
@@ -39,6 +49,8 @@ pub struct Settings {
     pub data_reload_interval_ms: u64,
     /// How often to refresh the UI. In millis.
     pub repaint_interval_ms: u64,
+    #[serde(default)]
+    pub theme: ThemeSettings,
 }
 
 const DEFAULT_CONFIG: &str = r#"
@@ -46,15 +58,13 @@ data_reload_interval_ms: 2000
 repaint_interval_ms: 50
 
 scheduler:
-  url: http://localhost:50050
+    url: "http://localhost:50050"
 
 http:
-  timeout: 2000
+    timeout: 2000
 
-job:
-  stage:
-    plan:
-      tree: false
+theme:
+    name: "dark"
 "#;
 
 impl Settings {
@@ -81,10 +91,10 @@ impl Settings {
                         .format(FileFormat::Yaml)
                         .required(false),
                 )
-                // Add in settings from the environment (with a prefix of BALLISTA_)
-                // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
+                // Add in settings from the environment (with a prefix of `BALLISTA`.)
+                // E.g. `BALLISTA__SCHEDULER__URL=http://localhost:50051 ballista_cli`
                 // would set the scheduler url key
-                .add_source(Environment::with_prefix("BALLISTA").separator("_"))
+                .add_source(Environment::with_prefix("BALLISTA").separator("__"))
         };
 
         let config = builder.build()?;
@@ -106,7 +116,8 @@ mod web {
             let mut repaint_interval_ms = 50;
             let mut scheduler_url = "http://localhost:50050";
             let mut http_timeout_ms = 2000;
-            let mut format_tree = false;
+            let mut theme_name = "dark";
+            let mut theme_app_background_bg = String::from("black");
 
             let query_string = Self::decode_request();
             query_string.split('&').for_each(|setting| {
@@ -114,18 +125,19 @@ mod web {
 
                 if let (Some(key), Some(value)) = (pair.next(), pair.next()) {
                     match key {
-                        "ballista_tick_interval" => {
+                        "ballista_data_reload_interval_ms" => {
                             data_reload_interval_ms = value.parse::<u64>().unwrap_or(2000)
                         }
-                        "ballista_repaint_interval" => {
+                        "ballista_repaint_interval_ms" => {
                             repaint_interval_ms = value.parse::<u64>().unwrap_or(50)
                         }
                         "ballista_scheduler_url" => scheduler_url = value,
                         "ballista_http_timeout" => {
                             http_timeout_ms = value.parse::<u64>().unwrap_or(2000)
                         }
-                        "ballista_job_stage_plan_tree" => {
-                            format_tree = value.parse::<bool>().unwrap_or(false)
+                        "ballista_theme_name" => theme_name = value,
+                        "ballista_theme_overrides_app_background_bg" => {
+                            theme_app_background_bg = value.replace("%23", "#");
                         }
                         _ => {}
                     }
@@ -133,19 +145,20 @@ mod web {
             });
             let config = format!(
                 r#"
-data_reload_interval_ms: {data_reload_interval_ms}
-repaint_interval_ms: {repaint_interval_ms}
+    data_reload_interval_ms: {data_reload_interval_ms}
+    repaint_interval_ms: {repaint_interval_ms}
 
-scheduler:
-  url: {scheduler_url}
+    scheduler:
+        url: {scheduler_url}
 
-http:
-  timeout: {http_timeout_ms}
+    http:
+        timeout: {http_timeout_ms}
 
-job:
-  stage:
-    plan:
-      tree: {format_tree}
+    theme:
+        name: {theme_name}
+        overrides:
+            app_background:
+                bg: {theme_app_background_bg}
 "#
             );
             tracing::info!("Using query string: {}", config);

@@ -41,6 +41,21 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 /// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
+/// Configuration key for the reduce-side in-flight-bytes governor budget.
+pub const BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT: &str =
+    "ballista.shuffle.reader.max_bytes_in_flight";
+/// Configuration key for the per-address in-flight block cap.
+pub const BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS: &str =
+    "ballista.shuffle.reader.max_blocks_in_flight_per_address";
+/// Configuration key for the assumed block size when partition stats lack a byte count.
+pub const BALLISTA_SHUFFLE_READER_DEFAULT_BLOCK_SIZE: &str =
+    "ballista.shuffle.reader.default_block_size_bytes";
+/// Configuration key for the gRPC client HTTP/2 initial connection-level flow-control window.
+pub const BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE: &str =
+    "ballista.client.initial_connection_window_size";
+/// Configuration key for the gRPC client HTTP/2 initial stream-level flow-control window.
+pub const BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE: &str =
+    "ballista.client.initial_stream_window_size";
 /// max message size for gRPC clients
 pub const BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE: &str =
     "ballista.client.grpc_max_message_size";
@@ -85,6 +100,12 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 /// pattern in the distributed planner. Set to `0` to disable promotion.
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
+
+/// Configuration key to enable broadcasting a small build side of a
+/// `SortMergeJoinExec` by converting it to a `CollectLeft` hash join in the
+/// static distributed planner. Enabled by default.
+pub const BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED: &str =
+    "ballista.optimizer.broadcast_sort_merge_join_enabled";
 
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
@@ -152,6 +173,26 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT.to_string(),
+                         "Reduce-side shuffle governor: maximum total in-flight bytes across concurrent remote partition fetches. Mirrors Spark's spark.reducer.maxSizeInFlight. Values above 4 GiB are clamped to 4 GiB (u32 semaphore limit).".to_string(),
+                         DataType::UInt64,
+                         Some((50331648).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS.to_string(),
+                         "Reduce-side shuffle governor: maximum concurrent in-flight partition fetches to a single executor address.".to_string(),
+                         DataType::UInt64,
+                         Some((128).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_DEFAULT_BLOCK_SIZE.to_string(),
+                         "Assumed per-partition byte size charged to the shuffle governor when partition stats carry no byte count.".to_string(),
+                         DataType::UInt64,
+                         Some((1048576).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE.to_string(),
+                         "HTTP/2 initial connection-level flow-control window for gRPC data-plane clients, in bytes. Should be >= the shuffle governor byte budget so the governor, not the transport window, is the binding backpressure. 0 leaves the tonic default.".to_string(),
+                         DataType::UInt64,
+                         Some((67108864).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE.to_string(),
+                         "HTTP/2 initial stream-level flow-control window for gRPC data-plane clients, in bytes. 0 leaves the tonic default.".to_string(),
+                         DataType::UInt64,
+                         Some((16777216).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
@@ -201,6 +242,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           Set to 0 to disable promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED.to_string(),
+                         "Broadcast a small build side of a SortMergeJoinExec by converting it \
+                          to a CollectLeft hash join in the static distributed planner. \
+                          The build side must also fit under broadcast_join_threshold_bytes.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -422,6 +469,31 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
     }
 
+    /// Reduce-side shuffle governor byte budget (`max_bytes_in_flight`).
+    pub fn shuffle_reader_max_bytes_in_flight(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT) as u64
+    }
+
+    /// Reduce-side shuffle governor per-address in-flight block cap.
+    pub fn shuffle_reader_max_blocks_in_flight_per_address(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS)
+    }
+
+    /// Assumed block size charged to the governor when stats lack a byte count.
+    pub fn shuffle_reader_default_block_size_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_DEFAULT_BLOCK_SIZE) as u64
+    }
+
+    /// HTTP/2 initial connection-level flow-control window (bytes) for data-plane clients.
+    pub fn grpc_client_initial_connection_window_size(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE) as u32
+    }
+
+    /// HTTP/2 initial stream-level flow-control window (bytes) for data-plane clients.
+    pub fn grpc_client_initial_stream_window_size(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE) as u32
+    }
+
     /// Returns the gRPC client connection timeout in seconds.
     pub fn grpc_client_connect_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS)
@@ -503,6 +575,13 @@ impl BallistaConfig {
     /// `0` disables promotion.
     pub fn broadcast_join_threshold_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
+    }
+
+    /// Returns whether broadcasting a small build side of a `SortMergeJoinExec`
+    /// (by converting it to a `CollectLeft` hash join) is enabled in the static
+    /// distributed planner.
+    pub fn broadcast_sort_merge_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
@@ -756,5 +835,11 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_sort_merge_join_enabled_by_default() {
+        let config = BallistaConfig::default();
+        assert!(config.broadcast_sort_merge_join_enabled());
     }
 }

@@ -40,8 +40,8 @@ classifiers = [
     "Programming Language :: Rust",
 ]
 dependencies = [
-    "pyarrow>=21.0.0",
-    "datafusion==53",
+    "pyarrow>=23.0.1",
+    "datafusion==54",
     "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]

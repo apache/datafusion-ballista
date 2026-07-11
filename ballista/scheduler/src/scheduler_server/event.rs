@@ -18,11 +18,34 @@
 use std::fmt::{Debug, Formatter};
 
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::ExecutionPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
-use ballista_core::{JobStatusSubscriber, serde::protobuf::TaskStatus};
+use ballista_core::{JobId, JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
+
+/// A plan submitted for execution by a client.
+///
+/// Most jobs are submitted as a [LogicalPlan] which the scheduler optimizes
+/// and turns into a physical plan itself. A client may instead submit an
+/// already-built physical plan directly, bypassing logical planning on the
+/// scheduler entirely - e.g. for plans containing custom operators that have
+/// no logical-plan representation. Physical-plan jobs always use the static
+/// distributed planner; the adaptive query planner (AQE) requires a logical
+/// plan and is not available for this path.
+// `LogicalPlan` is much larger than `Arc<dyn ExecutionPlan>`, but `SubmitPlan`
+// values are only ever handled by reference or already boxed by their callers
+// (e.g. `QueryStageSchedulerEvent::JobQueued::plan`), so the size difference
+// does not cause repeated large stack copies in practice.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
+pub enum SubmitPlan {
+    /// A logical plan that the scheduler will plan into a physical plan.
+    Logical(LogicalPlan),
+    /// An already-built physical plan supplied directly by the client.
+    Physical(Arc<dyn ExecutionPlan>),
+}
 
 /// Events that drive the query stage scheduler state machine.
 #[derive(Clone)]
@@ -30,13 +53,13 @@ pub enum QueryStageSchedulerEvent {
     /// A new job has been queued for execution.
     JobQueued {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Human-readable job name.
         job_name: String,
         /// Session context for the job.
         session_ctx: Arc<SessionContext>,
-        /// Logical plan to execute.
-        plan: Box<LogicalPlan>,
+        /// Plan to execute, either logical or an already-built physical plan.
+        plan: Box<SubmitPlan>,
         /// Timestamp when the job was queued.
         queued_at: u64,
         /// job status subscriber
@@ -45,7 +68,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job has been submitted for execution.
     JobSubmitted {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Timestamp when the job was queued.
         queued_at: u64,
         /// Timestamp when the job was submitted.
@@ -54,7 +77,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job failed during the planning phase.
     JobPlanningFailed {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Error message describing the failure.
         fail_message: String,
         /// Timestamp when the job was queued.
@@ -65,7 +88,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job has completed successfully.
     JobFinished {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Timestamp when the job was queued.
         queued_at: u64,
         /// Timestamp when the job completed.
@@ -74,7 +97,7 @@ pub enum QueryStageSchedulerEvent {
     /// A job failed during execution.
     JobRunningFailed {
         /// Unique job identifier.
-        job_id: String,
+        job_id: JobId,
         /// Error message describing the failure.
         fail_message: String,
         /// Timestamp when the job was queued.
@@ -83,11 +106,11 @@ pub enum QueryStageSchedulerEvent {
         failed_at: u64,
     },
     /// A job's execution graph has been updated.
-    JobUpdated(String),
+    JobUpdated(JobId),
     /// Request to cancel a job.
-    JobCancel(String),
+    JobCancel(JobId),
     /// Request to clean up job data.
-    JobDataClean(String),
+    JobDataClean(JobId),
     /// Task status updates received.
     TaskUpdating(String, Vec<TaskStatus>),
     /// Signal to revive task offers.
@@ -150,6 +173,7 @@ impl Debug for QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 write!(f, "JobDataClean : job_id={job_id}.")
             }
+            // TODO: This is not job_id but Executor ID (based on usage).
             QueryStageSchedulerEvent::TaskUpdating(job_id, status) => {
                 write!(f, "TaskUpdating : job_id={job_id}, status:[{status:?}].")
             }

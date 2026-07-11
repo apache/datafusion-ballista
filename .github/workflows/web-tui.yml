@@ -51,7 +51,7 @@ jobs:
     name: Build Web TUI WASM32 application
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 1
 
@@ -64,15 +64,40 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - name: Install Trunk
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
         with:
           tool: trunk@0.21.14
+
+      - name: Install cargo-get
+        uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
+        with:
+          tool: cargo-get@1.4.0
+
+      - name: Get package.version
+        id: cargo_metadata
+        run: |
+          BALLISTA_VERSION=$(cargo get --entry ballista/core/ package.version)
+          echo "ballista_version=${BALLISTA_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         working-directory: ballista-cli
         run: |
           trunk build --cargo-profile release-nonlto --minify --locked \
             --no-default-features --features web
+
+      - name: Deploy at nightlies.a.o
+        if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
+          REMOTE_TARGET_DIR="${{ secrets.NIGHTLIES_RSYNC_PATH }}/${TUI_DIR}/"
+
+          echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
+
+          ssh-keyscan -H "${{ secrets.NIGHTLIES_RSYNC_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${REMOTE_TARGET_DIR}"
+
+          rsync --times --compress --delete --verbose -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" ./target/web-tui/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7

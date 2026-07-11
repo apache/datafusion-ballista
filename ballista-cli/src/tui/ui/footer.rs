@@ -19,9 +19,8 @@ use crate::tui::app::App;
 use crate::tui::domain::jobs::PlanTab;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let mut current_view_key_bindings = Vec::with_capacity(10);
@@ -82,7 +81,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                                     .push(Span::from("[c] Cancel job, "));
                             }
 
-                            if app.is_selected_job_completed_or_running() {
+                            if app.does_job_have_plan() {
                                 current_view_key_bindings
                                     .push(Span::from("[p] View job plans, "));
                             }
@@ -157,12 +156,8 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             ])
             .split(area);
 
-        let line = Line::from(current_view_key_bindings);
-
-        let block = Block::default();
-        let paragraph = Paragraph::new(line)
-            .style(Style::default().bold())
-            .block(block)
+        let paragraph = Paragraph::new(Line::from(current_view_key_bindings))
+            .style(app.theme.footer)
             .centered();
         f.render_widget(paragraph, areas[0]);
 
@@ -171,12 +166,8 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         area
     };
 
-    let line = Line::from(global_key_bindings);
-
-    let block = Block::default();
-    let paragraph = Paragraph::new(line)
-        .style(Style::default().bold())
-        .block(block)
+    let paragraph = Paragraph::new(Line::from(global_key_bindings))
+        .style(app.theme.footer)
         .centered();
     f.render_widget(paragraph, global_area);
 }

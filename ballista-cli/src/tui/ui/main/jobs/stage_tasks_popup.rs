@@ -17,14 +17,12 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::stages::StageTaskResponse;
+use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
-use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Row, Table,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, HighlightSpacing, Row, Table};
 
 pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     let Some(popup) = &app.job_stages_popup else {
@@ -36,12 +34,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(98, 70, f.area());
-    f.render_widget(Clear, area);
-
-    let header_style = Style::default()
-        .fg(Color::LightYellow)
-        .bg(Color::Black)
-        .bold();
+    clear_area(f, area, app);
 
     let header_row = Row::new(vec![
         Cell::from(Text::from("Task ID".to_string()).right_aligned()),
@@ -55,7 +48,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         Cell::from(Text::from("Duration".to_string()).right_aligned()),
         Cell::from(Text::from("Total Time".to_string()).right_aligned()),
     ])
-    .style(header_style)
+    .style(app.theme.table_header)
     .height(1);
 
     let rows = stage
@@ -84,14 +77,14 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(format!(
                 " Tasks for stage '{}' of job '{}' ",
-                stage.id, &popup.job_id
+                stage.id, popup.job_id
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Indexed(193)).bold())
+            .border_style(app.theme.popup_border_alt)
             .border_type(BorderType::Thick),
     )
     .header(header_row)
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
 
     let mut table_state = popup.tasks_table_state;
@@ -102,24 +95,25 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
 }
 
 fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'static> {
-    let bg = if i.is_multiple_of(2) {
-        Color::DarkGray
+    let row_style = if i.is_multiple_of(2) {
+        app.theme.row_even
     } else {
-        Color::Black
+        app.theme.row_odd
     };
 
-    let status_color = match task.status.as_str() {
-        "Running" => Color::LightBlue,
-        "Successful" | "Completed" => Color::LightGreen,
-        "Failed" => Color::LightRed,
-        _ => Color::Gray,
+    let status_style = match task.status.as_str() {
+        "Running" => app.theme.status_running,
+        "Queued" => app.theme.status_queued,
+        "Successful" | "Completed" => app.theme.status_completed,
+        "Failed" => app.theme.status_failed,
+        _ => app.theme.status_unknown,
     };
 
     Row::new(vec![
         Cell::from(Text::from(task.id.to_string()).right_aligned()),
         Cell::from(
             Text::from(task.status.clone())
-                .style(Style::default().fg(status_color).bold())
+                .style(status_style)
                 .centered(),
         ),
         Cell::from(Text::from(app.format_count(task.input_rows)).right_aligned()),
@@ -151,7 +145,7 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
             .right_aligned(),
         ),
     ])
-    .style(Style::default().bg(bg))
+    .style(row_style)
 }
 
 fn format_datetime(dt: u64, app: &App) -> String {

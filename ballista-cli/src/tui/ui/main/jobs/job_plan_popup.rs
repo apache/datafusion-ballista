@@ -17,10 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::{JobPlansPopup, PhysicalFormat, PlanTab};
+use crate::tui::ui::components::clear_area::clear_area;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::prelude::{Color, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     let Some(job_plans) = &app.job_plan_popup else {
@@ -28,17 +28,17 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(80, 70, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let areas = Layout::vertical([
         Constraint::Min(0), // Plans
     ])
     .split(area);
 
-    render_plans(f, areas[0], job_plans);
+    render_plans(f, areas[0], job_plans, app);
 }
 
-fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
+fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup, app: &App) {
     let details = &job_plans.details;
     let tab = job_plans.get_tab();
 
@@ -68,7 +68,7 @@ fn render_plans(f: &mut Frame, area: Rect, job_plans: &JobPlansPopup) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan))
+        .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);
 
     let paragraph = Paragraph::new(plan).block(block).scroll((

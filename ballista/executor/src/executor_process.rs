@@ -61,7 +61,7 @@ use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
     default_config_producer, get_time_before,
 };
-use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
+use ballista_core::{BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer};
 
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
@@ -728,7 +728,7 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
         }
     }
 
-    info!("The work_dir {:?} will be deleted", &to_deleted);
+    info!("The work_dir {:?} will be deleted", to_deleted);
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
             error!("Fail to remove the directory {del:?} due to {e}");
@@ -741,10 +741,10 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
 /// Used by both push-based (gRPC handler) and pull-based (poll loop) cleanup.
 pub(crate) async fn remove_job_dir(
     work_dir: &str,
-    job_id: &str,
+    job_id: &JobId,
 ) -> ballista_core::error::Result<()> {
     let work_path = PathBuf::from(&work_dir);
-    let job_path = work_path.join(job_id);
+    let job_path = work_path.join(job_id.as_str());
 
     // Match legacy behavior: If the job path does not exist, return OK
     if !tokio::fs::try_exists(&job_path).await.unwrap_or(false) {
@@ -886,6 +886,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::clean_shuffle_data_loop;
+    use ballista_core::JobId;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -964,28 +965,28 @@ mod tests {
 
         // Normal correct one
         {
-            let job_path = prepare_testing_job_directory(base_dir, "job_a");
+            let job_path = prepare_testing_job_directory(base_dir, &"job_a".into());
             assert!(is_subdirectory(&job_path, base_dir));
         }
 
         // Empty job id
         {
-            let job_path = prepare_testing_job_directory(base_dir, "");
+            let job_path = prepare_testing_job_directory(base_dir, &"".into());
             assert!(!is_subdirectory(&job_path, base_dir));
 
-            let job_path = prepare_testing_job_directory(base_dir, ".");
+            let job_path = prepare_testing_job_directory(base_dir, &".".into());
             assert!(!is_subdirectory(&job_path, base_dir));
         }
 
         // Malicious job id
         {
-            let job_path = prepare_testing_job_directory(base_dir, "..");
+            let job_path = prepare_testing_job_directory(base_dir, &"..".into());
             assert!(!is_subdirectory(&job_path, base_dir));
         }
     }
-    fn prepare_testing_job_directory(base_dir: &Path, job_id: &str) -> PathBuf {
+    fn prepare_testing_job_directory(base_dir: &Path, job_id: &JobId) -> PathBuf {
         let mut path = base_dir.to_path_buf();
-        path.push(job_id);
+        path.push(job_id.as_str());
         if !path.exists() {
             fs::create_dir(&path).unwrap();
         }

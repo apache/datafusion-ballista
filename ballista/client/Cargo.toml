@@ -47,6 +47,7 @@ datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
 rstest = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }
 tonic = { workspace = true }
 
 [features]

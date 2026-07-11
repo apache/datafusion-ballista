@@ -17,18 +17,17 @@
 
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
-use ballista_core::JobStatusSubscriber;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
@@ -264,7 +263,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
         let mut executor_stage_assignments: HashMap<
             String,
-            HashMap<(String, usize), Vec<TaskDescription>>,
+            HashMap<(JobId, usize), Vec<TaskDescription>>,
         > = HashMap::new();
         for (executor_id, task) in bound_tasks.into_iter() {
             let stage_key = (task.partition.job_id.clone(), task.partition.stage_id);
@@ -276,7 +275,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 }
             } else {
                 let mut executor_stage_tasks: HashMap<
-                    (String, usize),
+                    (JobId, usize),
                     Vec<TaskDescription>,
                 > = HashMap::new();
                 executor_stage_tasks.insert(stage_key, vec![task]);
@@ -363,35 +362,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub(crate) async fn submit_job(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &str,
         session_ctx: Arc<SessionContext>,
-        logical_plan: &LogicalPlan,
+        plan: &SubmitPlan,
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let start = Instant::now();
 
         self.task_manager
-            .submit_job(
-                job_id,
-                job_name,
-                session_ctx,
-                logical_plan,
-                queued_at,
-                subscriber,
-            )
+            .submit_plan(job_id, job_name, session_ctx, plan, queued_at, subscriber)
             .await?;
 
         let elapsed = start.elapsed();
 
-        info!("Planned job {job_id} in {elapsed:?}");
+        info!("Job [{job_id}] planning took {elapsed:?}");
 
         Ok(())
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
-    pub(crate) fn clean_up_successful_job(&self, job_id: String) {
+    pub(crate) fn clean_up_successful_job(&self, job_id: JobId) {
         self.executor_manager.clean_up_job_data_delayed(
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,
@@ -403,7 +395,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
-    pub(crate) fn clean_up_failed_job(&self, job_id: String) {
+    pub(crate) fn clean_up_failed_job(&self, job_id: JobId) {
         self.executor_manager.clean_up_job_data(job_id.clone());
         self.task_manager.clean_up_job_delayed(
             job_id,

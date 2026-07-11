@@ -24,6 +24,7 @@ use crate::execution_loop::any_to_string;
 use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
 use ballista_core::ConfigProducer;
+use ballista_core::JobId;
 use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
 use ballista_core::registry::BallistaFunctionRegistry;
@@ -234,7 +235,7 @@ impl Executor {
     pub async fn cancel_task(
         &self,
         task_id: usize,
-        job_id: String,
+        job_id: JobId,
         stage_id: usize,
         partition_id: usize,
     ) -> Result<bool, BallistaError> {
@@ -284,7 +285,6 @@ mod test {
     };
     use datafusion::prelude::SessionContext;
     use futures::Stream;
-    use std::any::Any;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::{Context, Poll};
@@ -353,10 +353,6 @@ mod test {
             "NeverendingOperator"
         }
 
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
         fn schema(&self) -> SchemaRef {
             Arc::new(Schema::empty())
         }
@@ -390,7 +386,7 @@ mod test {
         let work_dir = TempDir::new().unwrap().path().to_str().unwrap().to_string();
 
         let shuffle_write = ShuffleWriterExec::try_new(
-            "job-id".to_owned(),
+            "job-id".into(),
             1,
             Arc::new(NeverendingOperator::new()),
             work_dir.clone(),
@@ -429,7 +425,7 @@ mod test {
         let executor_clone = executor.clone();
         tokio::task::spawn(async move {
             let part = PartitionId {
-                job_id: "job-id".to_owned(),
+                job_id: "job-id".into(),
                 stage_id: 1,
                 partition_id: 0,
             };
@@ -443,7 +439,7 @@ mod test {
         // poll until that happens.
         for _ in 0..20 {
             if executor
-                .cancel_task(1, "job-id".to_owned(), 1, 0)
+                .cancel_task(1, "job-id".into(), 1, 0)
                 .await
                 .expect("cancelling task")
             {
