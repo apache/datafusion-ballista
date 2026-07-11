@@ -251,6 +251,21 @@ jobs:
               exit 1
           fi
 
+  datafusion-proto-sync-check:
+    name: Check vendored DataFusion proto is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Check vendored DataFusion proto matches pinned crate
+        run: ci/scripts/rust_proto_check.sh
+
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:
