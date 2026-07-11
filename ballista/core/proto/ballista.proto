@@ -289,10 +289,26 @@ message PartitionId {
   uint32 partition_id = 4;
 }
 
+// Within-stage task identity (paired with job_id + stage_id on the parent
+// MultiTaskDefinition). One task processes a slice of partitions, so
+// `task_index` names the task within the stage; `global_output_partition_ids` gives
+// the concrete global partition ids the task's restricted plan is
+// covering. Writers use these to name shuffle files with global identity
+// (via `create_shuffle_path`) so downstream reads have a stable, canonical
+// address regardless of how the scheduler split the work.
 message TaskId {
   uint32 task_id = 1;
   uint32 task_attempt_num = 2;
-  uint32 partition_id = 3;
+  uint32 task_index = 3;
+  // Global partition ids covered by this task, in slice order. Position i in
+  // the restricted plan corresponds to `global_output_partition_ids[i]` globally.
+  repeated uint32 global_output_partition_ids = 4;
+  // Vcores this task consumed from the executor's budget at bind time.
+  // The executor uses this to size the task's memory pool proportionally
+  // (`pool = total_memory * vcores_consumed / total_vcores`), so a
+  // multi-partition task claiming N vcores gets N/total of the executor's
+  // memory budget rather than a single per-vcore share.
+  uint32 vcores_consumed = 5;
 }
 
 message PartitionStats {
@@ -530,7 +546,10 @@ message TaskStatus {
   string job_id = 2;
   uint32 stage_id = 3;
   uint32 stage_attempt_num = 4;
-  uint32 partition_id = 5;
+  // Task index within the stage (was `partition_id` — under the
+  // multi-partition-task model one task processes a partition slice, not a
+  // single partition).
+  uint32 task_index = 5;
   uint64 launch_time = 6;
   uint64 start_exec_time = 7;
   uint64 end_exec_time = 8;
@@ -549,17 +568,30 @@ message PollWorkParams {
   repeated TaskStatus task_status = 3;
 }
 
+// Pull-based single-task dispatch. One task processes a slice of
+// partitions; `task_index` names the task within the stage,
+// `global_output_partition_ids` gives the concrete global partition ids it covers. The
+// task's plan is scheduler-side shrink-restricted so its leaves report
+// `slice.len()` partitions; the writer uses `global_output_partition_ids` to attach
+// global identity to shuffle files (except in cases where the plan itself
+// resets partitioning: the writer walks its child plan to detect
+// SortPreservingMergeExec or RepartitionExec::Hash and picks the right
+// global mapping).
 message TaskDefinition {
   uint32 task_id = 1;
   uint32 task_attempt_num = 2;
   string job_id = 3;
   uint32 stage_id = 4;
   uint32 stage_attempt_num = 5;
-  uint32 partition_id = 6;
+  uint32 task_index = 6;
   bytes plan = 7;
   string session_id = 9;
   uint64 launch_time = 10;
   repeated KeyValuePair props = 11;
+  // Global partition ids covered by this task, in slice order.
+  repeated uint32 global_output_partition_ids = 12;
+  // Vcores this task consumed at bind time — see TaskId.vcores_consumed.
+  uint32 vcores_consumed = 13;
 }
 
 // A set of tasks in the same stage
@@ -843,7 +875,8 @@ message RunningTaskInfo {
   uint32 task_id = 1;
   string job_id = 2;
   uint32 stage_id = 3;
-  uint32 partition_id = 4;;
+  // Task slot within the stage (was `partition_id` — see TaskStatus).
+  uint32 task_index = 4;
 }
 
 service SchedulerGrpc {

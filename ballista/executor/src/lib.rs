@@ -64,7 +64,7 @@ use ballista_core::serde::protobuf::{
     FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask, TaskStatus,
     task_status,
 };
-use ballista_core::serde::scheduler::PartitionId;
+use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
 
 /// [ArrowFlightServerProvider] provides a function which creates a new Arrow Flight server.
@@ -106,7 +106,7 @@ pub fn as_task_status(
     executor_id: String,
     task_id: usize,
     stage_attempt_num: usize,
-    partition_id: PartitionId,
+    key: TaskKey,
     operator_metrics: Option<Vec<OperatorMetricsSet>>,
     execution_times: TaskExecutionTimes,
 ) -> TaskStatus {
@@ -120,10 +120,10 @@ pub fn as_task_status(
             );
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id.into(),
-                stage_id: partition_id.stage_id as u32,
+                job_id: key.job_id.clone().into(),
+                stage_id: key.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                partition_id: partition_id.partition_id as u32,
+                task_index: key.task_index as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,
@@ -140,10 +140,10 @@ pub fn as_task_status(
 
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id.into(),
-                stage_id: partition_id.stage_id as u32,
+                job_id: key.job_id.clone().into(),
+                stage_id: key.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                partition_id: partition_id.partition_id as u32,
+                task_index: key.task_index as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,

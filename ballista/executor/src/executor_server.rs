@@ -47,8 +47,8 @@ use ballista_core::serde::protobuf::{
     executor_metric, executor_status,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
+use ballista_core::serde::scheduler::TaskKey;
 
 use ballista_core::serde::scheduler::from_proto::{
     get_task_definition, get_task_definition_vec,
@@ -368,27 +368,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let job_id = task.job_id;
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
-        let partition_id = task.partition_id;
+        let task_index = task.task_index;
+        let global_output_partition_ids = task.global_output_partition_ids;
         let plan = task.plan;
 
-        let part = PartitionId {
+        let key = TaskKey {
             job_id: job_id.clone(),
             stage_id,
-            partition_id,
+            task_index,
         };
 
         let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
-            partition_id,
+            task_index,
+            global_output_partition_ids,
             plan,
             &self.executor.work_dir,
             &task.session_config,
         );
 
-        let runtime = self
-            .executor
-            .produce_runtime_for_session(&task.session_id, &task.session_config);
+        let runtime = self.executor.produce_runtime_for_session(
+            &task.session_id,
+            &task.session_config,
+            task.vcores_consumed,
+        );
 
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {
@@ -412,12 +416,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 let task_start = Instant::now();
                 let execution_result = self
                     .executor
-                    .execute_query_stage(
-                        task_id,
-                        part.clone(),
-                        exec.clone(),
-                        task_context,
-                    )
+                    .execute_query_stage(task_id, key.clone(), exec.clone(), task_context)
                     .await;
                 info!(
                     "Finished task : [{task_identity}] in {:?}",
@@ -450,7 +449,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     executor_id.clone(),
                     task_id,
                     stage_attempt_num,
-                    part,
+                    key.clone(),
                     operator_metrics,
                     task_execution_times,
                 );
@@ -475,7 +474,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     self.executor.metadata.id.clone(),
                     task_id,
                     stage_attempt_num,
-                    part,
+                    key.clone(),
                     None,
                     TaskExecutionTimes {
                         launch_time: task.launch_time,
@@ -786,7 +785,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         curator_task.task.job_id,
                         curator_task.task.stage_id,
                         curator_task.task.stage_attempt_num,
-                        curator_task.task.partition_id,
+                        curator_task.task.task_index,
                         curator_task.task.task_attempt_num,
                     );
                     debug!("Received task {:?}", task_identity);
@@ -921,7 +920,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     task.task_id as usize,
                     task.job_id.into(),
                     task.stage_id as usize,
-                    task.partition_id as usize,
+                    task.task_index as usize,
                 )
                 .await
             {

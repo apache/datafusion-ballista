@@ -33,7 +33,7 @@ use ballista_core::serde::protobuf::{
     PollWorkParams, PollWorkResult, TaskDefinition, TaskStatus,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
+use ballista_core::serde::scheduler::{ExecutorSpecification, TaskKey};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -159,14 +159,15 @@ where
                             // as scheduler expects notification.
                             //
 
-                            let partition_id = PartitionId {
+                            let task_index = task.task_index as usize;
+                            let task_key = TaskKey {
                                 job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
-                                partition_id: task.partition_id as usize,
+                                task_index,
                             };
 
                             warn!(
-                                "Executor failed to run task: {partition_id:?}, error: {e:?}"
+                                "Executor failed to run task: {task_key:?}, error: {e:?}"
                             );
 
                             let end_exec_time = SystemTime::now()
@@ -187,7 +188,7 @@ where
                                 executor.metadata.id.clone(),
                                 task.task_id as usize,
                                 task.task_attempt_num as usize,
-                                partition_id,
+                                task_key,
                                 None,
                                 task_execution_times,
                             )) {
@@ -237,13 +238,13 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
-    let partition_id = task.partition_id;
+    let task_index = task.task_index;
     let start_exec_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
     let task_identity = format!(
-        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
+        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{task_index}.{task_attempt_num}"
     );
     info!("Received task: [{task_identity}]");
 
@@ -260,8 +261,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_higher_order_functions =
         executor.function_registry.higher_order_functions.clone();
 
-    let runtime =
-        executor.produce_runtime_for_session(&task.session_id, &session_config)?;
+    let runtime = executor.produce_runtime_for_session(
+        &task.session_id,
+        &session_config,
+        task.vcores_consumed,
+    )?;
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
@@ -280,26 +284,33 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             proto.try_into_physical_plan(&task_context, codec.physical_extension_codec())
         })?;
 
+    let global_output_partition_ids: Vec<usize> = task
+        .global_output_partition_ids
+        .iter()
+        .map(|p| *p as usize)
+        .collect();
+
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
         job_id.clone(),
         stage_id as usize,
-        partition_id as usize,
+        task_index as usize,
+        global_output_partition_ids,
         plan,
         &executor.work_dir,
         task_context.session_config(),
     )?;
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
-        let part = PartitionId {
+        let key = TaskKey {
             job_id: job_id.clone(),
             stage_id: stage_id as usize,
-            partition_id: partition_id as usize,
+            task_index: task_index as usize,
         };
 
         let task_start = Instant::now();
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
             task_id as usize,
-            part.clone(),
+            key.clone(),
             query_stage_exec.clone(),
             task_context,
         ))
@@ -343,7 +354,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             executor.metadata.id.clone(),
             task_id as usize,
             stage_attempt_num as usize,
-            part,
+            key,
             operator_metrics,
             task_execution_times,
         ));

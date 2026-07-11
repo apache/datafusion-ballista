@@ -565,34 +565,32 @@ pub async fn get_query_stages<
                             .task_infos
                             .iter()
                             .enumerate()
-                            .map(|(partition_id, task_info)| {
-                                task_info.as_ref().map(|info| {
-                                    let (input_rows, output_rows) = running_stage
-                                        .stage_metrics
-                                        .as_deref()
-                                        .map(|metrics| {
-                                            get_partition_counts(metrics, partition_id)
-                                        })
-                                        .unwrap_or((0, 0));
+                            .map(|(task_index, info)| {
+                                let (input_rows, output_rows) = running_stage
+                                    .stage_metrics
+                                    .as_deref()
+                                    .map(|metrics| {
+                                        get_partition_counts(metrics, task_index)
+                                    })
+                                    .unwrap_or((0, 0));
 
-                                    let start_exec_time = info.start_exec_time as u64;
-                                    let end_exec_time = info.end_exec_time as u64;
+                                let start_exec_time = info.start_exec_time as u64;
+                                let end_exec_time = info.end_exec_time as u64;
 
-                                    let task_status: TaskStatus = (&info.task_status).into();
+                                let task_status: TaskStatus = (&info.task_status).into();
 
-                                    TaskSummary {
-                                        id: info.task_id,
-                                        partition_id: partition_id as u32,
-                                        scheduled_time: info.scheduled_time as u64,
-                                        launch_time: info.launch_time as u64,
-                                        start_exec_time,
-                                        end_exec_time,
-                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
-                                        finish_time: info.finish_time as u64,
-                                        input_rows,
-                                        output_rows,
-                                        status: task_status
-                                    }
+                                Some(TaskSummary {
+                                    id: info.task_id,
+                                    partition_id: task_index as u32,
+                                    scheduled_time: info.scheduled_time as u64,
+                                    launch_time: info.launch_time as u64,
+                                    start_exec_time,
+                                    end_exec_time,
+                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                    finish_time: info.finish_time as u64,
+                                    input_rows,
+                                    output_rows,
+                                    status: task_status
                                 })
                             })
                             .collect();
@@ -652,41 +650,33 @@ pub async fn get_query_stages<
                         });
                         summary.input_rows = get_combined_count(metrics, "input_rows");
                         summary.output_rows = get_combined_count(metrics, "output_rows");
-                        summary.elapsed_compute = get_finished_stage_time(
-                            &failed_stage
-                                .task_infos
-                                .iter()
-                                .flatten()
-                                .cloned()
-                                .collect::<Vec<_>>(),
-                        );
+                        summary.elapsed_compute =
+                            get_finished_stage_time(&failed_stage.task_infos);
 
                         summary.tasks = failed_stage
                             .task_infos
                             .iter()
                             .enumerate()
-                            .map(|(partition_id, task_info)| {
-                                task_info.as_ref().map(|info| {
-                                    let (input_rows, output_rows) =
-                                        get_partition_counts(metrics, partition_id);
+                            .map(|(partition_id, info)| {
+                                let (input_rows, output_rows) =
+                                    get_partition_counts(metrics, partition_id);
 
-                                    let start_exec_time = info.start_exec_time as u64;
-                                    let end_exec_time = info.end_exec_time as u64;
-                                    let task_status: TaskStatus = (&info.task_status).into();
+                                let start_exec_time = info.start_exec_time as u64;
+                                let end_exec_time = info.end_exec_time as u64;
+                                let task_status: TaskStatus = (&info.task_status).into();
 
-                                    TaskSummary {
-                                        id: info.task_id,
-                                        partition_id: partition_id as u32,
-                                        scheduled_time: info.scheduled_time as u64,
-                                        launch_time: info.launch_time as u64,
-                                        start_exec_time,
-                                        end_exec_time,
-                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
-                                        finish_time: info.finish_time as u64,
-                                        input_rows,
-                                        output_rows,
-                                        status: task_status,
-                                    }
+                                Some(TaskSummary {
+                                    id: info.task_id,
+                                    partition_id: partition_id as u32,
+                                    scheduled_time: info.scheduled_time as u64,
+                                    launch_time: info.launch_time as u64,
+                                    start_exec_time,
+                                    end_exec_time,
+                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                    finish_time: info.finish_time as u64,
+                                    input_rows,
+                                    output_rows,
+                                    status: task_status,
                                 })
                             })
                             .collect();
@@ -795,13 +785,10 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_running_stage_time(
-    task_infos: &[Option<TaskInfo>],
-    current_time: u128,
-) -> Option<String> {
+fn get_running_stage_time(task_infos: &[TaskInfo], current_time: u128) -> Option<String> {
     let min_start = task_infos
         .iter()
-        .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
+        .map(|t| t.start_exec_time)
         .filter(|t| *t > 0)
         .min();
 
@@ -1024,6 +1011,8 @@ mod tests {
             end_exec_time: end,
             finish_time: 0,
             task_status: task_status::Status::Running(Default::default()),
+            global_input_partition_ids: vec![],
+            vcores_consumed: 0,
         }
     }
 
@@ -1083,15 +1072,15 @@ mod tests {
     }
 
     #[test]
-    fn test_running_all_none_returns_none() {
-        let tasks: Vec<Option<TaskInfo>> = vec![None, None];
+    fn test_running_all_zero_start_returns_none() {
+        let tasks: Vec<TaskInfo> = vec![make_task_info(0, 0), make_task_info(0, 0)];
         assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
     #[test]
     fn test_running_future_start_returns_none() {
         // start_exec_time beyond current time → elapsed clamped to 0
-        let tasks = vec![Some(make_task_info(u128::MAX, 0))];
+        let tasks = vec![make_task_info(u128::MAX, 0)];
         assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
@@ -1099,7 +1088,7 @@ mod tests {
     fn test_running_past_start_returns_some() {
         let now = 4_000;
         let start = 1_000;
-        let tasks = vec![Some(make_task_info(start, 0))];
+        let tasks = vec![make_task_info(start, 0)];
         assert_eq!(
             get_running_stage_time(&tasks, now),
             Some("3.00s".to_string())
@@ -1107,15 +1096,15 @@ mod tests {
     }
 
     #[test]
-    fn test_running_mixed_some_none_uses_earliest_some() {
+    fn test_running_mixed_zero_start_uses_earliest_nonzero() {
         let now = 3_000;
         let earlier = 1_000;
         let later = 2_000;
         let tasks = vec![
-            None,
-            Some(make_task_info(later, 0)),
-            Some(make_task_info(earlier, 0)),
-            None,
+            make_task_info(0, 0),
+            make_task_info(later, 0),
+            make_task_info(earlier, 0),
+            make_task_info(0, 0),
         ];
         let result = get_running_stage_time(&tasks, now);
         assert_eq!(result, Some("2.00s".to_string()));

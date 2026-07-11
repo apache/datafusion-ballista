@@ -25,10 +25,10 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
+use crate::state::task_builder::restrict_plan_to_partitions;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
-#[cfg(feature = "disable-stage-plan-cache")]
-use ballista_core::execution_plans::ShuffleReaderExec;
+use ballista_core::execution_plans::compute_global_output_partition_ids;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
@@ -37,16 +37,12 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::{JobId, JobStatusSubscriber};
 use dashmap::DashMap;
-#[cfg(feature = "disable-stage-plan-cache")]
-use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
-#[cfg(feature = "disable-stage-plan-cache")]
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::{debug, error, info, trace, warn};
 use rand::distr::Alphanumeric;
@@ -100,7 +96,7 @@ impl TaskLauncher for DefaultTaskLauncher {
                     let task_ids: Vec<u32> = task
                         .task_ids
                         .iter()
-                        .map(|task_id| task_id.partition_id)
+                        .map(|task_id| task_id.task_index)
                         .collect();
                     format!("{}/{}/{:?}", task.job_id, task.stage_id, task_ids)
                 })
@@ -143,8 +139,6 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     stage_max_failures: usize,
 }
 
-/// Cache for active job information managed by this scheduler.
-///
 /// Contains the execution graph and cached data to improve performance
 /// when scheduling tasks for the job.
 #[derive(Clone)]
@@ -153,9 +147,6 @@ pub struct JobInfoCache {
     pub execution_graph: Arc<RwLock<ExecutionGraphBox>>,
     /// Cached job status for quick access.
     pub status: Option<job_status::Status>,
-    #[cfg(not(feature = "disable-stage-plan-cache"))]
-    /// Cache for encoded execution stage plans to avoid redundant serialization.
-    encoded_stage_plans: HashMap<usize, Vec<u8>>,
 }
 
 impl JobInfoCache {
@@ -166,105 +157,7 @@ impl JobInfoCache {
         Self {
             execution_graph: Arc::new(RwLock::new(graph)),
             status,
-            #[cfg(not(feature = "disable-stage-plan-cache"))]
-            encoded_stage_plans: HashMap::new(),
         }
-    }
-
-    #[cfg(feature = "disable-stage-plan-cache")]
-    fn partition_prune_helper(
-        partition_ids: &[usize],
-        plan: &Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let n = plan.output_partitioning().partition_count();
-        let wanted: HashSet<usize> = partition_ids.iter().copied().collect();
-        Ok(plan
-            .clone()
-            .transform_up(|node| {
-                let Some(r) = node.downcast_ref::<ShuffleReaderExec>() else {
-                    return Ok(Transformed::no(node));
-                };
-                // Skip broadcast readers (serve partition[0] for every index) and readers
-                // whose partition count differs from the stage output `n`, since pruning by
-                // index is only valid when reader partition `i` feeds output partition `i`.
-                if r.broadcast || r.partition.len() != n {
-                    return Ok(Transformed::no(node));
-                }
-                // Nothing to prune when this task consumes every partition.
-                if wanted.len() == r.partition.len() {
-                    return Ok(Transformed::no(node));
-                }
-
-                // Every requested id must index a real reader partition, else we'd
-                // silently prune away locations the task needs.
-                debug_assert!(wanted.iter().all(|&p| p < r.partition.len()));
-
-                let partition = r
-                    .partition
-                    .iter()
-                    .enumerate()
-                    .map(|(i, loc)| {
-                        if wanted.contains(&i) {
-                            loc.clone()
-                        } else {
-                            vec![]
-                        }
-                    })
-                    .collect();
-
-                let reader = match r.coalesce.clone() {
-                    Some(c) => ShuffleReaderExec::try_new_coalesced(
-                        r.stage_id,
-                        partition,
-                        c,
-                        r.schema(),
-                        r.properties().output_partitioning().clone(),
-                    )?,
-                    None => ShuffleReaderExec::try_new(
-                        r.stage_id,
-                        partition,
-                        r.schema(),
-                        r.properties().output_partitioning().clone(),
-                    )?,
-                };
-                Ok(Transformed::yes(Arc::new(reader) as Arc<dyn ExecutionPlan>))
-            })?
-            .data)
-    }
-
-    #[cfg(not(feature = "disable-stage-plan-cache"))]
-    fn encode_stage_plan<U: AsExecutionPlan>(
-        &mut self,
-        stage_id: usize,
-        plan: &Arc<dyn ExecutionPlan>,
-        codec: &dyn PhysicalExtensionCodec,
-        _partition_ids: &[usize],
-    ) -> Result<Vec<u8>> {
-        if let Some(plan) = self.encoded_stage_plans.get(&stage_id) {
-            Ok(plan.clone())
-        } else {
-            let mut plan_buf: Vec<u8> = vec![];
-            let plan_proto = U::try_from_physical_plan(plan.clone(), codec)?;
-            plan_proto.try_encode(&mut plan_buf)?;
-            self.encoded_stage_plans.insert(stage_id, plan_buf.clone());
-            Ok(plan_buf)
-        }
-    }
-
-    #[cfg(feature = "disable-stage-plan-cache")]
-    fn encode_stage_plan<U: AsExecutionPlan>(
-        &mut self,
-        _stage_id: usize,
-        plan: &Arc<dyn ExecutionPlan>,
-        codec: &dyn PhysicalExtensionCodec,
-        partition_ids: &[usize],
-    ) -> Result<Vec<u8>> {
-        let mut plan_buf: Vec<u8> = vec![];
-        let pruned_plan = Self::partition_prune_helper(partition_ids, plan)?;
-        let plan_proto = U::try_from_physical_plan(pruned_plan, codec)?;
-        plan_proto.try_encode(&mut plan_buf)?;
-
-        Ok(plan_buf)
     }
 }
 
@@ -613,6 +506,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(graph.session_config())
     }
 
+    /// Sum the vcores consumed by the given task statuses at their original
+    /// bind time. Used to refund the executor's vcore budget when tasks
+    /// complete: refunding `statuses.len()` (one per task) would drop
+    /// leftover vcores forever, because `bind_one` consumes `slice.len()`
+    /// vcores per task under the multi-partition-task model.
+    ///
+    /// Statuses whose (job, stage, task_index) can no longer be resolved
+    /// (e.g. the job's graph has been evicted) contribute 0.
+    pub(crate) async fn sum_vcores_for_statuses(&self, statuses: &[TaskStatus]) -> u32 {
+        let mut statuses_by_job: HashMap<String, Vec<&TaskStatus>> = HashMap::new();
+        for status in statuses {
+            statuses_by_job
+                .entry(status.job_id.clone())
+                .or_default()
+                .push(status);
+        }
+        let mut total_vcores: u32 = 0;
+        for (job_id, job_statuses) in statuses_by_job {
+            let Some(graph_arc) = self.get_active_execution_graph(&job_id.into()) else {
+                continue;
+            };
+            let graph = graph_arc.read().await;
+            for status in job_statuses {
+                if let Some(vcores) = graph
+                    .task_vcores(status.stage_id as usize, status.task_index as usize)
+                {
+                    total_vcores += vcores;
+                }
+            }
+        }
+        total_vcores
+    }
+
     /// Update given task statuses in the respective job and return a tuple containing:
     /// 1. A list of QueryStageSchedulerEvent to publish.
     /// 2. A list of reservations that can now be offered.
@@ -832,6 +758,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Prepares a task definition for a single task to be sent to an executor.
+    ///
+    /// The task's plan is rewritten to restrict leaves (Scan file_groups,
+    /// ShuffleReader partitions) to this task's assigned slice, then encoded
+    /// fresh. No shared-plan cache — each task gets its own bytes because
+    /// each task's plan is different.
     #[allow(dead_code)]
     pub fn prepare_task_definition(
         &self,
@@ -839,16 +770,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<TaskDefinition> {
         debug!("Preparing task definition for {task:?}");
 
-        let job_id = task.partition.job_id.clone();
-        let stage_id = task.partition.stage_id;
+        let job_id = task.key.job_id.clone();
+        let stage_id = task.key.stage_id;
 
-        if let Some(mut job_info) = self.active_job_cache.get_mut(&job_id) {
-            let plan = job_info.encode_stage_plan::<PhysicalPlanNode>(
-                stage_id,
-                &task.plan,
-                self.codec.physical_extension_codec(),
-                &[task.partition.partition_id],
+        if self.active_job_cache.get(&job_id).is_some() {
+            let restricted = restrict_plan_to_partitions(
+                task.plan.clone(),
+                &task.global_input_partition_ids,
             )?;
+            let mut plan_buf: Vec<u8> = vec![];
+            let plan_proto = PhysicalPlanNode::try_from_physical_plan(
+                restricted,
+                self.codec.physical_extension_codec(),
+            )?;
+            plan_proto.try_encode(&mut plan_buf)?;
 
             let task_definition = TaskDefinition {
                 task_id: task.task_id as u32,
@@ -856,14 +791,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 job_id: job_id.into(),
                 stage_id: stage_id as u32,
                 stage_attempt_num: task.stage_attempt_num as u32,
-                partition_id: task.partition.partition_id as u32,
-                plan,
+                task_index: task.key.task_index as u32,
+                plan: plan_buf,
                 session_id: task.session_id,
                 launch_time: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as u64,
                 props: task.session_config.to_key_value_pairs(),
+                global_output_partition_ids: compute_global_output_partition_ids(
+                    &task.plan,
+                    &task.global_input_partition_ids,
+                )
+                .into_iter()
+                .map(|pid| pid as u32)
+                .collect(),
+                vcores_consumed: task.vcores_consumed,
             };
             Ok(task_definition)
         } else {
@@ -898,77 +841,79 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     #[allow(dead_code)]
-    /// Prepare a MultiTaskDefinition with multiple tasks belonging to the same job stage
+    /// Emit one `MultiTaskDefinition` per task. Previously grouped multiple
+    /// tasks under one shared plan; now each task's plan is uniquely restricted
+    /// to its assigned partition slice so we can't share encoding.
     fn prepare_multi_task_definition(
         &self,
         tasks: Vec<TaskDescription>,
     ) -> Result<Vec<MultiTaskDefinition>> {
-        let partition_ids: Vec<usize> = tasks
-            .iter()
-            .map(|task| task.partition.partition_id)
-            .collect();
-        if let Some(task) = tasks.first() {
-            let session_id = task.session_id.clone();
-            let job_id = task.partition.job_id.clone();
-            let stage_id = task.partition.stage_id;
-            let stage_attempt_num = task.stage_attempt_num;
-
-            if log::max_level() >= log::Level::Debug {
-                let task_ids: Vec<usize> = tasks
-                    .iter()
-                    .map(|task| task.partition.partition_id)
-                    .collect();
-                debug!(
-                    "Preparing multi task definition for tasks {task_ids:?} belonging to job stage {job_id}/{stage_id}"
-                );
-                trace!("With task details {tasks:?}");
-            }
-
-            if let Some(mut job_info) = self.active_job_cache.get_mut(&job_id) {
-                let plan = job_info.encode_stage_plan::<PhysicalPlanNode>(
-                    stage_id,
-                    &task.plan,
-                    self.codec.physical_extension_codec(),
-                    &partition_ids,
-                )?;
-
-                let launch_time = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
-
-                let mut multi_tasks = vec![];
-                let props = task.session_config.to_key_value_pairs();
-                let task_ids = tasks
-                    .into_iter()
-                    .map(|task| TaskId {
-                        task_id: task.task_id as u32,
-                        task_attempt_num: task.task_attempt as u32,
-                        partition_id: task.partition.partition_id as u32,
-                    })
-                    .collect();
-                multi_tasks.push(MultiTaskDefinition {
-                    task_ids,
-                    job_id: job_id.into(),
-                    stage_id: stage_id as u32,
-                    stage_attempt_num: stage_attempt_num as u32,
-                    plan,
-                    session_id,
-                    launch_time,
-                    props,
-                });
-
-                Ok(multi_tasks)
-            } else {
-                Err(BallistaError::General(format!(
-                    "Cannot prepare multi task definition for job {job_id} which is not in active cache"
-                )))
-            }
-        } else {
-            Err(BallistaError::General(
+        let [first_task, ..] = tasks.as_slice() else {
+            return Err(BallistaError::General(
                 "Cannot prepare multi task definition for an empty vec".to_string(),
-            ))
+            ));
+        };
+        let session_id = first_task.session_id.clone();
+        let job_id = first_task.key.job_id.clone();
+        let stage_id = first_task.key.stage_id;
+        let stage_attempt_num = first_task.stage_attempt_num;
+
+        if log::max_level() >= log::Level::Debug {
+            let task_ids: Vec<usize> =
+                tasks.iter().map(|task| task.key.task_index).collect();
+            debug!(
+                "Preparing multi task definition for tasks {task_ids:?} belonging to job stage {job_id}/{stage_id}"
+            );
+            trace!("With task details {tasks:?}");
         }
+
+        if self.active_job_cache.get(&job_id).is_none() {
+            return Err(BallistaError::General(format!(
+                "Cannot prepare multi task definition for job {job_id} which is not in active cache"
+            )));
+        }
+
+        let launch_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let codec = self.codec.physical_extension_codec();
+
+        let mut multi_tasks = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let restricted = restrict_plan_to_partitions(
+                task.plan.clone(),
+                &task.global_input_partition_ids,
+            )?;
+            let mut plan_buf: Vec<u8> = vec![];
+            let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
+            plan_proto.try_encode(&mut plan_buf)?;
+            let props = task.session_config.to_key_value_pairs();
+            let task_ids = vec![TaskId {
+                task_id: task.task_id as u32,
+                task_attempt_num: task.task_attempt as u32,
+                task_index: task.key.task_index as u32,
+                global_output_partition_ids: compute_global_output_partition_ids(
+                    &task.plan,
+                    &task.global_input_partition_ids,
+                )
+                .into_iter()
+                .map(|p| p as u32)
+                .collect(),
+                vcores_consumed: task.vcores_consumed,
+            }];
+            multi_tasks.push(MultiTaskDefinition {
+                task_ids,
+                job_id: job_id.clone().into(),
+                stage_id: stage_id as u32,
+                stage_attempt_num: stage_attempt_num as u32,
+                plan: plan_buf,
+                session_id: session_id.clone(),
+                launch_time,
+                props,
+            });
+        }
+        Ok(multi_tasks)
     }
 
     /// Get the `ExecutionGraph` for the given job ID from cache
@@ -1425,163 +1370,5 @@ mod tests {
         assert!(manager.get_active_execution_graph(&job_id).is_none());
         assert_eq!(manager.running_job_number(), 0);
         Ok(())
-    }
-}
-
-#[cfg(all(test, feature = "disable-stage-plan-cache"))]
-mod prune_partition_tests {
-    use crate::state::task_manager::JobInfoCache;
-    use ballista_core::JobId;
-    use ballista_core::execution_plans::{
-        CoalescePlan, PartitionGroup, ShuffleReaderExec,
-    };
-    use ballista_core::serde::scheduler::{
-        ExecutorMetadata, PartitionId, PartitionLocation,
-    };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::physical_expr::Partitioning;
-    use datafusion::physical_plan::ExecutionPlan;
-    use std::sync::Arc;
-
-    fn create_partition(partition: usize) -> PartitionLocation {
-        PartitionLocation {
-            map_partition_id: 0,
-            partition_id: PartitionId {
-                job_id: JobId::new("demo".to_string()),
-                stage_id: 0,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "1".to_string(),
-                host: "1.1.1.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: Default::default(),
-                os_info: Default::default(),
-            },
-            partition_stats: Default::default(),
-            file_id: None,
-            is_sort_shuffle: false,
-        }
-    }
-
-    #[test]
-    fn check_prune_unwanted_partitions() {
-        let partitions = (0..4).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(4),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
-        let pruned = JobInfoCache::partition_prune_helper(&[1], &plan).unwrap();
-        let r = pruned
-            .downcast_ref::<ShuffleReaderExec>()
-            .expect("expected a ShuffleReaderExec");
-        assert!(r.partition[0].is_empty());
-        assert_eq!(r.partition[1].len(), 1);
-        assert_eq!(r.partition[1][0].partition_id.partition_id, 1);
-        assert!(r.partition[2].is_empty());
-        assert!(r.partition[3].is_empty());
-    }
-
-    #[test]
-    fn check_keeps_multiple_wanted_partitions() {
-        let partitions = (0..4).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(4),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
-        let pruned = JobInfoCache::partition_prune_helper(&[0, 3], &plan).unwrap();
-        let r = pruned
-            .downcast_ref::<ShuffleReaderExec>()
-            .expect("expected a ShuffleReaderExec");
-        assert_eq!(r.partition[0].len(), 1);
-        assert!(r.partition[1].is_empty());
-        assert!(r.partition[2].is_empty());
-        assert_eq!(r.partition[3].len(), 1);
-    }
-
-    #[test]
-    fn check_broadcast_reader_not_pruned() {
-        // Broadcast readers serve partition[0] for every index, so pruning must be a no-op.
-        let reader = ShuffleReaderExec::try_new_broadcast(
-            1,
-            (0..4).map(create_partition).collect(),
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            4,
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
-        let pruned = JobInfoCache::partition_prune_helper(&[1], &plan).unwrap();
-        let r = pruned
-            .downcast_ref::<ShuffleReaderExec>()
-            .expect("expected a ShuffleReaderExec");
-        // Broadcast keeps all locations flattened into partition[0]; nothing pruned.
-        assert!(r.broadcast);
-        assert_eq!(r.partition.len(), 1);
-        assert_eq!(r.partition[0].len(), 4);
-    }
-
-    #[test]
-    fn check_coalesced_reader_pruned_and_stays_coalesced() {
-        // K = 2 coalesce groups, each folding two upstream partitions.
-        let coalesce = CoalescePlan {
-            upstream_partition_count: 4,
-            groups: vec![
-                PartitionGroup {
-                    upstream_indices: vec![0, 1],
-                },
-                PartitionGroup {
-                    upstream_indices: vec![2, 3],
-                },
-            ],
-        };
-        let reader = ShuffleReaderExec::try_new_coalesced(
-            1,
-            vec![
-                vec![create_partition(0), create_partition(1)],
-                vec![create_partition(2), create_partition(3)],
-            ],
-            coalesce,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(2),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
-        let pruned = JobInfoCache::partition_prune_helper(&[1], &plan).unwrap();
-        let r = pruned
-            .downcast_ref::<ShuffleReaderExec>()
-            .expect("expected a ShuffleReaderExec");
-        assert!(r.coalesce.is_some());
-        assert!(r.partition[0].is_empty());
-        assert_eq!(r.partition[1].len(), 2);
-    }
-
-    #[test]
-    fn check_no_op_when_all_partitions_wanted() {
-        let partitions = (0..3).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(3),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
-        let pruned = JobInfoCache::partition_prune_helper(&[0, 1, 2], &plan).unwrap();
-        let r = pruned
-            .downcast_ref::<ShuffleReaderExec>()
-            .expect("expected a ShuffleReaderExec");
-        // Task consumes every partition, so nothing is emptied.
-        assert_eq!(r.partition[0].len(), 1);
-        assert_eq!(r.partition[1].len(), 1);
-        assert_eq!(r.partition[2].len(), 1);
     }
 }

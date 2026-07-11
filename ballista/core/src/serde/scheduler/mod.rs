@@ -69,6 +69,23 @@ pub struct PartitionId {
     pub partition_id: usize,
 }
 
+/// Locator for a task within an execution graph: (job, stage, task_index).
+///
+/// One task processes a partition slice, so the third component is
+/// `task_index` (the task's index within the stage), not a partition
+/// index. Sibling to [`PartitionId`] — [`PartitionId`] identifies an
+/// operator output partition (shuffle location, etc.), [`TaskKey`]
+/// identifies a scheduled task attempt.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskKey {
+    /// The job identifier.
+    pub job_id: JobId,
+    /// The stage identifier within the job.
+    pub stage_id: usize,
+    /// Task slot within the stage.
+    pub task_index: usize,
+}
+
 impl PartitionId {
     /// Creates a new partition ID with the given job, stage, and partition identifiers.
     pub fn new(job_id: &JobId, stage_id: usize, partition_id: usize) -> Self {
@@ -511,8 +528,19 @@ pub struct TaskDefinition {
     pub stage_id: usize,
     /// Current attempt number for the stage.
     pub stage_attempt_num: usize,
-    /// Partition to process.
-    pub partition_id: usize,
+    /// Monotonic index of this task within the stage. Not a partition index —
+    /// one task processes a slice of partitions given by `global_output_partition_ids`.
+    pub task_index: usize,
+    /// Global partition ids this task's restricted plan covers, in slice
+    /// order. `plan.output_partitioning().partition_count() == global_output_partition_ids.len()`
+    /// for pass-through shapes; writers use the slice to attach global
+    /// identity to shuffle files (with special-casing for plan-level
+    /// partitioning resets like SPM and RepartitionExec::Hash).
+    pub global_output_partition_ids: Vec<usize>,
+    /// Vcores this task consumed from the executor's budget at bind time.
+    /// Used to scale the task's memory pool so a task claiming N vcores
+    /// gets N/total_vcores of the executor's memory budget.
+    pub vcores_consumed: u32,
     /// Physical execution plan for this task.
     pub plan: Arc<dyn ExecutionPlan>,
     /// Timestamp when the task was launched.
