@@ -53,9 +53,10 @@ use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, displayable,
+    SendableRecordBatchStream, Statistics,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
@@ -95,7 +96,7 @@ pub struct ShuffleWriterExec {
 
 impl std::fmt::Display for ShuffleWriterExec {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let printable_plan = displayable(self.plan.as_ref())
+        let printable_plan = DisplayableExecutionPlan::with_metrics(self.plan.as_ref())
             .set_show_statistics(true)
             .indent(false);
         write!(
@@ -662,6 +663,38 @@ mod tests {
         let total: u64 = (0..num_partitions).map(|i| num_rows.value(i)).sum();
         assert_eq!(8, total);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "force_hash_collisions"))]
+    async fn display_renders_child_operator_metrics() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let work_dir = TempDir::new()?;
+        let query_stage = ShuffleWriterExec::try_new(
+            JobId::new("jobDisplay"),
+            1,
+            input_plan,
+            work_dir.path().to_str().unwrap().to_owned(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        let _ = utils::collect_stream(&mut stream)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+        let rendered = format!("{query_stage}");
+        assert!(
+            rendered.contains("metrics="),
+            "expected child-operator metrics in rendered plan:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("elapsed_compute"),
+            "expected populated elapsed_compute metric in rendered plan:\n{rendered}"
+        );
         Ok(())
     }
 

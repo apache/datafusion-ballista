@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{MemoryRefreshKind, System};
 use tokio::sync::mpsc;
 
@@ -63,7 +63,7 @@ use tokio::task::JoinHandle;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::{ExecutorProcessConfig, remove_job_dir};
+use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskExecutionTimes, as_task_status};
@@ -409,6 +409,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
                 info!("Execute task  : [{task_identity}]");
 
+                let task_start = Instant::now();
                 let execution_result = self
                     .executor
                     .execute_query_stage(
@@ -418,7 +419,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task_context,
                     )
                     .await;
-                info!("Finished task : [{task_identity}]");
+                info!(
+                    "Finished task : [{task_identity}] in {:?}",
+                    task_start.elapsed()
+                );
                 debug!(
                     "Task [{task_identity}], execution statistics: {execution_result:?}"
                 );
@@ -935,9 +939,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id.into();
+        let params = request.into_inner();
+        let job_id = params.job_id.into();
 
-        remove_job_dir(&self.executor.work_dir, &job_id)
+        remove_job_data(&self.executor.work_dir, &job_id, &params.remove_stage_ids)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 

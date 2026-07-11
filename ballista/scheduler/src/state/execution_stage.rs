@@ -107,6 +107,18 @@ impl ExecutionStage {
             ExecutionStage::Failed(stage) => stage.plan.as_ref(),
         }
     }
+
+    /// Get the output links for this stage. An empty slice means this is a
+    /// final stage in the `ExecutionGraph`.
+    pub fn output_links(&self) -> &[usize] {
+        match self {
+            ExecutionStage::UnResolved(stage) => &stage.output_links,
+            ExecutionStage::Resolved(stage) => &stage.output_links,
+            ExecutionStage::Running(stage) => &stage.output_links,
+            ExecutionStage::Successful(stage) => &stage.output_links,
+            ExecutionStage::Failed(stage) => &stage.output_links,
+        }
+    }
 }
 
 /// For a stage whose input stages are not all completed, we say it's a unresolved stage

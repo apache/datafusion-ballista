@@ -382,8 +382,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok(())
     }
 
-    /// Spawn a delayed future to clean up job data on both Scheduler and Executors
-    pub(crate) fn clean_up_successful_job(&self, job_id: JobId) {
+    /// Immediately reclaim intermediate shuffle data, then spawn a delayed
+    /// future to clean up the remaining job data (final-stage output + job
+    /// state) on both Scheduler and Executors.
+    pub(crate) fn clean_up_successful_job(
+        &self,
+        job_id: JobId,
+        intermediate_stage_ids: Vec<u32>,
+    ) {
+        self.executor_manager
+            .clean_up_intermediate_job_data(job_id.clone(), intermediate_stage_ids);
         self.executor_manager.clean_up_job_data_delayed(
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,

@@ -772,11 +772,16 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
     Ok(())
 }
 
-/// Remove a job directory under work_dir.
+/// Remove job data under work_dir.
 /// Used by both push-based (gRPC handler) and pull-based (poll loop) cleanup.
-pub(crate) async fn remove_job_dir(
+///
+/// `remove_stage_ids` empty ⇒ remove the whole `work_dir/{job_id}` dir (legacy
+/// behavior). Non-empty ⇒ remove only the listed `work_dir/{job_id}/{stage_id}`
+/// subdirs, retaining the rest of the job dir (e.g. the final-stage output).
+pub(crate) async fn remove_job_data(
     work_dir: &str,
     job_id: &JobId,
+    remove_stage_ids: &[u32],
 ) -> ballista_core::error::Result<()> {
     let work_path = PathBuf::from(&work_dir);
     let job_path = work_path.join(job_id.as_str());
@@ -796,11 +801,30 @@ pub(crate) async fn remove_job_dir(
         )));
     }
 
-    info!("Remove data for job {:?}", job_id);
+    // Empty stage list ⇒ remove the whole job dir (legacy behavior).
+    if remove_stage_ids.is_empty() {
+        info!("Remove data for job {:?}", job_id);
+        return tokio::fs::remove_dir_all(&job_path).await.map_err(|e| {
+            BallistaError::General(format!("Failed to remove {job_path:?} due to {e}"))
+        });
+    }
 
-    tokio::fs::remove_dir_all(&job_path).await.map_err(|e| {
-        BallistaError::General(format!("Failed to remove {job_path:?} due to {e}"))
-    })?;
+    // Otherwise remove only the given (intermediate) stage subdirs.
+    for stage_id in remove_stage_ids {
+        let stage_path = job_path.join(stage_id.to_string());
+        if !tokio::fs::try_exists(&stage_path).await.unwrap_or(false) {
+            continue;
+        }
+        if !is_subdirectory(stage_path.as_path(), job_path.as_path()) {
+            return Err(BallistaError::General(format!(
+                "Path {stage_path:?} is not a subdirectory of {job_path:?}"
+            )));
+        }
+        info!("Remove intermediate data for job {job_id:?} stage {stage_id}");
+        tokio::fs::remove_dir_all(&stage_path).await.map_err(|e| {
+            BallistaError::General(format!("Failed to remove {stage_path:?} due to {e}"))
+        })?;
+    }
 
     Ok(())
 }
@@ -921,6 +945,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::clean_shuffle_data_loop;
+    use super::remove_job_data;
     use ballista_core::JobId;
     use std::fs;
     use std::fs::File;
@@ -1019,6 +1044,43 @@ mod tests {
             assert!(!is_subdirectory(&job_path, base_dir));
         }
     }
+    #[tokio::test]
+    async fn test_remove_intermediate_stage_data() {
+        let work_dir = TempDir::new().unwrap();
+        let work = work_dir.path();
+        let job_id: JobId = "job".into();
+
+        // Create job/1, job/2, job/3, each with a data file.
+        for stage in [1u32, 2, 3] {
+            let stage_dir = work.join("job").join(stage.to_string());
+            fs::create_dir_all(&stage_dir).unwrap();
+            File::create(stage_dir.join("data.arrow"))
+                .unwrap()
+                .write_all(b"x")
+                .unwrap();
+        }
+
+        // Remove intermediate stages 1 and 2; stage 3 (final) is retained.
+        remove_job_data(work.to_str().unwrap(), &job_id, &[1, 2])
+            .await
+            .unwrap();
+        assert!(!work.join("job").join("1").exists());
+        assert!(!work.join("job").join("2").exists());
+        assert!(work.join("job").join("3").exists());
+
+        // Removing a missing stage id is a no-op (idempotent).
+        remove_job_data(work.to_str().unwrap(), &job_id, &[99])
+            .await
+            .unwrap();
+        assert!(work.join("job").join("3").exists());
+
+        // Empty list removes the whole job dir.
+        remove_job_data(work.to_str().unwrap(), &job_id, &[])
+            .await
+            .unwrap();
+        assert!(!work.join("job").exists());
+    }
+
     fn prepare_testing_job_directory(base_dir: &Path, job_id: &JobId) -> PathBuf {
         let mut path = base_dir.to_path_buf();
         path.push(job_id.as_str());
