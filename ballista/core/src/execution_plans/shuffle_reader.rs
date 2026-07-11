@@ -34,7 +34,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet,
+    self, BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -398,11 +398,14 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "ShuffleReader work dir should have been set by executor".to_owned(),
             ))?;
 
+        let read_metrics = ShuffleReadMetrics::new(partition, &self.metrics);
+
         let response_receiver = send_fetch_partitions(
             work_dir,
             partition_locations,
             config,
             self.client_pool.clone(),
+            read_metrics,
         );
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
@@ -703,11 +706,65 @@ fn local_remote_read_split(
     }
 }
 
+/// Fetch-side metrics for `ShuffleReaderExec`, recorded per output partition.
+///
+/// NOTE: the reader's `BaselineMetrics::elapsed_compute` measures poll time of
+/// the consuming stream, which overlaps with background fetching. `fetch_time`
+/// here is *additive* wall-time spent inside the fetch tasks — do not sum the
+/// two. `decoded_bytes` is the in-memory Arrow footprint of fetched batches,
+/// not compressed wire bytes. `fetch_time` and `permit_wait_time` are each
+/// summed across every concurrent remote fetch task, so their totals can
+/// exceed the operator's wall-clock elapsed time — read them as aggregate
+/// cost, not wall-clock.
+#[derive(Debug, Clone)]
+struct ShuffleReadMetrics {
+    /// Wall-time fetching remote partitions (Arrow-Flight fetch + buffering).
+    fetch_time: metrics::Time,
+    /// Wall-time opening node-local shuffle files.
+    local_read_time: metrics::Time,
+    /// Wall-time blocked acquiring the reduce-side in-flight governor permits
+    /// (request + per-address + byte semaphores, #1951).
+    permit_wait_time: metrics::Time,
+    /// Decoded (in-memory Arrow) bytes of fetched remote partitions.
+    decoded_bytes: metrics::Count,
+    /// Number of remote fetch attempts issued, including retries.
+    fetch_requests: metrics::Count,
+    /// Extra fetch attempts taken by the reduce-side retry loop.
+    fetch_retries: metrics::Count,
+    /// Partitions served from node-local shuffle files.
+    local_partitions: metrics::Count,
+    /// Partitions fetched from a remote executor.
+    remote_partitions: metrics::Count,
+}
+
+impl ShuffleReadMetrics {
+    fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
+        Self {
+            fetch_time: MetricBuilder::new(metrics).subset_time("fetch_time", partition),
+            local_read_time: MetricBuilder::new(metrics)
+                .subset_time("local_read_time", partition),
+            permit_wait_time: MetricBuilder::new(metrics)
+                .subset_time("permit_wait_time", partition),
+            decoded_bytes: MetricBuilder::new(metrics)
+                .counter("decoded_bytes", partition),
+            fetch_requests: MetricBuilder::new(metrics)
+                .counter("fetch_requests", partition),
+            fetch_retries: MetricBuilder::new(metrics)
+                .counter("fetch_retries", partition),
+            local_partitions: MetricBuilder::new(metrics)
+                .counter("local_partitions", partition),
+            remote_partitions: MetricBuilder::new(metrics)
+                .counter("remote_partitions", partition),
+        }
+    }
+}
+
 fn send_fetch_partitions(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     config: &SessionConfig,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
+    read_metrics: ShuffleReadMetrics,
 ) -> AbortableReceiverStream {
     let ballista_config = config.ballista_config();
     let max_reqs = config.ballista_shuffle_reader_maximum_concurrent_requests();
@@ -747,13 +804,20 @@ fn send_fetch_partitions(
         remote_locations.len()
     );
 
+    read_metrics.local_partitions.add(local_locations.len());
+    read_metrics.remote_partitions.add(remote_locations.len());
+
     // keep local shuffle files reading in serial order for memory control.
     let response_sender_c = response_sender.clone();
     let work_dir = work_dir.to_string();
+    let local_read_time = read_metrics.local_read_time.clone();
     spawned_tasks.push(SpawnedTask::spawn_blocking({
         move || {
             for p in local_locations {
-                let r = fetch_partition_local(&work_dir, &p, sort_shuffle_enabled);
+                let r = {
+                    let _timer = local_read_time.timer();
+                    fetch_partition_local(&work_dir, &p, sort_shuffle_enabled)
+                };
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
                 }
@@ -784,41 +848,55 @@ fn send_fetch_partitions(
         let customize_endpoint = customize_endpoint.clone();
         let client_grpc_config = client_grpc_config.clone();
         let client_pool = client_pool.clone();
+        let read_metrics = read_metrics.clone();
 
         spawned_tasks.push(SpawnedTask::spawn(async move {
             let addr = p.executor_meta.id.clone();
             let size = block_size(&p, default_block_size);
 
-            // Acquire the cheap count/address gates first, then the byte budget
-            // last, so a fetch does not hold scarce byte permits while blocked
-            // on a per-address slot. All acquires are on Arc<Semaphore>s that
-            // are never closed, so `unwrap()` cannot panic.
-            let req_permit = req_sem.acquire_owned().await.unwrap();
-            let addr_sem = {
-                let mut map = addr_sems.lock().unwrap();
-                map.entry(addr.clone())
-                    .or_insert_with(|| {
-                        Arc::new(Semaphore::new(max_blocks_per_addr.max(1)))
-                    })
-                    .clone()
+            // Time spent blocked acquiring the three governor permits (#1951).
+            let (req_permit, addr_permit, byte_permit) = {
+                let _permit_timer = read_metrics.permit_wait_time.timer();
+                let req_permit = req_sem.acquire_owned().await.unwrap();
+                let addr_sem = {
+                    let mut map = addr_sems.lock().unwrap();
+                    map.entry(addr.clone())
+                        .or_insert_with(|| {
+                            Arc::new(Semaphore::new(max_blocks_per_addr.max(1)))
+                        })
+                        .clone()
+                };
+                let addr_permit = addr_sem.acquire_owned().await.unwrap();
+                let byte_permit = byte_sem
+                    .acquire_many_owned(byte_permits_for(size, max_bytes))
+                    .await
+                    .unwrap();
+                (req_permit, addr_permit, byte_permit)
             };
-            let addr_permit = addr_sem.acquire_owned().await.unwrap();
-            let byte_permit = byte_sem
-                .acquire_many_owned(byte_permits_for(size, max_bytes))
-                .await
-                .unwrap();
 
-            let r = with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
-                fetch_partition_buffered(
-                    &p,
-                    client_grpc_config.clone(),
-                    prefer_flight,
-                    customize_endpoint.clone(),
-                    client_pool.clone(),
-                )
-            })
-            .await
+            let mut attempts = 0usize;
+            // Cloned (rather than used by reference) to avoid a partial move of
+            // `read_metrics`, which is still needed below for
+            // `fetch_requests`/`fetch_retries`.
+            let decoded_bytes = read_metrics.decoded_bytes.clone();
+            let r = {
+                let _fetch_timer = read_metrics.fetch_time.timer();
+                with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
+                    attempts += 1;
+                    fetch_partition_buffered(
+                        &p,
+                        client_grpc_config.clone(),
+                        prefer_flight,
+                        customize_endpoint.clone(),
+                        client_pool.clone(),
+                    )
+                })
+                .await
+            }
             .map(|(schema, batches)| {
+                let bytes: usize =
+                    batches.iter().map(|b| b.get_array_memory_size()).sum();
+                decoded_bytes.add(bytes);
                 Box::pin(GovernedStream::new(
                     buffered_stream(schema, batches),
                     byte_permit,
@@ -826,6 +904,10 @@ fn send_fetch_partitions(
                     addr_permit,
                 )) as SendableRecordBatchStream
             });
+            // Total wire attempts (initial + retries), recorded only after
+            // `with_retry` has finished retrying.
+            read_metrics.fetch_requests.add(attempts);
+            read_metrics.fetch_retries.add(attempts.saturating_sub(1));
 
             if let Err(e) = response_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {e}");
@@ -1551,6 +1633,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_partitions_error_path_records_metrics() -> Result<()> {
+        // A single remote partition location pointing at a host with no Flight
+        // server listening, so every wire attempt fails with a
+        // `GrpcConnectionError` (remapped to `FetchFailed` by
+        // `fetch_partition_remote`), which `is_retriable_fetch_error` treats
+        // as retriable. Unlike `test_fetch_partitions_error_mapping` (which
+        // fans out 4 upstream locations into 4 concurrent remote tasks), this
+        // test uses exactly one location so there is a single fetch task and
+        // the attempt/retry counters are deterministic: with several
+        // concurrent tasks racing to error out first, the stream can return
+        // as soon as the fastest task fails, aborting the others mid-retry
+        // and making their counters nondeterministic.
+        let retries: usize = 2;
+        let config = SessionConfig::new_with_ballista()
+            .set_usize(crate::config::BALLISTA_CLIENT_IO_RETRIES_TIMES, retries)
+            .set_usize(crate::config::BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS, 0);
+
+        let session_ctx = SessionContext::new_with_config(config);
+        let task_ctx = session_ctx.task_ctx();
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let job_id = "test_job_metrics";
+        let input_stage_id = 2;
+        let partition = PartitionLocation {
+            map_partition_id: 0,
+            partition_id: PartitionId {
+                job_id: job_id.into(),
+                stage_id: input_stage_id,
+                partition_id: 0,
+            },
+            executor_meta: ExecutorMetadata {
+                id: "executor_1".to_string(),
+                host: "executor_1".to_string(),
+                port: 7070,
+                grpc_port: 8080,
+                specification: ExecutorSpecification::default().with_task_slots(1),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+            partition_stats: Default::default(),
+            file_id: None,
+            is_sort_shuffle: false,
+        };
+        let work_dir = TempDir::new().unwrap();
+        let work_dir = work_dir.path().to_str().unwrap().to_owned();
+
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            input_stage_id,
+            vec![vec![partition]],
+            Arc::new(schema),
+            Partitioning::UnknownPartitioning(1),
+        )?
+        .with_work_dir(work_dir);
+
+        let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
+        let batches = utils::collect_stream(&mut stream).await;
+        assert!(batches.is_err());
+        let ballista_error = batches.unwrap_err();
+        assert!(matches!(
+            ballista_error,
+            BallistaError::FetchFailed(_, _, _, _)
+        ));
+
+        // The injected error is retriable (see `is_retriable_fetch_error`), so
+        // `with_retry` runs the initial attempt plus `retries` retries before
+        // giving up: total wire attempts = 1 + retries.
+        let expected_attempts = retries + 1;
+        let expected_retries = retries;
+
+        let metrics = shuffle_reader_exec
+            .metrics()
+            .expect("ShuffleReaderExec should report metrics");
+        let count = |name: &str| metrics.sum_by_name(name).map(|v| v.as_usize());
+
+        assert_eq!(count("fetch_requests"), Some(expected_attempts));
+        assert_eq!(count("fetch_retries"), Some(expected_retries));
+        assert!(
+            metrics.sum_by_name("fetch_time").is_some(),
+            "fetch_time metric should be registered"
+        );
+        assert!(
+            metrics.sum_by_name("permit_wait_time").is_some(),
+            "permit_wait_time metric should be registered"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_send_fetch_partitions_1() {
         test_send_fetch_partitions(1, 10).await;
     }
@@ -1675,11 +1850,13 @@ mod tests {
         let config = SessionConfig::new_with_ballista()
             .with_ballista_shuffle_reader_maximum_concurrent_requests(max_request_num);
 
+        let metrics_set = ExecutionPlanMetricsSet::new();
         let response_receiver = send_fetch_partitions(
             &work_dir.to_string_lossy(),
             partition_locations,
             &config,
             None,
+            ShuffleReadMetrics::new(0, &metrics_set),
         );
 
         let stream = RecordBatchStreamAdapter::new(
@@ -1689,6 +1866,90 @@ mod tests {
 
         let result = common::collect(Box::pin(stream)).await.unwrap();
         assert_eq!(partition_num, result.len());
+    }
+
+    #[tokio::test]
+    async fn send_fetch_partitions_records_local_metrics() {
+        let schema = get_test_partition_schema();
+        let data_array = Int32Array::from(vec![1]);
+        let batch =
+            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
+                .unwrap();
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path();
+        let partition_num = 3usize;
+        for p in 0..partition_num {
+            let file_path =
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
+            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+            let file = File::create(&file_path).unwrap();
+            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let partition_locations = get_test_partition_locations(partition_num, None);
+        let config = SessionConfig::new_with_ballista();
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let read_metrics = ShuffleReadMetrics::new(0, &metrics_set);
+
+        let response_receiver = send_fetch_partitions(
+            &work_dir.to_string_lossy(),
+            partition_locations,
+            &config,
+            None,
+            read_metrics,
+        );
+        let stream = RecordBatchStreamAdapter::new(
+            Arc::new(schema),
+            response_receiver.try_flatten(),
+        );
+        let result = common::collect(Box::pin(stream)).await.unwrap();
+        assert_eq!(partition_num, result.len());
+
+        let metrics = metrics_set.clone_inner();
+        let count =
+            |name: &str| metrics.sum_by_name(name).map(|v| v.as_usize()).unwrap_or(0);
+        assert_eq!(count("local_partitions"), partition_num);
+        assert_eq!(count("remote_partitions"), 0);
+        assert!(
+            metrics.sum_by_name("local_read_time").is_some(),
+            "local_read_time metric should be registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_fetch_partitions_counts_remote_split() {
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path();
+        // No files on disk => all partitions are treated as remote.
+        let partition_locations = get_test_partition_locations(2, None);
+        let config = SessionConfig::new_with_ballista();
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let read_metrics = ShuffleReadMetrics::new(0, &metrics_set);
+
+        // Drop the receiver without polling; the split counts are recorded
+        // synchronously inside send_fetch_partitions.
+        let _rx = send_fetch_partitions(
+            &work_dir.to_string_lossy(),
+            partition_locations,
+            &config,
+            None,
+            read_metrics,
+        );
+
+        let metrics = metrics_set.clone_inner();
+        assert_eq!(
+            metrics
+                .sum_by_name("remote_partitions")
+                .map(|v| v.as_usize()),
+            Some(2)
+        );
+        assert_eq!(
+            metrics
+                .sum_by_name("local_partitions")
+                .map(|v| v.as_usize()),
+            Some(0)
+        );
     }
 
     fn get_test_partition_locations(
