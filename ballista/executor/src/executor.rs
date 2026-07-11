@@ -199,9 +199,8 @@ impl Executor {
     }
 
     /// Produces the runtime for a task, reusing the session's shared read-side
-    /// state when a cache is attached. Falls back to the per-task
-    /// `runtime_producer` when caching is disabled or an override producer is in
-    /// use.
+    /// state when a session cache is attached; otherwise builds a runtime per
+    /// task via the `runtime_producer`.
     pub fn produce_runtime_for_session(
         &self,
         session_id: &str,

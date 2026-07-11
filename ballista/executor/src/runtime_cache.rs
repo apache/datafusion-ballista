@@ -42,9 +42,13 @@ pub type MemoryPoolPolicy = Arc<
 ///
 /// A base env carries the read-side state safe to share across all tasks of a
 /// session: the object-store registry and the cache manager (whose Parquet
-/// footer cache is thereby reused across the session's tasks and queries). Each
-/// task's real runtime is produced by applying [`MemoryPoolPolicy`] to the
-/// shared base, which installs a fresh per-task memory pool — so memory
+/// footer cache is thereby reused across the session's tasks and queries).
+/// `RuntimeEnvBuilder::from_runtime_env` also carries over the disk manager
+/// (rooted at the executor's `work_dir`), so a session's tasks share one
+/// `DiskManager` too; this is safe because spill temp files are uniquely
+/// named, matching the standard one-`RuntimeEnv`-per-`SessionContext` model.
+/// Each task's real runtime is produced by applying [`MemoryPoolPolicy`] to
+/// the shared base, which installs a fresh per-task memory pool — so memory
 /// isolation is unchanged.
 ///
 /// The cache is bounded by an LRU of `capacity` sessions. A capacity of `0`
