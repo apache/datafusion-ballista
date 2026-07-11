@@ -386,7 +386,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             &task.session_config,
         );
 
-        let runtime = self.executor.produce_runtime(&task.session_config);
+        let runtime = self
+            .executor
+            .produce_runtime_for_session(&task.session_id, &task.session_config);
 
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {

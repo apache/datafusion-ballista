@@ -70,7 +70,7 @@ use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
-use crate::runtime_cache::MemoryPoolPolicy;
+use crate::runtime_cache::{MemoryPoolPolicy, SessionRuntimeCache};
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
@@ -163,6 +163,11 @@ pub struct ExecutorProcessConfig {
     /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
     /// installed and DataFusion falls back to its unbounded default.
     pub memory_pool_size: Option<u64>,
+    /// Maximum number of sessions whose shared base runtime env is retained on
+    /// the executor (LRU). Sharing reuses object-store clients and the Parquet
+    /// footer cache across a session's tasks and queries. `0` disables caching
+    /// and builds a fresh runtime per task.
+    pub session_runtime_cache_capacity: usize,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -222,6 +227,7 @@ impl Default for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
+            session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,
@@ -343,26 +349,42 @@ pub async fn start_executor_process(
         datafusion_proto::protobuf::PhysicalPlanNode,
     > = BallistaCodec::new(logical, physical);
 
-    let executor = Arc::new(Executor::new(
-        executor_meta.clone(),
-        &work_dir,
-        runtime_producer,
-        config_producer,
-        opt.override_function_registry.clone().unwrap_or_default(),
-        metrics_collector,
-        concurrent_tasks,
-        opt.override_execution_engine.clone().unwrap_or_else(|| {
-            if opt.client_ttl > 0 {
-                let client_pool =
-                    Arc::new(DefaultBallistaClientPool::with_eviction_thread(
-                        Duration::from_secs(opt.client_ttl),
-                    ));
-                Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
-            } else {
-                Arc::new(DefaultExecutionEngine::new())
-            }
-        }),
-    ));
+    // Session caching applies only to the default runtime producer. With an
+    // override producer we cannot split base + pool, so we serve per-task as
+    // before by leaving the cache unset.
+    let session_runtime_cache = if opt.override_runtime_producer.is_none() {
+        Some(Arc::new(SessionRuntimeCache::new(
+            base_runtime_producer.clone(),
+            pool_policy.clone(),
+            opt.session_runtime_cache_capacity,
+        )))
+    } else {
+        None
+    };
+
+    let executor = Arc::new(
+        Executor::new(
+            executor_meta.clone(),
+            &work_dir,
+            runtime_producer,
+            config_producer,
+            opt.override_function_registry.clone().unwrap_or_default(),
+            metrics_collector,
+            concurrent_tasks,
+            opt.override_execution_engine.clone().unwrap_or_else(|| {
+                if opt.client_ttl > 0 {
+                    let client_pool =
+                        Arc::new(DefaultBallistaClientPool::with_eviction_thread(
+                            Duration::from_secs(opt.client_ttl),
+                        ));
+                    Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
+                } else {
+                    Arc::new(DefaultExecutionEngine::new())
+                }
+            }),
+        )
+        .with_session_runtime_cache(session_runtime_cache),
+    );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let session_config = (executor.config_producer)();
