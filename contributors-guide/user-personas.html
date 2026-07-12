@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ballista Code Organization &#8212; Apache DataFusion Ballista  documentation</title>
+    <title>User Personas &#8212; Apache DataFusion Ballista  documentation</title>
   
   
   
@@ -42,12 +42,12 @@
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'contributors-guide/code-organization';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributors-guide/user-personas';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="User Personas" href="user-personas.html" />
-    <link rel="prev" title="Ballista Architecture" href="architecture.html" />
+    <link rel="next" title="Ballista Development" href="development.html" />
+    <link rel="prev" title="Ballista Code Organization" href="code-organization.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -299,8 +299,8 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Ballista Architecture</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Ballista Code Organization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="user-personas.html">User Personas</a></li>
+<li class="toctree-l1"><a class="reference internal" href="code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">User Personas</a></li>
 <li class="toctree-l1"><a class="reference internal" href="development.html">Ballista Development</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
 </ul>
@@ -351,7 +351,7 @@
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Ballista Code Organization</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">User Personas</span></li>
   </ul>
 </nav>
 </div>
@@ -386,50 +386,157 @@
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="ballista-code-organization">
-<h1>Ballista Code Organization<a class="headerlink" href="#ballista-code-organization" title="Link to this heading">#</a></h1>
-<p>This section provides links to the source code for major areas of functionality.</p>
-<section id="ballista-core-crate">
-<h2>ballista-core crate<a class="headerlink" href="#ballista-core-crate" title="Link to this heading">#</a></h2>
+<section id="user-personas">
+<h1>User Personas<a class="headerlink" href="#user-personas" title="Link to this heading">#</a></h1>
+<p>Ballista serves several distinct audiences, each of which comes to the project
+for a different reason and depends on a different set of capabilities. This page
+names those audiences as <strong>personas</strong> and, for each one, records the guarantees
+that audience relies on.</p>
+<section id="why-this-page-exists">
+<h2>Why this page exists<a class="headerlink" href="#why-this-page-exists" title="Link to this heading">#</a></h2>
+<p>This is a review contract, not marketing copy. It exists so that changes to
+Ballista stay <strong>additive</strong>:</p>
 <ul class="simple">
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core">Crate Source</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/proto/ballista.proto">Protocol Buffer Definition</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/core/src/execution_plans">Execution Plans</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/client.rs">Ballista Client</a></p></li>
+<li><p>A pull request may <strong>add</strong> a new persona, or <strong>extend</strong> an existing one with
+new capabilities.</p></li>
+<li><p>A pull request must <strong>not remove or silently regress</strong> a capability that an
+existing persona depends on.</p></li>
+</ul>
+<p>Reviewers evaluate every non-trivial pull request against this list. Each
+persona lists concrete “red flags” — the kinds of change that would quietly take
+functionality away from that audience. A red flag does not mean a change is
+forbidden, but it does mean the change needs explicit discussion and maintainer
+sign-off, and usually a migration path (for example an entry in the
+<a class="reference internal" href="../upgrading/index.html"><span class="doc std std-doc">upgrade guide</span></a>), rather than landing silently.</p>
+<p>These personas are deliberately in tension with one another. One audience wants
+distributed execution to be a transparent implementation detail; another wants
+the execution model exposed and tunable; another wants Ballista’s internals to
+be a stable, composable library. The point of keeping them all written down is
+to make sure a change that delights one audience does not quietly break another.</p>
+</section>
+<section id="persona-1-the-datafusion-user-going-multi-node">
+<h2>Persona 1: The DataFusion user going multi-node<a class="headerlink" href="#persona-1-the-datafusion-user-going-multi-node" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Who</strong>: A data engineer or analyst already using
+<a class="reference external" href="https://datafusion.apache.org/">DataFusion</a> single-process (often through the
+Python bindings) who has outgrown a single machine.</p></li>
+<li><p><strong>Coming from</strong>: DataFusion, single process.</p></li>
+<li><p><strong>Why Ballista</strong>: Run the same SQL and DataFrame workloads across a cluster
+with minimal code change and <em>identical results</em>.</p></li>
+<li><p><strong>Depends on</strong> (must not regress):</p>
+<ul>
+<li><p>Query results and semantics match single-process DataFusion for the same
+input.</p></li>
+<li><p>A client surface that mirrors DataFusion’s <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> / DataFrame / SQL
+API.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">datafusion.*</span></code> session configuration overrides are honored end-to-end, so
+users tune DataFusion the way they already do.</p></li>
+<li><p>Standard object stores and file formats work and produce correct results
+across partitions.</p></li>
+<li><p>Distributed execution is <em>transparent</em>: getting a correct answer never
+requires the user to reason about stages, tasks, or partitioning.</p></li>
+</ul>
+</li>
+<li><p><strong>Red flags in a pull request</strong>:</p>
+<ul>
+<li><p>Results diverge from single-process DataFusion for the same input.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">datafusion.*</span></code> overrides are dropped or ignored during scheduling/planning.</p></li>
+<li><p>A DataFusion feature that is correct single-node becomes silently wrong when
+the plan is split across stages (for example dynamic filter pushdown,
+uncorrelated scalar subqueries, or a scan reading more than its assigned
+partition).</p></li>
+<li><p>Client API changes that break the DataFusion-mirroring surface.</p></li>
+</ul>
+</li>
 </ul>
 </section>
-<section id="ballista-scheduler-crate">
-<h2>ballista-scheduler crate<a class="headerlink" href="#ballista-scheduler-crate" title="Link to this heading">#</a></h2>
+<section id="persona-2-the-spark-user-wanting-the-same-execution-model">
+<h2>Persona 2: The Spark user wanting the same execution model<a class="headerlink" href="#persona-2-the-spark-user-wanting-the-same-execution-model" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler">Crate Source</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/planner.rs">Distributed Query Planner</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/scheduler_server/grpc.rs">gRPC Service</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/flight_sql.rs">Flight SQL Service</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/api">REST API</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs">Prometheus Integration</a></p></li>
+<li><p><strong>Who</strong>: A data engineer or platform owner running Spark SQL / batch jobs who
+wants a lighter, Rust-native alternative without relearning a new execution
+paradigm.</p></li>
+<li><p><strong>Coming from</strong>: Apache Spark.</p></li>
+<li><p><strong>Why Ballista</strong>: Keep the Spark mental model — plans split into <strong>stages</strong> at
+shuffle boundaries, one <strong>task</strong> per partition, shuffle files, executors with
+task slots, and adaptive query execution (<strong>AQE</strong>) for runtime adaptivity — on
+top of DataFusion and Arrow.</p></li>
+<li><p><strong>Depends on</strong> (must not regress):</p>
+<ul>
+<li><p>The stage/task execution model at shuffle boundaries.</p></li>
+<li><p>The AQE / adaptive planner path (partition coalescing, dynamic join
+selection, runtime broadcast), available and gated behind configuration.</p></li>
+<li><p>Broadcast joins for small build sides, to avoid shuffles and skew (the
+equivalent of Spark’s broadcast hash join).</p></li>
+<li><p>The operational surface Spark users expect: a scheduler plus executors,
+task-slot concurrency, a tunable <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code>, and stage/task
+observability (task timings, a history server / UI) for debugging skew.</p></li>
+<li><p>Behavior driven by configuration and <code class="docutils literal notranslate"><span class="pre">SET</span></code>, not hard-coded planner choices.</p></li>
+</ul>
+</li>
+<li><p><strong>Red flags in a pull request</strong>:</p>
+<ul>
+<li><p>Removing or short-circuiting the stage/task boundary model, or collapsing
+toward single-process execution.</p></li>
+<li><p>Regressing or removing the AQE / adaptive planner path — or making it the
+only path in a way that breaks Persona 1’s transparent static path.</p></li>
+<li><p>Hard-coding a join or planner strategy instead of gating it behind
+configuration.</p></li>
+<li><p>Removing the stage/task observability that Spark users rely on to diagnose
+skew.</p></li>
+</ul>
+</li>
 </ul>
 </section>
-<section id="ballista-executor-crate">
-<h2>ballista-executor crate<a class="headerlink" href="#ballista-executor-crate" title="Link to this heading">#</a></h2>
+<section id="persona-3-the-library-user-building-a-specialized-engine">
+<h2>Persona 3: The library user building a specialized engine<a class="headerlink" href="#persona-3-the-library-user-building-a-specialized-engine" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/executor">Crate Source</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/flight_service.rs">Flight Service</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/executor_server.rs">Executor Server</a></p></li>
+<li><p><strong>Who</strong>: An engineer using Ballista as a <em>framework</em> — the foundation for a
+specialized or bespoke distributed query engine — rather than as a turnkey
+cluster.</p></li>
+<li><p><strong>Coming from</strong>: Building on DataFusion as a library, now needing distribution
+(or replacing a hand-rolled distributed layer).</p></li>
+<li><p><strong>Why Ballista</strong>: Reusable scheduler, executor, and plan-serialization
+building blocks with extension points, instead of writing distributed
+execution from scratch.</p></li>
+<li><p><strong>Depends on</strong> (must not regress):</p>
+<ul>
+<li><p>Stable, composable public APIs across the <code class="docutils literal notranslate"><span class="pre">scheduler</span></code>, <code class="docutils literal notranslate"><span class="pre">executor</span></code>, <code class="docutils literal notranslate"><span class="pre">client</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">core</span></code> crates (the execution graph and plan serialization included).</p></li>
+<li><p>Extension points that do not require forking: custom object stores,
+physical/logical extension codecs, custom operators and functions, a
+pluggable runtime producer, custom session configuration, and a custom query
+planner.</p></li>
+<li><p>Behavior that stays <em>configurable rather than hard-coded</em>, so an embedder can
+swap the planner, join strategy, partitioning, or runtime environment.</p></li>
+<li><p>Backward-compatible public APIs, with breaking changes signaled in the
+<a class="reference internal" href="../upgrading/index.html"><span class="doc std std-doc">upgrade guide</span></a>.</p></li>
+<li><p>No assumptions baked into the core that only fit the built-in clients or the
+TPC-H benchmark.</p></li>
+</ul>
+</li>
+<li><p><strong>Red flags in a pull request</strong>:</p>
+<ul>
+<li><p>Breaking a public API signature without an upgrade-guide entry.</p></li>
+<li><p>Hard-coding behavior that used to be pluggable, or removing an extension
+point (an extension-codec argument, the runtime-producer override,
+session-config injection).</p></li>
+<li><p>Coupling core logic to a specific client, planner, or benchmark instead of
+keeping it behind a trait or configuration.</p></li>
+<li><p>Wire-format or serialization changes that break externally-produced plans
+with no compatibility path.</p></li>
+</ul>
+</li>
 </ul>
 </section>
-<section id="ballista-crate">
-<h2>ballista crate<a class="headerlink" href="#ballista-crate" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista/client">Crate Source</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/client/src/context.rs">Context</a></p></li>
-</ul>
-</section>
-<section id="pyballista">
-<h2>PyBallista<a class="headerlink" href="#pyballista" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/python">Source</a></p></li>
-<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/python/src/context.rs">Context</a></p></li>
-</ul>
+<section id="adding-a-persona">
+<h2>Adding a persona<a class="headerlink" href="#adding-a-persona" title="Link to this heading">#</a></h2>
+<p>This registry is append-only. As Ballista attracts new kinds of users, add a
+persona for each one via a pull request, using the same schema (who they are,
+what they are coming from, why Ballista, what they depend on, and the red flags
+that would regress them). Do not remove existing personas: an audience that
+relied on Ballista does not stop existing because our priorities shifted, and
+the whole value of this page is that the guarantees only accumulate.</p>
 </section>
 </section>
 
@@ -444,20 +551,20 @@
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="architecture.html"
+       href="code-organization.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Ballista Architecture</p>
+        <p class="prev-next-title">Ballista Code Organization</p>
       </div>
     </a>
     <a class="right-next"
-       href="user-personas.html"
+       href="development.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">User Personas</p>
+        <p class="prev-next-title">Ballista Development</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -480,11 +587,11 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-core-crate">ballista-core crate</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-scheduler-crate">ballista-scheduler crate</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-executor-crate">ballista-executor crate</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-crate">ballista crate</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pyballista">PyBallista</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-this-page-exists">Why this page exists</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#persona-1-the-datafusion-user-going-multi-node">Persona 1: The DataFusion user going multi-node</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#persona-2-the-spark-user-wanting-the-same-execution-model">Persona 2: The Spark user wanting the same execution model</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#persona-3-the-library-user-building-a-specialized-engine">Persona 3: The library user building a specialized engine</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-persona">Adding a persona</a></li>
 </ul>
   </nav></div>
 
@@ -492,7 +599,7 @@
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/contributors-guide/code-organization.md">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/contributors-guide/user-personas.md">
       <i class="fa-solid fa-pencil"></i>
       
       
@@ -507,7 +614,7 @@
   <div class="sidebar-secondary-item">
 
   <div class="tocsection sourcelink">
-    <a href="../_sources/contributors-guide/code-organization.md.txt">
+    <a href="../_sources/contributors-guide/user-personas.md.txt">
       <i class="fa-solid fa-file-lines"></i> Show Source
     </a>
   </div>
