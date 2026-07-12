@@ -42,7 +42,7 @@ use tokio::{fs, time};
 use uuid::Uuid;
 
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::SessionConfig;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
@@ -70,36 +70,46 @@ use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
+use crate::runtime_cache::{
+    DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
+};
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
 
-/// Wrap a [`RuntimeProducer`] so that every produced
-/// [`RuntimeEnv`](datafusion::execution::runtime_env::RuntimeEnv) carries a
-/// fresh [`FairSpillPool`] of size `total_bytes / concurrent_tasks`.
+/// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
+/// shared base env with a fresh [`FairSpillPool`] of size
+/// `total_bytes / concurrent_tasks`. The base env's disk manager, cache manager,
+/// and object-store registry are preserved via
+/// [`RuntimeEnvBuilder::from_runtime_env`].
 ///
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
-/// concurrent_tasks`). The inner env's disk manager, cache manager, and
-/// object store registry are preserved via [`RuntimeEnvBuilder::from_runtime_env`].
-fn wrap_runtime_producer_with_memory_pool(
-    inner: RuntimeProducer,
+/// concurrent_tasks`).
+fn memory_pool_policy(
     total_bytes: u64,
     concurrent_tasks: usize,
-) -> Result<RuntimeProducer, BallistaError> {
+) -> Result<MemoryPoolPolicy, BallistaError> {
     let per_task = (total_bytes / concurrent_tasks as u64) as usize;
     if per_task == 0 {
         return Err(BallistaError::Configuration(format!(
             "memory_pool_size ({total_bytes} bytes) is smaller than concurrent_tasks ({concurrent_tasks})"
         )));
     }
-    Ok(Arc::new(move |session_config: &SessionConfig| {
-        let inner_env = inner(session_config)?;
-        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
-        RuntimeEnvBuilder::from_runtime_env(&inner_env)
-            .with_memory_pool(pool)
-            .build_arc()
-    }))
+    Ok(Arc::new(
+        move |base: Arc<RuntimeEnv>, _config: &SessionConfig| {
+            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
+            RuntimeEnvBuilder::from_runtime_env(&base)
+                .with_memory_pool(pool)
+                .build_arc()
+        },
+    ))
+}
+
+/// A no-op policy: the task uses the shared base env unchanged (DataFusion's
+/// default unbounded pool). Used when `--memory-pool-size` is unset.
+fn identity_pool_policy() -> MemoryPoolPolicy {
+    Arc::new(|base, _config| Ok(base))
 }
 
 /// Configuration for the executor process.
@@ -155,6 +165,11 @@ pub struct ExecutorProcessConfig {
     /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
     /// installed and DataFusion falls back to its unbounded default.
     pub memory_pool_size: Option<u64>,
+    /// Maximum number of sessions whose shared base runtime env is retained on
+    /// the executor (LRU). Sharing reuses object-store clients and the Parquet
+    /// footer cache across a session's tasks and queries. `0` disables caching
+    /// and builds a fresh runtime per task.
+    pub session_runtime_cache_capacity: usize,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -214,6 +229,7 @@ impl Default for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
+            session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,
@@ -290,7 +306,7 @@ pub async fn start_executor_process(
         .unwrap_or_else(|| Arc::new(default_config_producer));
 
     let wd = work_dir.clone();
-    let runtime_producer: RuntimeProducer =
+    let base_runtime_producer: RuntimeProducer =
         opt.override_runtime_producer.clone().unwrap_or_else(|| {
             Arc::new(move |_| {
                 let runtime_env = RuntimeEnvBuilder::new()
@@ -300,19 +316,24 @@ pub async fn start_executor_process(
             })
         });
 
-    let runtime_producer = if let Some(total) = opt.memory_pool_size {
-        let producer = wrap_runtime_producer_with_memory_pool(
-            runtime_producer,
-            total,
-            concurrent_tasks,
-        )?;
+    let pool_policy: MemoryPoolPolicy = if let Some(total) = opt.memory_pool_size {
+        let policy = memory_pool_policy(total, concurrent_tasks)?;
         let per_task = total / concurrent_tasks as u64;
         info!(
             "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
         );
-        producer
+        policy
     } else {
-        runtime_producer
+        identity_pool_policy()
+    };
+
+    // Combined producer preserving the current per-task behavior: build a fresh
+    // base env, then apply the pool policy. Used by `Executor::produce_runtime`
+    // and as the fallback when session caching is disabled.
+    let runtime_producer: RuntimeProducer = {
+        let base = base_runtime_producer.clone();
+        let policy = pool_policy.clone();
+        Arc::new(move |config: &SessionConfig| policy(base(config)?, config))
     };
 
     let logical = opt
@@ -330,26 +351,43 @@ pub async fn start_executor_process(
         datafusion_proto::protobuf::PhysicalPlanNode,
     > = BallistaCodec::new(logical, physical);
 
-    let executor = Arc::new(Executor::new(
-        executor_meta.clone(),
-        &work_dir,
-        runtime_producer,
-        config_producer,
-        opt.override_function_registry.clone().unwrap_or_default(),
-        metrics_collector,
-        concurrent_tasks,
-        opt.override_execution_engine.clone().unwrap_or_else(|| {
-            if opt.client_ttl > 0 {
-                let client_pool =
-                    Arc::new(DefaultBallistaClientPool::with_eviction_thread(
-                        Duration::from_secs(opt.client_ttl),
-                    ));
-                Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
-            } else {
-                Arc::new(DefaultExecutionEngine::new())
-            }
-        }),
-    ));
+    // Session caching applies only to the default runtime producer. With an
+    // override producer we cannot split base + pool, so we serve per-task as
+    // before by leaving the cache unset.
+    let session_runtime_cache: Option<Arc<dyn SessionRuntimeCache>> =
+        if opt.override_runtime_producer.is_none() {
+            Some(Arc::new(DefaultSessionRuntimeCache::new(
+                base_runtime_producer.clone(),
+                pool_policy.clone(),
+                opt.session_runtime_cache_capacity,
+            )))
+        } else {
+            None
+        };
+
+    let executor = Arc::new(
+        Executor::new(
+            executor_meta.clone(),
+            &work_dir,
+            runtime_producer,
+            config_producer,
+            opt.override_function_registry.clone().unwrap_or_default(),
+            metrics_collector,
+            concurrent_tasks,
+            opt.override_execution_engine.clone().unwrap_or_else(|| {
+                if opt.client_ttl > 0 {
+                    let client_pool =
+                        Arc::new(DefaultBallistaClientPool::with_eviction_thread(
+                            Duration::from_secs(opt.client_ttl),
+                        ));
+                    Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
+                } else {
+                    Arc::new(DefaultExecutionEngine::new())
+                }
+            }),
+        )
+        .with_session_runtime_cache(session_runtime_cache),
+    );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let session_config = (executor.config_producer)();
@@ -1064,14 +1102,9 @@ mod memory_pool_tests {
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
 
-    fn baseline_producer() -> RuntimeProducer {
-        Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())))
-    }
-
     #[test]
     fn returns_error_when_total_smaller_than_concurrent_tasks() {
-        let inner = baseline_producer();
-        let result = wrap_runtime_producer_with_memory_pool(inner, 4, 8);
+        let result = memory_pool_policy(4, 8);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("memory_pool_size"));
@@ -1084,13 +1117,9 @@ mod memory_pool_tests {
         let concurrent = 8usize;
         let expected_per_task = (total / concurrent as u64) as usize;
 
-        let wrapped = wrap_runtime_producer_with_memory_pool(
-            baseline_producer(),
-            total,
-            concurrent,
-        )
-        .unwrap();
-        let env = wrapped(&SessionConfig::new()).unwrap();
+        let policy = memory_pool_policy(total, concurrent).unwrap();
+        let base = Arc::new(RuntimeEnv::default());
+        let env = policy(base, &SessionConfig::new()).unwrap();
 
         match env.memory_pool.memory_limit() {
             MemoryLimit::Finite(n) => assert_eq!(n, expected_per_task),
@@ -1100,20 +1129,26 @@ mod memory_pool_tests {
     }
 
     #[test]
-    fn preserves_inner_object_store_registry() {
+    fn preserves_base_object_store_registry() {
         let registry: Arc<dyn datafusion::execution::object_store::ObjectStoreRegistry> =
             Arc::new(DefaultObjectStoreRegistry::new());
-        let registry_for_inner = registry.clone();
-        let inner: RuntimeProducer = Arc::new(move |_| {
-            let env = RuntimeEnvBuilder::new()
-                .with_object_store_registry(registry_for_inner.clone())
-                .build()?;
-            Ok(Arc::new(env))
-        });
+        let base = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_object_store_registry(registry.clone())
+                .build()
+                .unwrap(),
+        );
 
-        let wrapped = wrap_runtime_producer_with_memory_pool(inner, 1024, 1).unwrap();
-        let env = wrapped(&SessionConfig::new()).unwrap();
+        let policy = memory_pool_policy(1024, 1).unwrap();
+        let env = policy(base, &SessionConfig::new()).unwrap();
 
         assert!(Arc::ptr_eq(&env.object_store_registry, &registry));
+    }
+
+    #[test]
+    fn identity_policy_returns_base_unchanged() {
+        let base = Arc::new(RuntimeEnv::default());
+        let env = identity_pool_policy()(base.clone(), &SessionConfig::new()).unwrap();
+        assert!(Arc::ptr_eq(&env, &base));
     }
 }

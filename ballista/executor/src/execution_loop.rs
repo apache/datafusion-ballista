@@ -262,7 +262,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_higher_order_functions =
         executor.function_registry.higher_order_functions.clone();
 
-    let runtime = executor.produce_runtime(&session_config)?;
+    let runtime =
+        executor.produce_runtime_for_session(&task.session_id, &session_config)?;
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
