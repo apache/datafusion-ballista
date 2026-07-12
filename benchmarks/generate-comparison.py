@@ -296,7 +296,7 @@ def query_count(benchmark: str):
     elif benchmark == "tpcds":
         return 99
     else:
-        raise "invalid benchmark name"
+        raise ValueError("invalid benchmark name")
 
 def main(files, labels, benchmark: str, title: str, output_dir: str = '.'):
     results = []
