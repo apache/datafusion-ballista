@@ -55,14 +55,13 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
 fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
     use tui_big_text::{BigText, PixelSize};
 
-    let banner_size = match area.width {
-        0..70 => PixelSize::Octant,
-        70..80 => PixelSize::QuarterHeight,
-        _ => PixelSize::ThirdHeight,
-    };
-
+    // Quadrant is the densest PixelSize drawn purely from the Block Elements range
+    // (U+2580..U+259F), which every monospace font carries. The denser sizes
+    // (ThirdHeight/Sextant/QuarterHeight/Octant) need Symbols for Legacy Computing,
+    // which most fonts lack and render as tofu. Quadrant costs 4 rows per line, so the
+    // header is sized to fit two of them.
     let big_text = BigText::builder()
-        .pixel_size(banner_size)
+        .pixel_size(PixelSize::Quadrant)
         .style(banner_style)
         .lines(vec![" DataFusion".into(), " Ballista".into()])
         .build();
@@ -75,6 +74,72 @@ fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
 #[cfg(feature = "web")]
 fn render_banner(f: &mut Frame, area: Rect, _banner_style: Style) {
     f.render_widget(Block::default(), area);
+}
+
+#[cfg(all(test, not(feature = "web")))]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// The height of the header chunk in `ui::render`, which is what the banner is given.
+    const HEADER_HEIGHT: u16 = 8;
+    /// The banner area as laid out by `render_header` on a wide terminal: 30% of the width.
+    const BANNER_WIDTH: u16 = 60;
+
+    fn draw_banner(height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(BANNER_WIDTH, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_banner(f, f.area(), Style::default()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The banner must only use Block Elements (U+2580..=U+259F), which every monospace
+    /// font carries. The denser `tui-big-text` pixel sizes emit Symbols for Legacy
+    /// Computing (sextants at U+1FB00.., octants at U+1CD00..), which most fonts lack and
+    /// render as tofu.
+    #[test]
+    fn banner_uses_only_widely_supported_block_element_glyphs() {
+        let buffer = draw_banner(HEADER_HEIGHT);
+
+        let offenders: Vec<char> = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace() && !matches!(c, '\u{2580}'..='\u{259F}'))
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "banner emitted glyphs outside Block Elements: {offenders:?}"
+        );
+    }
+
+    /// The banner's natural height is set by its pixel size (4 rows per line for Quadrant,
+    /// two lines), and `ratatui` clips rather than complains when a widget outgrows its
+    /// area. Render into a deliberately over-tall buffer so the banner can draw its full
+    /// height, then pin that height to the header's: too tall and " Ballista" would be cut
+    /// off in the real layout, too short and the header wastes rows.
+    #[test]
+    fn banner_natural_height_matches_the_header_height() {
+        let buffer = draw_banner(HEADER_HEIGHT * 2);
+
+        let drawn_height = (0..HEADER_HEIGHT * 2)
+            .filter(|&row| {
+                (0..BANNER_WIDTH)
+                    .any(|col| !buffer[(col, row)].symbol().trim().is_empty())
+            })
+            .map(|row| row + 1)
+            .max()
+            .unwrap_or(0);
+
+        assert_eq!(
+            drawn_height, HEADER_HEIGHT,
+            "banner draws {drawn_height} rows but the header reserves {HEADER_HEIGHT}; \
+             adjust the banner's PixelSize or the header's Constraint::Length so they agree"
+        );
+    }
 }
 
 fn render_navbar(f: &mut Frame, area: Rect, app: &App) {
