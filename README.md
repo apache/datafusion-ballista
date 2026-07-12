@@ -124,10 +124,6 @@ node-local disk, comparing Ballista 54.0.0-rc2 (with hash joins enabled) against
 
 The overall speedup is 1.5x (sum of median-of-three runtimes across all 22 queries).
 
-Ballista and Spark return identical row counts on 21 of the 22 queries; they differ only on
-Q15 (Spark returns 0 rows, Ballista returns 1). The 1.5x overall speedup is unchanged whether or
-not Q15 is included.
-
 ![benchmarks](docs/source/_static/images/tpch_allqueries.png)
 
 ### Per Query Comparison
