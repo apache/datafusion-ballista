@@ -628,9 +628,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let num_tasks = statuses.len();
             debug!("Updating {num_tasks} tasks in job {job_id}");
 
-            // let graph = self.get_active_execution_graph(&job_id).await;
-            let job_events = if let Some(cached) =
-                self.get_active_execution_graph(&job_id.clone().into())
+            let job_events = if let Some(cached) = self
+                .get_or_acquire_active_execution_graph(&job_id.clone().into())
+                .await?
             {
                 let mut graph = cached.write().await;
                 graph.update_task_status(
@@ -640,9 +640,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     self.stage_max_failures,
                 )?
             } else {
-                // TODO Deal with curator changed case
-                error!(
-                    "Fail to find job {job_id} in the active cache and it may not be curated by this scheduler"
+                warn!(
+                    "Job {job_id} is not in the active cache and could not be acquired by this scheduler"
                 );
                 vec![]
             };
@@ -940,6 +939,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .get(job_id)
             .as_deref()
             .map(|cached| cached.execution_graph.clone())
+    }
+
+    /// Returns the cached execution graph for a job, attempting to acquire curation on cache miss.
+    ///
+    /// On miss, calls [`JobState::try_acquire_job`] to take over a running job from a failed
+    /// scheduler and rehydrates `active_job_cache` when acquisition succeeds.
+    async fn get_or_acquire_active_execution_graph(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<Arc<RwLock<ExecutionGraphBox>>>> {
+        if let Some(cached) = self.get_active_execution_graph(job_id) {
+            return Ok(Some(cached));
+        }
+
+        let Some(graph) = self.state.try_acquire_job(job_id).await? else {
+            return Ok(None);
+        };
+
+        info!("Acquired curation of job {job_id} and rehydrated active cache");
+
+        let job_info = JobInfoCache::new(graph);
+        self.active_job_cache
+            .entry(job_id.clone())
+            .or_insert(job_info);
+
+        Ok(self.get_active_execution_graph(job_id))
     }
 
     /// Remove the `ExecutionGraph` for the given job ID from cache
