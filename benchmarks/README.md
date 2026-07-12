@@ -299,3 +299,27 @@ $SPARK_HOME/bin/spark-submit \
 ```
 
 [1]: http://www.tpc.org/tpch/
+
+## Regenerating the README comparison charts
+
+The Spark-vs-Ballista TPC-H charts in the top-level `README.md` are produced by
+`generate-comparison.py` from two JSON result files:
+
+- a Spark result (Comet's `tpcbench.py` format, keyed by query), and
+- a Ballista result (the `tpch` binary's `--output` JSON, `{"queries": [...]}`).
+
+The script auto-detects each format. Regenerate all four PNGs with:
+
+```sh
+python3 generate-comparison.py \
+  results/spark-3.5.3-sf100.json \
+  results/ballista-54.0.0-rc2-sf100.json \
+  --labels Spark Ballista \
+  --benchmark tpch \
+  --title "TPC-H SF100" \
+  --output-dir ../docs/source/_static/images
+```
+
+It writes `tpch_allqueries.png`, `tpch_queries_compare.png`,
+`tpch_queries_speedup_rel.png`, and `tpch_queries_speedup_abs.png`, and warns on
+any per-query row-count / result-hash mismatch between the two engines.
