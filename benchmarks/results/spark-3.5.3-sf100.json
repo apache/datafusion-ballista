@@ -1,0 +1,260 @@
+{
+  "engine": "datafusion-comet",
+  "benchmark": "tpch",
+  "spark_conf": {
+    "spark.eventLog.enabled": "true",
+    "spark.app.id": "spark-d0c5eb2e48274136b7d628cc5a989ef1",
+    "spark.hadoop.fs.s3a.path.style.access": "true",
+    "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+    "spark.kubernetes.executor.volumes.hostPath.tpchdata.options.type": "Directory",
+    "spark.app.submitTime": "1783877778088",
+    "spark.comet.exec.replaceSortMergeJoin": "true",
+    "spark.memory.offHeap.enabled": "true",
+    "spark.executor.extraClassPath": "/app/comet/spark/target/comet-spark-spark3.5_2.12-0.15.0-SNAPSHOT.jar",
+    "spark.app.startTime": "1783877778354",
+    "spark.app.name": "comet benchmark derived from tpch",
+    "spark.executor.instances": "2",
+    "spark.hadoop.fs.s3a.access.key": "minioadmin",
+    "spark.serializer.objectStreamReset": "100",
+    "spark.hadoop.fs.s3a.endpoint": "http://minio.minio.svc.cluster.local:9000",
+    "spark.sql.warehouse.dir": "file:/app/comet/benchmarks/tpc/spark-warehouse",
+    "spark.kubernetes.executor.volumes.hostPath.tpchdata.options.path": "/mnt/bigdata/tpch",
+    "spark.scheduler.minRegisteredResourcesRatio": "1.0",
+    "spark.submit.deployMode": "client",
+    "spark.kubernetes.container.image.pullPolicy": "Always",
+    "spark.executor.cores": "8",
+    "spark.driver.extraClassPath": "/app/comet/spark/target/comet-spark-spark3.5_2.12-0.15.0-SNAPSHOT.jar",
+    "spark.kubernetes.namespace": "default",
+    "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+    "spark.comet.exec.memoryPool": "fair_unified",
+    "spark.jars": "file:///app/comet/spark/target/comet-spark-spark3.5_2.12-0.15.0-SNAPSHOT.jar",
+    "spark.hadoop.fs.s3a.secret.key": "Passw0rd",
+    "spark.executor.id": "driver",
+    "spark.driver.host": "10.42.0.94",
+    "spark.comet.expression.Cast.allowIncompatible": "true",
+    "spark.plugins": "org.apache.spark.CometPlugin",
+    "spark.sql.extensions": "org.apache.comet.CometSparkSessionExtensions",
+    "spark.kubernetes.executor.volumes.hostPath.tpchdata.mount.path": "/mnt/bigdata/tpch",
+    "spark.driver.cores": "8",
+    "spark.kubernetes.executor.volumes.hostPath.tpchdata.mount.readOnly": "true",
+    "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+    "spark.executor.memory": "32G",
+    "spark.shuffle.manager": "org.apache.spark.shuffle.sort.SortShuffleManager",
+    "spark.master": "k8s://https://kubernetes.default:443",
+    "spark.driver.bindAddress": "0.0.0.0",
+    "spark.rdd.compress": "True",
+    "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+    "spark.eventLog.dir": "file:///app/output/spark-events",
+    "spark.repl.local.jars": "file:///app/comet/spark/target/comet-spark-spark3.5_2.12-0.15.0-SNAPSHOT.jar",
+    "spark.driver.port": "36317",
+    "spark.executor.memoryOverhead": "8G",
+    "spark.submit.pyFiles": "",
+    "spark.app.initial.jar.urls": "spark://10.42.0.94:36317/jars/comet-spark-spark3.5_2.12-0.15.0-SNAPSHOT.jar",
+    "spark.comet.exec.memoryPool.fraction": "0.8",
+    "spark.driver.memory": "32G",
+    "spark.scheduler.maxRegisteredResourcesWaitingTime": "120s",
+    "spark.kubernetes.container.image": "kube1:5000/comet-benchmark-automation:main",
+    "spark.comet.enabled": "false",
+    "spark.memory.offHeap.size": "16g",
+    "spark.kubernetes.executor.podNamePrefix": "comet-exec"
+  },
+  "data_path": "/mnt/bigdata/tpch/sf100",
+  "1": {
+    "durations": [
+      46.749,
+      46.845,
+      47.317
+    ],
+    "row_count": 4,
+    "result_hash": "6839cc802df6220ed2efdaaaa48373a6"
+  },
+  "2": {
+    "durations": [
+      7.864,
+      7.204,
+      7.06
+    ],
+    "row_count": 100,
+    "result_hash": "8713537cd1485edda8aa2ab1c8adbb4c"
+  },
+  "3": {
+    "durations": [
+      13.37,
+      13.543,
+      13.369
+    ],
+    "row_count": 10,
+    "result_hash": "33bbc3c9a63909fd6d6003560b4ea755"
+  },
+  "4": {
+    "durations": [
+      11.902,
+      11.718,
+      11.821
+    ],
+    "row_count": 5,
+    "result_hash": "0c335c239cbd062c9a59599703c3ff11"
+  },
+  "5": {
+    "durations": [
+      26.824,
+      26.932,
+      27.159
+    ],
+    "row_count": 5,
+    "result_hash": "f1e68aab4aa9d0988709357fc210d775"
+  },
+  "6": {
+    "durations": [
+      1.933,
+      1.946,
+      1.903
+    ],
+    "row_count": 1,
+    "result_hash": "c6c1b569e2dcff60c55511e6a9bde9ae"
+  },
+  "7": {
+    "durations": [
+      12.15,
+      12.47,
+      12.679
+    ],
+    "row_count": 4,
+    "result_hash": "922e4f80cdc8823f684c6e4958268948"
+  },
+  "8": {
+    "durations": [
+      19.5,
+      18.431,
+      18.241
+    ],
+    "row_count": 2,
+    "result_hash": "0cdb4e0044896db6a2f3ee9c5093ced5"
+  },
+  "9": {
+    "durations": [
+      45.045,
+      44.73,
+      47.733
+    ],
+    "row_count": 175,
+    "result_hash": "fff4ba3023e74505f304fa3243cbeeb6"
+  },
+  "10": {
+    "durations": [
+      11.917,
+      12.438,
+      11.99
+    ],
+    "row_count": 20,
+    "result_hash": "eff45fe7fce5423fd3aedcf06cd32114"
+  },
+  "11": {
+    "durations": [
+      8.042,
+      8.313,
+      8.739
+    ],
+    "row_count": 0,
+    "result_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "12": {
+    "durations": [
+      7.647,
+      7.481,
+      7.115
+    ],
+    "row_count": 2,
+    "result_hash": "577938552d052005225c8c7c364a6119"
+  },
+  "13": {
+    "durations": [
+      11.482,
+      11.488,
+      11.172
+    ],
+    "row_count": 45,
+    "result_hash": "0c86705638707000a28141565ec2c17d"
+  },
+  "14": {
+    "durations": [
+      3.5,
+      3.496,
+      3.277
+    ],
+    "row_count": 1,
+    "result_hash": "bb2d4a89bc3443b150df7d985a3835a9"
+  },
+  "15": {
+    "durations": [
+      8.53,
+      8.487,
+      8.498
+    ],
+    "row_count": 0,
+    "result_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "16": {
+    "durations": [
+      4.687,
+      4.602,
+      4.623
+    ],
+    "row_count": 27840,
+    "result_hash": "09617b9a65b1a80bc3b780bd176da499"
+  },
+  "17": {
+    "durations": [
+      39.428,
+      39.09,
+      38.84
+    ],
+    "row_count": 1,
+    "result_hash": "e038ecb64707eda06644bf1841d2061b"
+  },
+  "18": {
+    "durations": [
+      39.985,
+      39.439,
+      39.882
+    ],
+    "row_count": 100,
+    "result_hash": "b470d2721d4ac39a518b4501aeb3b994"
+  },
+  "19": {
+    "durations": [
+      3.965,
+      3.87,
+      3.824
+    ],
+    "row_count": 1,
+    "result_hash": "f41b28d5633548749fe1af8315cd357d"
+  },
+  "20": {
+    "durations": [
+      6.653,
+      6.287,
+      6.398
+    ],
+    "row_count": 17801,
+    "result_hash": "8333b018700dfaa3c501809f6bfea98e"
+  },
+  "21": {
+    "durations": [
+      35.314,
+      34.594,
+      34.618
+    ],
+    "row_count": 100,
+    "result_hash": "55f00f36a912977d8945b162e8270452"
+  },
+  "22": {
+    "durations": [
+      5.699,
+      5.831,
+      5.786
+    ],
+    "row_count": 7,
+    "result_hash": "8d2a7a4bd34f1d33b6c58d64eaafb0c4"
+  }
+}

@@ -1,0 +1,397 @@
+{
+  "benchmark_version": "54.0.0",
+  "datafusion_version": "54.0.0",
+  "num_cpus": 2,
+  "start_time": 1783879121,
+  "arguments": [
+    "benchmark",
+    "ballista",
+    "--host=ballista-scheduler",
+    "--port=50050",
+    "--path=/mnt/bigdata/tpch/sf100",
+    "--format=parquet",
+    "--iterations=3",
+    "--partitions=32",
+    "-c",
+    "datafusion.optimizer.prefer_hash_join=true",
+    "-c",
+    "datafusion.optimizer.enable_dynamic_filter_pushdown=false",
+    "--output=/out"
+  ],
+  "queries": [
+    {
+      "query": 1,
+      "iterations": [
+        {
+          "elapsed": 2.743112762,
+          "row_count": 4
+        },
+        {
+          "elapsed": 2.684253577,
+          "row_count": 4
+        },
+        {
+          "elapsed": 2.80503105,
+          "row_count": 4
+        }
+      ]
+    },
+    {
+      "query": 2,
+      "iterations": [
+        {
+          "elapsed": 12.225558097,
+          "row_count": 100
+        },
+        {
+          "elapsed": 4.624848151,
+          "row_count": 100
+        },
+        {
+          "elapsed": 5.808143754,
+          "row_count": 100
+        }
+      ]
+    },
+    {
+      "query": 3,
+      "iterations": [
+        {
+          "elapsed": 7.892478336,
+          "row_count": 10
+        },
+        {
+          "elapsed": 7.701982339,
+          "row_count": 10
+        },
+        {
+          "elapsed": 7.784189012,
+          "row_count": 10
+        }
+      ]
+    },
+    {
+      "query": 4,
+      "iterations": [
+        {
+          "elapsed": 2.786422127,
+          "row_count": 5
+        },
+        {
+          "elapsed": 3.672076766,
+          "row_count": 5
+        },
+        {
+          "elapsed": 2.830597393,
+          "row_count": 5
+        }
+      ]
+    },
+    {
+      "query": 5,
+      "iterations": [
+        {
+          "elapsed": 20.518467769,
+          "row_count": 5
+        },
+        {
+          "elapsed": 18.970252209999998,
+          "row_count": 5
+        },
+        {
+          "elapsed": 18.741338092,
+          "row_count": 5
+        }
+      ]
+    },
+    {
+      "query": 6,
+      "iterations": [
+        {
+          "elapsed": 1.033232746,
+          "row_count": 1
+        },
+        {
+          "elapsed": 0.885128717,
+          "row_count": 1
+        },
+        {
+          "elapsed": 0.902387701,
+          "row_count": 1
+        }
+      ]
+    },
+    {
+      "query": 7,
+      "iterations": [
+        {
+          "elapsed": 19.227861314,
+          "row_count": 4
+        },
+        {
+          "elapsed": 19.181737051,
+          "row_count": 4
+        },
+        {
+          "elapsed": 18.208528849,
+          "row_count": 4
+        }
+      ]
+    },
+    {
+      "query": 8,
+      "iterations": [
+        {
+          "elapsed": 30.332761134,
+          "row_count": 2
+        },
+        {
+          "elapsed": 27.854367586,
+          "row_count": 2
+        },
+        {
+          "elapsed": 27.888317189,
+          "row_count": 2
+        }
+      ]
+    },
+    {
+      "query": 9,
+      "iterations": [
+        {
+          "elapsed": 39.902751467,
+          "row_count": 175
+        },
+        {
+          "elapsed": 34.697746061,
+          "row_count": 175
+        },
+        {
+          "elapsed": 38.686819917,
+          "row_count": 175
+        }
+      ]
+    },
+    {
+      "query": 10,
+      "iterations": [
+        {
+          "elapsed": 8.769960255,
+          "row_count": 20
+        },
+        {
+          "elapsed": 7.962175028,
+          "row_count": 20
+        },
+        {
+          "elapsed": 8.074948514,
+          "row_count": 20
+        }
+      ]
+    },
+    {
+      "query": 11,
+      "iterations": [
+        {
+          "elapsed": 3.792205112,
+          "row_count": 0
+        },
+        {
+          "elapsed": 4.076705507,
+          "row_count": 0
+        },
+        {
+          "elapsed": 4.146536372,
+          "row_count": 0
+        }
+      ]
+    },
+    {
+      "query": 12,
+      "iterations": [
+        {
+          "elapsed": 4.413415732,
+          "row_count": 2
+        },
+        {
+          "elapsed": 4.328741705,
+          "row_count": 2
+        },
+        {
+          "elapsed": 4.395397683,
+          "row_count": 2
+        }
+      ]
+    },
+    {
+      "query": 13,
+      "iterations": [
+        {
+          "elapsed": 4.402982449,
+          "row_count": 45
+        },
+        {
+          "elapsed": 3.989945382,
+          "row_count": 45
+        },
+        {
+          "elapsed": 4.504037622,
+          "row_count": 45
+        }
+      ]
+    },
+    {
+      "query": 14,
+      "iterations": [
+        {
+          "elapsed": 1.655310965,
+          "row_count": 1
+        },
+        {
+          "elapsed": 1.5857014999999999,
+          "row_count": 1
+        },
+        {
+          "elapsed": 1.650086961,
+          "row_count": 1
+        }
+      ]
+    },
+    {
+      "query": 15,
+      "iterations": [
+        {
+          "elapsed": 2.714380838,
+          "row_count": 1
+        },
+        {
+          "elapsed": 2.939645537,
+          "row_count": 1
+        },
+        {
+          "elapsed": 2.995816832,
+          "row_count": 1
+        }
+      ]
+    },
+    {
+      "query": 16,
+      "iterations": [
+        {
+          "elapsed": 1.968846979,
+          "row_count": 27840
+        },
+        {
+          "elapsed": 1.789795157,
+          "row_count": 27840
+        },
+        {
+          "elapsed": 3.266783199,
+          "row_count": 27840
+        }
+      ]
+    },
+    {
+      "query": 17,
+      "iterations": [
+        {
+          "elapsed": 24.219467366,
+          "row_count": 1
+        },
+        {
+          "elapsed": 24.729054014,
+          "row_count": 1
+        },
+        {
+          "elapsed": 24.469489192,
+          "row_count": 1
+        }
+      ]
+    },
+    {
+      "query": 18,
+      "iterations": [
+        {
+          "elapsed": 23.127502664,
+          "row_count": 100
+        },
+        {
+          "elapsed": 23.133384505,
+          "row_count": 100
+        },
+        {
+          "elapsed": 22.574076816,
+          "row_count": 100
+        }
+      ]
+    },
+    {
+      "query": 19,
+      "iterations": [
+        {
+          "elapsed": 5.10989335,
+          "row_count": 1
+        },
+        {
+          "elapsed": 2.69582563,
+          "row_count": 1
+        },
+        {
+          "elapsed": 5.697245369,
+          "row_count": 1
+        }
+      ]
+    },
+    {
+      "query": 20,
+      "iterations": [
+        {
+          "elapsed": 5.518005898,
+          "row_count": 17801
+        },
+        {
+          "elapsed": 4.530718662,
+          "row_count": 17801
+        },
+        {
+          "elapsed": 4.792567828,
+          "row_count": 17801
+        }
+      ]
+    },
+    {
+      "query": 21,
+      "iterations": [
+        {
+          "elapsed": 34.493681339,
+          "row_count": 100
+        },
+        {
+          "elapsed": 33.02886174,
+          "row_count": 100
+        },
+        {
+          "elapsed": 30.446426455,
+          "row_count": 100
+        }
+      ]
+    },
+    {
+      "query": 22,
+      "iterations": [
+        {
+          "elapsed": 2.020250622,
+          "row_count": 7
+        },
+        {
+          "elapsed": 1.889876463,
+          "row_count": 7
+        },
+        {
+          "elapsed": 1.811573604,
+          "row_count": 7
+        }
+      ]
+    }
+  ]
+}
