@@ -117,11 +117,12 @@ See the [architecture guide](docs/source/contributors-guide/architecture.md) for
 
 We run some simple benchmarks comparing Ballista with Apache Spark to track progress with performance optimizations.
 These are benchmarks derived from TPC-H and not official TPC-H benchmarks. These results are from running individual
-queries at scale factor 100 (100 GB) on a single node with a single executor and 8 concurrent tasks.
+queries at scale factor 100 (100 GB) on a two-node cluster (2 executors, 8 cores each) reading Parquet from
+node-local disk, comparing Ballista 54.0.0-rc2 (with hash joins enabled) against Apache Spark 3.5.3.
 
 ### Overall Speedup
 
-The overall speedup is 2.9x
+The overall speedup is 1.5x
 
 ![benchmarks](docs/source/_static/images/tpch_allqueries.png)
 
