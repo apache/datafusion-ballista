@@ -113,30 +113,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
-## Performance
-
-We run some simple benchmarks comparing Ballista with Apache Spark to track progress with performance optimizations.
-These are benchmarks derived from TPC-H and not official TPC-H benchmarks. These results are from running individual
-queries at scale factor 100 (100 GB) on a single node with a single executor and 8 concurrent tasks.
-
-### Overall Speedup
-
-The overall speedup is 2.9x
-
-![benchmarks](docs/source/_static/images/tpch_allqueries.png)
-
-### Per Query Comparison
-
-![benchmarks](docs/source/_static/images/tpch_queries_compare.png)
-
-### Relative Speedup
-
-![benchmarks](docs/source/_static/images/tpch_queries_speedup_rel.png)
-
-### Absolute Speedup
-
-![benchmarks](docs/source/_static/images/tpch_queries_speedup_abs.png)
-
 ## Getting Started
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
