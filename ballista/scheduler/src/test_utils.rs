@@ -386,6 +386,25 @@ impl TaskLauncher for VirtualTaskLauncher {
     }
 }
 
+/// Launcher that rejects every launch with a deterministic gRPC `InvalidArgument`,
+/// simulating an executor that cannot decode/validate the task (see issue #1908).
+#[derive(Default)]
+pub struct RejectingTaskLauncher {}
+
+#[async_trait::async_trait]
+impl TaskLauncher for RejectingTaskLauncher {
+    async fn launch_tasks(
+        &self,
+        _executor: &ExecutorMetadata,
+        _tasks: Vec<MultiTaskDefinition>,
+        _executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        Err(BallistaError::GrpcError(Box::new(
+            tonic::Status::invalid_argument("undecodable task"),
+        )))
+    }
+}
+
 /// Test harness for scheduler integration tests.
 pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
@@ -440,6 +459,83 @@ impl SchedulerTest {
                 Arc::new(config),
                 metrics_collector,
                 Arc::new(launcher),
+            );
+        scheduler.init().await?;
+
+        for (executor_id, VirtualExecutor { task_slots, .. }) in executors {
+            let metadata = ExecutorMetadata {
+                id: executor_id.clone(),
+                host: String::default(),
+                port: 0,
+                grpc_port: 0,
+                specification: ExecutorSpecification::default()
+                    .with_task_slots(task_slots as u32),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            };
+
+            let executor_data = ExecutorData {
+                executor_id,
+                total_task_slots: task_slots as u32,
+                available_task_slots: task_slots as u32,
+            };
+
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(metadata, executor_data)
+                .await?;
+        }
+
+        Ok(Self {
+            scheduler,
+            session_config,
+            status_receiver: Some(status_receiver),
+        })
+    }
+
+    /// Like [`SchedulerTest::new`] but injects a custom [`TaskLauncher`].
+    pub async fn new_with_launcher(
+        config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        num_executors: usize,
+        task_slots_per_executor: usize,
+        runner: Option<Arc<dyn TaskRunner>>,
+        launcher: Arc<dyn TaskLauncher>,
+    ) -> Result<Self> {
+        let cluster = BallistaCluster::new_from_config(&config).await?;
+
+        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            SessionConfig::new_with_ballista()
+                .with_target_partitions(num_executors * task_slots_per_executor)
+        } else {
+            SessionConfig::new_with_ballista()
+        };
+
+        let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
+
+        let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
+            .map(|i| {
+                let id = format!("virtual-executor-{i}");
+                let executor = VirtualExecutor {
+                    executor_id: id.clone(),
+                    task_slots: task_slots_per_executor,
+                    runner: runner.clone(),
+                };
+                (id, executor)
+            })
+            .collect();
+
+        // This launcher does not report task statuses back, so no receiver is needed.
+        let (_status_sender, status_receiver) = channel(1000);
+
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new_with_task_launcher(
+                "localhost:50050".to_owned(),
+                cluster,
+                BallistaCodec::default(),
+                Arc::new(config),
+                metrics_collector,
+                launcher,
             );
         scheduler.init().await?;
 

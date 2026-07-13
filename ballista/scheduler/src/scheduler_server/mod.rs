@@ -473,9 +473,9 @@ mod test {
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
-        ExplodingTableProvider, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
-        assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context,
+        ExplodingTableProvider, RejectingTaskLauncher, SchedulerTest, TaskRunnerFn,
+        TestMetricsCollector, assert_completed_event, assert_failed_event,
+        assert_no_submitted_event, assert_submitted_event, test_cluster_context,
     };
 
     #[tokio::test]
@@ -1013,6 +1013,49 @@ mod test {
             .find(|s| matches!(s.status, Some(Status::Successful(_))));
 
         assert!(successful_job.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deterministic_launch_rejection_fails_job() -> Result<()> {
+        // A launcher that always rejects with gRPC InvalidArgument (an executor that
+        // cannot decode the task). The job must fail fast instead of hanging (#1908).
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new_with_launcher(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+            Arc::new(RejectingTaskLauncher::default()),
+        )
+        .await?;
+
+        let plan = test_plan();
+        let job_id = test.submit("", &plan).await?;
+
+        // Hard wall-clock bound so a stuck job fails the test instead of hanging.
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            test.await_completion(&job_id),
+        )
+        .await
+        .expect(
+            "job did not reach a terminal state within 10s — likely not being failed",
+        )?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "expected job to fail on task rejection, got {status:?}"
+        );
 
         Ok(())
     }
