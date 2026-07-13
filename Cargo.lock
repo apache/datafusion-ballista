@@ -1043,6 +1043,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-chaos"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "ballista",
+ "ballista-core",
+ "ballista-executor",
+ "ballista-scheduler",
+ "datafusion",
+ "env_logger",
+ "log",
+ "rstest",
+ "tokio",
+]
+
+[[package]]
 name = "ballista-cli"
 version = "54.0.0"
 dependencies = [
