@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use ballista_core::JobId;
 use ballista_core::error::Result;
 use datafusion::arrow::array::{ListArray, ListBuilder, StringBuilder};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -27,6 +28,7 @@ use datafusion::logical_expr::{LogicalPlan, PlanType, StringifiedPlan};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::expressions::col;
 use datafusion::physical_plan::expressions::lit;
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
@@ -41,8 +43,8 @@ use crate::{
 };
 
 pub(crate) async fn generate_distributed_explain_plan(
-    job_id: &str,
-    session_ctx: Arc<SessionContext>,
+    job_id: &JobId,
+    session_ctx: &SessionContext,
     plan: Arc<LogicalPlan>,
 ) -> Result<String> {
     let session_config = Arc::new(session_ctx.copied_config());
@@ -184,4 +186,26 @@ fn render_stages(stages: HashMap<usize, ExecutionStage>) -> String {
         writeln!(buf, "{:#?}", stage).ok();
     }
     buf
+}
+
+pub(crate) async fn handle_explain_plan(
+    job_id: &JobId,
+    ctx: &SessionContext,
+    logical_plan: &LogicalPlan,
+    plan: Arc<dyn ExecutionPlan>,
+) -> ballista_core::error::Result<Arc<dyn ExecutionPlan>> {
+    if let LogicalPlan::Explain(explain_plan) = &logical_plan
+        && let Some(explain) = plan.downcast_ref::<ExplainExec>()
+    {
+        let inner_plan = explain_plan.plan.clone();
+        let plans = explain.stringified_plans();
+
+        let distributed_txt =
+            generate_distributed_explain_plan(job_id, ctx, inner_plan).await?;
+        let (logical_txt, physical_txt) = extract_logical_and_physical_plans(plans);
+
+        construct_distributed_explain_exec(logical_txt, physical_txt, distributed_txt)
+    } else {
+        Ok(plan)
+    }
 }

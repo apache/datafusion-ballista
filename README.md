@@ -26,7 +26,8 @@
 
 <img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
 
-Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion) by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
+Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion)
+by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
 Existing DataFusion application:
 
@@ -35,27 +36,28 @@ use datafusion::prelude::*;
 
 #[tokio::main]
 async fn main() -> datafusion::error::Result<()> {
-  let ctx = SessionContext::new();
+    let ctx = SessionContext::new();
 
-  // register the table
-  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
-      .await?;
+    // register the table
+    ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
+        .await?;
 
-  // create a plan to run a SQL query
-  let df = ctx
-      .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
-      .await?;
+    // create a plan to run a SQL query
+    let df = ctx
+        .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
+        .await?;
 
-  // execute and print results
-  df.show().await?;
-  Ok(())
+    // execute and print results
+    df.show().await?;
+    Ok(())
 }
 ```
 
 can be distributed with few lines of code changed:
 
 > [!IMPORTANT]  
-> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively working to close the gap
+> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively working
+> to close the gap
 
 ```rust
 use ballista::prelude::*;
@@ -87,6 +89,16 @@ async fn main() -> datafusion::error::Result<()> {
 
 For documentation or more examples, please refer to the [Ballista User Guide][user-guide].
 
+## Who is Ballista for
+
+Ballista serves several distinct audiences:
+
+- **DataFusion users going multi-node** — you already use [Apache DataFusion](https://github.com/apache/datafusion) on a single machine and have outgrown it. Ballista runs the same SQL and DataFrame workloads across a cluster with minimal code changes and the same results.
+- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, one task per partition, executors with task slots, and adaptive query execution (AQE).
+- **Library users building a specialized engine** — you are building a bespoke distributed query engine and want reusable scheduler, executor, and plan-serialization building blocks with extension points, instead of writing distributed execution from scratch.
+
+These audiences are documented in more detail, along with the guarantees each relies on, in the [User Personas](docs/source/contributors-guide/user-personas.md) guide.
+
 ## Architecture
 
 A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
@@ -100,30 +112,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 ![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.excalidraw.svg)
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
-
-## Performance
-
-We run some simple benchmarks comparing Ballista with Apache Spark to track progress with performance optimizations.
-These are benchmarks derived from TPC-H and not official TPC-H benchmarks. These results are from running individual
-queries at scale factor 100 (100 GB) on a single node with a single executor and 8 concurrent tasks.
-
-### Overall Speedup
-
-The overall speedup is 2.9x
-
-![benchmarks](docs/source/_static/images/tpch_allqueries.png)
-
-### Per Query Comparison
-
-![benchmarks](docs/source/_static/images/tpch_queries_compare.png)
-
-### Relative Speedup
-
-![benchmarks](docs/source/_static/images/tpch_queries_speedup_rel.png)
-
-### Absolute Speedup
-
-![benchmarks](docs/source/_static/images/tpch_queries_speedup_abs.png)
 
 ## Getting Started
 
@@ -154,7 +142,7 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | Feature                    | Default | Description                                      |
 | -------------------------- | ------- | ------------------------------------------------ |
 | `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging |
-| `substrait`                | Yes     | Enables Substrait plan support                   |
+| `substrait`                | No      | Enables Substrait plan support                   |
 | `prometheus-metrics`       | No      | Enables Prometheus metrics collection            |
 | `graphviz-support`         | No      | Enables execution graph visualization            |
 | `spark-compat`             | No      | Enables Spark compatibility mode                 |
@@ -170,6 +158,14 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | `build-binary`            | Yes     | Builds the executor binary with CLI and logging       |
 | `mimalloc`                | Yes     | Uses mimalloc memory allocator for better performance |
 | `spark-compat`            | No      | Enables Spark compatibility mode                      |
+
+### ballista-cli
+
+| Feature | Default | Description                                        |
+| ------- | ------- | -------------------------------------------------- |
+| `tui`   | Yes     | Enables a REST client with Terminal User Interface |
+
+![TUI Jobs table](./docs/source/user-guide/screenshots/tui-jobs-table.png)
 
 ### Usage Examples
 
@@ -191,6 +187,15 @@ but still there is a gap between DataFusion and Ballista which we want to bridge
 
 Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html) for more
 information on supported SQL.
+
+## Who uses Ballista
+
+The following organizations use Ballista. To add yours, open a pull request.
+
+| Organization                                                                                                                   |                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| <a href="https://spice.ai"><img src="docs/source/_static/images/adopters/spiceai.png" height="36" alt="Spice AI"/></a>         | [Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
+| <a href="https://coralogix.com"><img src="docs/source/_static/images/adopters/coralogix.png" height="36" alt="Coralogix"/></a> | [Coralogix](https://coralogix.com/)                           |
 
 ## Contribution Guide
 

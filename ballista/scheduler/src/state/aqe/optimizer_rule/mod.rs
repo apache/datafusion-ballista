@@ -15,10 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod datafusion_patch;
+pub mod chaos_exec;
+pub mod coalesce_partitions;
 pub mod distributed_exchange;
+pub mod join_selection;
 pub mod propagate_empty;
 
-pub use datafusion_patch::*;
+pub use coalesce_partitions::*;
 pub use distributed_exchange::*;
+pub use join_selection::*;
 pub use propagate_empty::*;

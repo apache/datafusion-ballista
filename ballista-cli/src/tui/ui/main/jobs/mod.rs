@@ -15,44 +15,50 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod dot_parser;
+pub(crate) mod dot_parser;
+pub mod job_config_popup;
 pub mod job_dot_popup;
 pub mod job_plan_popup;
 pub mod job_stages_popup;
 pub mod stage_plan_popup;
 pub mod stage_tasks_popup;
 
+#[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
+    domain::jobs::{JobConfigEntry, JobConfigPopup, stages::StagePlanTab},
+    event::{Event, UiData},
+};
+use crate::tui::{
     app::App,
     domain::{
         SortOrder,
         jobs::{Job, SortColumn},
     },
-    event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
 };
 
-use ratatui::style::Color;
+use crate::tui::ui::components::clear_area::clear_area;
+use crate::tui::ui::components::loading_indicator::shimmer_spans_with_style;
+use crate::tui::ui::vertical_scrollbar;
+use ratatui::text::Line;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Text,
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
     },
 };
 
+#[cfg(not(feature = "web"))]
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
-    let jobs = match app.http_client.get_jobs().await {
-        Ok(jobs) => jobs,
-        Err(e) => {
-            tracing::error!("Failed to load the jobs: {e:?}");
-            Vec::new()
-        }
-    };
+    let jobs = app.http_client.get_jobs().await.unwrap_or_else(|e| {
+        tracing::error!("Failed to load the jobs: {e:?}");
+        Vec::new()
+    });
 
     app.send_event(Event::DataLoaded {
         data: UiData::Jobs(jobs),
@@ -60,6 +66,7 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
     .await
 }
 
+#[cfg(not(feature = "web"))]
 pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     match app.http_client.get_job_dot(job_id).await {
         Ok(dot_content) => {
@@ -76,10 +83,33 @@ pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     }
 }
 
+/// Loading the whole job's stages to render the popup window
+#[cfg(not(feature = "web"))]
+pub async fn load_job_config_popup(app: &App, job_id: &str) -> TuiResult<()> {
+    let config = match app.http_client.get_job_config(job_id).await {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!("Failed to load job config for {job_id}: {e:?}");
+            return Ok(());
+        }
+    };
+
+    let entries = config
+        .into_iter()
+        .map(|(key, value)| JobConfigEntry { key, value })
+        .collect();
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobConfig(JobConfigPopup::new(job_id.to_string(), entries)),
+    })
+    .await
+}
+
+#[cfg(not(feature = "web"))]
 pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     let mut stages = app
         .http_client
-        .get_job_stages(job_id)
+        .get_job_stages(job_id, &StagePlanTab::Default)
         .await
         .inspect(|stages| tracing::trace!("Loaded stages for job '{job_id}': {stages:?}"))
         .inspect_err(|e| {
@@ -96,8 +126,39 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
     .await
 }
 
+/// Loading stage's plan to render the popup window
+#[cfg(not(feature = "web"))]
+pub async fn load_stage_plan(
+    app: &App,
+    job_id: &str,
+    tab: &StagePlanTab,
+) -> TuiResult<()> {
+    let mut stages = app
+        .http_client
+        .get_job_stages(job_id, tab)
+        .await
+        .inspect(|s| tracing::trace!("Loaded the {tab:?} plan for job '{job_id}': {s:?}"))
+        .inspect_err(|e| {
+            tracing::error!("Failed to load the {tab:?} plan for job '{job_id}': {e:?}")
+        })?;
+
+    stages
+        .stages
+        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobStagesPlanData(tab.clone(), stages),
+    })
+    .await
+}
+
+#[cfg(not(feature = "web"))]
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
-    let details = match app.http_client.get_job_details(job_id).await {
+    let details = match app
+        .http_client
+        .get_job_details(job_id, &StagePlanTab::Default)
+        .await
+    {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("Failed to load job details for {job_id}: {e:?}");
@@ -111,7 +172,7 @@ pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
 }
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let search_term = app.search_term.to_lowercase();
     let filtered_jobs: Vec<&Job> = if search_term.is_empty() {
@@ -130,7 +191,6 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     let rects = Layout::vertical([
         Constraint::Length(3), // Search box
         Constraint::Min(5),    // Table
-        Constraint::Length(4), // Scrollbar padding
     ])
     .split(area);
 
@@ -140,27 +200,69 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     app.jobs_data.sort_jobs(&mut sorted_jobs);
 
     if !sorted_jobs.is_empty() {
+        let selected_job = app
+            .jobs_data
+            .table_state
+            .selected()
+            .and_then(|idx| sorted_jobs.get(idx).copied());
+
+        let (table_area, failed_status_area) =
+            split_area_for_table_and_failure(selected_job, rects[1]);
+
         let mut scroll_state = app.jobs_data.scrollbar_state;
         let mut table_state = app.jobs_data.table_state;
+        let [table_area, scrollbar_area] = vertical_scrollbar::split_area(table_area);
         render_jobs_table(
             f,
-            rects[1],
+            table_area,
             &sorted_jobs,
             &mut table_state,
             &app.jobs_data.sort_column,
             &app.jobs_data.sort_order,
             app,
         );
-        render_scrollbar(f, rects[1], &mut scroll_state);
+        render_scrollbar(f, scrollbar_area, &mut scroll_state);
+
+        if let Some((area, job)) = failed_status_area {
+            render_job_failure_reason(f, area, job, app);
+        }
     } else {
-        render_no_jobs(f, rects[1]);
+        render_no_jobs(f, rects[1], app.theme.text_info);
     }
 }
 
-fn render_no_jobs(f: &mut Frame, area: Rect) {
+fn split_area_for_table_and_failure(
+    selected_job: Option<&Job>,
+    area: Rect,
+) -> (Rect, Option<(Rect, &Job)>) {
+    match selected_job {
+        Some(job) if job.is_failed() => {
+            let areas = Layout::vertical([
+                Constraint::Percentage(80), // Table
+                Constraint::Percentage(20), // Failure reason
+            ])
+            .split(area);
+            (areas[0], Some((areas[1], job)))
+        }
+        _ => (area, None),
+    }
+}
+
+fn render_job_failure_reason(f: &mut Frame, area: Rect, job: &Job, app: &App) {
+    let block = Block::default()
+        .borders(Borders::all())
+        .style(app.theme.text_error);
+    let paragraph = Paragraph::new(job.job_status.as_str())
+        .style(app.theme.text_error)
+        .wrap(Wrap { trim: true })
+        .block(block);
+    f.render_widget(paragraph, area);
+}
+
+fn render_no_jobs(f: &mut Frame, area: Rect, style: Style) {
     let block = Block::default().borders(Borders::all());
     let paragraph = Paragraph::new("No registered jobs in the scheduler!")
-        .style(Style::default().bold())
+        .style(style)
         .centered()
         .block(block);
     f.render_widget(paragraph, area);
@@ -187,11 +289,6 @@ fn render_jobs_table(
     sort_order: &SortOrder,
     app: &App,
 ) {
-    let header_style = Style::default()
-        .fg(Color::LightYellow)
-        .bg(Color::Black)
-        .bold();
-
     let id_suffix = column_suffix(sort_column, sort_order, &SortColumn::Id);
     let name_suffix = column_suffix(sort_column, sort_order, &SortColumn::Name);
     let status_suffix = column_suffix(sort_column, sort_order, &SortColumn::Status);
@@ -201,34 +298,34 @@ fn render_jobs_table(
         column_suffix(sort_column, sort_order, &SortColumn::PercentComplete);
     let start_time_suffix =
         column_suffix(sort_column, sort_order, &SortColumn::StartTime);
+    let duration_suffix = column_suffix(sort_column, sort_order, &SortColumn::Duration);
 
-    let header = [
-        format!("Id{id_suffix}"),
-        format!("Name{name_suffix}"),
-        format!("Status{status_suffix}"),
-        format!("Stages Completed{stages_suffix}"),
-        format!("Percent Completed{percent_suffix}"),
-        format!("Start time{start_time_suffix}"),
-    ]
-    .into_iter()
-    .map(|item| Text::from(item).centered())
-    .map(Cell::from)
-    .collect::<Row>()
-    .style(header_style)
+    let header_row = Row::new(vec![
+        Cell::from(Text::from(format!("Id{id_suffix}")).right_aligned()),
+        Cell::from(Text::from(format!("Name{name_suffix}")).centered()),
+        Cell::from(Text::from(format!("Status{status_suffix}")).centered()),
+        Cell::from(Text::from(format!("Stages Completed{stages_suffix}")).centered()),
+        Cell::from(Text::from(format!("Percent Completed{percent_suffix}")).centered()),
+        Cell::from(Text::from(format!("Start Time{start_time_suffix}")).centered()),
+        Cell::from(Text::from(format!("Duration{duration_suffix}")).right_aligned()),
+    ])
+    .style(app.theme.table_header)
     .height(1);
 
     let rows = jobs.iter().enumerate().map(|(i, job)| {
-        let color = match i % 2 {
-            0 => Color::DarkGray,
-            _ => Color::Black,
+        let row_style = if i % 2 == 0 {
+            app.theme.row_even
+        } else {
+            app.theme.row_odd
         };
 
-        let id_cell = Cell::from(Text::from(job.job_id.clone()).centered());
+        let id_cell = Cell::from(Text::from(job.job_id.clone()).right_aligned());
         let name_cell = Cell::from(Text::from(job.job_name.clone()).centered());
-        let status_cell = render_job_status_cell(job);
+        let status_cell = render_job_status_cell(job, app);
         let stage_completion_cell = render_job_stage_completion_cell(job);
         let percent_completion_cell = render_job_percent_completion_cell(job);
         let start_time_cell = render_job_start_time_cell(job, app);
+        let duration_cell = render_job_duration_cell(job, app);
 
         let cells = vec![
             id_cell,
@@ -237,24 +334,26 @@ fn render_jobs_table(
             stage_completion_cell,
             percent_completion_cell,
             start_time_cell,
+            duration_cell,
         ];
-        Row::new(cells).style(Style::default().bg(color))
+        Row::new(cells).style(row_style)
     });
 
     let t = Table::new(
         rows,
         [
             Constraint::Percentage(10), // Id
-            Constraint::Percentage(20), // Name
+            Constraint::Percentage(15), // Name
             Constraint::Percentage(10), // Status
-            Constraint::Percentage(20), // Stages Completed
-            Constraint::Percentage(20), // Percent Completed
-            Constraint::Percentage(20), // Start time
+            Constraint::Percentage(15), // Stages Completed
+            Constraint::Percentage(15), // Percent Completed
+            Constraint::Percentage(15), // Start time
+            Constraint::Percentage(15), // Duration
         ],
     )
     .block(Block::default().borders(Borders::all()))
-    .header(header)
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .header(header_row)
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
 }
@@ -262,6 +361,16 @@ fn render_jobs_table(
 fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
     let start_time = app.format_datetime(job.start_time);
     Cell::from(Text::from(start_time).centered())
+}
+
+fn render_job_duration_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
+    let duration = if job.end_time > 0 {
+        let duration = job.end_time - job.start_time;
+        app.format_duration(duration as u64)
+    } else {
+        "N/A".to_string()
+    };
+    Cell::from(Text::from(duration).right_aligned())
 }
 
 fn render_job_percent_completion_cell(job: &Job) -> Cell<'_> {
@@ -283,16 +392,25 @@ fn render_job_stage_completion_cell(job: &Job) -> Cell<'_> {
     Cell::from(Text::from(stage_completion).centered())
 }
 
-fn render_job_status_cell(job: &Job) -> Cell<'_> {
-    let color = match job.status.as_str() {
-        "Running" => Color::LightBlue,
-        "Queued" => Color::LightMagenta,
-        "Failed" => Color::LightRed,
-        "Completed" => Color::LightGreen,
-        _ => Color::Gray,
+fn render_job_status_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
+    fn content_wo_animation(text: &str, style: Style) -> Text<'_> {
+        Text::from(text).style(style)
+    }
+
+    fn content_with_animation(text: &str, style: Style) -> Text<'_> {
+        let text = shimmer_spans_with_style(text, style);
+        Line::from(text).into()
+    }
+
+    let content = match job.status.as_str() {
+        "Running" => content_with_animation("Running", app.theme.status_running),
+        "Queued" => content_with_animation("Queued", app.theme.status_queued),
+        "Failed" => content_wo_animation("Failed", app.theme.status_failed),
+        "Completed" => content_wo_animation("Completed", app.theme.status_completed),
+        other => content_wo_animation(other, app.theme.status_unknown),
     };
-    let text = Text::from(job.status.clone()).style(Style::default().fg(color).bold());
-    Cell::from(text.centered())
+
+    Cell::from(content.centered())
 }
 
 #[cfg(test)]

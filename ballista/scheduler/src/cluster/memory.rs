@@ -20,14 +20,13 @@ use crate::cluster::{
     JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
-use async_trait::async_trait;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
     AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
     executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::{ConfigProducer, JobStatusSubscriber};
+use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::mpsc::error::TrySendError;
@@ -63,12 +62,12 @@ pub struct InMemoryClusterState {
     cluster_event_sender: ClusterEventSender<ClusterStateEvent>,
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl ClusterState for InMemoryClusterState {
     async fn bind_schedulable_tasks(
         &self,
         distribution: TaskDistributionPolicy,
-        active_jobs: Arc<HashMap<String, JobInfoCache>>,
+        active_jobs: Arc<HashMap<JobId, JobInfoCache>>,
         executors: Option<HashSet<String>>,
     ) -> Result<Vec<BoundTask>> {
         let mut guard = self.task_slots.lock().await;
@@ -265,11 +264,11 @@ impl ClusterState for InMemoryClusterState {
 pub struct InMemoryJobState {
     scheduler: String,
     /// Jobs which have either completed successfully or failed
-    completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraphBox>)>,
+    completed_jobs: DashMap<JobId, (JobStatus, Option<ExecutionGraphBox>)>,
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
-    queued_jobs: DashMap<String, (String, u64)>,
+    queued_jobs: DashMap<JobId, (String, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
-    running_jobs: DashMap<String, ExtendedJobStatus>,
+    running_jobs: DashMap<JobId, ExtendedJobStatus>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
     session_builder: SessionBuilder,
     /// Sender of job events
@@ -320,11 +319,11 @@ impl ExtendedJobStatus {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl JobState for InMemoryJobState {
     async fn submit_job(
         &self,
-        job_id: String,
+        job_id: JobId,
         graph: &ExecutionGraphBox,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
@@ -349,11 +348,11 @@ impl JobState for InMemoryJobState {
         }
     }
 
-    async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
+    async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
         if let Some((job_name, queued_at)) = self.queued_jobs.get(job_id).as_deref() {
             return Ok(Some(JobStatus {
-                job_id: job_id.to_string(),
-                job_name: job_name.clone(),
+                job_id: job_id.to_owned().into(),
+                job_name: job_name.to_owned(),
                 status: Some(Status::Queued(QueuedJob {
                     queued_at: *queued_at,
                 })),
@@ -373,7 +372,7 @@ impl JobState for InMemoryJobState {
 
     async fn get_execution_graph(
         &self,
-        job_id: &str,
+        job_id: &JobId,
     ) -> Result<Option<ExecutionGraphBox>> {
         Ok(self
             .completed_jobs
@@ -382,13 +381,16 @@ impl JobState for InMemoryJobState {
             .and_then(|(_, graph)| graph.as_ref().map(|e| e.cloned())))
     }
 
-    async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraphBox>> {
+    async fn try_acquire_job(
+        &self,
+        _job_id: &JobId,
+    ) -> Result<Option<ExecutionGraphBox>> {
         // Always return None. The only state stored here are for completed jobs
         // which cannot be acquired
         Ok(None)
     }
 
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()> {
+    async fn save_job(&self, job_id: &JobId, graph: &ExecutionGraphBox) -> Result<()> {
         let status = graph.status().clone();
         // If job is either successful or failed, save to completed jobs
         if matches!(
@@ -400,7 +402,7 @@ impl JobState for InMemoryJobState {
             }
 
             self.completed_jobs
-                .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
+                .insert(job_id.to_owned(), (status.clone(), Some(graph.cloned())));
         } else {
             // otherwise update running job
             if let Some(mut job_info) = self.running_jobs.get_mut(job_id) {
@@ -418,7 +420,7 @@ impl JobState for InMemoryJobState {
         // job change event emitted
         // it is emitting current job status
         self.job_event_sender.send(&JobStateEvent::JobUpdated {
-            job_id: job_id.to_string(),
+            job_id: job_id.to_owned(),
             status,
         });
 
@@ -452,14 +454,14 @@ impl JobState for InMemoryJobState {
         Ok(Box::pin(self.job_event_sender.subscribe()))
     }
 
-    async fn remove_job(&self, job_id: &str) -> Result<()> {
+    async fn remove_job(&self, job_id: &JobId) -> Result<()> {
         if self.completed_jobs.remove(job_id).is_none() {
             warn!("Tried to delete non-existent job {job_id} from state");
         }
         Ok(())
     }
 
-    async fn get_jobs(&self) -> Result<HashSet<String>> {
+    async fn get_jobs(&self) -> Result<HashSet<JobId>> {
         Ok(self
             .completed_jobs
             .iter()
@@ -467,9 +469,20 @@ impl JobState for InMemoryJobState {
             .collect())
     }
 
-    fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
+    async fn get_all_jobs(&self) -> Result<HashSet<JobId>> {
+        let mut all_jobs: HashSet<JobId> = self
+            .queued_jobs
+            .iter()
+            .map(|pair| pair.key().clone())
+            .collect();
+        all_jobs.extend(self.running_jobs.iter().map(|pair| pair.key().clone()));
+        all_jobs.extend(self.completed_jobs.iter().map(|pair| pair.key().clone()));
+        Ok(all_jobs)
+    }
+
+    fn accept_job(&self, job_id: &JobId, job_name: &str, queued_at: u64) -> Result<()> {
         self.queued_jobs
-            .insert(job_id.to_string(), (job_name.to_string(), queued_at));
+            .insert(job_id.to_owned(), (job_name.to_owned(), queued_at));
 
         Ok(())
     }
@@ -478,13 +491,13 @@ impl JobState for InMemoryJobState {
         self.queued_jobs.len()
     }
 
-    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()> {
+    async fn fail_unscheduled_job(&self, job_id: &JobId, reason: String) -> Result<()> {
         if let Some((job_id, (job_name, queued_at))) = self.queued_jobs.remove(job_id) {
             self.completed_jobs.insert(
                 job_id.clone(),
                 (
                     JobStatus {
-                        job_id,
+                        job_id: job_id.into(),
                         job_name,
                         status: Some(Status::Failed(FailedJob {
                             error: reason,

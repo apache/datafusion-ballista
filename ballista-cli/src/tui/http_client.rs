@@ -18,14 +18,19 @@
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+use crate::tui::domain::jobs::stages::StagePlanTab;
 use crate::tui::{
     TuiResult,
     domain::{
         SchedulerState,
         executors::Executor,
-        jobs::{CancelJobResponse, Job, JobDetails, stages::JobStagesResponse},
+        jobs::{
+            CancelJobResponse, Job, JobConfigResponse, JobDetails,
+            stages::JobStagesResponse,
+        },
         metrics::{Metric, MetricsResponse},
     },
     error::TuiError,
@@ -33,22 +38,23 @@ use crate::tui::{
 };
 
 pub struct HttpClient {
-    scheduler_url: String,
+    config: Settings,
     client: reqwest::Client,
 }
 
 impl HttpClient {
     pub fn new(config: Settings) -> TuiResult<Self> {
+        let builder = Client::builder();
+        #[cfg(not(target_arch = "wasm32"))]
+        let builder = builder.timeout(Duration::from_millis(config.http.timeout));
         Ok(Self {
-            scheduler_url: config.scheduler.url,
-            client: Client::builder()
-                .timeout(Duration::from_millis(config.http.timeout))
-                .build()?,
+            client: builder.build()?,
+            config,
         })
     }
 
     pub fn scheduler_url(&self) -> &str {
-        &self.scheduler_url
+        &self.config.scheduler.url
     }
 
     pub async fn get_scheduler_state(&self) -> TuiResult<SchedulerState> {
@@ -61,6 +67,12 @@ impl HttpClient {
         self.json::<Vec<Executor>>(&url).await
     }
 
+    pub async fn get_executor(&self, executor_id: &str) -> TuiResult<Executor> {
+        let url = self.url(&format!("executor/{}", self.url_encode(executor_id)));
+        tracing::trace!("Going to GET details for '{}'", &url);
+        self.json::<Executor>(&url).await
+    }
+
     pub async fn get_jobs(&self) -> TuiResult<Vec<Job>> {
         let url = self.url("jobs");
         self.json::<Vec<Job>>(&url).await.map(|mut jobs| {
@@ -70,7 +82,7 @@ impl HttpClient {
     }
 
     pub async fn cancel_job(&self, job_id: &str) -> TuiResult<CancelJobResponse> {
-        let url = format!("{}/api/job/{}", self.scheduler_url, job_id);
+        let url = self.url(&format!("job/{}", self.url_encode(job_id)));
         tracing::trace!("Going to PATCH {}", &url);
         let response = self
             .client
@@ -95,7 +107,11 @@ impl HttpClient {
             })
     }
 
-    pub async fn get_job_details(&self, job_id: &str) -> TuiResult<JobDetails> {
+    pub async fn get_job_details(
+        &self,
+        job_id: &str,
+        plan_format: &StagePlanTab,
+    ) -> TuiResult<JobDetails> {
         #[derive(serde::Deserialize, Debug)]
         struct JobDetailResponse {
             logical_plan: Option<String>,
@@ -103,32 +119,42 @@ impl HttpClient {
             stage_plan: Option<String>,
         }
 
-        let url = format!("{}/api/job/{}", self.scheduler_url, self.url_encode(job_id));
+        let url = self.url(&format!(
+            "job/{}?{}",
+            self.url_encode(job_id),
+            plan_format.as_query_param(),
+        ));
         let resp = self.json::<JobDetailResponse>(&url).await?;
         Ok(JobDetails {
             job_id: job_id.to_string(),
             logical_plan: resp.logical_plan,
             physical_plan: resp.physical_plan,
+            physical_plan_tree: None,
             stage_plan: resp.stage_plan,
         })
     }
 
     pub async fn get_job_dot(&self, job_id: &str) -> TuiResult<String> {
-        let url = format!(
-            "{}/api/job/{}/dot",
-            self.scheduler_url,
-            self.url_encode(job_id)
-        );
+        let url = self.url(&format!("job/{}/dot", self.url_encode(job_id)));
         self.text(&url).await
     }
 
-    pub async fn get_job_stages(&self, job_id: &str) -> TuiResult<JobStagesResponse> {
-        let url = format!(
-            "{}/api/job/{}/stages",
-            self.scheduler_url,
-            self.url_encode(job_id)
-        );
+    pub async fn get_job_stages(
+        &self,
+        job_id: &str,
+        plan_format: &StagePlanTab,
+    ) -> TuiResult<JobStagesResponse> {
+        let url = self.url(&format!(
+            "job/{}/stages?{}",
+            self.url_encode(job_id),
+            plan_format.as_query_param(),
+        ));
         self.json::<JobStagesResponse>(&url).await
+    }
+
+    pub async fn get_job_config(&self, job_id: &str) -> TuiResult<JobConfigResponse> {
+        let url = self.url(&format!("job/{}/config", self.url_encode(job_id)));
+        self.json::<JobConfigResponse>(&url).await
     }
 
     pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
@@ -183,7 +209,7 @@ impl HttpClient {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/api/{}", self.scheduler_url, path)
+        format!("{}/api/{}", self.config.scheduler.url, path)
     }
 
     fn url_encode(&self, job_id: &str) -> String {

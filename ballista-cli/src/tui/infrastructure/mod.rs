@@ -16,7 +16,7 @@
 // under the License.
 
 mod config;
-mod logging;
+pub mod theme;
 
-pub use config::Settings;
-pub use logging::init_file_logger;
+pub use config::{Settings, ThemeSettings};
+use theme::{ThemeName, ThemeOverride};

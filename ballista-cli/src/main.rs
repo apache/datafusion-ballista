@@ -15,25 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod logging;
 #[cfg(feature = "tui")]
 mod tui;
-
-use std::path::Path;
-use std::{env, sync::Arc};
 
 use ballista::{extension::SessionConfigExt, prelude::SessionContextExt};
 use ballista_cli::{
     BALLISTA_CLI_VERSION, exec, print_format::PrintFormat, print_options::PrintOptions,
 };
 use clap::Parser;
+#[cfg(feature = "cli")]
 use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
+#[cfg(feature = "cli")]
 use datafusion_cli::{
     object_storage::instrumented::InstrumentedObjectStoreRegistry, print_options::MaxRows,
 };
 use mimalloc::MiMalloc;
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::{env, sync::Arc};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -109,15 +112,18 @@ struct Args {
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let tui_mode = Arc::new(AtomicBool::new(false));
+
+    logging::init_logging(tui_mode.clone())?;
+
     let args = Args::parse();
 
     #[cfg(feature = "tui")]
     if args.tui {
-        return tui::tui_main()
+        return tui::main(tui_mode.clone())
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
     }
-    env_logger::init();
 
     if !args.quiet {
         println!("Ballista CLI v{BALLISTA_CLI_VERSION}");
@@ -190,7 +196,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !rc.is_empty() {
             exec::exec_from_files(rc, &ctx, &print_options).await
         }
-        exec::exec_from_repl(&ctx, &mut print_options).await;
+        exec::exec_from_repl(&ctx, &mut print_options, tui_mode.clone()).await;
     }
 
     Ok(())

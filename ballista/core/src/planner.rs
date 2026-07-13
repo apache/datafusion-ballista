@@ -19,7 +19,6 @@ use crate::config::BallistaConfig;
 use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
 use crate::serde::BallistaLogicalExtensionCodec;
 
-use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
@@ -101,7 +100,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     async fn create_physical_plan(
         &self,
@@ -308,12 +307,10 @@ mod test {
 
         assert!(matches!(analyze_df.logical_plan(), LogicalPlan::Analyze(_)));
         let explain = plan
-            .as_any()
             .downcast_ref::<DistributedExplainAnalyzeExec<LogicalPlanNode>>()
             .unwrap();
         assert!(
             explain.children()[0]
-                .as_any()
                 .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
                 .is_some()
         );

@@ -274,7 +274,7 @@ async fn execute_shuffle_write(
     let metrics: MetricsSet = match writer_kind {
         WriterKind::Hash => {
             let exec = ShuffleWriterExec::try_new(
-                format!("bench_job_{task_id}"),
+                format!("bench_job_{task_id}").into(),
                 1,
                 input,
                 work_dir_str,
@@ -289,7 +289,7 @@ async fn execute_shuffle_write(
             let cfg =
                 SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, args.batch_size);
             let exec = SortShuffleWriterExec::try_new(
-                format!("bench_job_{task_id}"),
+                format!("bench_job_{task_id}").into(),
                 1,
                 input,
                 work_dir_str,

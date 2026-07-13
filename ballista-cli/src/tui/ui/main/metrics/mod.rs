@@ -15,38 +15,39 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "web"))]
 use crate::tui::{
     TuiResult,
+    event::{Event, UiData},
+};
+use crate::tui::{
     app::App,
     domain::{
         SortOrder,
         metrics::{Metric, SortColumn},
     },
-    event::{Event, UiData},
     ui::search_box::render_search_box,
     ui::vertical_scrollbar::render_scrollbar,
 };
+
 use prometheus_parse::HistogramCount;
 
-use ratatui::style::Color;
+use crate::tui::ui::vertical_scrollbar;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::Style,
     text::Text,
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState,
     },
 };
 
+#[cfg(not(feature = "web"))]
 pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
-    let metrics = match app.http_client.get_metrics().await {
-        Ok(metrics) => metrics,
-        Err(e) => {
-            tracing::error!("Failed to load the metrics: {e:?}");
-            Vec::new()
-        }
-    };
+    let metrics = app.http_client.get_metrics().await.unwrap_or_else(|e| {
+        tracing::error!("Failed to load the metrics: {e:?}");
+        Vec::new()
+    });
 
     app.send_event(Event::DataLoaded {
         data: UiData::Metrics(metrics),
@@ -56,6 +57,8 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
 
 pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
+    let block = Block::default().style(app.theme.app_background); // or any color you want
+    f.render_widget(block, f.area());
 
     let search_term = app.search_term.to_lowercase();
     let filtered_metrics: Vec<&Metric> = if search_term.is_empty() {
@@ -68,27 +71,28 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
-    let vertical = Layout::vertical([
+    let rects = Layout::vertical([
         Constraint::Length(3), // Search box
         Constraint::Min(5),    // Table
-        Constraint::Length(4), // Scrollbar
-    ]);
-    let rects = vertical.split(area);
+    ])
+    .split(area);
 
     render_search_box(f, rects[0], app);
 
     if !filtered_metrics.is_empty() {
         let mut scroll_state = app.metrics_data.scrollbar_state;
         let mut table_state = app.metrics_data.table_state;
-        render_metrics_table(f, rects[1], app, &filtered_metrics, &mut table_state);
-        render_scrollbar(f, rects[1], &mut scroll_state);
+        let table_area = vertical_scrollbar::split_area(rects[1]);
+        render_metrics_table(f, table_area[0], app, &filtered_metrics, &mut table_state);
+        render_scrollbar(f, table_area[1], &mut scroll_state);
     } else if are_metrics_enabled(app) {
-        render_no_metrics(f, rects[1], "No metrics.");
+        render_no_metrics(f, rects[1], "No metrics.", app);
     } else {
         render_no_metrics(
             f,
             rects[1],
-            "The scheduler is built with 'prometheus_metric' feature disabled.",
+            "The scheduler is built with 'prometheus-metrics' feature disabled.",
+            app,
         );
     }
 }
@@ -101,12 +105,12 @@ fn are_metrics_enabled(app: &App) -> bool {
     }
 }
 
-fn render_no_metrics(f: &mut Frame, area: Rect, reason: &str) {
+fn render_no_metrics(f: &mut Frame, area: Rect, reason: &str, app: &App) {
     let block = Block::default()
         .borders(Borders::all())
-        .style(Style::default().fg(Color::Red));
+        .style(app.theme.text_error);
     let paragraph = Paragraph::new(reason)
-        .style(Style::default().bold())
+        .style(app.theme.text_error)
         .centered()
         .block(block);
     f.render_widget(paragraph, area);
@@ -131,8 +135,6 @@ fn render_metrics_table(
     metrics: &[&Metric],
     state: &mut TableState,
 ) {
-    let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
-
     let sort_column = &app.metrics_data.sort_column;
     let sort_order = &app.metrics_data.sort_order;
 
@@ -146,15 +148,16 @@ fn render_metrics_table(
     .into_iter()
     .map(Cell::from)
     .collect::<Row>()
-    .style(header_style)
+    .style(app.theme.table_header)
     .height(1);
 
     let rows = metrics.iter().enumerate().map(|(i, metric)| {
         use prometheus_parse::Value;
 
-        let color = match i % 2 {
-            0 => Color::DarkGray,
-            _ => Color::Black,
+        let row_style = if i % 2 == 0 {
+            app.theme.row_even
+        } else {
+            app.theme.row_odd
         };
 
         let name_cell = Cell::from(Text::from(metric.sample.metric.clone()));
@@ -167,8 +170,7 @@ fn render_metrics_table(
         };
         let description_cell = Cell::from(Text::from(metric.help.clone()));
 
-        Row::new(vec![name_cell, value_cell, description_cell])
-            .style(Style::default().bg(color))
+        Row::new(vec![name_cell, value_cell, description_cell]).style(row_style)
     });
 
     let t = Table::new(
@@ -181,7 +183,7 @@ fn render_metrics_table(
     )
     .block(Block::default().borders(Borders::all()))
     .header(header)
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
 }

@@ -18,9 +18,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus};
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
@@ -65,7 +64,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
 {
@@ -97,7 +96,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 queued_at,
                 subscriber,
             } => {
-                info!("Job {job_id} queued with name {job_name:?}");
+                info!("Job queued: [{job_id}]");
 
                 if let Err(e) = self
                     .state
@@ -129,7 +128,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         if let Some(subscriber) = subscriber {
                             let timestamp = timestamp_millis();
                             let job_status = JobStatus {
-                                job_id: job_id.clone(),
+                                job_id: job_id.clone().into(),
                                 job_name,
                                 status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(
                                     FailedJob { error, queued_at, started_at: timestamp, ended_at: timestamp }
@@ -147,7 +146,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             }
                         }
 
-                        error!("{}", &fail_message);
+                        error!("{}", fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
                             fail_message,
@@ -174,7 +173,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_submitted(&job_id, queued_at, submitted_at);
 
-                info!("Job {job_id} submitted");
+                info!("Job submitted: [{job_id}]");
 
                 if self.state.config.is_push_staged_scheduling() {
                     event_sender
@@ -211,11 +210,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_completed(&job_id, queued_at, completed_at);
 
-                info!("Job {job_id} success");
-                if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
-                    error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
-                }
-                self.state.clean_up_successful_job(job_id);
+                info!("Job finished successfully: [{job_id}]");
+                let intermediate_stage_ids =
+                    match self.state.task_manager.succeed_job(&job_id).await {
+                        Ok(ids) => ids,
+                        Err(e) => {
+                            error!(
+                                "Fail to invoke succeed_job for job {job_id} due to {e:?}"
+                            );
+                            vec![]
+                        }
+                    };
+                self.state
+                    .clean_up_successful_job(job_id, intermediate_stage_ids);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -226,7 +233,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
-                error!("Job {job_id} running failed");
+                error!("Job failed: [{job_id}]");
                 match self
                     .state
                     .task_manager
@@ -249,7 +256,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
-                info!("Job {job_id} Updated");
+                debug!("Job updated, job_id: [{job_id}]");
                 if let Err(e) = self.state.task_manager.update_job(&job_id).await {
                     error!("Fail to invoke update_job for job {job_id} due to {e:?}");
                 }
@@ -257,7 +264,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             QueryStageSchedulerEvent::JobCancel(job_id) => {
                 self.metrics_collector.record_cancelled(&job_id);
 
-                info!("Job {job_id} Cancelled");
+                info!("Job cancelled: [{job_id}]");
                 match self.state.task_manager.cancel_job(&job_id).await {
                     Ok((running_tasks, _pending_tasks)) => {
                         event_sender
@@ -304,7 +311,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         error!(
                             "Failed to update {num_status} task statuses for Executor {executor_id}: {e:?}"
                         );
-                        // TODO error handling
                     }
                 }
             }

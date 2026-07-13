@@ -36,6 +36,7 @@ use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::{
     DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
+    PhysicalPlanDecodeContext,
 };
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -53,7 +54,8 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    ChaosExec, CoalescePlan, PartitionGroup, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -66,6 +68,47 @@ pub use generated::ballista as protobuf;
 pub mod generated;
 /// Scheduler-specific serialization types and conversions.
 pub mod scheduler;
+
+// ============================ CoalescePlan codec ============================
+//
+// Native ↔ proto conversions for `CoalescePlan` and `PartitionGroup`. Borrow-
+// based on the encode side because the call site only has a borrow
+// (`exec.coalesce.as_ref()`); the `Vec<u32>` clone is intentional and cheap
+// for typical K (small post-coalesce partition counts).
+
+impl From<&protobuf::PartitionGroup> for PartitionGroup {
+    fn from(p: &protobuf::PartitionGroup) -> Self {
+        Self {
+            upstream_indices: p.upstream_indices.clone(),
+        }
+    }
+}
+
+impl From<&PartitionGroup> for protobuf::PartitionGroup {
+    fn from(p: &PartitionGroup) -> Self {
+        Self {
+            upstream_indices: p.upstream_indices.clone(),
+        }
+    }
+}
+
+impl From<&protobuf::CoalescePlan> for CoalescePlan {
+    fn from(p: &protobuf::CoalescePlan) -> Self {
+        Self {
+            upstream_partition_count: p.upstream_partition_count,
+            groups: p.groups.iter().map(PartitionGroup::from).collect(),
+        }
+    }
+}
+
+impl From<&CoalescePlan> for protobuf::CoalescePlan {
+    fn from(p: &CoalescePlan) -> Self {
+        Self {
+            upstream_partition_count: p.upstream_partition_count,
+            groups: p.groups.iter().map(Into::into).collect(),
+        }
+    }
+}
 
 impl ProstMessageExt for protobuf::Action {
     fn type_url() -> &'static str {
@@ -339,20 +382,20 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )
             })?;
         let converter = DefaultPhysicalProtoConverter {};
+        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
 
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
-                    ctx,
+                    &decode_ctx,
                     input.schema().as_ref(),
-                    self.default_codec.as_ref(),
                     &converter,
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
-                    shuffle_writer.job_id.clone(),
+                    shuffle_writer.job_id.clone().into(),
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
@@ -364,9 +407,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     sort_shuffle_writer.output_partitioning.as_ref(),
-                    ctx,
+                    &decode_ctx,
                     input.schema().as_ref(),
-                    self.default_codec.as_ref(),
                     &converter,
                 )?;
 
@@ -388,7 +430,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 );
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
-                    sort_shuffle_writer.job_id.clone(),
+                    sort_shuffle_writer.job_id.clone().into(),
                     sort_shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // executor will fill this in
@@ -418,14 +460,21 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let partitioning = parse_protobuf_partitioning(
                     shuffle_reader.partitioning.as_ref(),
-                    ctx,
+                    &decode_ctx,
                     schema.as_ref(),
-                    self.default_codec.as_ref(),
                     &converter,
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
-                let exec = if shuffle_reader.broadcast {
+                let exec = if let Some(c) = shuffle_reader.coalesce.as_ref() {
+                    ShuffleReaderExec::try_new_coalesced(
+                        stage_id,
+                        partition_location,
+                        CoalescePlan::from(c),
+                        schema,
+                        partitioning,
+                    )?
+                } else if shuffle_reader.broadcast {
                     let all_locations = partition_location
                         .into_iter()
                         .next()
@@ -453,14 +502,20 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
                 let partitioning = parse_protobuf_partitioning(
                     unresolved_shuffle.partitioning.as_ref(),
-                    ctx,
+                    &decode_ctx,
                     schema.as_ref(),
-                    self.default_codec.as_ref(),
                     &converter,
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
-                let exec = if unresolved_shuffle.broadcast {
+                let exec = if let Some(c) = unresolved_shuffle.coalesce.as_ref() {
+                    UnresolvedShuffleExec::new_coalesced(
+                        unresolved_shuffle.stage_id as usize,
+                        schema,
+                        partitioning,
+                        CoalescePlan::from(c),
+                    )
+                } else if unresolved_shuffle.broadcast {
                     UnresolvedShuffleExec::new_broadcast(
                         unresolved_shuffle.stage_id as usize,
                         schema,
@@ -475,6 +530,23 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 };
                 Ok(Arc::new(exec))
             }
+            PhysicalPlanType::ChaosExec(chaos_exec) => {
+                let input = match inputs {
+                    [input] => input.clone(),
+                    _ => {
+                        return Err(DataFusionError::Internal(format!(
+                            "ChaosExec expects exactly 1 input, got {}",
+                            inputs.len()
+                        )));
+                    }
+                };
+                Ok(Arc::new(ChaosExec::new(
+                    input,
+                    chaos_exec.failure_probability,
+                    &chaos_exec.fault_type,
+                    Some(chaos_exec.seed),
+                )?))
+            }
         }
     }
 
@@ -483,7 +555,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
     ) -> Result<(), DataFusionError> {
-        if let Some(exec) = node.as_any().downcast_ref::<ShuffleWriterExec>() {
+        if let Some(exec) = node.downcast_ref::<ShuffleWriterExec>() {
             // note that we use shuffle_output_partitioning() rather than output_partitioning()
             // to get the true output partitioning
             let output_partitioning = match exec.shuffle_output_partitioning() {
@@ -522,7 +594,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
 
             Ok(())
-        } else if let Some(exec) = node.as_any().downcast_ref::<SortShuffleWriterExec>() {
+        } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
             let output_partitioning = match exec.shuffle_output_partitioning() {
                 Partitioning::Hash(exprs, partition_count) => {
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
@@ -565,7 +637,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
 
             Ok(())
-        } else if let Some(exec) = node.as_any().downcast_ref::<ShuffleReaderExec>() {
+        } else if let Some(exec) = node.downcast_ref::<ShuffleReaderExec>() {
             let stage_id = exec.stage_id as u32;
             let mut partition = vec![];
             for location in &exec.partition {
@@ -597,6 +669,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partitioning: Some(partitioning),
                         broadcast: exec.broadcast,
                         upstream_partition_count: exec.upstream_partition_count as u32,
+                        coalesce: exec.coalesce.as_ref().map(|c| c.into()),
                     },
                 )),
             };
@@ -607,7 +680,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
 
             Ok(())
-        } else if let Some(exec) = node.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+        } else if let Some(exec) = node.downcast_ref::<UnresolvedShuffleExec>() {
             let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
@@ -622,6 +695,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partitioning: Some(partitioning),
                         broadcast: exec.broadcast,
                         upstream_partition_count: exec.upstream_partition_count as u32,
+                        coalesce: exec.coalesce.as_ref().map(|c| c.into()),
                     },
                 )),
             };
@@ -632,9 +706,26 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
 
             Ok(())
+        } else if let Some(exec) = node.downcast_ref::<ChaosExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::ChaosExec(
+                    protobuf::ChaosExecNode {
+                        failure_probability: exec.failure_probability(),
+                        fault_type: exec.fault_type().to_string(),
+                        seed: exec.seed(),
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode chaos monkey execution plan: {e:?}"
+                ))
+            })?;
+            Ok(())
         } else {
             Err(DataFusionError::Internal(format!(
-                "unsupported plan type: {node:?}"
+                "Unsupported plan node, name: [{}] ",
+                node.name()
             )))
         }
     }
@@ -662,6 +753,7 @@ struct FileFormatProto {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::execution_plans::PartitionGroup;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::expressions::col;
@@ -718,6 +810,55 @@ mod test {
         ]))
     }
 
+    // Regression coverage for #1838 and the removed `make_filter_projection_serde_safe`
+    // workaround: a `FilterExec` that projects to zero columns must survive physical
+    // plan serialization with its empty projection intact. datafusion-proto 53.1.0
+    // could not distinguish `Some(vec![])` (empty projection) from `None` (full
+    // projection) and decoded the former back as `None`, shifting column indices.
+    // DataFusion 54 preserves the distinction, so no Ballista-side rewrite is needed.
+    #[tokio::test]
+    async fn filter_exec_empty_projection_survives_physical_serde() {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::expressions::lit;
+        use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
+        use datafusion_proto::physical_plan::{
+            AsExecutionPlan, DefaultPhysicalExtensionCodec,
+        };
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let filter = FilterExecBuilder::new(lit(true), input)
+            .apply_projection(Some(vec![]))
+            .unwrap()
+            .build()
+            .unwrap();
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(filter);
+        assert_eq!(
+            plan.schema().fields().len(),
+            0,
+            "precondition: filter projects to zero columns"
+        );
+
+        let codec = DefaultPhysicalExtensionCodec {};
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = proto.try_into_physical_plan(&ctx, &codec).unwrap();
+
+        assert_eq!(
+            decoded.schema().fields().len(),
+            0,
+            "decoded FilterExec must still project zero columns"
+        );
+        let filter = decoded
+            .downcast_ref::<FilterExec>()
+            .expect("decoded plan must be a FilterExec");
+        assert_eq!(
+            filter.projection().as_ref().map(|p| p.is_empty()),
+            Some(true),
+            "empty projection must round-trip as Some(vec![]), not None"
+        );
+    }
+
     #[tokio::test]
     async fn test_unresolved_shuffle_exec_roundtrip() {
         let schema = create_test_schema();
@@ -740,13 +881,16 @@ mod test {
         let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
-            .as_any()
             .downcast_ref::<UnresolvedShuffleExec>()
             .expect("Expected UnresolvedShuffleExec");
 
         assert_eq!(decoded_exec.stage_id, 1);
         assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
         assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
+        assert!(
+            decoded_exec.coalesce.is_none(),
+            "absent coalesce field must decode to None (codec inertness)"
+        );
     }
 
     #[tokio::test]
@@ -773,13 +917,276 @@ mod test {
         let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
-            .as_any()
             .downcast_ref::<ShuffleReaderExec>()
             .expect("Expected ShuffleReaderExec");
 
         assert_eq!(decoded_exec.stage_id, 1);
         assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
         assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
+        assert!(
+            decoded_exec.coalesce.is_none(),
+            "absent coalesce field must decode to None (codec inertness)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_coalesced_roundtrip_single_group() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 1);
+        let coalesce = CoalescePlan {
+            upstream_partition_count: 4,
+            groups: vec![PartitionGroup {
+                upstream_indices: vec![0, 1, 2, 3],
+            }],
+        };
+
+        let original_exec = ShuffleReaderExec::try_new_coalesced(
+            7,
+            vec![vec![]; 1], // K-shape: 1 output partition
+            coalesce.clone(),
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_exec = decoded_plan
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+
+        assert_eq!(decoded_exec.stage_id, 7);
+        assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
+        let stored = decoded_exec
+            .coalesce
+            .as_ref()
+            .expect("coalesce must round-trip");
+        assert_eq!(stored, &coalesce);
+        assert_eq!(stored.upstream_partition_count, 4);
+        assert_eq!(stored.groups.len(), 1);
+        assert_eq!(stored.groups[0].upstream_indices, vec![0, 1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_coalesced_roundtrip_multi_group_mixed_sizes() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 3);
+        let coalesce = CoalescePlan {
+            upstream_partition_count: 8,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 1, 2],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![3, 4],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![5, 6, 7],
+                },
+            ],
+        };
+
+        let original_exec = ShuffleReaderExec::try_new_coalesced(
+            1,
+            vec![vec![]; 3], // K-shape: 3 output partitions
+            coalesce.clone(),
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_exec = decoded_plan
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+
+        let stored = decoded_exec
+            .coalesce
+            .as_ref()
+            .expect("coalesce must round-trip");
+        assert_eq!(stored, &coalesce);
+        assert_eq!(stored.upstream_partition_count, 8);
+        assert_eq!(stored.groups.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_unresolved_shuffle_exec_coalesced_roundtrip_multi_index() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        let coalesce = CoalescePlan {
+            upstream_partition_count: 5,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 1, 2, 3],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![4],
+                },
+            ],
+        };
+
+        let original_exec = UnresolvedShuffleExec::new_coalesced(
+            9,
+            schema.clone(),
+            partitioning.clone(),
+            coalesce.clone(),
+        );
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_exec = decoded_plan
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+
+        assert_eq!(decoded_exec.stage_id, 9);
+        let stored = decoded_exec
+            .coalesce
+            .as_ref()
+            .expect("coalesce must round-trip");
+        assert_eq!(stored, &coalesce);
+        assert_eq!(stored.upstream_partition_count, 5);
+        assert_eq!(stored.groups[0].upstream_indices.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_coalesced_roundtrip_non_contiguous_indices() {
+        // Proto allows arbitrary upstream_indices sets even though the default
+        // algorithm only emits contiguous ranges.
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        let coalesce = CoalescePlan {
+            upstream_partition_count: 6,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 2, 4],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![1, 3, 5],
+                },
+            ],
+        };
+
+        let original_exec = ShuffleReaderExec::try_new_coalesced(
+            3,
+            vec![vec![]; 2],
+            coalesce.clone(),
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded_exec = decoded_plan
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+
+        let stored = decoded_exec
+            .coalesce
+            .as_ref()
+            .expect("coalesce must round-trip");
+        assert_eq!(stored, &coalesce);
+        // Non-contiguous indices preserved bit-for-bit:
+        assert_eq!(stored.groups[0].upstream_indices, vec![0, 2, 4]);
+        assert_eq!(stored.groups[1].upstream_indices, vec![1, 3, 5]);
+    }
+
+    // ---- CoalescePlan native ↔ proto direct conversion round-trips ----
+
+    #[test]
+    fn coalesce_plan_native_to_proto_roundtrip_empty() {
+        let native = CoalescePlan {
+            upstream_partition_count: 0,
+            groups: vec![],
+        };
+        let proto: protobuf::CoalescePlan = (&native).into();
+        let back: CoalescePlan = (&proto).into();
+        assert_eq!(native, back);
+    }
+
+    #[test]
+    fn coalesce_plan_native_to_proto_roundtrip_single_group() {
+        let native = CoalescePlan {
+            upstream_partition_count: 4,
+            groups: vec![PartitionGroup {
+                upstream_indices: vec![0, 1, 2, 3],
+            }],
+        };
+        let proto: protobuf::CoalescePlan = (&native).into();
+        let back: CoalescePlan = (&proto).into();
+        assert_eq!(native, back);
+    }
+
+    #[test]
+    fn coalesce_plan_native_to_proto_roundtrip_multi_group_mixed_sizes() {
+        let native = CoalescePlan {
+            upstream_partition_count: 8,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 1, 2],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![3, 4],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![5, 6, 7],
+                },
+            ],
+        };
+        let proto: protobuf::CoalescePlan = (&native).into();
+        let back: CoalescePlan = (&proto).into();
+        assert_eq!(native, back);
+        assert_eq!(back.groups.len(), 3);
+        assert_eq!(back.upstream_partition_count, 8);
+    }
+
+    #[test]
+    fn coalesce_plan_native_to_proto_roundtrip_non_contiguous_indices() {
+        // Proto allows arbitrary index sets even though the default algorithm
+        // only produces contiguous ranges.
+        let native = CoalescePlan {
+            upstream_partition_count: 6,
+            groups: vec![
+                PartitionGroup {
+                    upstream_indices: vec![0, 2, 4],
+                },
+                PartitionGroup {
+                    upstream_indices: vec![1, 3, 5],
+                },
+            ],
+        };
+        let proto: protobuf::CoalescePlan = (&native).into();
+        let back: CoalescePlan = (&proto).into();
+        assert_eq!(native, back);
     }
 
     #[tokio::test]
@@ -797,7 +1204,6 @@ mod test {
         let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
-            .as_any()
             .downcast_ref::<UnresolvedShuffleExec>()
             .expect("Expected UnresolvedShuffleExec");
 
@@ -824,7 +1230,6 @@ mod test {
         let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
-            .as_any()
             .downcast_ref::<ShuffleReaderExec>()
             .expect("Expected ShuffleReaderExec");
 

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::App;
 use crate::tui::domain::SortOrder;
 use prometheus_parse::Sample;
 use ratatui::widgets::{ScrollbarState, TableState};
@@ -137,7 +138,7 @@ impl FromStr for MetricsResponse {
             .lines()
             .map(|line| Ok(line.to_string()))
             .collect();
-        let scrape = prometheus_parse::Scrape::parse(lines.into_iter())?;
+        let scrape = prometheus_parse::Scrape::parse_at(lines.into_iter(), App::now())?;
         for sample in scrape.samples {
             let metric = Metric {
                 sample: sample.clone(),
@@ -149,7 +150,7 @@ impl FromStr for MetricsResponse {
             };
             metrics.push(metric);
         }
-        // metrics.sort_by(|a, b| a.sample.metric.cmp(&b.sample.metric));
+        metrics.sort_by(|a, b| a.sample.metric.cmp(&b.sample.metric));
 
         Ok(MetricsResponse { metrics })
     }

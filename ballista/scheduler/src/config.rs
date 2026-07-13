@@ -195,6 +195,22 @@ pub struct Config {
         help = "Should the REST API be disabled"
     )]
     pub disable_rest_api: bool,
+    #[cfg(feature = "rest-api")]
+    /// Comma-separated list of allowed origins for CORS
+    #[arg(
+        long,
+        default_value_t = String::default(),
+        help = "Comma-separated list of allowed origins for CORS. By default, http://localhost:8080 and https://nightlies.apache.org are allowed."
+    )]
+    pub cors_allowed_origins: String,
+    #[cfg(feature = "rest-api")]
+    /// Comma-separated list of allowed methods for CORS
+    #[arg(
+        long,
+        default_value_t = String::default(),
+        help = "Comma-separated list of allowed methods for CORS. By default, GET, PATCH, and OPTIONS are allowed."
+    )]
+    pub cors_allowed_methods: String,
 }
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
@@ -256,6 +272,12 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
+    #[cfg(feature = "rest-api")]
+    /// Comma-separated list of allowed origins for CORS
+    pub cors_allowed_origins: String,
+    #[cfg(feature = "rest-api")]
+    /// Comma-separated list of allowed methods for CORS
+    pub cors_allowed_methods: String,
 }
 
 impl Default for SchedulerConfig {
@@ -288,6 +310,10 @@ impl Default for SchedulerConfig {
             stage_max_failures: 4,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
+            #[cfg(feature = "rest-api")]
+            cors_allowed_origins: String::default(),
+            #[cfg(feature = "rest-api")]
+            cors_allowed_methods: String::default(),
         }
     }
 }
@@ -516,6 +542,10 @@ impl TryFrom<Config> for SchedulerConfig {
             stage_max_failures: opt.stage_max_failures,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
+            #[cfg(feature = "rest-api")]
+            cors_allowed_origins: opt.cors_allowed_origins,
+            #[cfg(feature = "rest-api")]
+            cors_allowed_methods: opt.cors_allowed_methods,
         };
 
         Ok(config)

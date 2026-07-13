@@ -21,10 +21,13 @@ name: "CodeQL"
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - ".github/**"
   pull_request:
-    branches: [ "main" ]
+    paths:
+      - ".github/**"
   schedule:
-    - cron: '16 4 * * 1'
+    - cron: "16 4 * * 1"
 
 permissions:
   contents: read
@@ -32,24 +35,24 @@ permissions:
 jobs:
   analyze:
     name: Analyze Actions
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     permissions:
       contents: read
       security-events: write
       packages: read
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      with:
-        persist-credentials: false
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4
-      with:
-        languages: actions
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        with:
+          languages: actions
 
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4
-      with:
-        category: "/language:actions"
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        with:
+          category: "/language:actions"

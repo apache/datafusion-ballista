@@ -1,0 +1,43 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Configuration file for Trunk - a Rust WASM builder & bundler for web applications
+# See all possible options and their meaning at https://github.com/trunk-rs/trunk/blob/main/Trunk.toml
+# Trunk is used to build ballista-cli's TUI application as a web application by using Ratzilla
+
+# Install trunk with: cargo binstall trunk
+# Build the web application with `dev` profile: 
+# 1) cd ballista-cli
+# 2) trunk serve --no-default-features --features web
+# 3) open http://localhost:8080
+
+[build]
+target = "ballista-web-tui.html"
+dist = "../target/web-tui"
+public_url = "./"
+
+[watch]
+ignore = []
+
+[[hooks]]
+stage = "build"
+command = "sh"
+command_arguments = ["-c", "cp -f ./src/tui/ui/header/ballista-logo.svg \"$TRUNK_STAGING_DIR/ballista-logo.svg\""]
+
+[hooks.windows]
+command = "cmd"
+command_arguments = ["/c", "copy .\\src\\tui\\ui\\header\\ballista-logo.svg \"%TRUNK_STAGING_DIR%\\ballista-logo.svg\""]

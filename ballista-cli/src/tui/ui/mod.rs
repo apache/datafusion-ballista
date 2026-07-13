@@ -16,6 +16,7 @@
 // under the License.
 
 mod cancel_result_popup;
+mod components;
 mod footer;
 mod header;
 mod help_overlay;
@@ -24,15 +25,23 @@ mod scheduler_info_popup;
 mod search_box;
 mod vertical_scrollbar;
 
-use crate::tui::app::App;
-use crate::tui::ui::header::render_header;
+use super::{app::App, ui::header::render_header};
 use footer::render_footer;
+#[cfg(feature = "web")]
+pub(crate) use main::dot_parser;
 pub use main::{
-    job_dot_popup, job_plan_popup, job_stages_popup, load_executors_data,
-    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
-    load_metrics_data, stage_plan_popup, stage_tasks_popup,
+    executor_details_popup, job_config_popup, job_dot_popup, job_plan_popup,
+    job_stages_popup, render_executors, render_jobs, render_metrics, stage_plan_popup,
+    stage_tasks_popup,
 };
-use main::{render_executors, render_jobs, render_metrics};
+#[cfg(not(feature = "web"))]
+pub use main::{
+    load_executor_details_popup, load_executors_data, load_job_config_popup,
+    load_job_details, load_job_dot, load_job_stages_popup, load_jobs_data,
+    load_metrics_data, load_stage_plan,
+};
+
+use ratatui::widgets::Block;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -47,6 +56,9 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
             Constraint::Length(2), // Footer
         ])
         .split(f.area());
+
+    let block = Block::default().style(app.theme.app_background);
+    f.render_widget(block, f.area());
 
     render_header(f, chunks[0], app);
     render_main_view(f, app, chunks[1]);
@@ -71,6 +83,10 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         job_dot_popup::render_job_dot_popup(f, app);
     } else if app.job_plan_popup.is_some() {
         job_plan_popup::render_job_plan_popup(f, app);
+    } else if app.job_config_popup.is_some() {
+        job_config_popup::render_job_config_popup(f, app);
+    } else if app.executor_details_popup.is_some() {
+        executor_details_popup::render_executor_details_popup(f, app);
     }
 }
 

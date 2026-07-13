@@ -35,7 +35,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, SortShuffleWriterExec};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskStatus,
+    FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskKilled, TaskStatus,
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
@@ -105,6 +105,18 @@ impl ExecutionStage {
             ExecutionStage::Running(stage) => stage.plan.as_ref(),
             ExecutionStage::Successful(stage) => stage.plan.as_ref(),
             ExecutionStage::Failed(stage) => stage.plan.as_ref(),
+        }
+    }
+
+    /// Get the output links for this stage. An empty slice means this is a
+    /// final stage in the `ExecutionGraph`.
+    pub fn output_links(&self) -> &[usize] {
+        match self {
+            ExecutionStage::UnResolved(stage) => &stage.output_links,
+            ExecutionStage::Resolved(stage) => &stage.output_links,
+            ExecutionStage::Running(stage) => &stage.output_links,
+            ExecutionStage::Successful(stage) => &stage.output_links,
+            ExecutionStage::Failed(stage) => &stage.output_links,
         }
     }
 }
@@ -554,15 +566,40 @@ impl RunningStage {
         }
     }
 
-    /// Converts this running stage to a failed stage with the given error message.
+    /// Converts this running stage to a failed stage. Still-running tasks are recorded
+    /// as cancelled (`Failed(TaskKilled)`) since failing the stage cancels them.
     pub fn to_failed(&self, error_message: String) -> FailedStage {
+        let task_infos = self
+            .task_infos
+            .iter()
+            .map(|task_info| {
+                task_info.as_ref().map(|info| {
+                    if matches!(info.task_status, task_status::Status::Running(_)) {
+                        TaskInfo {
+                            task_status: task_status::Status::Failed(FailedTask {
+                                error: "killed".to_string(),
+                                retryable: false,
+                                count_to_failures: false,
+                                failed_reason: Some(FailedReason::TaskKilled(
+                                    TaskKilled {},
+                                )),
+                            }),
+                            ..info.clone()
+                        }
+                    } else {
+                        info.clone()
+                    }
+                })
+            })
+            .collect();
+
         FailedStage {
             stage_id: self.stage_id,
             stage_attempt_num: self.stage_attempt_num,
             partitions: self.partitions,
             output_links: self.output_links.clone(),
             plan: self.plan.clone(),
-            task_infos: self.task_infos.clone(),
+            task_infos,
             stage_metrics: self.stage_metrics.clone(),
             error_message,
         }
@@ -644,7 +681,7 @@ impl RunningStage {
     }
 
     /// Update the TaskInfo for task partition
-    pub fn update_task_info(&mut self, partition_id: usize, status: TaskStatus) -> bool {
+    pub fn update_task_info(&mut self, partition_id: usize, status: &TaskStatus) -> bool {
         debug!("Updating TaskInfo for partition {partition_id}");
         let Some(task_info) = self.task_infos[partition_id].as_ref() else {
             warn!(
@@ -661,7 +698,7 @@ impl RunningStage {
             return false;
         }
         let scheduled_time = task_info.scheduled_time;
-        let task_status = status.status.unwrap();
+        let task_status = status.status.as_ref().unwrap();
         let updated_task_info = TaskInfo {
             task_id,
             scheduled_time,
@@ -1005,11 +1042,11 @@ impl Debug for FailedStage {
 /// will be different. Here, we should use the input partition count.
 fn get_stage_partitions(plan: Arc<dyn ExecutionPlan>) -> usize {
     // Try ShuffleWriterExec first
-    if let Some(shuffle_writer) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+    if let Some(shuffle_writer) = plan.downcast_ref::<ShuffleWriterExec>() {
         return shuffle_writer.input_partition_count();
     }
     // Try SortShuffleWriterExec
-    if let Some(shuffle_writer) = plan.as_any().downcast_ref::<SortShuffleWriterExec>() {
+    if let Some(shuffle_writer) = plan.downcast_ref::<SortShuffleWriterExec>() {
         return shuffle_writer.input_partition_count();
     }
     // Fallback to output partitioning
@@ -1058,17 +1095,28 @@ impl StageOutput {
     }
     /// returns vector of partition locations
     /// which is compatible with ShuffleReader vector format
+    ///
+    /// `output_partition_count` is the number of expected
+    ///  output partition number
     pub fn partition_locations(
         mut self,
-        output_partitions: usize,
+        output_partition_count: usize,
     ) -> Vec<Vec<PartitionLocation>> {
         let mut partition_locations = Vec::new();
-        for i in 0..output_partitions {
+        for i in 0..output_partition_count {
             let p = self.partition_locations.remove(&i).unwrap_or_default();
             partition_locations.push(p);
         }
 
         partition_locations
+    }
+
+    /// returns vector of partition locations
+    /// which is compatible with ShuffleReader vector format
+    /// supporting broadcast shuffle read.
+    /// All partitions are merged into one
+    pub fn partition_locations_broadcast(self) -> Vec<Vec<PartitionLocation>> {
+        self.partition_locations.into_values().collect()
     }
 }
 
@@ -1142,7 +1190,7 @@ mod tests {
         // Simulates receiving a status update for a task that was already
         // reset (e.g., executor heartbeat timed out).
         let status = make_task_status(0, 0);
-        let result = stage.update_task_info(0, status);
+        let result = stage.update_task_info(0, &status);
 
         // Should return false (update rejected), not panic.
         assert!(!result);
@@ -1167,7 +1215,7 @@ mod tests {
         });
 
         let status = make_task_status(0, 0);
-        let result = stage.update_task_info(0, status);
+        let result = stage.update_task_info(0, &status);
 
         assert!(result);
         assert!(matches!(
@@ -1204,7 +1252,7 @@ mod tests {
 
         // Executor sends a late status update for partition 0.
         let status = make_task_status(0, 0);
-        let result = stage.update_task_info(0, status);
+        let result = stage.update_task_info(0, &status);
 
         // Should gracefully reject the update, not panic.
         assert!(!result);

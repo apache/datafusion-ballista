@@ -42,7 +42,7 @@ use tokio::{fs, time};
 use uuid::Uuid;
 
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::SessionConfig;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
@@ -61,7 +61,7 @@ use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
     default_config_producer, get_time_before,
 };
-use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
+use ballista_core::{BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer};
 
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
@@ -70,36 +70,46 @@ use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
+use crate::runtime_cache::{
+    DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
+};
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server, executor_server::ExecutorGrpcListen};
 
-/// Wrap a [`RuntimeProducer`] so that every produced
-/// [`RuntimeEnv`](datafusion::execution::runtime_env::RuntimeEnv) carries a
-/// fresh [`FairSpillPool`] of size `total_bytes / concurrent_tasks`.
+/// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
+/// shared base env with a fresh [`FairSpillPool`] of size
+/// `total_bytes / concurrent_tasks`. The base env's disk manager, cache manager,
+/// and object-store registry are preserved via
+/// [`RuntimeEnvBuilder::from_runtime_env`].
 ///
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
-/// concurrent_tasks`). The inner env's disk manager, cache manager, and
-/// object store registry are preserved via [`RuntimeEnvBuilder::from_runtime_env`].
-fn wrap_runtime_producer_with_memory_pool(
-    inner: RuntimeProducer,
+/// concurrent_tasks`).
+fn memory_pool_policy(
     total_bytes: u64,
     concurrent_tasks: usize,
-) -> Result<RuntimeProducer, BallistaError> {
+) -> Result<MemoryPoolPolicy, BallistaError> {
     let per_task = (total_bytes / concurrent_tasks as u64) as usize;
     if per_task == 0 {
         return Err(BallistaError::Configuration(format!(
             "memory_pool_size ({total_bytes} bytes) is smaller than concurrent_tasks ({concurrent_tasks})"
         )));
     }
-    Ok(Arc::new(move |session_config: &SessionConfig| {
-        let inner_env = inner(session_config)?;
-        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
-        RuntimeEnvBuilder::from_runtime_env(&inner_env)
-            .with_memory_pool(pool)
-            .build_arc()
-    }))
+    Ok(Arc::new(
+        move |base: Arc<RuntimeEnv>, _config: &SessionConfig| {
+            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
+            RuntimeEnvBuilder::from_runtime_env(&base)
+                .with_memory_pool(pool)
+                .build_arc()
+        },
+    ))
+}
+
+/// A no-op policy: the task uses the shared base env unchanged (DataFusion's
+/// default unbounded pool). Used when `--memory-pool-size` is unset.
+fn identity_pool_policy() -> MemoryPoolPolicy {
+    Arc::new(|base, _config| Ok(base))
 }
 
 /// Configuration for the executor process.
@@ -155,6 +165,11 @@ pub struct ExecutorProcessConfig {
     /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
     /// installed and DataFusion falls back to its unbounded default.
     pub memory_pool_size: Option<u64>,
+    /// Maximum number of sessions whose shared base runtime env is retained on
+    /// the executor (LRU). Sharing reuses object-store clients and the Parquet
+    /// footer cache across a session's tasks and queries. `0` disables caching
+    /// and builds a fresh runtime per task.
+    pub session_runtime_cache_capacity: usize,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -214,6 +229,7 @@ impl Default for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
+            session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
             override_runtime_producer: None,
@@ -290,7 +306,7 @@ pub async fn start_executor_process(
         .unwrap_or_else(|| Arc::new(default_config_producer));
 
     let wd = work_dir.clone();
-    let runtime_producer: RuntimeProducer =
+    let base_runtime_producer: RuntimeProducer =
         opt.override_runtime_producer.clone().unwrap_or_else(|| {
             Arc::new(move |_| {
                 let runtime_env = RuntimeEnvBuilder::new()
@@ -300,19 +316,24 @@ pub async fn start_executor_process(
             })
         });
 
-    let runtime_producer = if let Some(total) = opt.memory_pool_size {
-        let producer = wrap_runtime_producer_with_memory_pool(
-            runtime_producer,
-            total,
-            concurrent_tasks,
-        )?;
+    let pool_policy: MemoryPoolPolicy = if let Some(total) = opt.memory_pool_size {
+        let policy = memory_pool_policy(total, concurrent_tasks)?;
         let per_task = total / concurrent_tasks as u64;
         info!(
             "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
         );
-        producer
+        policy
     } else {
-        runtime_producer
+        identity_pool_policy()
+    };
+
+    // Combined producer preserving the current per-task behavior: build a fresh
+    // base env, then apply the pool policy. Used by `Executor::produce_runtime`
+    // and as the fallback when session caching is disabled.
+    let runtime_producer: RuntimeProducer = {
+        let base = base_runtime_producer.clone();
+        let policy = pool_policy.clone();
+        Arc::new(move |config: &SessionConfig| policy(base(config)?, config))
     };
 
     let logical = opt
@@ -330,26 +351,43 @@ pub async fn start_executor_process(
         datafusion_proto::protobuf::PhysicalPlanNode,
     > = BallistaCodec::new(logical, physical);
 
-    let executor = Arc::new(Executor::new(
-        executor_meta.clone(),
-        &work_dir,
-        runtime_producer,
-        config_producer,
-        opt.override_function_registry.clone().unwrap_or_default(),
-        metrics_collector,
-        concurrent_tasks,
-        opt.override_execution_engine.clone().unwrap_or_else(|| {
-            if opt.client_ttl > 0 {
-                let client_pool =
-                    Arc::new(DefaultBallistaClientPool::with_eviction_thread(
-                        Duration::from_secs(opt.client_ttl),
-                    ));
-                Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
-            } else {
-                Arc::new(DefaultExecutionEngine::new())
-            }
-        }),
-    ));
+    // Session caching applies only to the default runtime producer. With an
+    // override producer we cannot split base + pool, so we serve per-task as
+    // before by leaving the cache unset.
+    let session_runtime_cache: Option<Arc<dyn SessionRuntimeCache>> =
+        if opt.override_runtime_producer.is_none() {
+            Some(Arc::new(DefaultSessionRuntimeCache::new(
+                base_runtime_producer.clone(),
+                pool_policy.clone(),
+                opt.session_runtime_cache_capacity,
+            )))
+        } else {
+            None
+        };
+
+    let executor = Arc::new(
+        Executor::new(
+            executor_meta.clone(),
+            &work_dir,
+            runtime_producer,
+            config_producer,
+            opt.override_function_registry.clone().unwrap_or_default(),
+            metrics_collector,
+            concurrent_tasks,
+            opt.override_execution_engine.clone().unwrap_or_else(|| {
+                if opt.client_ttl > 0 {
+                    let client_pool =
+                        Arc::new(DefaultBallistaClientPool::with_eviction_thread(
+                            Duration::from_secs(opt.client_ttl),
+                        ));
+                    Arc::new(DefaultExecutionEngine::with_client_pool(client_pool))
+                } else {
+                    Arc::new(DefaultExecutionEngine::new())
+                }
+            }),
+        )
+        .with_session_runtime_cache(session_runtime_cache),
+    );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let session_config = (executor.config_producer)();
@@ -738,7 +776,7 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
         }
     }
 
-    info!("The work_dir {:?} will be deleted", &to_deleted);
+    info!("The work_dir {:?} will be deleted", to_deleted);
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
             error!("Fail to remove the directory {del:?} due to {e}");
@@ -747,14 +785,19 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
     Ok(())
 }
 
-/// Remove a job directory under work_dir.
+/// Remove job data under work_dir.
 /// Used by both push-based (gRPC handler) and pull-based (poll loop) cleanup.
-pub(crate) async fn remove_job_dir(
+///
+/// `remove_stage_ids` empty ⇒ remove the whole `work_dir/{job_id}` dir (legacy
+/// behavior). Non-empty ⇒ remove only the listed `work_dir/{job_id}/{stage_id}`
+/// subdirs, retaining the rest of the job dir (e.g. the final-stage output).
+pub(crate) async fn remove_job_data(
     work_dir: &str,
-    job_id: &str,
+    job_id: &JobId,
+    remove_stage_ids: &[u32],
 ) -> ballista_core::error::Result<()> {
     let work_path = PathBuf::from(&work_dir);
-    let job_path = work_path.join(job_id);
+    let job_path = work_path.join(job_id.as_str());
 
     // Match legacy behavior: If the job path does not exist, return OK
     if !tokio::fs::try_exists(&job_path).await.unwrap_or(false) {
@@ -771,11 +814,30 @@ pub(crate) async fn remove_job_dir(
         )));
     }
 
-    info!("Remove data for job {:?}", job_id);
+    // Empty stage list ⇒ remove the whole job dir (legacy behavior).
+    if remove_stage_ids.is_empty() {
+        info!("Remove data for job {:?}", job_id);
+        return tokio::fs::remove_dir_all(&job_path).await.map_err(|e| {
+            BallistaError::General(format!("Failed to remove {job_path:?} due to {e}"))
+        });
+    }
 
-    tokio::fs::remove_dir_all(&job_path).await.map_err(|e| {
-        BallistaError::General(format!("Failed to remove {job_path:?} due to {e}"))
-    })?;
+    // Otherwise remove only the given (intermediate) stage subdirs.
+    for stage_id in remove_stage_ids {
+        let stage_path = job_path.join(stage_id.to_string());
+        if !tokio::fs::try_exists(&stage_path).await.unwrap_or(false) {
+            continue;
+        }
+        if !is_subdirectory(stage_path.as_path(), job_path.as_path()) {
+            return Err(BallistaError::General(format!(
+                "Path {stage_path:?} is not a subdirectory of {job_path:?}"
+            )));
+        }
+        info!("Remove intermediate data for job {job_id:?} stage {stage_id}");
+        tokio::fs::remove_dir_all(&stage_path).await.map_err(|e| {
+            BallistaError::General(format!("Failed to remove {stage_path:?} due to {e}"))
+        })?;
+    }
 
     Ok(())
 }
@@ -896,6 +958,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::clean_shuffle_data_loop;
+    use super::remove_job_data;
+    use ballista_core::JobId;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -974,28 +1038,65 @@ mod tests {
 
         // Normal correct one
         {
-            let job_path = prepare_testing_job_directory(base_dir, "job_a");
+            let job_path = prepare_testing_job_directory(base_dir, &"job_a".into());
             assert!(is_subdirectory(&job_path, base_dir));
         }
 
         // Empty job id
         {
-            let job_path = prepare_testing_job_directory(base_dir, "");
+            let job_path = prepare_testing_job_directory(base_dir, &"".into());
             assert!(!is_subdirectory(&job_path, base_dir));
 
-            let job_path = prepare_testing_job_directory(base_dir, ".");
+            let job_path = prepare_testing_job_directory(base_dir, &".".into());
             assert!(!is_subdirectory(&job_path, base_dir));
         }
 
         // Malicious job id
         {
-            let job_path = prepare_testing_job_directory(base_dir, "..");
+            let job_path = prepare_testing_job_directory(base_dir, &"..".into());
             assert!(!is_subdirectory(&job_path, base_dir));
         }
     }
-    fn prepare_testing_job_directory(base_dir: &Path, job_id: &str) -> PathBuf {
+    #[tokio::test]
+    async fn test_remove_intermediate_stage_data() {
+        let work_dir = TempDir::new().unwrap();
+        let work = work_dir.path();
+        let job_id: JobId = "job".into();
+
+        // Create job/1, job/2, job/3, each with a data file.
+        for stage in [1u32, 2, 3] {
+            let stage_dir = work.join("job").join(stage.to_string());
+            fs::create_dir_all(&stage_dir).unwrap();
+            File::create(stage_dir.join("data.arrow"))
+                .unwrap()
+                .write_all(b"x")
+                .unwrap();
+        }
+
+        // Remove intermediate stages 1 and 2; stage 3 (final) is retained.
+        remove_job_data(work.to_str().unwrap(), &job_id, &[1, 2])
+            .await
+            .unwrap();
+        assert!(!work.join("job").join("1").exists());
+        assert!(!work.join("job").join("2").exists());
+        assert!(work.join("job").join("3").exists());
+
+        // Removing a missing stage id is a no-op (idempotent).
+        remove_job_data(work.to_str().unwrap(), &job_id, &[99])
+            .await
+            .unwrap();
+        assert!(work.join("job").join("3").exists());
+
+        // Empty list removes the whole job dir.
+        remove_job_data(work.to_str().unwrap(), &job_id, &[])
+            .await
+            .unwrap();
+        assert!(!work.join("job").exists());
+    }
+
+    fn prepare_testing_job_directory(base_dir: &Path, job_id: &JobId) -> PathBuf {
         let mut path = base_dir.to_path_buf();
-        path.push(job_id);
+        path.push(job_id.as_str());
         if !path.exists() {
             fs::create_dir(&path).unwrap();
         }
@@ -1011,14 +1112,9 @@ mod memory_pool_tests {
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
 
-    fn baseline_producer() -> RuntimeProducer {
-        Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())))
-    }
-
     #[test]
     fn returns_error_when_total_smaller_than_concurrent_tasks() {
-        let inner = baseline_producer();
-        let result = wrap_runtime_producer_with_memory_pool(inner, 4, 8);
+        let result = memory_pool_policy(4, 8);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("memory_pool_size"));
@@ -1031,13 +1127,9 @@ mod memory_pool_tests {
         let concurrent = 8usize;
         let expected_per_task = (total / concurrent as u64) as usize;
 
-        let wrapped = wrap_runtime_producer_with_memory_pool(
-            baseline_producer(),
-            total,
-            concurrent,
-        )
-        .unwrap();
-        let env = wrapped(&SessionConfig::new()).unwrap();
+        let policy = memory_pool_policy(total, concurrent).unwrap();
+        let base = Arc::new(RuntimeEnv::default());
+        let env = policy(base, &SessionConfig::new()).unwrap();
 
         match env.memory_pool.memory_limit() {
             MemoryLimit::Finite(n) => assert_eq!(n, expected_per_task),
@@ -1047,20 +1139,26 @@ mod memory_pool_tests {
     }
 
     #[test]
-    fn preserves_inner_object_store_registry() {
+    fn preserves_base_object_store_registry() {
         let registry: Arc<dyn datafusion::execution::object_store::ObjectStoreRegistry> =
             Arc::new(DefaultObjectStoreRegistry::new());
-        let registry_for_inner = registry.clone();
-        let inner: RuntimeProducer = Arc::new(move |_| {
-            let env = RuntimeEnvBuilder::new()
-                .with_object_store_registry(registry_for_inner.clone())
-                .build()?;
-            Ok(Arc::new(env))
-        });
+        let base = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_object_store_registry(registry.clone())
+                .build()
+                .unwrap(),
+        );
 
-        let wrapped = wrap_runtime_producer_with_memory_pool(inner, 1024, 1).unwrap();
-        let env = wrapped(&SessionConfig::new()).unwrap();
+        let policy = memory_pool_policy(1024, 1).unwrap();
+        let env = policy(base, &SessionConfig::new()).unwrap();
 
         assert!(Arc::ptr_eq(&env.object_store_registry, &registry));
+    }
+
+    #[test]
+    fn identity_policy_returns_base_unchanged() {
+        let base = Arc::new(RuntimeEnv::default());
+        let env = identity_pool_policy()(base.clone(), &SessionConfig::new()).unwrap();
+        assert!(Arc::ptr_eq(&env, &base));
     }
 }

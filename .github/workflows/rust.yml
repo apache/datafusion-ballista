@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Rust
+name: Ballista Rust
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -23,36 +23,53 @@ concurrency:
 
 on:
   push:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
+    branches: [ "main" ]
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "ci/scripts/**"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-macos-builder/**"
+      - ".github/actions/setup-windows-builder/**"
+      - ".github/actions/setup-rust-runtime/**"
+      - ".github/workflows/rust.yml"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "ci/scripts/**"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-macos-builder/**"
+      - ".github/actions/setup-windows-builder/**"
+      - ".github/actions/setup-rust-runtime/**"
+      - ".github/workflows/rust.yml"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
 jobs:
   # Check crate compiles and base cargo check passes
-  linux-build-lib:
-    name: linux build test
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+  build-lib:
+    name: cargo check
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-      - name: Prepare cargo build
+        uses: ./.github/actions/setup-macos-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: cargo check
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
           # date with the manifest. When this fails, please make sure to commit
@@ -65,35 +82,30 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo test --profile ci --features=testcontainers
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   # Run `cargo doc` to ensure the rustdoc is clean
-  linux-rustdoc:
+  rustdoc:
     name: cargo doc
-    needs: linux-build-lib
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    needs: build-lib
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: stable
+        uses: ./.github/actions/setup-macos-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
 
@@ -103,34 +115,33 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo check --profile ci -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features --locked
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   ballista-test:
-    name: test linux balista
+    name: test linux ballista
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -139,40 +150,18 @@ jobs:
           cd ballista
           # Ensure also compiles in standalone mode
           cargo test --profile ci --no-default-features --features standalone --locked
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
-
-  windows-test:
-    name: windows test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          submodules: true
-          fetch-depth: 1
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-windows-builder
-      - name: Run tests
-        shell: bash
-        run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-          export TMP=$(pwd)/.temp
-          mkdir -p "$TMP"
-          cargo test --profile ci --locked
 
   macos-test:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run tests
         shell: bash
         run: |
@@ -188,93 +177,68 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Verify that benchmark queries return expected results
         run: |
           cargo test --package ballista-benchmarks --profile release-nonlto --features=ci --locked -- --test-threads=1
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run
         run: ci/scripts/rust_fmt.sh
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ${{ matrix.arch }}/rust
-      env:
-        # Disable full debug symbol generation to speed up CI build and keep memory down
-        # "1" means line tables only, which is useful for panic tracebacks.
-        RUSTFLAGS: "-C debuginfo=1"
+    runs-on: macos-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      # "1" means line tables only, which is useful for panic tracebacks.
+      RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ matrix.rust }}
-      - name: Install Clippy
-        run: |
-          rustup component add clippy
+        uses: ./.github/actions/setup-macos-builder
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
 
   cargo-toml-formatting-checks:
     name: Check Cargo.toml formatting
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ${{ matrix.arch }}/rust
-      env:
-        # Disable full debug symbol generation to speed up CI build and keep memory down
-        # "1" means line tables only, which is useful for panic tracebacks.
-        RUSTFLAGS: "-C debuginfo=1"
+    runs-on: macos-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      # "1" means line tables only, which is useful for panic tracebacks.
+      RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ matrix.rust }}
-      - name: Install cargo-tomlfmt
         run: |
-          which cargo-tomlfmt || cargo install cargo-tomlfmt
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Install cargo-tomlfmt
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: cargo-tomlfmt@0.2.1
+
       - name: Check Cargo.toml formatting
         run: |
           # if you encounter error, try rerun the command below, finally run 'git diff' to
@@ -286,9 +250,22 @@ jobs:
               echo "cargo tomlfmt found format violations"
               exit 1
           fi
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
+
+  datafusion-proto-sync-check:
+    name: Check vendored DataFusion proto is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Check vendored DataFusion proto matches pinned crate
+        run: ci/scripts/rust_proto_check.sh
+
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:
@@ -299,7 +276,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v6.0.2
+#     - uses: actions/checkout@v7.0.0
 #       with:
 #         submodules: true
 #     - name: Cache Cargo

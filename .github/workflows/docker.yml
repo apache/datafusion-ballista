@@ -16,7 +16,30 @@
 # under the License.
 
 name: Docker
-on: [pull_request, push]
+on:
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "ballista/**"
+      - "ballista-cli/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
+      - ".github/workflows/docker.yml"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -28,15 +51,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
-      - name: Installs Rust and Cargo
-        run: curl -y --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+        uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+          fetch-tags: true
       - name: Install protoc
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
+      - name: Setup Rust toolchain
+        run: |
+          rustup update stable
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run script
         run: |
+          git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
 
           ./dev/build-ballista-docker.sh
 
@@ -44,11 +75,11 @@ jobs:
           docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:latest
           docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:latest
 
-          # release dockers only when there is a release tag 
+          # release dockers only when there is a release tag
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
           then
-            
+
             docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
 
             echo "publishing docker tag $DOCKER_TAG"
@@ -56,7 +87,7 @@ jobs:
             docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
             docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
             docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG
-            
+
             docker push ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
             docker push ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
             docker push ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG

@@ -23,8 +23,9 @@
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::remove_job_dir;
+use crate::executor_process::remove_job_data;
 use crate::{TaskExecutionTimes, as_task_status};
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::BallistaCodec;
@@ -43,7 +44,7 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
@@ -116,14 +117,17 @@ where
 
                 // Clean up any state related to the listed jobs
                 for cleanup in jobs_to_clean {
-                    let job_id = cleanup.job_id.clone();
+                    let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
+                    let remove_stage_ids = cleanup.remove_stage_ids.clone();
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
                     // Failures here do not affect task execution and are only logged.
                     tokio::spawn(async move {
-                        if let Err(e) = remove_job_dir(&work_dir, &job_id).await {
-                            error!("failed to remove job dir {job_id}: {e}");
+                        if let Err(e) =
+                            remove_job_data(&work_dir, &job_id, &remove_stage_ids).await
+                        {
+                            error!("failed to remove job data {job_id}: {e}");
                         }
                     });
                 }
@@ -158,7 +162,7 @@ where
                             //
 
                             let partition_id = PartitionId {
-                                job_id: task.job_id.clone(),
+                                job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
                                 partition_id: task.partition_id as usize,
                             };
@@ -231,7 +235,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
-    let job_id = task.job_id;
+    let job_id: JobId = task.job_id.into();
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
@@ -255,8 +259,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_scalar_functions = executor.function_registry.scalar_functions.clone();
     let task_aggregate_functions = executor.function_registry.aggregate_functions.clone();
     let task_window_functions = executor.function_registry.window_functions.clone();
+    let task_higher_order_functions =
+        executor.function_registry.higher_order_functions.clone();
 
-    let runtime = executor.produce_runtime(&session_config)?;
+    let runtime =
+        executor.produce_runtime_for_session(&task.session_id, &session_config)?;
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
@@ -264,6 +271,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         session_id,
         session_config,
         task_scalar_functions,
+        task_higher_order_functions,
         task_aggregate_functions,
         task_window_functions,
         runtime.clone(),
@@ -290,6 +298,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             partition_id: partition_id as usize,
         };
 
+        let task_start = Instant::now();
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
             task_id as usize,
             part.clone(),
@@ -307,8 +316,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             }
         };
 
-        info!("Done with task {task_identity}");
-        debug!("Statistics: {execution_result:?}");
+        info!(
+            "Finished task : [{task_identity}] in {:?}",
+            task_start.elapsed()
+        );
+        debug!("Task statistics: [{task_identity}] {execution_result:?}");
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics

@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4"
+        tags = "1, 2, 3, 4, 5"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -49,7 +49,18 @@ pub mod ballista_physical_plan_node {
         UnresolvedShuffle(super::UnresolvedShuffleExecNode),
         #[prost(message, tag = "4")]
         SortShuffleWriter(super::SortShuffleWriterExecNode),
+        #[prost(message, tag = "5")]
+        ChaosExec(super::ChaosExecNode),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChaosExecNode {
+    #[prost(double, tag = "1")]
+    pub failure_probability: f64,
+    #[prost(string, tag = "2")]
+    pub fault_type: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub seed: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWriterExecNode {
@@ -95,6 +106,9 @@ pub struct UnresolvedShuffleExecNode {
     pub broadcast: bool,
     #[prost(uint32, tag = "7")]
     pub upstream_partition_count: u32,
+    /// Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
+    #[prost(message, optional, tag = "8")]
+    pub coalesce: ::core::option::Option<CoalescePlan>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
@@ -111,12 +125,33 @@ pub struct ShuffleReaderExecNode {
     pub broadcast: bool,
     #[prost(uint32, tag = "6")]
     pub upstream_partition_count: u32,
+    /// Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
+    #[prost(message, optional, tag = "7")]
+    pub coalesce: ::core::option::Option<CoalescePlan>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
     pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+}
+/// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
+/// Empty when no coalesce is applied (the optional field on the parent message is absent).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CoalescePlan {
+    /// Original number of upstream partitions (M) before coalescing. Required for EXPLAIN's "K of M" rendering.
+    #[prost(uint32, tag = "1")]
+    pub upstream_partition_count: u32,
+    /// Coalesced output groups. Length is K (the post-coalesce partition count).
+    #[prost(message, repeated, tag = "2")]
+    pub groups: ::prost::alloc::vec::Vec<PartitionGroup>,
+}
+/// One coalesced output partition's source list: a set of upstream partition indices in \[0, upstream_partition_count).
+/// Default algorithm produces only contiguous indices, but proto allows arbitrary index sets for future strategies.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionGroup {
+    #[prost(uint32, repeated, tag = "1")]
+    pub upstream_indices: ::prost::alloc::vec::Vec<u32>,
 }
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Scheduling
@@ -923,7 +958,7 @@ pub struct ExecuteQueryParams {
     /// client and scheduler
     #[prost(string, tag = "5")]
     pub operation_id: ::prost::alloc::string::String,
-    #[prost(oneof = "execute_query_params::Query", tags = "1, 6")]
+    #[prost(oneof = "execute_query_params::Query", tags = "1, 6, 7")]
     pub query: ::core::option::Option<execute_query_params::Query>,
 }
 /// Nested message and enum types in `ExecuteQueryParams`.
@@ -934,6 +969,12 @@ pub mod execute_query_params {
         LogicalPlan(::prost::alloc::vec::Vec<u8>),
         #[prost(bytes, tag = "6")]
         SubstraitPlan(::prost::alloc::vec::Vec<u8>),
+        /// An already-built physical plan, serialized with the scheduler's
+        /// physical extension codec. Lets clients bypass logical-plan creation
+        /// on the scheduler, e.g. for plans containing custom operators that
+        /// have no logical-plan representation.
+        #[prost(bytes, tag = "7")]
+        PhysicalPlan(::prost::alloc::vec::Vec<u8>),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1147,6 +1188,10 @@ pub struct CancelJobResult {
 pub struct CleanJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
+    /// Specific stage ids to remove within the job dir.
+    /// Empty means remove the whole job dir (legacy behavior).
+    #[prost(uint32, repeated, tag = "2")]
+    pub remove_stage_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CleanJobDataResult {}
@@ -1192,6 +1237,10 @@ pub struct CancelTasksResult {
 pub struct RemoveJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
+    /// Specific stage ids to remove within the job dir.
+    /// Empty means remove the whole job dir (legacy behavior).
+    #[prost(uint32, repeated, tag = "2")]
+    pub remove_stage_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveJobDataResult {}

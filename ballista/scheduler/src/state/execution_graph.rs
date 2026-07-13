@@ -27,6 +27,7 @@ use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor, accept};
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 
+use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
@@ -101,7 +102,7 @@ pub type ExecutionGraphBox = Box<dyn ExecutionGraph + Send + Sync>;
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 pub trait ExecutionGraph: Debug {
     /// Returns the job ID for this execution graph.
-    fn job_id(&self) -> &str;
+    fn job_id(&self) -> &JobId;
 
     /// Returns the job name for this execution graph.
     fn job_name(&self) -> &str;
@@ -109,7 +110,10 @@ pub trait ExecutionGraph: Debug {
     /// Returns the session ID associated with this job.
     fn session_id(&self) -> &str;
 
-    /// Returns the current job status.
+    /// Returns the session config associated with this job.
+    fn session_config(&self) -> Arc<SessionConfig>;
+
+    /// Returns the current status of the job.
     fn status(&self) -> &JobStatus;
 
     /// Returns the logical plan as a string, if captured at submission time.
@@ -215,6 +219,18 @@ pub trait ExecutionGraph: Debug {
     /// fail job with error message
     fn fail_job(&mut self, error: String);
 
+    /// Abort a running job: fail it, transition every running stage to Failed,
+    /// and return the in-flight tasks that should be cancelled. Used for both the
+    /// failure and cancellation teardown paths.
+    fn abort_running(&mut self, error: String) -> Vec<RunningTaskInfo> {
+        let running_tasks = self.running_tasks();
+        self.fail_job(error.clone());
+        for stage_id in self.running_stages() {
+            self.fail_stage(stage_id, error.clone());
+        }
+        running_tasks
+    }
+
     /// Marks the job as successfully completed.
     ///
     /// This should only be called after all stages have completed successfully.
@@ -223,6 +239,16 @@ pub trait ExecutionGraph: Debug {
 
     /// Exposes executions stages and stage id's
     fn stages(&self) -> &HashMap<usize, ExecutionStage>;
+
+    /// Stage ids of all non-final (intermediate) stages — those whose
+    /// `output_links` is non-empty. The final stage(s) are excluded.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        self.stages()
+            .iter()
+            .filter(|(_, stage)| !stage.output_links().is_empty())
+            .map(|(stage_id, _)| *stage_id as u32)
+            .collect()
+    }
 
     /// returns next task to run
     /// (used for testing only)
@@ -244,7 +270,7 @@ pub struct StaticExecutionGraph {
     #[allow(dead_code)] // not used at the moment, will be used later
     scheduler_id: Option<String>,
     /// ID for this job
-    job_id: String,
+    job_id: JobId,
     /// Job name, can be empty string
     job_name: String,
     /// Session ID for this job
@@ -283,7 +309,7 @@ pub struct RunningTaskInfo {
     /// Unique identifier for this task within the execution graph.
     pub task_id: usize,
     /// The job ID this task belongs to.
-    pub job_id: String,
+    pub job_id: JobId,
     /// The stage ID this task belongs to.
     pub stage_id: usize,
     /// The partition this task is processing.
@@ -300,7 +326,7 @@ impl StaticExecutionGraph {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scheduler_id: &str,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
@@ -319,8 +345,8 @@ impl StaticExecutionGraph {
 
         Ok(Self {
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_string(),
-            job_name: job_name.to_string(),
+            job_id: job_id.to_owned(),
+            job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
             status: JobStatus {
@@ -407,7 +433,7 @@ impl StaticExecutionGraph {
             });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
-            info!("Job {job_id} is success, finalizing output partitions");
+            debug!("Job {job_id} is success, finalizing job output ...");
             self.succeed_job()?;
             events.push(QueryStageSchedulerEvent::JobFinished {
                 job_id,
@@ -631,8 +657,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         Box::new(self.clone())
     }
 
-    fn job_id(&self) -> &str {
-        self.job_id.as_str()
+    fn job_id(&self) -> &JobId {
+        &self.job_id
     }
 
     fn job_name(&self) -> &str {
@@ -641,6 +667,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     fn session_id(&self) -> &str {
         self.session_id.as_str()
+    }
+
+    fn session_config(&self) -> Arc<SessionConfig> {
+        self.session_config.clone()
     }
 
     fn status(&self) -> &JobStatus {
@@ -771,7 +801,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -780,17 +810,17 @@ impl ExecutionGraph for StaticExecutionGraph {
                             task_stage_attempt_num,
                             partition_id
                         );
-                        let operator_metrics = task_status.metrics.clone();
-
-                        if !running_stage
-                            .update_task_info(partition_id, task_status.clone())
-                        {
+                        if !running_stage.update_task_info(partition_id, &task_status) {
                             continue;
                         }
 
-                        if let Some(task_status::Status::Failed(failed_task)) =
-                            task_status.status
-                        {
+                        let TaskStatus {
+                            status,
+                            metrics: operator_metrics,
+                            ..
+                        } = task_status;
+
+                        if let Some(task_status::Status::Failed(failed_task)) = status {
                             let failed_reason = failed_task.failed_reason;
 
                             match failed_reason {
@@ -895,7 +925,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                             }
                         } else if let Some(task_status::Status::Successful(
                             successful_task,
-                        )) = task_status.status
+                        )) = status
                         {
                             // update task metrics for successfu task
                             running_stage
@@ -946,7 +976,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                     for task_status in stage_task_statuses.into_iter() {
                         let task_stage_attempt_num =
                             task_status.stage_attempt_num as usize;
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -1348,8 +1378,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     /// fail job with error message
     fn fail_job(&mut self, error: String) {
+        self.end_time = timestamp_millis();
+
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
                 error,
@@ -1375,13 +1407,10 @@ impl ExecutionGraph for StaticExecutionGraph {
             .map(|l| l.try_into())
             .collect::<Result<Vec<_>>>()?;
 
-        self.end_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
@@ -1626,14 +1655,12 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
         plan: &dyn ExecutionPlan,
     ) -> std::result::Result<bool, Self::Error> {
         // Handle both ShuffleWriterExec and SortShuffleWriterExec
-        if let Some(shuffle_write) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+        if let Some(shuffle_write) = plan.downcast_ref::<ShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
-        } else if let Some(shuffle_write) =
-            plan.as_any().downcast_ref::<SortShuffleWriterExec>()
-        {
+        } else if let Some(shuffle_write) = plan.downcast_ref::<SortShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(unresolved_shuffle) =
-            plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
+            plan.downcast_ref::<UnresolvedShuffleExec>()
         {
             if let Some(output_links) =
                 self.output_links.get_mut(&unresolved_shuffle.stage_id)
@@ -1703,18 +1730,14 @@ impl TaskDescription {
     /// Returns the number of output partitions this task will produce.
     pub fn get_output_partition_number(&self) -> usize {
         // Try ShuffleWriterExec first
-        if let Some(shuffle_writer) =
-            self.plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
+        if let Some(shuffle_writer) = self.plan.downcast_ref::<ShuffleWriterExec>() {
             return shuffle_writer
                 .shuffle_output_partitioning()
                 .map(|partitioning| partitioning.partition_count())
                 .unwrap_or(1);
         }
         // Try SortShuffleWriterExec
-        if let Some(shuffle_writer) =
-            self.plan.as_any().downcast_ref::<SortShuffleWriterExec>()
-        {
+        if let Some(shuffle_writer) = self.plan.downcast_ref::<SortShuffleWriterExec>() {
             return shuffle_writer
                 .shuffle_output_partitioning()
                 .partition_count();
@@ -1725,7 +1748,7 @@ impl TaskDescription {
 }
 
 pub(crate) fn partition_to_location(
-    job_id: &str,
+    job_id: &JobId,
     map_partition_id: usize,
     stage_id: usize,
     executor: &ExecutorMetadata,
@@ -1760,10 +1783,11 @@ mod test {
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
-        TaskKilled, failed_task, job_status,
+        TaskKilled, failed_task, job_status, task_status,
     };
 
     use crate::state::execution_graph::ExecutionGraph;
+    use crate::state::execution_stage::ExecutionStage;
     use crate::test_utils::{
         mock_completed_task, mock_executor, mock_failed_task,
         revive_graph_and_complete_next_stage,
@@ -1771,6 +1795,65 @@ mod test {
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
+
+    #[tokio::test]
+    async fn test_intermediate_stage_ids() {
+        // A simple aggregation produces a 2-stage graph: one intermediate
+        // stage (non-empty output_links) feeding one final stage (empty
+        // output_links).
+        let graph = test_aggregation_plan(4).await;
+
+        assert_eq!(graph.stages().len(), 2);
+
+        // Exactly one final stage.
+        let final_count = graph
+            .stages()
+            .values()
+            .filter(|s| s.output_links().is_empty())
+            .count();
+        assert_eq!(final_count, 1);
+
+        // Intermediate = all - final = exactly one stage, and none of the
+        // returned ids is a final stage.
+        let intermediate = graph.intermediate_stage_ids();
+        assert_eq!(intermediate.len(), 1);
+        for id in &intermediate {
+            let stage = graph.stages().get(&(*id as usize)).unwrap();
+            assert!(!stage.output_links().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fail_job_sets_end_time_and_failed_metadata() -> Result<()> {
+        let mut graph = test_aggregation_plan(4).await;
+        let start = graph.start_time();
+        assert_eq!(graph.end_time(), 0);
+
+        ExecutionGraph::fail_job(&mut graph, "test failure".to_string());
+
+        assert!(
+            matches!(
+                graph.status().status.as_ref(),
+                Some(job_status::Status::Failed(f)) if f.error == "test failure"
+            ),
+            "expected FailedJob status after fail_job"
+        );
+        assert!(
+            graph.end_time() >= start,
+            "end_time ({}) should be set and >= start_time ({})",
+            graph.end_time(),
+            start
+        );
+
+        if let Some(job_status::Status::Failed(failed)) = &graph.status().status {
+            assert_eq!(failed.started_at, start);
+            assert_eq!(failed.ended_at, graph.end_time());
+        } else {
+            panic!("missing FailedJob");
+        }
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_drain_tasks() -> Result<()> {
@@ -2118,6 +2201,72 @@ mod test {
         ));
         assert!(failure_reason.contains("IOError"));
         assert!(!agg_graph.is_successful());
+
+        Ok(())
+    }
+
+    // Aborting a running job (failure or cancellation) must transition every
+    // running stage to Failed and return its in-flight tasks for cancellation.
+    // `abort_running` is the shared teardown invoked by `abort_job`.
+    #[tokio::test]
+    async fn test_abort_running_cancels_stages_and_returns_inflight_tasks() -> Result<()>
+    {
+        let executor = mock_executor("executor-id1".to_string());
+        let mut graph = test_join_plan(2).await;
+
+        // Call revive to move the two leaf Resolved stages to Running
+        graph.revive();
+        assert!(
+            graph.running_stages().len() >= 2,
+            "expected two concurrently running leaf stages, found {:?}",
+            graph.running_stages()
+        );
+
+        // Dispatch a task so there is an in-flight task to cancel
+        let _task = graph.pop_next_task(&executor.id)?.unwrap();
+
+        // Aborting cancels every running stage and returns its in-flight tasks
+        let cancelled = graph.abort_running("job aborted".to_string());
+
+        assert!(
+            !cancelled.is_empty(),
+            "abort_running must return the in-flight tasks to cancel"
+        );
+        assert!(
+            graph.running_stages().is_empty(),
+            "every running stage must be cancelled, found {:?}",
+            graph.running_stages()
+        );
+        assert!(
+            matches!(
+                graph.status(),
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "the job must be Failed after abort"
+        );
+
+        // In-flight tasks of the cancelled stage are recorded as Failed(TaskKilled)
+        let has_killed_task = graph.stages.values().any(|stage| match stage {
+            ExecutionStage::Failed(failed) => {
+                failed.task_infos.iter().flatten().any(|info| {
+                    matches!(
+                        &info.task_status,
+                        task_status::Status::Failed(FailedTask {
+                            failed_reason: Some(failed_task::FailedReason::TaskKilled(_)),
+                            ..
+                        })
+                    )
+                })
+            }
+            _ => false,
+        });
+        assert!(
+            has_killed_task,
+            "in-flight tasks must be recorded as Failed(TaskKilled) after abort"
+        );
 
         Ok(())
     }

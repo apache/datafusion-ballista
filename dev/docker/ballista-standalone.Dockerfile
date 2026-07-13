@@ -18,7 +18,7 @@
 FROM ubuntu:24.04
 
 LABEL org.opencontainers.image.source="https://github.com/apache/datafusion-ballista"
-LABEL org.opencontainers.image.description="Apache Arrow Ballista Distributed SQL Query Engine"
+LABEL org.opencontainers.image.description="Apache DataFusion Ballista Distributed SQL Query Engine"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ARG RELEASE_FLAG=release
@@ -30,17 +30,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get -qq update && apt-get install -qq -y wget
 
-COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
-COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
+COPY target/${RELEASE_FLAG}/ballista-scheduler /root/ballista-scheduler
+COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
 
 RUN chmod a+x /root/ballista-scheduler && \
     chmod a+x /root/ballista-executor
-
-# populate some sample data for ListingSchemaProvider
-RUN mkdir -p /data && \
-    wget -q https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P /data/
-ENV DATAFUSION_CATALOG_LOCATION=/data
-ENV DATAFUSION_CATALOG_TYPE=csv
 
 # Expose Ballista Scheduler gRPC port
 EXPOSE 50050

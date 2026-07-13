@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::display::format_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
@@ -21,15 +22,18 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use ballista_core::BALLISTA_VERSION;
+use ballista_core::serde::protobuf::failed_task::FailedReason::{
+    ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
+};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    ExecutorMetric, executor_metric::Metric, task_status,
+    ExecutorMetric, FailedTask, executor_metric::Metric, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
 use ballista_core::utils::get_current_time;
+use ballista_core::{BALLISTA_VERSION, JobId};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
@@ -69,18 +73,13 @@ struct SchedulerVersionResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct ExecutorBriefResponse {
+pub struct ExecutorResponse {
     pub id: String,
     pub host: String,
     pub port: u16,
     pub last_seen: Option<u128>,
     pub specification: ExecutorSpecification,
     pub metrics: Vec<ExecutorMetricResponse>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct ExecutorDetailedResponse {
-    pub executor_info: ExecutorBriefResponse,
     pub os_info: ExecutorOperatingSystemSpecification,
 }
 
@@ -113,7 +112,7 @@ impl ExecutorMetricResponse {
 
 #[derive(Debug, serde::Serialize)]
 pub struct JobResponse {
-    pub job_id: String,
+    pub job_id: JobId,
     pub job_name: String,
     pub job_status: String,
     pub status: String,
@@ -169,14 +168,17 @@ pub struct TaskSummary {
 pub enum TaskStatus {
     Running,
     Successful,
-    Failed,
+    Failed { reason: String, error: String },
 }
 
 impl From<&task_status::Status> for TaskStatus {
     fn from(value: &task_status::Status) -> Self {
         match value {
             task_status::Status::Running(_) => TaskStatus::Running,
-            task_status::Status::Failed(_) => TaskStatus::Failed,
+            task_status::Status::Failed(failed) => TaskStatus::Failed {
+                reason: failed_reason(failed),
+                error: failed.error.clone(),
+            },
             task_status::Status::Successful(_) => TaskStatus::Successful,
         }
     }
@@ -197,7 +199,7 @@ pub struct QueryStageSummary {
     pub stage_status: String,
     pub input_rows: usize,
     pub output_rows: usize,
-    pub elapsed_compute: String,
+    pub elapsed_compute: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,8 +211,20 @@ pub struct QueryStageSummary {
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct JobQueryParams {
-    /// Flag to tree-style render for physical plan
-    pub render_tree: Option<bool>,
+    /// Controls plan format
+    pub plan_format: Option<PlanFormat>,
+}
+
+#[derive(Debug, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFormat {
+    /// ?plan_format=default => plain indent, no metrics
+    #[default]
+    Default,
+    /// ?plan_format=tree => tree render, no metrics
+    Tree,
+    /// ?plan_format=metrics => indent with aggregated metrics   
+    Metrics,
 }
 
 pub async fn get_scheduler_state<
@@ -253,13 +267,13 @@ pub async fn get_executors<
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> impl IntoResponse {
     let state = &data_server.state;
-    let executors: Vec<ExecutorBriefResponse> = state
+    let executors: Vec<ExecutorResponse> = state
         .executor_manager
         .get_executors_state()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|(metadata, duration, metrics)| ExecutorBriefResponse {
+        .map(|(metadata, duration, metrics)| ExecutorResponse {
             id: metadata.id,
             host: metadata.host,
             port: metadata.port,
@@ -269,6 +283,7 @@ pub async fn get_executors<
                 .into_iter()
                 .filter_map(ExecutorMetricResponse::from_proto)
                 .collect(),
+            os_info: metadata.os_info,
         })
         .collect();
 
@@ -290,23 +305,17 @@ pub async fn get_executor_info<
         .unwrap_or_default()
         .into_iter()
         .find(|(metadata, _, _)| metadata.id == executor_id)
-        .map(|(metadata, duration, metrics)| {
-            let executor_info = ExecutorBriefResponse {
-                id: metadata.id,
-                host: metadata.host,
-                port: metadata.port,
-                last_seen: duration.map(|d| d.as_millis()),
-                specification: metadata.specification,
-                metrics: metrics
-                    .into_iter()
-                    .filter_map(ExecutorMetricResponse::from_proto)
-                    .collect(),
-            };
-
-            ExecutorDetailedResponse {
-                executor_info,
-                os_info: metadata.os_info,
-            }
+        .map(|(metadata, duration, metrics)| ExecutorResponse {
+            id: metadata.id,
+            host: metadata.host,
+            port: metadata.port,
+            last_seen: duration.map(|d| d.as_millis()),
+            specification: metadata.specification,
+            metrics: metrics
+                .into_iter()
+                .filter_map(ExecutorMetricResponse::from_proto)
+                .collect(),
+            os_info: metadata.os_info,
         });
 
     executor_info
@@ -322,7 +331,7 @@ pub async fn get_jobs<
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
 
-    let jobs = state.task_manager.get_jobs().await.map_err(|e| {
+    let jobs = state.task_manager.get_all_jobs().await.map_err(|e| {
         tracing::error!("Error occurred while getting jobs, reason: {e:?}");
         SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
     })?;
@@ -330,16 +339,21 @@ pub async fn get_jobs<
     let jobs: Vec<JobResponse> = jobs
         .iter()
         .map(|job| {
-            let (plain_status, job_status) =
-                format_job_status(&job.status.status, job.end_time - job.start_time);
+            let (plain_status, job_status) = format_job_status(
+                &job.status.status,
+                job_elapsed_ms(job.start_time, job.end_time),
+            );
 
             // calculate progress based on completed stages for now, but we could use completed
             // tasks in the future to make this more accurate
-            let percent_complete =
-                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8;
+            let percent_complete = if job.num_stages == 0 {
+                0
+            } else {
+                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8
+            };
             JobResponse {
-                job_id: job.job_id.to_string(),
-                job_name: job.job_name.to_string(),
+                job_id: job.job_id.to_owned(),
+                job_name: job.job_name.to_owned(),
                 job_status,
                 status: plain_status,
                 start_time: job.start_time,
@@ -368,7 +382,7 @@ pub async fn get_job<
     let graph = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|err| {
             tracing::error!("Error occurred while getting the execution graph for job '{job_id}' reason: {err:?}");
@@ -377,29 +391,32 @@ pub async fn get_job<
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
     let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
-    let (plain_status, job_status) =
-        format_job_status(&job.status().status, job.end_time() - job.start_time());
+    let (plain_status, job_status) = format_job_status(
+        &job.status().status,
+        job_elapsed_ms(job.start_time(), job.end_time()),
+    );
 
     let num_stages = job.stage_count();
     let completed_stages = job.completed_stages();
     let percent_complete =
         ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
-    let physical_plan = if render_tree {
-        displayable(job.physical_plan().as_ref())
+    let physical_plan = match plan_format {
+        PlanFormat::Default | PlanFormat::Metrics => {
+            DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+                .indent(false)
+                .to_string()
+        }
+        PlanFormat::Tree => displayable(job.physical_plan().as_ref())
             .tree_render()
-            .to_string()
-    } else {
-        DisplayableExecutionPlan::new(job.physical_plan().as_ref())
-            .indent(false)
-            .to_string()
+            .to_string(),
     };
 
     Ok(Json(JobResponse {
-        job_id: job.job_id().to_string(),
-        job_name: job.job_name().to_string(),
+        job_id: job.job_id().to_owned(),
+        job_name: job.job_name().to_owned(),
         job_status,
         status: plain_status,
         start_time: job.start_time(),
@@ -424,7 +441,7 @@ pub async fn cancel_job<
     let job_status = data_server
         .state
         .task_manager
-        .get_job_status(&job_id)
+        .get_job_status(&job_id.clone().into())
         .await
         .map_err(|err| {
             tracing::error!("Error getting job status: {err:?}");
@@ -446,7 +463,7 @@ pub async fn cancel_job<
                     );
                     SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
                 })?
-                .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
+                .post_event(QueryStageSchedulerEvent::JobCancel(job_id.into()))
                 .await
                 .map_err(|_| {
                     SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
@@ -493,12 +510,12 @@ pub async fn get_query_stages<
     Path(job_id): Path<String>,
     query: Query<JobQueryParams>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let render_tree = query.render_tree.unwrap_or(false);
+    let plan_format = query.plan_format.clone().unwrap_or_default();
 
     if let Some(graph) = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|e| {
             tracing::error!("Error occurred while getting the query stages for job '{job_id}' reason: {e:?}");
@@ -518,7 +535,7 @@ pub async fn get_query_stages<
                     stage_status: stage.variant_name().to_string(),
                     input_rows: 0,
                     output_rows: 0,
-                    elapsed_compute: "".to_string(),
+                    elapsed_compute: None,
                     tasks: vec![],
                     task_duration_percentiles: None,
                     task_input_percentiles: None,
@@ -526,11 +543,12 @@ pub async fn get_query_stages<
                 };
                 match stage {
                     ExecutionStage::Running(running_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(running_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(running_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        let metrics = running_stage.stage_metrics.as_deref().unwrap_or(&[]);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(running_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree    => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(running_stage.plan.as_ref(), metrics),
+                        });
                         summary.input_rows = running_stage
                             .stage_metrics
                             .as_ref()
@@ -542,8 +560,7 @@ pub async fn get_query_stages<
                             .map(|m| get_combined_count(m.as_slice(), "output_rows"))
                             .unwrap_or(0);
                         summary.elapsed_compute = get_running_stage_time(&running_stage
-                            .task_infos, get_current_time())
-                            ;
+                            .task_infos, get_current_time());
                         summary.tasks = running_stage
                             .task_infos
                             .iter()
@@ -581,11 +598,11 @@ pub async fn get_query_stages<
                             .collect();
                     }
                     ExecutionStage::Successful(completed_stage) => {
-                        summary.stage_plan = if render_tree {
-                            Some(displayable(completed_stage.plan.as_ref()).tree_render().to_string())
-                        } else {
-                            Some(displayable(completed_stage.plan.as_ref()).indent(false).to_string())
-                        };
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(completed_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree    => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
+                        });
                         summary.input_rows = get_combined_count(
                             &completed_stage.stage_metrics,
                             "input_rows",
@@ -622,6 +639,54 @@ pub async fn get_query_stages<
                                     input_rows,
                                     output_rows,
                                     status: task_status
+                                })
+                            })
+                            .collect();
+                    }
+                    ExecutionStage::Failed(failed_stage) => {
+                        let metrics = failed_stage.stage_metrics.as_deref().unwrap_or(&[]);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(failed_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree => displayable(failed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(failed_stage.plan.as_ref(), metrics),
+                        });
+                        summary.input_rows = get_combined_count(metrics, "input_rows");
+                        summary.output_rows = get_combined_count(metrics, "output_rows");
+                        summary.elapsed_compute = get_finished_stage_time(
+                            &failed_stage
+                                .task_infos
+                                .iter()
+                                .flatten()
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        );
+
+                        summary.tasks = failed_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                task_info.as_ref().map(|info| {
+                                    let (input_rows, output_rows) =
+                                        get_partition_counts(metrics, partition_id);
+
+                                    let start_exec_time = info.start_exec_time as u64;
+                                    let end_exec_time = info.end_exec_time as u64;
+                                    let task_status: TaskStatus = (&info.task_status).into();
+
+                                    TaskSummary {
+                                        id: info.task_id,
+                                        partition_id: partition_id as u32,
+                                        scheduled_time: info.scheduled_time as u64,
+                                        launch_time: info.launch_time as u64,
+                                        start_exec_time,
+                                        end_exec_time,
+                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                        finish_time: info.finish_time as u64,
+                                        input_rows,
+                                        output_rows,
+                                        status: task_status,
+                                    }
                                 })
                             })
                             .collect();
@@ -686,6 +751,14 @@ fn task_duration_percentiles(tasks: &[Option<TaskSummary>]) -> Option<Percentile
     })
 }
 
+/// Returns elapsed wall time in milliseconds for API formatting.
+///
+/// Uses saturating subtraction so inconsistent timestamps (e.g. failed jobs, or
+/// `end_time` still zero while `start_time` is set) do not panic on subtract.
+fn job_elapsed_ms(start_time: u64, end_time: u64) -> u64 {
+    end_time.saturating_sub(start_time)
+}
+
 fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, String) {
     match status {
         Some(Status::Queued(_)) => ("Queued".to_string(), "Queued".to_string()),
@@ -722,7 +795,10 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -> String {
+fn get_running_stage_time(
+    task_infos: &[Option<TaskInfo>],
+    current_time: u128,
+) -> Option<String> {
     let min_start = task_infos
         .iter()
         .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
@@ -730,16 +806,29 @@ fn get_running_stage_time(task_infos: &[Option<TaskInfo>], current_time: u128) -
         .min();
 
     match (min_start, current_time) {
-        (Some(start), end) if end > start => {
-            let t = Time::new();
-            t.add_duration(Duration::from_millis((end - start) as u64));
-            t.to_string()
+        (Some(start), end) if end >= start => {
+            let time = Time::new();
+            time.add_duration(Duration::from_millis((end - start) as u64));
+            Some(time.to_string())
         }
-        _ => "0".to_string(),
+        _ => None,
     }
 }
 
-fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
+fn failed_reason(failed: &FailedTask) -> String {
+    match &failed.failed_reason {
+        Some(ExecutionError(_)) => "ExecutionError",
+        Some(FetchPartitionError(_)) => "FetchPartitionError",
+        Some(IoError(_)) => "IoError",
+        Some(ExecutorLost(_)) => "ExecutorLost",
+        Some(ResultLost(_)) => "ResultLost",
+        Some(TaskKilled(_)) => "TaskKilled",
+        None => "Failed",
+    }
+    .to_string()
+}
+
+fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
     let min_start = task_infos
         .iter()
         .map(|t| t.start_exec_time)
@@ -753,12 +842,12 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> String {
         .max();
 
     match (min_start, max_end) {
-        (Some(start), Some(end)) if end > start => {
-            let t = Time::new();
-            t.add_duration(Duration::from_millis((end - start) as u64));
-            t.to_string()
+        (Some(start), Some(end)) if end >= start => {
+            let time = Time::new();
+            time.add_duration(Duration::from_millis((end - start) as u64));
+            Some(time.to_string())
         }
-        _ => "0".to_string(),
+        _ => None,
     }
 }
 
@@ -811,7 +900,7 @@ pub async fn get_job_dot_graph<
     if let Some(graph) = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|e| {
             tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
@@ -838,7 +927,7 @@ pub async fn get_query_stage_dot_graph<
     if let Some(graph) = data_server
         .state
         .task_manager
-        .get_job_execution_graph(&job_id)
+        .get_job_execution_graph(&job_id.clone().into())
         .await
         .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))?
     {
@@ -904,6 +993,22 @@ pub async fn get_scheduler_metrics<
     }
 }
 
+pub async fn get_job_config<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
+    data_server
+        .state
+        .task_manager
+        .get_job_config(&job_id.clone().into())
+        .await
+        .map(|e| Json(e.to_props()))
+        .map_err(|_| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,24 +1027,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_job_elapsed_saturates_when_end_precedes_start() {
+        assert_eq!(job_elapsed_ms(900, 100), 0);
+    }
+
     // --- get_finished_stage_time ---
 
     #[test]
-    fn test_finished_empty_slice_returns_zero() {
-        assert_eq!(get_finished_stage_time(&[]), "0");
+    fn test_finished_empty_slice_returns_none() {
+        assert_eq!(get_finished_stage_time(&[]), None);
     }
 
     #[test]
-    fn test_finished_all_zero_timestamps_returns_zero() {
+    fn test_finished_all_zero_timestamps_returns_none() {
         let tasks = vec![make_task_info(0, 0), make_task_info(0, 0)];
-        assert_eq!(get_finished_stage_time(&tasks), "0");
+        assert_eq!(get_finished_stage_time(&tasks), None);
     }
 
     #[test]
     fn test_finished_single_task_elapsed() {
         // 600 - 100 = 500 ms → "500.00ms"
         let tasks = vec![make_task_info(100, 600)];
-        assert_eq!(get_finished_stage_time(&tasks), "500.00ms");
+        assert_eq!(
+            get_finished_stage_time(&tasks),
+            Some("500.00ms".to_string())
+        );
     }
 
     #[test]
@@ -950,41 +1063,47 @@ mod tests {
             make_task_info(200, 900),
             make_task_info(300, 700),
         ];
-        assert_eq!(get_finished_stage_time(&tasks), "800.00ms");
+        assert_eq!(
+            get_finished_stage_time(&tasks),
+            Some("800.00ms".to_string())
+        );
     }
 
     #[test]
-    fn test_finished_end_before_start_returns_zero() {
+    fn test_finished_end_before_start_returns_none() {
         let tasks = vec![make_task_info(900, 100)];
-        assert_eq!(get_finished_stage_time(&tasks), "0");
+        assert_eq!(get_finished_stage_time(&tasks), None);
     }
 
     // --- get_running_stage_time ---
 
     #[test]
-    fn test_running_empty_slice_returns_zero() {
-        assert_eq!(get_running_stage_time(&[], 1000), "0");
+    fn test_running_empty_slice_returns_none() {
+        assert_eq!(get_running_stage_time(&[], 1000), None);
     }
 
     #[test]
-    fn test_running_all_none_returns_zero() {
+    fn test_running_all_none_returns_none() {
         let tasks: Vec<Option<TaskInfo>> = vec![None, None];
-        assert_eq!(get_running_stage_time(&tasks, 1000), "0");
+        assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
     #[test]
-    fn test_running_future_start_returns_zero() {
+    fn test_running_future_start_returns_none() {
         // start_exec_time beyond current time → elapsed clamped to 0
         let tasks = vec![Some(make_task_info(u128::MAX, 0))];
-        assert_eq!(get_running_stage_time(&tasks, 1000), "0");
+        assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
     #[test]
-    fn test_running_past_start_returns_nonzero() {
+    fn test_running_past_start_returns_some() {
         let now = 4_000;
         let start = 1_000;
         let tasks = vec![Some(make_task_info(start, 0))];
-        assert_eq!(get_running_stage_time(&tasks, now), "3.00s");
+        assert_eq!(
+            get_running_stage_time(&tasks, now),
+            Some("3.00s".to_string())
+        );
     }
 
     #[test]
@@ -999,6 +1118,16 @@ mod tests {
             None,
         ];
         let result = get_running_stage_time(&tasks, now);
-        assert_eq!(result, "2.00s");
+        assert_eq!(result, Some("2.00s".to_string()));
+    }
+
+    #[test]
+    fn test_job_elapsed_ms_normal() {
+        assert_eq!(super::job_elapsed_ms(100, 500), 400);
+    }
+
+    #[test]
+    fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
+        assert_eq!(super::job_elapsed_ms(500, 100), 0);
     }
 }

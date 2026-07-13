@@ -19,7 +19,7 @@
 name = "ballista-executor"
 description = "Ballista Distributed Compute - Executor"
 license = "Apache-2.0"
-version = "53.0.0"
+version = "54.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
@@ -34,15 +34,15 @@ required-features = ["build-binary"]
 
 [features]
 arrow-ipc-optimizations = []
-build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
-default = ["arrow-ipc-optimizations", "build-binary", "mimalloc"]
+build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary", "mimalloc"]
+default = ["arrow-ipc-optimizations", "build-binary"]
 spark-compat = ["ballista-core/spark-compat"]
 
 [dependencies]
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-ballista-core = { path = "../core", version = "53.0.0" }
+ballista-core = { path = "../core", version = "54.0.0" }
 bytesize = "2"
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
@@ -50,6 +50,7 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
+lru = "0.18"
 memory-stats = { version = "1.2.0", features = ["always_use_statm"] }
 mimalloc = { workspace = true, optional = true }
 parking_lot = { workspace = true }

@@ -15,25 +15,35 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod executor_details_popup;
 mod executors_table;
 mod jobs;
 
 use jobs::render_jobs;
 
+use crate::tui::ui::components::clear_area::clear_area;
+#[cfg(not(feature = "web"))]
+use crate::tui::{
+    TuiResult,
+    event::{Event, UiData},
+};
+use crate::tui::{app::App, domain::executors::Executor};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    widgets::Clear,
 };
 
-use crate::tui::{
-    TuiResult,
-    app::App,
-    event::{Event, UiData},
-};
+#[cfg(not(feature = "web"))]
+pub async fn load_executor_details_popup(app: &App, executor_id: &str) -> TuiResult<()> {
+    let executor = app.http_client.get_executor(executor_id).await?;
+    app.send_event(Event::DataLoaded {
+        data: UiData::ExecutorDetails(executor),
+    })
+    .await
+}
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -49,6 +59,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+#[cfg(not(feature = "web"))]
 pub async fn load_executors_data(app: &App) -> TuiResult<()> {
     let (scheduler_result, executors_result, jobs_result) = tokio::join!(
         app.http_client.get_scheduler_state(),
@@ -72,4 +83,14 @@ pub async fn load_executors_data(app: &App) -> TuiResult<()> {
         data: UiData::Executors(scheduler_state, executors_data, jobs_data),
     })
     .await
+}
+
+fn format_last_seen(executor: &Executor, app: &App) -> String {
+    executor
+        .last_seen
+        .map(|d| match d.try_into() {
+            Ok(d) => app.format_datetime(d),
+            Err(_) => "Invalid timestamp".to_string(),
+        })
+        .unwrap_or_else(|| "N/A".to_string())
 }

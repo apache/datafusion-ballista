@@ -21,7 +21,7 @@ pub mod prometheus;
 
 #[cfg(feature = "prometheus")]
 use crate::metrics::prometheus::PrometheusMetricsCollector;
-use ballista_core::error::Result;
+use ballista_core::{JobId, error::Result};
 use std::sync::Arc;
 
 /// Interface for recording metrics events in the scheduler. An instance of `Arc<dyn SchedulerMetricsCollector>`
@@ -33,21 +33,21 @@ pub trait SchedulerMetricsCollector: Send + Sync {
     /// on executors.
     /// When invoked should specify the timestamp in milliseconds when the job was originally
     /// queued and the timestamp in milliseconds when it was submitted
-    fn record_submitted(&self, job_id: &str, queued_at: u64, submitted_at: u64);
+    fn record_submitted(&self, job_id: &JobId, queued_at: u64, submitted_at: u64);
 
     /// Record that job with `job_id` has completed successfully. This should only
     /// be invoked on successful job completion.
     /// When invoked should specify the timestamp in milliseconds when the job was originally
     /// queued and the timestamp in milliseconds when it was completed
-    fn record_completed(&self, job_id: &str, queued_at: u64, completed_at: u64);
+    fn record_completed(&self, job_id: &JobId, queued_at: u64, completed_at: u64);
 
     /// Record that job with `job_id` has failed.
     /// When invoked should specify the timestamp in milliseconds when the job was originally
     /// queued and the timestamp in milliseconds when it failed.
-    fn record_failed(&self, job_id: &str, queued_at: u64, failed_at: u64);
+    fn record_failed(&self, job_id: &JobId, queued_at: u64, failed_at: u64);
 
     /// Record that job with `job_id` was cancelled.
-    fn record_cancelled(&self, job_id: &str);
+    fn record_cancelled(&self, job_id: &JobId);
 
     /// Set the current number of pending tasks in scheduler. A pending task is a task that is available
     /// to schedule on an executor but cannot be scheduled because no resources are available.
@@ -64,10 +64,10 @@ pub trait SchedulerMetricsCollector: Send + Sync {
 pub struct NoopMetricsCollector {}
 
 impl SchedulerMetricsCollector for NoopMetricsCollector {
-    fn record_submitted(&self, _job_id: &str, _queued_at: u64, _submitted_at: u64) {}
-    fn record_completed(&self, _job_id: &str, _queued_at: u64, _completed_att: u64) {}
-    fn record_failed(&self, _job_id: &str, _queued_at: u64, _failed_at: u64) {}
-    fn record_cancelled(&self, _job_id: &str) {}
+    fn record_submitted(&self, _job_id: &JobId, _queued_at: u64, _submitted_at: u64) {}
+    fn record_completed(&self, _job_id: &JobId, _queued_at: u64, _completed_att: u64) {}
+    fn record_failed(&self, _job_id: &JobId, _queued_at: u64, _failed_at: u64) {}
+    fn record_cancelled(&self, _job_id: &JobId) {}
     fn set_pending_tasks_queue_size(&self, _value: u64) {}
 
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {

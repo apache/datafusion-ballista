@@ -17,9 +17,10 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::executors::{Executor, SortColumn};
+use crate::tui::ui::vertical_scrollbar;
 use crate::tui::ui::vertical_scrollbar::render_scrollbar;
 use ratatui::layout::Constraint;
-use ratatui::prelude::{Color, Text};
+use ratatui::prelude::Text;
 use ratatui::style::Style;
 use ratatui::widgets::{Cell, HighlightSpacing, Row, Table};
 use ratatui::{
@@ -34,47 +35,56 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     match &app.executors_data.executors {
         executors if !executors.is_empty() => {
             let mut scroll_state = app.executors_data.scrollbar_state;
-            render_executors_table(f, area, app);
-            render_scrollbar(f, area, &mut scroll_state);
+            let rects = vertical_scrollbar::split_area(area);
+            render_executors_table(f, rects[0], app);
+            render_scrollbar(f, rects[1], &mut scroll_state);
         }
         _no_executors => {
-            f.render_widget(no_live_executors(block), area);
+            f.render_widget(no_live_executors(block, app.theme.text_error), area);
         }
     };
 }
 
 fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
-    let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
-
     let sort_column = &app.executors_data.sort_column;
     let sort_order = &app.executors_data.sort_order;
 
-    let host_suffix = match (sort_column, sort_order) {
-        (SortColumn::Host, crate::tui::domain::SortOrder::Ascending) => " ▲",
-        (SortColumn::Host, crate::tui::domain::SortOrder::Descending) => " ▼",
-        _ => "",
-    };
-    let id_suffix = match (sort_column, sort_order) {
-        (SortColumn::Id, crate::tui::domain::SortOrder::Ascending) => " ▲",
-        (SortColumn::Id, crate::tui::domain::SortOrder::Descending) => " ▼",
-        _ => "",
-    };
-    let last_seen_suffix = match (sort_column, sort_order) {
-        (SortColumn::LastSeen, crate::tui::domain::SortOrder::Ascending) => " ▲",
-        (SortColumn::LastSeen, crate::tui::domain::SortOrder::Descending) => " ▼",
-        _ => "",
-    };
+    macro_rules! sort_suffix {
+        ($column:path, $sort_column:expr, $sort_order:expr) => {
+            match ($sort_column, $sort_order) {
+                ($column, crate::tui::domain::SortOrder::Ascending) => " ▲",
+                ($column, crate::tui::domain::SortOrder::Descending) => " ▼",
+                _ => "",
+            }
+        };
+    }
 
-    let header = [
-        format!("Host{host_suffix}"),
-        format!("Id{id_suffix}"),
-        format!("Last seen{last_seen_suffix}"),
-    ]
-    .into_iter()
-    .map(|item| Text::from(item).centered())
-    .map(Cell::from)
-    .collect::<Row>()
-    .style(header_style)
+    let host_suffix = sort_suffix!(SortColumn::Host, sort_column, sort_order);
+    let id_suffix = sort_suffix!(SortColumn::Id, sort_column, sort_order);
+    let cpu_cores_suffix = sort_suffix!(SortColumn::CpuCores, sort_column, sort_order);
+    let task_slots_suffix = sort_suffix!(SortColumn::TaskSlots, sort_column, sort_order);
+    let proc_physical_memory_suffix =
+        sort_suffix!(SortColumn::ProcPhysicalMemoryUsage, sort_column, sort_order);
+    let peak_physical_memory_suffix =
+        sort_suffix!(SortColumn::PeakPhysicalMemoryUsage, sort_column, sort_order);
+    let last_seen_suffix = sort_suffix!(SortColumn::LastSeen, sort_column, sort_order);
+
+    let header_row = Row::new(vec![
+        Cell::from(Text::from(format!("Host{host_suffix}")).centered()),
+        Cell::from(Text::from(format!("Id{id_suffix}")).centered()),
+        Cell::from(Text::from(format!("CPU cores{cpu_cores_suffix}")).right_aligned()),
+        Cell::from(Text::from(format!("Task Slots{task_slots_suffix}")).right_aligned()),
+        Cell::from(
+            Text::from(format!("Physical Memory{proc_physical_memory_suffix}"))
+                .right_aligned(),
+        ),
+        Cell::from(
+            Text::from(format!("Peak Physical Memory{peak_physical_memory_suffix}"))
+                .right_aligned(),
+        ),
+        Cell::from(Text::from(format!("Last Seen{last_seen_suffix}")).centered()),
+    ])
+    .style(app.theme.table_header)
     .height(1);
 
     let rows = app
@@ -83,44 +93,77 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, executor)| {
-            let color = match i % 2 {
-                0 => Color::DarkGray,
-                _ => Color::Black,
+            let row_style = if i % 2 == 0 {
+                app.theme.row_even
+            } else {
+                app.theme.row_odd
             };
 
             let host_cell = Cell::from(
                 Text::from(format!("{}:{}", executor.host, executor.port)).centered(),
             );
             let id_cell = Cell::from(Text::from(executor.id.clone()).centered());
+            let cpu_cores_cell = Cell::from(
+                Text::from(app.format_count(executor.cpu_cores() as usize))
+                    .right_aligned(),
+            );
+            let task_slots_cell = Cell::from(
+                Text::from(app.format_count(executor.specification.task_slots as usize))
+                    .right_aligned(),
+            );
+            let proc_physical_memory_cell = Cell::from(
+                Text::from(
+                    app.format_size(executor.proc_physical_memory_usage() as usize),
+                )
+                .right_aligned(),
+            );
+            let peak_physical_memory_cell = Cell::from(
+                Text::from(
+                    app.format_size(executor.peak_physical_memory_usage() as usize),
+                )
+                .right_aligned(),
+            );
             let last_seen_cell = render_last_seen_cell(executor, app);
 
-            let cells = vec![host_cell, id_cell, last_seen_cell];
-            Row::new(cells).style(Style::default().bg(color))
+            let cells = vec![
+                host_cell,
+                id_cell,
+                cpu_cores_cell,
+                task_slots_cell,
+                proc_physical_memory_cell,
+                peak_physical_memory_cell,
+                last_seen_cell,
+            ];
+            Row::new(cells).style(row_style)
         });
 
     let t = Table::new(
         rows,
         [
-            Constraint::Percentage(33), // Host
-            Constraint::Percentage(33), // Id
-            Constraint::Percentage(33), // Last seen
+            Constraint::Percentage(10), // Host
+            Constraint::Percentage(20), // Id
+            Constraint::Percentage(8),  // CPU cores
+            Constraint::Percentage(8),  // Task slots
+            Constraint::Percentage(18), // Proc physical memory
+            Constraint::Percentage(18), // Peak physical memory
+            Constraint::Percentage(18), // Last seen
         ],
     )
     .block(Block::default().borders(Borders::all()))
-    .header(header)
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .header(header_row)
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
     let mut table_state = app.executors_data.table_state;
     frame.render_stateful_widget(t, area, &mut table_state);
 }
 
 fn render_last_seen_cell<'a>(executor: &'a Executor, app: &App) -> Cell<'a> {
-    let last_seen = app.format_datetime(executor.last_seen);
+    let last_seen = super::format_last_seen(executor, app);
     Cell::from(Text::from(last_seen).centered())
 }
 
-fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {
+fn no_live_executors(block: Block<'_>, style: Style) -> Paragraph<'_> {
     Paragraph::new("No live executors")
-        .block(block.border_style(Style::new().red()))
+        .block(block.border_style(style))
         .centered()
 }

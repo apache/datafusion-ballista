@@ -29,7 +29,6 @@
 //! A optional background tokio task evicts idle connections that have not been used
 //! within the configured `idle_timeout`.
 
-use async_trait::async_trait;
 use ballista_core::client::BallistaClient;
 use ballista_core::client_pool::{BallistaClientPool, PooledClient};
 use ballista_core::error::Result;
@@ -146,7 +145,7 @@ fn evict(idle: &IdleMap, timeout: Duration) {
     });
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl BallistaClientPool for DefaultBallistaClientPool {
     async fn acquire(
         &self,
@@ -186,6 +185,8 @@ impl BallistaClientPool for DefaultBallistaClientPool {
                     customize_endpoint,
                     config.io_retries_times,
                     config.io_retry_wait_time_ms,
+                    config.initial_connection_window_size,
+                    config.initial_stream_window_size,
                 )
                 .await?
             }

@@ -25,6 +25,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
@@ -34,12 +35,13 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::execution::context::SessionContext;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 // TODO: the AQE planner runs DataFusion's DefaultPhysicalPlanner with a
@@ -51,7 +53,8 @@ use std::vec;
 // an AQE optimizer rule in a follow-up PR.
 
 mod adapter;
-mod execution_plan;
+pub(crate) mod coalesce;
+pub(crate) mod execution_plan;
 pub mod optimizer_rule;
 pub mod planner;
 #[cfg(test)]
@@ -92,7 +95,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
     /// ID for this job
-    job_id: String,
+    job_id: JobId,
     /// Job name, can be empty string
     job_name: String,
     /// Session ID for this job
@@ -119,8 +122,6 @@ pub(crate) struct AdaptiveExecutionGraph {
     session_config: Arc<SessionConfig>,
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
-    /// Physical plan, captured at submission time.
-    physical_plan: Arc<dyn ExecutionPlan>,
 }
 
 impl AdaptiveExecutionGraph {
@@ -129,20 +130,22 @@ impl AdaptiveExecutionGraph {
     /// This will use the `DistributedPlanner` to break the plan into stages
     /// and build the DAG structure needed for distributed execution.
     #[allow(clippy::too_many_arguments)]
-    pub fn try_new(
+    pub async fn try_new(
         scheduler_id: &str,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &str,
-        session_id: &str,
-        plan: Arc<dyn ExecutionPlan>,
+        ctx: &SessionContext,
+        logical_plan: &LogicalPlan,
         queued_at: u64,
-        session_config: Arc<SessionConfig>,
-        logical_plan: Option<String>,
     ) -> ballista_core::error::Result<Self> {
-        let mut planner =
-            AdaptivePlanner::try_new(&session_config, plan.clone(), job_name.to_owned())?;
+        let session_id = ctx.session_id();
 
-        //let stages = HashMap::new();
+        let mut planner =
+            AdaptivePlanner::try_new(ctx, logical_plan, job_name.to_owned()).await?;
+
+        let logical_plan = Some(logical_plan.display_indent().to_string());
+
+        let session_config = Arc::new(ctx.copied_config());
         let started_at = timestamp_millis();
 
         // initial plans should have at least one stage to run,
@@ -170,8 +173,8 @@ impl AdaptiveExecutionGraph {
         Ok(Self {
             planner,
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_string(),
-            job_name: job_name.to_string(),
+            job_id: job_id.to_owned(),
+            job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
             status: JobStatus {
@@ -192,7 +195,6 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
-            physical_plan: plan,
         })
     }
 }
@@ -278,7 +280,7 @@ impl AdaptiveExecutionGraph {
             });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
-            info!("Job {job_id} is success, finalizing output partitions");
+            debug!("Job {job_id} is success, finalizing output partitions ...");
             self.succeed_job()?;
             events.push(QueryStageSchedulerEvent::JobFinished {
                 job_id,
@@ -502,8 +504,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         Box::new(self.clone())
     }
 
-    fn job_id(&self) -> &str {
-        self.job_id.as_str()
+    fn job_id(&self) -> &JobId {
+        &self.job_id
     }
 
     fn job_name(&self) -> &str {
@@ -512,6 +514,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn session_id(&self) -> &str {
         self.session_id.as_str()
+    }
+
+    fn session_config(&self) -> Arc<SessionConfig> {
+        self.session_config.clone()
     }
 
     fn status(&self) -> &JobStatus {
@@ -523,7 +529,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
     }
 
     fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
-        self.physical_plan.clone()
+        self.planner.plan.clone()
     }
 
     fn start_time(&self) -> u64 {
@@ -650,7 +656,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -659,19 +665,20 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             task_stage_attempt_num,
                             partition_id
                         );
-                        let operator_metrics = task_status.metrics.clone();
 
-                        if !running_stage
-                            .update_task_info(partition_id, task_status.clone())
-                        {
+                        if !running_stage.update_task_info(partition_id, &task_status) {
                             continue;
                         }
+
+                        let TaskStatus {
+                            status,
+                            metrics: operator_metrics,
+                            ..
+                        } = task_status;
                         //
                         // handle task failure
                         //
-                        if let Some(task_status::Status::Failed(failed_task)) =
-                            task_status.status
-                        {
+                        if let Some(task_status::Status::Failed(failed_task)) = status {
                             let failed_reason = failed_task.failed_reason;
 
                             match failed_reason {
@@ -780,7 +787,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                         //
                         else if let Some(task_status::Status::Successful(
                             successful_task,
-                        )) = task_status.status
+                        )) = status
                         {
                             // update task metrics for successfu task
                             running_stage
@@ -1167,8 +1174,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     /// fail job with error message
     fn fail_job(&mut self, error: String) {
+        self.end_time = timestamp_millis();
+
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
                 error,
@@ -1194,13 +1203,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             .map(|l| l.try_into())
             .collect::<ballista_core::error::Result<Vec<_>>>()?;
 
-        self.end_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
@@ -1290,10 +1296,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 let task_attempt = stage.task_failure_numbers[partition_id];
                 let task_info = crate::state::execution_graph::TaskInfo {
                     task_id,
-                    scheduled_time: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis(),
+                    scheduled_time: timestamp_millis() as u128,
                     // Those times will be updated when the task finish
                     launch_time: 0,
                     start_exec_time: 0,

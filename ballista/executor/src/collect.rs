@@ -18,9 +18,9 @@
 //! The CollectExec operator retrieves results from the cluster and returns them as a single
 //! vector of [`RecordBatch`](datafusion::arrow::record_batch::RecordBatch).
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::{any::Any, pin::Pin};
 
 use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::error::DataFusionError;
@@ -79,10 +79,6 @@ impl ExecutionPlan for CollectExec {
         "CollectExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.plan.schema()
     }
@@ -125,7 +121,7 @@ impl ExecutionPlan for CollectExec {
         }))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.plan.partition_statistics(partition)
     }
 }

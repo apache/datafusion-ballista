@@ -17,14 +17,16 @@
 
 name: Dependencies
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
 on:
   push:
-    branches-ignore:
-      - 'gh-readonly-queue/**'
+    branches: [ "main" ]
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
@@ -40,19 +42,37 @@ on:
 jobs:
   depcheck:
     name: msrv dependency check
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
+        uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Check dependencies
         run: |
           cd dev/msrvcheck
           cargo run
+
+  python-lock:
+    name: python Cargo.lock up to date
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-macos-builder
+        with:
+          rust-version: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Verify python/Cargo.lock is in sync with manifests
+        run: |
+          cd python
+          if ! cargo metadata --locked --format-version 1 >/dev/null; then
+            echo "::error::python/Cargo.lock is out of date with the manifests. Run 'cd python && cargo update' and commit the updated Cargo.lock."
+            exit 1
+          fi

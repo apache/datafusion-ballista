@@ -14,26 +14,35 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
-    DistributedExchangeRule, PropagateEmptyExecRule, WarnOnDuplicateExecRule,
+    CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
+    PropagateEmptyExecRule, SelectJoinRule,
 };
-
+use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
+use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
+use datafusion::error::DataFusionError;
+#[cfg(test)]
+use datafusion::execution::config::SessionConfig;
+use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
+use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
-use datafusion::prelude::SessionConfig;
 use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::time::Instant;
 
 type PhysicalOptimizerRuleRef =
@@ -56,7 +65,7 @@ pub struct AdaptivePlanner {
     /// Physical planner used for this job
     physical_planner: Arc<DefaultPhysicalPlanner>,
     /// physical plan representing given job
-    plan: Arc<dyn ExecutionPlan>,
+    pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// caches current runnable stages
     runnable_stage_cache: HashMap<usize, Arc<dyn ExecutionPlan>>,
     /// job name
@@ -76,27 +85,27 @@ impl Debug for AdaptivePlanner {
 impl AdaptivePlanner {
     /// Creates a new `AdaptivePlanner` with the specified physical optimizer rules.
     ///
-    /// # Arguments
+    /// # Arguments:
+    /// * `state_builder` -  Session state builder,
     /// * `plan` - The physical execution plan for the job.
-    /// * `session_config` - The session configuration for the job.
-    /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
     /// * `job_name` - The name of the job.
+    /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
     pub fn try_new_with_optimizers(
+        state_builder: SessionStateBuilder,
         plan: Arc<dyn ExecutionPlan>,
-        session_config: &SessionConfig,
-        physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
         job_name: String,
+        physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
         let session_state =
-            Self::create_session_state(session_config, physical_optimizer_rules);
+            Self::create_session_state(state_builder, physical_optimizer_rules);
         let planner = DefaultPhysicalPlanner::default();
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
         Ok(Self {
-            stage_id_generator: 0,
+            stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
             session_state,
             physical_planner: planner.into(),
             plan,
@@ -108,22 +117,74 @@ impl AdaptivePlanner {
     /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
     ///
     /// # Arguments
+    ///
     /// * `session_config` - The session configuration for the job.
     /// * `plan` - The physical execution plan for the job.
     /// * `job_name` - The name of the job.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
-    pub fn try_new(
+    #[cfg(test)]
+    pub fn try_from_plan(
         session_config: &SessionConfig,
         plan: Arc<dyn ExecutionPlan>,
         job_name: String,
     ) -> common::Result<Self> {
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+        let state_builder = SessionStateBuilder::new_with_default_features()
+            .with_config(session_config.clone());
         Self::try_new_with_optimizers(
+            state_builder,
             plan,
-            session_config,
-            Self::default_optimizers(),
             job_name,
+            Self::default_optimizers(plan_id_generator),
+        )
+    }
+
+    /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The session context
+    /// * `logical_plan` - The logical plan for the job.
+    /// * `job_name` - The name of the job.
+    ///
+    /// # Returns
+    /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
+    pub async fn try_new(
+        ctx: &SessionContext,
+        logical_plan: &LogicalPlan,
+        job_name: String,
+    ) -> common::Result<Self> {
+        // session state with very limited set of optimizers.
+        // this optimizer set will be executed only once, before
+        // running standard set of optimizers, which will
+        // after each stage.
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+
+        let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
+        let plan_preparation_state = Self::create_session_state(
+            plan_preparation_state_builder,
+            Self::plan_preparation_optimizers(plan_id_generator.clone()),
+        );
+
+        let plan = plan_preparation_state
+            .create_physical_plan(logical_plan)
+            .await?;
+
+        // Note: the signature requires a JobId, but we are passing a JobName. The below is a
+        // dirty fix but this seems like a bug or a design flaw.
+        let job_id: JobId = job_name.clone().into();
+        let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan)
+            .await
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
+        let state_builder = SessionStateBuilder::from(ctx.state());
+        Self::try_new_with_optimizers(
+            state_builder,
+            plan,
+            job_name,
+            Self::default_optimizers(plan_id_generator),
         )
     }
     /// Cancels a stage by its ID.
@@ -162,8 +223,8 @@ impl AdaptivePlanner {
             .as_ref()
             .map(|stage| {
                 (
-                    stage.as_any().downcast_ref::<ExchangeExec>(),
-                    stage.as_any().downcast_ref::<AdaptiveDatafusionExec>(),
+                    stage.downcast_ref::<ExchangeExec>(),
+                    stage.downcast_ref::<AdaptiveDatafusionExec>(),
                 )
             }) {
             Some((Some(stage), None)) => {
@@ -206,25 +267,33 @@ impl AdaptivePlanner {
         &mut self,
         stage_id: usize,
     ) -> common::Result<Vec<Vec<PartitionLocation>>> {
-        let output_partition_count = self
-            .runnable_stage_cache
-            .get(&stage_id)
-            .ok_or(datafusion::error::DataFusionError::Execution(
+        let stage = self.runnable_stage_cache.get(&stage_id).ok_or(
+            datafusion::error::DataFusionError::Execution(
                 "Can't find active cache resolve".into(),
-            ))?
-            .output_partitioning()
-            .partition_count();
+            ),
+        )?;
+        let is_broadcast = stage
+            .downcast_ref::<ExchangeExec>()
+            .map(|e| e.broadcast)
+            .unwrap_or(false);
 
-        let stage_output = self
-            .runnable_stage_output
-            .remove(&stage_id)
-            .ok_or(datafusion::error::DataFusionError::Execution(
-                "Can't find active stage to update resolve".into(),
-            ))?
-            .partition_locations(output_partition_count);
-
+        let output_partition_count = stage.output_partitioning().partition_count();
+        let stage_output = if is_broadcast {
+            self.runnable_stage_output
+                .remove(&stage_id)
+                .ok_or(datafusion::error::DataFusionError::Execution(
+                    "Can't find active stage to resolve".into(),
+                ))?
+                .partition_locations_broadcast()
+        } else {
+            self.runnable_stage_output
+                .remove(&stage_id)
+                .ok_or(datafusion::error::DataFusionError::Execution(
+                    "Can't find active stage to resolve".into(),
+                ))?
+                .partition_locations(output_partition_count)
+        };
         self.finalise_stage_internal(stage_id, stage_output.clone())?;
-
         Ok(stage_output)
     }
 
@@ -294,14 +363,17 @@ impl AdaptivePlanner {
                 let (stage_ids, shuffle_writers) = stages
                     .into_iter()
                     .map(|plan| {
-                        // TODO: we need to find input stages for given stage
-                        //       thus result should change
-                        BallistaAdapter::adapt_to_ballista(
-                            plan,
-                            self.job_name.as_str(),
-                            config,
-                        )
-                        .map(|w| (w.plan.stage_id(), w))
+                        // Run the coalesce rule per-stage: the root of `plan` is
+                        // the stage's wrapper exchange, so the rule's walker sees
+                        // only this stage's input exchanges as the alignment
+                        // group. This avoids cross-stage gluing and stale state
+                        // that would arise if the rule walked the entire residual
+                        // plan in `default_optimizers()`.
+                        let plan = CoalescePartitionsRule.optimize(plan, config)?;
+                        // adapt_to_ballista takes an job_id, we are passing a job_name. Need to transform to fix compiler.
+                        let job_id = self.job_name.clone().into();
+                        BallistaAdapter::adapt_to_ballista(plan, &job_id, config)
+                            .map(|w| (w.plan.stage_id(), w))
                     })
                     .collect::<common::Result<(HashSet<_>, Vec<_>)>>()?;
 
@@ -329,7 +401,7 @@ impl AdaptivePlanner {
         if !runnable_stages.is_empty() {
             let mut runnable = Vec::new();
             for exec in runnable_stages.into_iter() {
-                match exec.as_any().downcast_ref::<ExchangeExec>() {
+                match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
                     Some(exchange) if exchange.stage_id().is_none() => {
                         exchange.set_stage_id(self.stage_id_generator);
@@ -352,9 +424,7 @@ impl AdaptivePlanner {
             }
 
             Ok(Some(runnable))
-        } else if let Some(root) =
-            self.plan.as_any().downcast_ref::<AdaptiveDatafusionExec>()
-        {
+        } else if let Some(root) = self.plan.downcast_ref::<AdaptiveDatafusionExec>() {
             // shuffle writer has finished
             // there is no more runnable stages
             if root.shuffle_created() {
@@ -396,8 +466,7 @@ impl AdaptivePlanner {
         runnable_stages
             .into_iter()
             .map(|exec| {
-                exec.as_any()
-                    .downcast_ref::<ExchangeExec>()
+                exec.downcast_ref::<ExchangeExec>()
                     .ok_or_else(|| {
                         datafusion::common::DataFusionError::Plan(
                             "ExchangeExec expected".into(),
@@ -419,35 +488,78 @@ impl AdaptivePlanner {
     ///
     /// # Returns
     /// A vector of default physical optimizer rules.
-    fn default_optimizers() -> Vec<PhysicalOptimizerRuleRef> {
-        let mut physical_optimizers = PhysicalOptimizer::new().rules;
+    fn default_optimizers(
+        plan_id_generator: Arc<AtomicUsize>,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
+        let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
+            vec![];
+
+        // changing plan before other built in optimizers kick in
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
+
+        // select actual join implementation based on current runtime information
+        physical_optimizers
+            .push(Arc::new(SelectJoinRule::new(plan_id_generator.clone())));
+
+        // add default datafusion set of optimizers
+        // physical_optimizers.extend(
+        //     datafusion::physical_optimizer::optimizer::PhysicalOptimizer::new().rules,
+        // );
+        //
+        physical_optimizers.extend(Self::datafusion_optimizers());
+
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
-        physical_optimizers.push(Arc::new(DistributedExchangeRule::default()));
-        // we should remove it at the later stage this is just temporary
-        // to detect possible duplicate execs.
-        // rule does not mutate plan hance it can go after `DistributedExchangeRule`
-        physical_optimizers.push(Arc::new(WarnOnDuplicateExecRule::default()));
+        physical_optimizers
+            .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
 
         physical_optimizers
     }
+
+    // at the moment we create default set of optimizers
+    // ```
+    // physical_optimizers.extend(PhysicalOptimizer::new().rules);
+    // ```
+    // as there are issues with some of them
+    // TODO: replace this once we update to datafusion 55
+    fn datafusion_optimizers() -> Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> {
+        datafusion::physical_optimizer::optimizer::PhysicalOptimizer::new()
+            .rules
+            .into_iter()
+            .map(|r| match r.name() {
+                "FilterPushdown" => Arc::new(FilterPushdown::new()),
+                _ => r,
+            })
+            .collect()
+    }
+
+    /// set of rules which will be executed ONCE before
+    /// running standard set of physical optimizers
+    fn plan_preparation_optimizers(
+        plan_id_generator: Arc<AtomicUsize>,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
+        vec![
+            Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
+            Arc::new(ChaosCreatingRule::default()),
+        ]
+    }
+
     /// Creates a session state with the given configuration and optimizer rules.
     ///
     /// # Arguments
-    /// * `session_config` - The session configuration.
+    /// * `session_builder` - The session builder.
     /// * `physical_optimizers` - A list of physical optimizer rules.
     ///
     /// # Returns
     /// A new `SessionState` instance.
     fn create_session_state(
-        session_config: &SessionConfig,
+        builder: SessionStateBuilder,
         physical_optimizers: Vec<PhysicalOptimizerRuleRef>,
     ) -> SessionState {
-        SessionStateBuilder::new_with_default_features()
+        builder
             .with_physical_optimizer_rules(physical_optimizers)
-            .with_config(session_config.clone())
             .build()
     }
+
     /// Recursively finds runnable exchanges in the execution plan.
     ///
     /// # Arguments
@@ -460,7 +572,7 @@ impl AdaptivePlanner {
         node: &Arc<dyn ExecutionPlan>,
         runnable_stages: &mut Vec<Arc<dyn ExecutionPlan>>,
     ) -> bool {
-        if let Some(exchange) = node.as_any().downcast_ref::<ExchangeExec>()
+        if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
             && exchange.shuffle_created()
         {
             // we found exchange which has partitions resolved or this stage is not
@@ -468,7 +580,7 @@ impl AdaptivePlanner {
             // all runnable children has been run
 
             false
-        } else if let Some(exchange) = node.as_any().downcast_ref::<ExchangeExec>()
+        } else if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
             && !exchange.shuffle_created()
         {
             // we found exchange which has not been resolved (run)

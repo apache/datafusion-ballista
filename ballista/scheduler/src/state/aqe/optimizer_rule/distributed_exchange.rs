@@ -37,16 +37,17 @@ pub struct DistributedExchangeRule {
 }
 
 impl DistributedExchangeRule {
+    pub(crate) fn new(plan_id_generator: Arc<AtomicUsize>) -> Self {
+        Self { plan_id_generator }
+    }
+
     pub(crate) fn transform(
         &self,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(coalesce) = execution_plan
-            .as_any()
-            .downcast_ref::<CoalescePartitionsExec>()
-        {
+        if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = coalesce.input();
-            if input.as_any().downcast_ref::<ExchangeExec>().is_none()
+            if input.downcast_ref::<ExchangeExec>().is_none()
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
             {
                 let exchange_exec = ExchangeExec::new(
@@ -59,12 +60,11 @@ impl DistributedExchangeRule {
                     execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
                 ));
             }
-        } else if let Some(sort_preserving_merge) = execution_plan
-            .as_any()
-            .downcast_ref::<SortPreservingMergeExec>(
-        ) {
+        } else if let Some(sort_preserving_merge) =
+            execution_plan.downcast_ref::<SortPreservingMergeExec>()
+        {
             let input = sort_preserving_merge.input();
-            if input.as_any().downcast_ref::<ExchangeExec>().is_none()
+            if input.downcast_ref::<ExchangeExec>().is_none()
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
             {
                 let exchange_exec = ExchangeExec::new(
@@ -77,8 +77,7 @@ impl DistributedExchangeRule {
                     execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
                 ));
             }
-        } else if let Some(repartition) =
-            execution_plan.as_any().downcast_ref::<RepartitionExec>()
+        } else if let Some(repartition) = execution_plan.downcast_ref::<RepartitionExec>()
             && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
         {
             let input = repartition.input();
@@ -108,7 +107,6 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
 
         if result
             .data
-            .as_any()
             .downcast_ref::<AdaptiveDatafusionExec>()
             .is_some()
         {
@@ -139,7 +137,7 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
 /// (short-circuits), `Resolved` if every branch that has an exchange has a resolved
 /// one, and `None` if no exchange is found anywhere.
 fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
-    if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+    if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
         if exchange.shuffle_created() && !exchange.inactive_stage {
             ExchangeStatus::Resolved
         } else {
@@ -237,25 +235,18 @@ mod tests {
 
         let result = rule.optimize(coalesce, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let coalesce_out = adaptive
             .input()
-            .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
             .unwrap();
         let child = coalesce_out.children()[0];
         assert!(
-            child.as_any().downcast_ref::<ExchangeExec>().is_some(),
+            child.downcast_ref::<ExchangeExec>().is_some(),
             "direct child should remain ExchangeExec"
         );
         assert!(
-            child.children()[0]
-                .as_any()
-                .downcast_ref::<ExchangeExec>()
-                .is_none(),
+            child.children()[0].downcast_ref::<ExchangeExec>().is_none(),
             "ExchangeExec should not wrap another ExchangeExec"
         );
     }
@@ -273,18 +264,13 @@ mod tests {
 
         let result = rule.optimize(outer, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let outer_coalesce = adaptive
             .input()
-            .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
             .unwrap();
         assert!(
             outer_coalesce.children()[0]
-                .as_any()
                 .downcast_ref::<ExchangeExec>()
                 .is_none(),
             "should not inject ExchangeExec when unresolved exchange is in subtree"
@@ -303,18 +289,13 @@ mod tests {
 
         let result = rule.optimize(outer, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let outer_coalesce = adaptive
             .input()
-            .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
             .unwrap();
         assert!(
             outer_coalesce.children()[0]
-                .as_any()
                 .downcast_ref::<ExchangeExec>()
                 .is_some(),
             "should inject ExchangeExec when subtree only has resolved exchanges"
@@ -330,20 +311,13 @@ mod tests {
 
         let result = rule.optimize(input, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let spm = adaptive
             .input()
-            .as_any()
             .downcast_ref::<SortPreservingMergeExec>()
             .expect("child should be SortPreservingMergeExec");
         assert!(
-            spm.children()[0]
-                .as_any()
-                .downcast_ref::<ExchangeExec>()
-                .is_some(),
+            spm.children()[0].downcast_ref::<ExchangeExec>().is_some(),
             "SortPreservingMergeExec should have ExchangeExec injected as its child"
         );
     }
@@ -355,23 +329,14 @@ mod tests {
 
         let result = rule.optimize(input, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let spm = adaptive
             .input()
-            .as_any()
             .downcast_ref::<SortPreservingMergeExec>()
             .unwrap();
         let child = spm.children()[0];
-        assert!(child.as_any().downcast_ref::<ExchangeExec>().is_some());
-        assert!(
-            child.children()[0]
-                .as_any()
-                .downcast_ref::<ExchangeExec>()
-                .is_none()
-        );
+        assert!(child.downcast_ref::<ExchangeExec>().is_some());
+        assert!(child.children()[0].downcast_ref::<ExchangeExec>().is_none());
     }
 
     #[test]
@@ -384,20 +349,13 @@ mod tests {
 
         let result = rule.optimize(input, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let spm = adaptive
             .input()
-            .as_any()
             .downcast_ref::<SortPreservingMergeExec>()
             .unwrap();
         assert!(
-            spm.children()[0]
-                .as_any()
-                .downcast_ref::<ExchangeExec>()
-                .is_none(),
+            spm.children()[0].downcast_ref::<ExchangeExec>().is_none(),
             "should not inject ExchangeExec when unresolved exchange is in subtree"
         );
     }
@@ -415,13 +373,9 @@ mod tests {
 
         let result = rule.optimize(repartition, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         let exchange = adaptive
             .input()
-            .as_any()
             .downcast_ref::<ExchangeExec>()
             .expect("Hash RepartitionExec should be replaced with ExchangeExec");
         assert!(
@@ -440,16 +394,9 @@ mod tests {
 
         let result = rule.optimize(repartition, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         assert!(
-            adaptive
-                .input()
-                .as_any()
-                .downcast_ref::<RepartitionExec>()
-                .is_some(),
+            adaptive.input().downcast_ref::<RepartitionExec>().is_some(),
             "RoundRobin repartition should be kept as-is (not replaced)"
         );
     }
@@ -468,16 +415,9 @@ mod tests {
 
         let result = rule.optimize(repartition, &config()).unwrap();
 
-        let adaptive = result
-            .as_any()
-            .downcast_ref::<AdaptiveDatafusionExec>()
-            .unwrap();
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
         assert!(
-            adaptive
-                .input()
-                .as_any()
-                .downcast_ref::<RepartitionExec>()
-                .is_some(),
+            adaptive.input().downcast_ref::<RepartitionExec>().is_some(),
             "Hash repartition should be kept when input has an unresolved exchange"
         );
     }
@@ -489,10 +429,7 @@ mod tests {
         let rule = DistributedExchangeRule::default();
         let result = rule.optimize(leaf_exec(), &config()).unwrap();
         assert!(
-            result
-                .as_any()
-                .downcast_ref::<AdaptiveDatafusionExec>()
-                .is_some(),
+            result.downcast_ref::<AdaptiveDatafusionExec>().is_some(),
             "optimize should always wrap the result in AdaptiveDatafusionExec"
         );
     }
@@ -506,13 +443,11 @@ mod tests {
         let result = rule.optimize(adaptive, &config()).unwrap();
 
         let outer = result
-            .as_any()
             .downcast_ref::<AdaptiveDatafusionExec>()
             .expect("result should be AdaptiveDatafusionExec");
         assert!(
             outer
                 .input()
-                .as_any()
                 .downcast_ref::<AdaptiveDatafusionExec>()
                 .is_none(),
             "existing AdaptiveDatafusionExec should not be wrapped in another one"
@@ -605,15 +540,12 @@ mod tests {
             )
             .unwrap();
         let exchange1 = result1
-            .as_any()
             .downcast_ref::<AdaptiveDatafusionExec>()
             .unwrap()
             .input()
-            .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
             .unwrap()
             .children()[0]
-            .as_any()
             .downcast_ref::<ExchangeExec>()
             .unwrap();
         assert_eq!(
@@ -628,15 +560,12 @@ mod tests {
             )
             .unwrap();
         let exchange2 = result2
-            .as_any()
             .downcast_ref::<AdaptiveDatafusionExec>()
             .unwrap()
             .input()
-            .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
             .unwrap()
             .children()[0]
-            .as_any()
             .downcast_ref::<ExchangeExec>()
             .unwrap();
         assert_eq!(

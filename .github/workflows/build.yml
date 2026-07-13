@@ -26,14 +26,10 @@ concurrency:
 
 on:
   pull_request:
-    branches: ["main"]
     paths:
-      - 'python/**'
+      - "python/**"
   push:
-    tags: ["*-rc*"]
-    branches: ["branch-*"]
-    paths:
-      - 'python/**'
+    tags: [ "*-rc*" ]
 
 jobs:
   test-release:
@@ -47,13 +43,17 @@ jobs:
           - "3.12"
           - "3.13"
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - name: Install Protoc
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
@@ -61,26 +61,26 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
       - name: Build Python package
         run: |
           cd python
-          uv sync --dev --no-install-package ballista 
+          uv sync --dev --no-install-package ballista
           uv run pytest
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
       - name: Install Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
@@ -88,21 +88,22 @@ jobs:
       # but do not yet build the rust library
       - name: Install dependencies
         run: |
-          cd python 
+          cd python
           uv sync --dev --no-install-package ballista
 
       # Update output format to enable automatic inline annotations.
       - name: Run Ruff
         run: |
-          cd python 
+          cd python
           uv run --no-project ruff check --output-format=github .
           uv run --no-project ruff format --check .
 
   generate-license:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@v7.0.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - name: Generate license file
@@ -112,23 +113,33 @@ jobs:
           name: python-wheel-license
           path: LICENSE.txt
 
-  build-python-mac-win:
-    needs: [generate-license]
+  build-python-mac:
+    if: github.event_name != 'pull_request'
+    needs: [ generate-license, build, test-release ]
     name: Mac/Win
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10"]
-        os: [macos-latest, windows-latest]
+        python-version: [ "3.10" ]
+        os: [ macos-latest ]
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+        with:
+          # FIXME: temporary workaround, see: https://github.com/Swatinem/rust-cache/issues/341
+          cache-bin: ${{ matrix.os != 'macos-latest' }}
+          workspaces: |
+            python -> target
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -143,7 +154,7 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
@@ -153,15 +164,8 @@ jobs:
           uv sync --dev --no-install-package ballista
           uv run --no-project maturin build --release --strip
 
-      - name: List Windows wheels
-        if: matrix.os == 'windows-latest'
-        run: dir python\target\wheels\
-        # since the runner is dynamic shellcheck (from actionlint) can't infer this is powershell
-        # so we specify it explicitly
-        shell: powershell
-
       - name: List Mac wheels
-        if: matrix.os != 'windows-latest'
+        if: matrix.os == 'macos-latest'
         run: find python/target/wheels/
 
       - name: Archive wheels
@@ -171,13 +175,18 @@ jobs:
           path: python/target/wheels/*
 
   build-manylinux-x86_64:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [ generate-license, build, test-release ]
     name: Manylinux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -194,7 +203,7 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
@@ -211,13 +220,18 @@ jobs:
           path: python/target/wheels/*
 
   build-manylinux-aarch64:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [ generate-license, build, test-release ]
     name: Manylinux arm64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -234,7 +248,7 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@9cfd02964306b527feff5fee75acfd028cce4260 # v6.8.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
@@ -251,13 +265,18 @@ jobs:
           path: python/target/wheels/*
 
   build-sdist:
-    needs: [generate-license]
+    if: github.event_name != 'pull_request'
+    needs: [ generate-license, build, test-release ]
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -274,7 +293,7 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@9cfd02964306b527feff5fee75acfd028cce4260 # v6.8.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
@@ -282,22 +301,34 @@ jobs:
         run: |
           cd python
           uv sync --dev --no-install-package ballista
-          uv run --no-project maturin build --release --sdist --out dist --strip
+          uv run --no-project maturin sdist --out dist
 
       - name: Assert sdist build does not generate wheels
         run: |
-          if [ "$(ls -A target/wheels)" ]; then
-            echo "Error: Sdist build generated wheels"
+          cd python
+          # `--out dist` causes maturin to place artifacts under python/dist/.
+          # Older maturin versions also wrote to the default python/target/wheels/,
+          # so check both locations.
+          found=$(find dist target/wheels -name '*.whl' 2>/dev/null || true)
+          if [ -n "$found" ]; then
+            echo "Error: Sdist build generated wheels:"
+            echo "$found"
             exit 1
-          else
-            echo "Directory is clean"
           fi
+          echo "No wheels generated (expected)."
         shell: bash
 
+      - name: Archive sdist
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-sdist
+          path: python/dist/*.tar.gz
+
   merge-build-artifacts:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs:
-      - build-python-mac-win
+      - build-python-mac
       - build-manylinux-x86_64
       - build-manylinux-aarch64
       - build-sdist

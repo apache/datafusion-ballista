@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::execution_engine::QueryStageExecutor;
-use log::info;
+use ballista_core::JobId;
+use log::debug;
 use std::{fmt::Display, sync::Arc};
 
 /// `ExecutorMetricsCollector` records metrics for `ShuffleWriteExec`
@@ -28,7 +29,7 @@ pub trait ExecutorMetricsCollector: Send + Sync {
     /// Record metrics for stage after it is executed
     fn record_stage(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         stage_id: usize,
         partition: usize,
         plan: Arc<dyn QueryStageExecutor>,
@@ -43,12 +44,12 @@ pub struct LoggingMetricsCollector {}
 impl ExecutorMetricsCollector for LoggingMetricsCollector {
     fn record_stage(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         stage_id: usize,
         partition: usize,
         plan: Arc<dyn QueryStageExecutor>,
     ) {
-        info!(
+        debug!(
             "\n=== [{job_id}/{stage_id}/{partition}] Physical plan with metrics ===\n{plan}\n"
         );
     }

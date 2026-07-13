@@ -17,6 +17,12 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// Functional tests for the CoalescePartitionsRule end-to-end through the planner
+mod coalesce_rule;
+/// Job-failure lifecycle tests for the adaptive graph
+mod job_failure;
+/// covers join selection tests
+mod join_selection;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 
@@ -39,7 +45,7 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
         // next few properties are generic values
         map_partition_id: 0,
         partition_id: PartitionId {
-            job_id: "".to_string(),
+            job_id: "".into(),
             stage_id: 0,
             partition_id: 0,
         },
@@ -64,7 +70,7 @@ pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLoca
         // next few properties are generic values
         map_partition_id: 0,
         partition_id: PartitionId {
-            job_id: "".to_string(),
+            job_id: "".into(),
             stage_id: 0,
             partition_id: 0,
         },

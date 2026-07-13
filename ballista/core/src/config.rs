@@ -41,6 +41,21 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 /// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
+/// Configuration key for the reduce-side in-flight-bytes governor budget.
+pub const BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT: &str =
+    "ballista.shuffle.reader.max_bytes_in_flight";
+/// Configuration key for the per-address in-flight block cap.
+pub const BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS: &str =
+    "ballista.shuffle.reader.max_blocks_in_flight_per_address";
+/// Configuration key for the assumed block size when partition stats lack a byte count.
+pub const BALLISTA_SHUFFLE_READER_DEFAULT_BLOCK_SIZE: &str =
+    "ballista.shuffle.reader.default_block_size_bytes";
+/// Configuration key for the gRPC client HTTP/2 initial connection-level flow-control window.
+pub const BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE: &str =
+    "ballista.client.initial_connection_window_size";
+/// Configuration key for the gRPC client HTTP/2 initial stream-level flow-control window.
+pub const BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE: &str =
+    "ballista.client.initial_stream_window_size";
 /// max message size for gRPC clients
 pub const BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE: &str =
     "ballista.client.grpc_max_message_size";
@@ -86,6 +101,48 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
+/// Configuration key to enable broadcasting a small build side of a
+/// `SortMergeJoinExec` by converting it to a `CollectLeft` hash join in the
+/// static distributed planner. Enabled by default.
+pub const BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED: &str =
+    "ballista.optimizer.broadcast_sort_merge_join_enabled";
+
+/// Configuration key to enable AQE coalesce-shuffle-partitions rule.
+/// Disabled by default — opt in when the workload benefits from larger
+/// downstream tasks more than from preserved parallelism.
+pub const BALLISTA_COALESCE_ENABLED: &str = "ballista.planner.coalesce.enabled";
+/// Configuration key to enable AQE propagate empty exec rule.
+/// This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)
+pub const BALLISTA_PROPAGATE_EMPTY_ENABLED: &str =
+    "ballista.planner.propagate_empty.enabled";
+/// Configuration key for the target post-coalesce partition byte size (bytes).
+/// Mirrors Spark's `spark.sql.adaptive.advisoryPartitionSizeInBytes`.
+pub const BALLISTA_COALESCE_TARGET_PARTITION_BYTES: &str =
+    "ballista.planner.coalesce.target_partition_bytes";
+/// Configuration key for the small-partition merge factor (Spark legacy semantics).
+pub const BALLISTA_COALESCE_SMALL_PARTITION_FACTOR: &str =
+    "ballista.planner.coalesce.small_partition_factor";
+/// Configuration key for the merged-partition early-flush factor (Spark legacy semantics).
+pub const BALLISTA_COALESCE_MERGED_PARTITION_FACTOR: &str =
+    "ballista.planner.coalesce.merged_partition_factor";
+/// Configuration key for enabling the AQE dynamic join-selection rule.
+/// When disabled, `SelectJoinRule` is a no-op and `DynamicJoinSelectionExec`
+/// nodes are left in the plan (which will fail at execution — disable only for debugging).
+pub const BALLISTA_ADAPTIVE_JOIN_ENABLED: &str = "ballista.planner.adaptive_join.enabled";
+/// Configuration key to enable chaos-monkey execution injection for robustness testing.
+pub const BALLISTA_CHAOS_EXECUTION_ENABLED: &str =
+    "ballista.testing.chaos_execution.enabled";
+/// Configuration key for the per-node failure probability used by chaos-monkey execution.
+pub const BALLISTA_CHAOS_EXECUTION_PROBABILITY: &str =
+    "ballista.testing.chaos_execution.probability";
+/// Configuration key controlling the fault type injected by chaos-monkey execution.
+/// Valid values: `"transient"` (IoError), `"fatal"` (Execution error), `"panic"`, `"delay"`.
+pub const BALLISTA_CHAOS_EXECUTION_FAULT_TYPE: &str =
+    "ballista.testing.chaos_execution.fault_type";
+/// Configuration key for the optional RNG seed used by chaos-monkey execution.
+/// An empty string (default) means non-deterministic; set to a `u64` value for reproducibility.
+pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_execution.seed";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -114,6 +171,26 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT.to_string(),
+                         "Reduce-side shuffle governor: maximum total in-flight bytes across concurrent remote partition fetches. Mirrors Spark's spark.reducer.maxSizeInFlight. Values above 4 GiB are clamped to 4 GiB (u32 semaphore limit).".to_string(),
+                         DataType::UInt64,
+                         Some((50331648).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS.to_string(),
+                         "Reduce-side shuffle governor: maximum concurrent in-flight partition fetches to a single executor address.".to_string(),
+                         DataType::UInt64,
+                         Some((128).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_DEFAULT_BLOCK_SIZE.to_string(),
+                         "Assumed per-partition byte size charged to the shuffle governor when partition stats carry no byte count.".to_string(),
+                         DataType::UInt64,
+                         Some((1048576).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE.to_string(),
+                         "HTTP/2 initial connection-level flow-control window for gRPC data-plane clients, in bytes. Should be >= the shuffle governor byte budget so the governor, not the transport window, is the binding backpressure. 0 leaves the tonic default.".to_string(),
+                         DataType::UInt64,
+                         Some((67108864).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE.to_string(),
+                         "HTTP/2 initial stream-level flow-control window for gRPC data-plane clients, in bytes. 0 leaves the tonic default.".to_string(),
+                         DataType::UInt64,
+                         Some((16777216).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
@@ -163,6 +240,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           Set to 0 to disable promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED.to_string(),
+                         "Broadcast a small build side of a SortMergeJoinExec by converting it \
+                          to a CollectLeft hash join in the static distributed planner. \
+                          The build side must also fit under broadcast_join_threshold_bytes.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -178,7 +261,79 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS.to_string(),
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
-                         Some(3000.to_string()))
+                         Some(3000.to_string())),
+        ConfigEntry::new(BALLISTA_COALESCE_ENABLED.to_string(),
+                         "Enables the AQE coalesce-shuffle-partitions rule. \
+                          Disabled by default — opt in when fewer/larger \
+                          downstream tasks matter more than parallelism.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_PROPAGATE_EMPTY_ENABLED.to_string(),
+                        "Configuration key to enable AQE propagate empty exec rule. \
+                        This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)".to_string(),
+                        DataType::Boolean,
+                        Some(true.to_string())),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
+            "Target post-coalesce partition byte size in bytes. Mirrors Spark's \
+             advisoryPartitionSizeInBytes."
+                .to_string(),
+            DataType::UInt64,
+            Some((64 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_SMALL_PARTITION_FACTOR.to_string(),
+            "Small-partition merge factor (Spark legacy).".to_string(),
+            DataType::Float64,
+            Some("0.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_COALESCE_MERGED_PARTITION_FACTOR.to_string(),
+            "Merged-partition early-flush factor (Spark legacy).".to_string(),
+            DataType::Float64,
+            Some("1.2".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_ADAPTIVE_JOIN_ENABLED.to_string(),
+            "Enables the AQE dynamic join-selection rule (SelectJoinRule). \
+             When true (default), DynamicJoinSelectionExec nodes are resolved to \
+             concrete HashJoin or CollectLeft join implementations at runtime. \
+             Disable only for debugging.".to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_CHAOS_EXECUTION_ENABLED.to_string(),
+            "Enables chaos-monkey execution injection for robustness testing. \
+             When true, ChaosExec is inserted at a random point in the plan \
+             once per optimize call.".to_string(),
+            DataType::Boolean,
+            Some(false.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_CHAOS_EXECUTION_PROBABILITY.to_string(),
+            "Failure probability (0.0–1.0) passed to ChaosExec when \
+             chaos execution is enabled.".to_string(),
+            DataType::Float64,
+            Some("0.25".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_CHAOS_EXECUTION_FAULT_TYPE.to_string(),
+            "Fault type injected by chaos-monkey execution. \
+             \"transient\": IoError (retryable); \"fatal\": Execution error (non-retryable); \
+             \"panic\": panics the task thread; \
+             \"delay\" or \"delay:N\": sleeps N ms per batch with no error (default N=1).".to_string(),
+            DataType::Utf8,
+            Some("transient".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_CHAOS_EXECUTION_SEED.to_string(),
+            "Optional u64 seed for the chaos RNG. \
+             Empty string (default) means non-deterministic; set to a numeric value \
+             to get reproducible fault injection across runs.".to_string(),
+            DataType::Utf8,
+            Some("".to_string()),
+        ),
     ];
     entries
         .into_iter()
@@ -272,6 +427,11 @@ impl BallistaConfig {
             DataType::Utf8 => {
                 val.to_string();
             }
+            DataType::Float64 => {
+                val.to_string()
+                    .parse::<f64>()
+                    .map_err(|e| format!("{e:?}"))?;
+            }
             _ => {
                 return Err(format!("not support data type: {data_type}"));
             }
@@ -298,6 +458,31 @@ impl BallistaConfig {
     /// Returns the maximum number of concurrent shuffle reader requests.
     pub fn shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
+    }
+
+    /// Reduce-side shuffle governor byte budget (`max_bytes_in_flight`).
+    pub fn shuffle_reader_max_bytes_in_flight(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT) as u64
+    }
+
+    /// Reduce-side shuffle governor per-address in-flight block cap.
+    pub fn shuffle_reader_max_blocks_in_flight_per_address(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS)
+    }
+
+    /// Assumed block size charged to the governor when stats lack a byte count.
+    pub fn shuffle_reader_default_block_size_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_DEFAULT_BLOCK_SIZE) as u64
+    }
+
+    /// HTTP/2 initial connection-level flow-control window (bytes) for data-plane clients.
+    pub fn grpc_client_initial_connection_window_size(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE) as u32
+    }
+
+    /// HTTP/2 initial stream-level flow-control window (bytes) for data-plane clients.
+    pub fn grpc_client_initial_stream_window_size(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE) as u32
     }
 
     /// Returns the gRPC client connection timeout in seconds.
@@ -383,6 +568,66 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
+    /// Returns whether broadcasting a small build side of a `SortMergeJoinExec`
+    /// (by converting it to a `CollectLeft` hash join) is enabled in the static
+    /// distributed planner.
+    pub fn broadcast_sort_merge_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED)
+    }
+
+    /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
+    pub fn coalesce_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_COALESCE_ENABLED)
+    }
+
+    /// Returns whether the AQE propagate empty rule is enabled.
+    pub fn propagate_empty_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_PROPAGATE_EMPTY_ENABLED)
+    }
+
+    /// Returns the target post-coalesce partition byte size in bytes
+    /// (Spark's `advisoryPartitionSizeInBytes`).
+    pub fn coalesce_target_partition_bytes(&self) -> u64 {
+        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES) as u64
+    }
+
+    /// Returns the small-partition merge factor (Spark legacy).
+    pub fn coalesce_small_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR)
+    }
+
+    /// Returns the merged-partition early-flush factor (Spark legacy).
+    pub fn coalesce_merged_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR)
+    }
+
+    /// Returns whether the AQE dynamic join-selection rule is enabled.
+    pub fn adaptive_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_ADAPTIVE_JOIN_ENABLED)
+    }
+
+    /// Returns whether chaos-monkey execution injection is enabled.
+    pub fn chaos_execution_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_CHAOS_EXECUTION_ENABLED)
+    }
+
+    /// Returns the failure probability for chaos-monkey execution (0.0–1.0).
+    pub fn chaos_execution_probability(&self) -> f64 {
+        self.get_float_setting(BALLISTA_CHAOS_EXECUTION_PROBABILITY)
+    }
+
+    /// Returns the fault type injected by chaos-monkey execution (default `"transient"`).
+    pub fn chaos_execution_fault_type(&self) -> String {
+        self.get_string_setting(BALLISTA_CHAOS_EXECUTION_FAULT_TYPE)
+    }
+
+    /// Returns the optional RNG seed for chaos-monkey execution.
+    /// `None` means non-deterministic (thread-local RNG); `Some(n)` gives reproducible runs.
+    pub fn chaos_execution_seed(&self) -> Option<u64> {
+        let s = self.get_string_setting(BALLISTA_CHAOS_EXECUTION_SEED);
+        if s.is_empty() { None } else { s.parse().ok() }
+    }
+
     /// Should client employ pull or push job tracking strategy
     pub fn client_pull(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_PULL)
@@ -437,6 +682,19 @@ impl BallistaConfig {
             // infallible because we validate all configs in the constructor
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.to_string()
+        }
+    }
+
+    #[allow(dead_code)]
+    fn get_float_setting(&self, key: &str) -> f64 {
+        if let Some(v) = self.settings.get(key) {
+            // infallible because we validate all configs in the constructor
+            v.parse::<f64>().unwrap()
+        } else {
+            let entries = Self::valid_entries();
+            // infallible because we validate all configs in the constructor
+            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
+            v.parse::<f64>().unwrap()
         }
     }
 }
@@ -561,5 +819,11 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_sort_merge_join_enabled_by_default() {
+        let config = BallistaConfig::default();
+        assert!(config.broadcast_sort_merge_join_enabled());
     }
 }
