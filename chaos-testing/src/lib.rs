@@ -21,6 +21,7 @@
 //! repository for the design.
 
 pub mod budget;
+pub mod cluster;
 pub mod fixture;
 pub mod registry;
 pub mod udf;

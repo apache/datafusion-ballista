@@ -1,0 +1,301 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Reserve a free TCP port by binding to :0 and immediately releasing it.
+///
+/// Inherently racy, but adequate here: the child binds within milliseconds and
+/// the tests are the only thing running.
+fn free_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    listener.local_addr().expect("local addr").port()
+}
+
+/// Locate a binary built by this crate, honouring CARGO_TARGET_DIR.
+fn binary(name: &str) -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop(); // workspace root
+    let target =
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    path.push(target);
+    path.push(if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    });
+    path.push(name);
+    assert!(
+        path.exists(),
+        "{} not found at {}. Run `cargo build -p ballista-chaos --bins` first.",
+        name,
+        path.display()
+    );
+    path
+}
+
+/// One supervised executor process.
+///
+/// `port`, `grpc_port`, and `work_dir` are not read yet in this task; Task 6
+/// uses them to target a specific executor for observation and killing.
+#[allow(dead_code)]
+pub(crate) struct ExecutorHandle {
+    pub(crate) child: Child,
+    pub(crate) port: u16,
+    pub(crate) grpc_port: u16,
+    pub(crate) work_dir: PathBuf,
+}
+
+pub struct TestClusterBuilder {
+    executors: usize,
+    executor_timeout_seconds: u64,
+    expire_interval_seconds: u64,
+    task_max_failures: usize,
+    stage_max_failures: usize,
+    concurrent_tasks: usize,
+}
+
+impl Default for TestClusterBuilder {
+    fn default() -> Self {
+        Self {
+            executors: 2,
+            // Ballista's defaults are 180s/15s, which would make an executor-kill
+            // scenario take three minutes to even notice the death.
+            executor_timeout_seconds: 5,
+            expire_interval_seconds: 1,
+            task_max_failures: 4,
+            stage_max_failures: 4,
+            concurrent_tasks: 4,
+        }
+    }
+}
+
+impl TestClusterBuilder {
+    pub fn executors(mut self, n: usize) -> Self {
+        self.executors = n;
+        self
+    }
+
+    /// How long the scheduler waits on a missing heartbeat before declaring the
+    /// executor lost. Scenario E raises this deliberately to isolate the
+    /// FetchPartitionError path from the ExecutorLost path.
+    pub fn executor_timeout_seconds(mut self, seconds: u64) -> Self {
+        self.executor_timeout_seconds = seconds;
+        self
+    }
+
+    pub fn task_max_failures(mut self, n: usize) -> Self {
+        self.task_max_failures = n;
+        self
+    }
+
+    pub async fn start(self) -> Result<TestCluster, String> {
+        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let scheduler_port = free_port();
+
+        let mut scheduler = Command::new(binary("chaos-scheduler"));
+        scheduler
+            .env("CHAOS_SCHEDULER_PORT", scheduler_port.to_string())
+            .env(
+                "CHAOS_EXECUTOR_TIMEOUT_SECONDS",
+                self.executor_timeout_seconds.to_string(),
+            )
+            .env(
+                "CHAOS_EXPIRE_INTERVAL_SECONDS",
+                self.expire_interval_seconds.to_string(),
+            )
+            .env(
+                "CHAOS_TASK_MAX_FAILURES",
+                self.task_max_failures.to_string(),
+            )
+            .env(
+                "CHAOS_STAGE_MAX_FAILURES",
+                self.stage_max_failures.to_string(),
+            )
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let scheduler = scheduler
+            .spawn()
+            .map_err(|e| format!("spawn scheduler: {e}"))?;
+
+        let mut cluster = TestCluster {
+            scheduler,
+            scheduler_port,
+            executors: Vec::new(),
+            temp,
+            builder: self,
+        };
+
+        for i in 0..cluster.builder.executors {
+            cluster.spawn_executor(i)?;
+        }
+
+        let n = cluster.builder.executors;
+        cluster.await_executors(n).await?;
+        Ok(cluster)
+    }
+}
+
+/// A multi-process Ballista cluster under test. Every child is killed on drop.
+pub struct TestCluster {
+    scheduler: Child,
+    scheduler_port: u16,
+    pub(crate) executors: Vec<ExecutorHandle>,
+    temp: tempfile::TempDir,
+    builder: TestClusterBuilder,
+}
+
+impl TestCluster {
+    pub fn builder() -> TestClusterBuilder {
+        TestClusterBuilder::default()
+    }
+
+    /// The Ballista client URL.
+    pub fn scheduler_url(&self) -> String {
+        format!("df://127.0.0.1:{}", self.scheduler_port)
+    }
+
+    /// The scheduler REST base URL. gRPC and REST share one port.
+    pub fn rest_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.scheduler_port)
+    }
+
+    /// The shared directory for fixtures and fault budgets. Every executor can
+    /// read it, which is what makes the fault budget cluster-wide.
+    pub fn shared_dir(&self) -> &std::path::Path {
+        self.temp.path()
+    }
+
+    pub(crate) fn spawn_executor(&mut self, index: usize) -> Result<(), String> {
+        let port = free_port();
+        let grpc_port = free_port();
+        let work_dir = self.temp.path().join(format!("executor-{index}"));
+        std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+        let child = Command::new(binary("chaos-executor"))
+            .env("CHAOS_EXECUTOR_PORT", port.to_string())
+            .env("CHAOS_EXECUTOR_GRPC_PORT", grpc_port.to_string())
+            .env("CHAOS_SCHEDULER_PORT", self.scheduler_port.to_string())
+            .env(
+                "CHAOS_CONCURRENT_TASKS",
+                self.builder.concurrent_tasks.to_string(),
+            )
+            .env("CHAOS_WORK_DIR", work_dir.display().to_string())
+            .env("CHAOS_HEARTBEAT_SECONDS", "1")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn executor {index}: {e}"))?;
+
+        if self.executors.len() > index {
+            self.executors[index] = ExecutorHandle {
+                child,
+                port,
+                grpc_port,
+                work_dir,
+            };
+        } else {
+            self.executors.push(ExecutorHandle {
+                child,
+                port,
+                grpc_port,
+                work_dir,
+            });
+        }
+        Ok(())
+    }
+
+    /// Block until `n` executors have registered with the scheduler.
+    pub async fn await_executors(&self, n: usize) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(count) = self.registered_executors().await
+                && count >= n
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("timed out waiting for {n} executors to register"));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// How many executors the scheduler currently considers registered.
+    pub async fn registered_executors(&self) -> Result<usize, String> {
+        let body: serde_json::Value =
+            reqwest::get(format!("{}/api/executors", self.rest_url()))
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
+        Ok(body.as_array().map(|a| a.len()).unwrap_or(0))
+    }
+}
+
+impl Drop for TestCluster {
+    fn drop(&mut self) {
+        for executor in &mut self.executors {
+            let _ = executor.child.kill();
+            let _ = executor.child.wait();
+        }
+        let _ = self.scheduler.kill();
+        let _ = self.scheduler.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cluster_starts_with_the_requested_executors_registered() {
+        let cluster = TestCluster::builder()
+            .executors(2)
+            .start()
+            .await
+            .expect("cluster must start");
+
+        // The scheduler's own view is the source of truth: if the executors did
+        // not register, every later scenario would silently run single-executor.
+        let executors: serde_json::Value =
+            reqwest::get(format!("{}/api/executors", cluster.rest_url()))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+        assert_eq!(
+            executors.as_array().map(|a| a.len()),
+            Some(2),
+            "expected 2 registered executors, got {executors:?}"
+        );
+    }
+}
