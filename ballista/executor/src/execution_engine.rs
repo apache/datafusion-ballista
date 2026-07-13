@@ -165,16 +165,71 @@ fn restrict_scan_to_partition(
     Some(DataSourceExec::from_data_source(config))
 }
 
-impl ExecutionEngine for DefaultExecutionEngine {
-    fn create_query_stage_exec(
+/// The plan the stage's shuffle writer consumes: the writer's own child, wrapped in a
+/// [`MemoryGuardExec`](crate::memory_pools::MemoryGuardExec).
+///
+/// The guard's stream checks the executor's real allocator balance against the armed
+/// limit before every batch, and fails this one task with a retriable
+/// `ResourcesExhausted` rather than letting the process be OOM-killed. Placing it here
+/// puts the check on the stage's entire data path.
+///
+/// **The insertion point is load-bearing**, for two reasons -- neither of which is that
+/// the guard hides the plan beneath it. It does not: `MemoryGuardExec` implements no
+/// `downcast_delegate`, so `downcast_ref` on the guard itself yields `None`, but
+/// `TreeNode::transform` descends through `children()` / `with_new_children()` and
+/// downcasts each node it visits individually. An opaque node conceals nothing below
+/// itself from a traversal. (DataFusion says as much of `downcast_delegate`: it "should
+/// not be used for plan traversal or optimizer rewrites".)
+///
+/// What actually matters:
+///
+/// 1. **The guard must not sit on the stage root.** [`build_stage_writer`] and the
+///    scheduler both `downcast_ref` the root to find the shuffle writer
+///    (`ShuffleWriterExec` / `SortShuffleWriterExec`). A guard *there* is
+///    opaque to that downcast and the stage would not be recognised as a writer at all.
+///    Hence the guard goes immediately *below* the writer, wrapping the writer's child.
+///    See `the_guard_is_inserted_immediately_below_each_shuffle_writer`.
+/// 2. **Exactly one guard must be inserted.** The guard adds a level to the plan, and
+///    the executor's flattened metrics list must stay in step with the scheduler's view
+///    of the same plan, which is zipped by position. One guard, at a known depth, keeps
+///    that predictable. See `exactly_one_guard_is_inserted` and
+///    `the_guard_does_not_change_the_metrics_list_length`.
+///
+/// Do not give `MemoryGuardExec` a `downcast_delegate`, and do not move this call onto
+/// the root.
+///
+/// [`build_stage_writer`]: DefaultExecutionEngine::build_stage_writer
+#[cfg(feature = "oom-guard")]
+fn stage_input(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    Arc::new(crate::memory_pools::MemoryGuardExec::new(
+        plan.children()[0].clone(),
+    ))
+}
+
+/// The plan the stage's shuffle writer consumes: the writer's own child, unchanged.
+///
+/// Without the `oom-guard` feature there is no tracking allocator and nothing to check,
+/// so the stage plan is rebuilt exactly as before.
+#[cfg(not(feature = "oom-guard"))]
+fn stage_input(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    plan.children()[0].clone()
+}
+
+impl DefaultExecutionEngine {
+    /// Rebuild the scheduler's stage plan for execution on this executor and return its
+    /// shuffle writer.
+    ///
+    /// Split out of [`ExecutionEngine::create_query_stage_exec`] so that tests can assert
+    /// on the concrete rewritten plan (which the `Arc<dyn QueryStageExecutor>` it is
+    /// wrapped in hides).
+    fn build_stage_writer(
         &self,
         job_id: JobId,
         stage_id: usize,
         partition_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
-        _config: &SessionConfig,
-    ) -> Result<Arc<dyn QueryStageExecutor>> {
+    ) -> Result<ShuffleWriterVariant> {
         let plan = plan
             .transform(|p| {
                 if let Some(reader) = p.downcast_ref::<ShuffleReaderExec>() {
@@ -205,13 +260,11 @@ impl ExecutionEngine for DefaultExecutionEngine {
             let exec = ShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
-                plan.children()[0].clone(),
+                stage_input(&plan),
                 work_dir.to_string(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
             )?;
-            Ok(Arc::new(DefaultQueryStageExec::new(
-                ShuffleWriterVariant::Hash(exec),
-            )))
+            Ok(ShuffleWriterVariant::Hash(exec))
         } else if let Some(sort_shuffle_writer) =
             plan.downcast_ref::<SortShuffleWriterExec>()
         {
@@ -219,20 +272,34 @@ impl ExecutionEngine for DefaultExecutionEngine {
             let exec = SortShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
-                plan.children()[0].clone(),
+                stage_input(&plan),
                 work_dir.to_string(),
                 sort_shuffle_writer.shuffle_output_partitioning().clone(),
                 sort_shuffle_writer.config().clone(),
             )?;
-            Ok(Arc::new(DefaultQueryStageExec::new(
-                ShuffleWriterVariant::Sort(exec),
-            )))
+            Ok(ShuffleWriterVariant::Sort(exec))
         } else {
             Err(DataFusionError::Internal(
                 "Plan passed to new_query_stage_exec is not a ShuffleWriterExec or SortShuffleWriterExec"
                     .to_string(),
             ))
         }
+    }
+}
+
+impl ExecutionEngine for DefaultExecutionEngine {
+    fn create_query_stage_exec(
+        &self,
+        job_id: JobId,
+        stage_id: usize,
+        partition_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        work_dir: &str,
+        _config: &SessionConfig,
+    ) -> Result<Arc<dyn QueryStageExecutor>> {
+        let writer =
+            self.build_stage_writer(job_id, stage_id, partition_id, plan, work_dir)?;
+        Ok(Arc::new(DefaultQueryStageExec::new(writer)))
     }
 }
 
@@ -331,15 +398,104 @@ impl QueryStageExecutor for DefaultQueryStageExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use ballista_core::client_pool::{BallistaClientPool, PooledClient};
+    #[cfg(feature = "oom-guard")]
+    use ballista_core::execution_plans::sort_shuffle::SortShuffleConfig;
+    use ballista_core::extension::BallistaConfigGrpcEndpoint;
+    use ballista_core::utils::GrpcClientConfig;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::physical_plan::ParquetSource;
     use datafusion::execution::object_store::ObjectStoreUrl;
+    #[cfg(feature = "oom-guard")]
+    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::union::UnionExec;
+
+    /// The schema every plan in these tests is built over.
+    fn test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]))
+    }
+
+    /// The work dir the rewritten stage plan must be given.
+    const WORK_DIR: &str = "/work/dir";
+
+    /// A stage plan as the scheduler hands it over: rooted at a `ShuffleWriterExec`.
+    fn hash_writer(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            ShuffleWriterExec::try_new(
+                "job".into(),
+                1,
+                input,
+                "/scheduler/dir".to_string(),
+                None,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The same, rooted at a `SortShuffleWriterExec` -- the branch that is easy to forget.
+    /// Only the guard-placement tests build this variant, and they only exist when the
+    /// guard is compiled in.
+    #[cfg(feature = "oom-guard")]
+    fn sort_writer(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let partitioning = Partitioning::Hash(vec![col("a", &test_schema()).unwrap()], 2);
+        Arc::new(
+            SortShuffleWriterExec::try_new(
+                "job".into(),
+                1,
+                input,
+                "/scheduler/dir".to_string(),
+                partitioning,
+                SortShuffleConfig::default(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The rebuilt shuffle writer, as an `ExecutionPlan`, whichever variant it is.
+    fn writer_root(writer: &ShuffleWriterVariant) -> Arc<dyn ExecutionPlan> {
+        match writer {
+            ShuffleWriterVariant::Hash(w) => Arc::new(w.clone()),
+            ShuffleWriterVariant::Sort(w) => Arc::new(w.clone()),
+        }
+    }
+
+    /// The first node of type `T` anywhere in the tree, in pre-order.
+    fn find_first<T: ExecutionPlan + 'static>(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        if plan.downcast_ref::<T>().is_some() {
+            return Some(Arc::clone(plan));
+        }
+        plan.children().into_iter().find_map(find_first::<T>)
+    }
+
+    /// A client pool test double with a recognizable `Debug` rendering: the reader's
+    /// `client_pool` field is private, so `Debug` is how a test observes that the
+    /// `transform` pass installed it.
+    #[derive(Debug)]
+    struct TestClientPool;
+
+    #[async_trait::async_trait]
+    impl BallistaClientPool for TestClientPool {
+        async fn acquire(
+            &self,
+            _host: &str,
+            _port: u16,
+            _config: &GrpcClientConfig,
+            _customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+        ) -> ballista_core::error::Result<PooledClient> {
+            unimplemented!("no client is ever acquired in these tests")
+        }
+
+        async fn evict_idle(&self) {}
+    }
 
     /// Build a `DataSourceExec` over `n` file groups, one file each.
     fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let schema = test_schema();
         let source = Arc::new(ParquetSource::new(schema));
         let mut builder =
             FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
@@ -382,5 +538,175 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
         assert!(restrict_scan_to_partition(&plan, 0).is_none());
+    }
+
+    /// Inserting the guard must not disturb the `transform` pass: the
+    /// `ShuffleReaderExec` still receives its `work_dir` / `client_pool` (without which
+    /// the stage cannot read its shuffle input) and the `DataSourceExec` is still
+    /// restricted to this task's partition (without which the task over-reads the shared
+    /// file group -- silently wrong results, not an error). Runs in both feature
+    /// configurations.
+    ///
+    /// Note what this does *not* prove. A guard hoisted above the `transform` pass would
+    /// still leave both rewrites intact, because `TreeNode::transform` walks the plan via
+    /// `children()` / `with_new_children()` -- which `MemoryGuardExec` implements -- and
+    /// downcasts each node individually, so an opaque node in the path hides nothing
+    /// beneath it. The guard's opacity to `downcast_ref` only breaks a downcast aimed at a
+    /// node the guard sits *directly on top of* -- in this function, the shuffle writer on
+    /// the stage root. That is what `the_guard_is_inserted_immediately_below_each_shuffle_writer`
+    /// and `exactly_one_guard_is_inserted` pin down; both fail if the guard is inserted
+    /// anywhere but immediately below the writer.
+    #[test]
+    fn the_transform_pass_still_reaches_the_reader_and_the_scan() {
+        let engine = DefaultExecutionEngine::with_client_pool(Arc::new(TestClientPool));
+
+        let reader: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleReaderExec::try_new(
+                1,
+                vec![vec![]],
+                test_schema(),
+                Partitioning::UnknownPartitioning(1),
+            )
+            .unwrap(),
+        );
+        let union: Arc<dyn ExecutionPlan> =
+            UnionExec::try_new(vec![reader, scan_with_file_groups(4)]).unwrap();
+
+        let writer = engine
+            .build_stage_writer("job".into(), 2, 2, hash_writer(union), WORK_DIR)
+            .unwrap();
+        let root = writer_root(&writer);
+
+        let reader = find_first::<ShuffleReaderExec>(&root)
+            .expect("the rebuilt plan must still contain the shuffle reader");
+        // `work_dir` and `client_pool` are private to `ShuffleReaderExec`; its derived
+        // `Debug` is the only view a test outside `ballista-core` has of them.
+        let rendered = format!("{reader:?}");
+        assert!(
+            rendered.contains(&format!("work_dir: Some({WORK_DIR:?})")),
+            "the reader must have been given its work_dir, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("client_pool: Some(TestClientPool)"),
+            "the reader must have been given the client pool, got: {rendered}"
+        );
+
+        let scan = find_first::<DataSourceExec>(&root)
+            .expect("the rebuilt plan must still contain the scan");
+        assert_eq!(
+            group_file_counts(&scan),
+            vec![0, 0, 1, 0],
+            "the scan must be restricted to this task's partition (2 of 4); an \
+             unrestricted scan over-reads the shared file group -- wrong results"
+        );
+    }
+
+    /// `collect_plan_metrics` pushes a node's metrics *and* recurses into its children,
+    /// and the scheduler's `merge_stage_metrics` positionally zips the executor's list
+    /// against its own guard-free plan -- silently dropping the metrics of every stage of
+    /// every job on a length mismatch. `MemoryGuardExec` therefore reports no metrics of
+    /// its own, and the two lists must stay the same length. This fails the instant
+    /// someone adds a `metrics()` delegation to the guard.
+    #[test]
+    fn the_guard_does_not_change_the_metrics_list_length() {
+        let engine = DefaultExecutionEngine::new();
+        // The plan as the scheduler holds it: no guard, ever.
+        let scheduler_plan = hash_writer(scan_with_file_groups(2));
+        let writer = engine
+            .build_stage_writer("job".into(), 1, 0, Arc::clone(&scheduler_plan), WORK_DIR)
+            .unwrap();
+        let executor_plan = writer_root(&writer);
+
+        assert_eq!(
+            utils::collect_plan_metrics(executor_plan.as_ref()).len(),
+            utils::collect_plan_metrics(scheduler_plan.as_ref()).len(),
+            "the executor's flattened metrics list must stay the same length as the \
+             scheduler's guard-free view of the same plan"
+        );
+    }
+
+    /// Number of `MemoryGuardExec` nodes anywhere in the tree.
+    #[cfg(feature = "oom-guard")]
+    fn count_guards(plan: &Arc<dyn ExecutionPlan>) -> usize {
+        use crate::memory_pools::MemoryGuardExec;
+        usize::from(plan.downcast_ref::<MemoryGuardExec>().is_some())
+            + plan.children().into_iter().map(count_guards).sum::<usize>()
+    }
+
+    /// The guard sits immediately below the shuffle writer -- and nowhere else. The root
+    /// must stay an un-wrapped writer (the scheduler's own downcast, and this function's,
+    /// depend on it), and the guard's child must be the original input.
+    ///
+    /// Asserted for *both* writer variants: the `SortShuffleWriterExec` branch is easy to
+    /// forget.
+    #[cfg(feature = "oom-guard")]
+    #[test]
+    fn the_guard_is_inserted_immediately_below_each_shuffle_writer() {
+        use crate::memory_pools::MemoryGuardExec;
+
+        let engine = DefaultExecutionEngine::new();
+        let input = Arc::new(EmptyExec::new(test_schema())) as Arc<dyn ExecutionPlan>;
+
+        for (label, plan) in [
+            ("ShuffleWriterExec", hash_writer(Arc::clone(&input))),
+            ("SortShuffleWriterExec", sort_writer(Arc::clone(&input))),
+        ] {
+            let writer = engine
+                .build_stage_writer("job".into(), 1, 0, plan, WORK_DIR)
+                .unwrap();
+            let root = writer_root(&writer);
+
+            assert!(
+                root.downcast_ref::<MemoryGuardExec>().is_none(),
+                "{label}: the stage root must remain the writer, not a guard -- \
+                 `create_query_stage_exec` downcasts the root to find the writer"
+            );
+
+            let children = root.children();
+            assert_eq!(children.len(), 1, "{label}: the writer has one child");
+            let guard = children[0]
+                .downcast_ref::<MemoryGuardExec>()
+                .unwrap_or_else(|| {
+                    panic!("{label}: the writer's child must be a MemoryGuardExec")
+                });
+            assert!(
+                Arc::ptr_eq(guard.input(), &input),
+                "{label}: the guard must wrap the writer's original child, unchanged"
+            );
+        }
+    }
+
+    /// Exactly one guard, ever: no guard-over-guard, and none deeper in the tree. Every
+    /// downcast site assumes the guard lives at exactly one known depth.
+    #[cfg(feature = "oom-guard")]
+    #[test]
+    fn exactly_one_guard_is_inserted() {
+        let engine = DefaultExecutionEngine::new();
+        let reader: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleReaderExec::try_new(
+                1,
+                vec![vec![]],
+                test_schema(),
+                Partitioning::UnknownPartitioning(1),
+            )
+            .unwrap(),
+        );
+        let union: Arc<dyn ExecutionPlan> =
+            UnionExec::try_new(vec![reader, scan_with_file_groups(4)]).unwrap();
+
+        for plan in [
+            hash_writer(Arc::clone(&union)),
+            sort_writer(Arc::clone(&union)),
+        ] {
+            let writer = engine
+                .build_stage_writer("job".into(), 1, 0, plan, WORK_DIR)
+                .unwrap();
+            let root = writer_root(&writer);
+            assert_eq!(
+                count_guards(&root),
+                1,
+                "exactly one guard must be inserted, immediately below the writer"
+            );
+        }
     }
 }

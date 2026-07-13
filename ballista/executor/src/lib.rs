@@ -37,6 +37,9 @@ pub mod executor_process;
 pub mod executor_server;
 /// Arrow Flight service for streaming shuffle data between executors.
 pub mod flight_service;
+/// Allocator-backed OOM protection: real-usage memory accounting and circuit breaker.
+#[cfg(feature = "oom-guard")]
+pub mod memory_pools;
 /// Metrics collection for executor runtime statistics.
 pub mod metrics;
 /// Session-scoped cache of shared executor runtime environments.

@@ -91,6 +91,80 @@ The executor refuses to start if the per-task share would round to zero (i.e.
 When `--memory-pool-size` is not set, the executor behaves as before with no
 memory pool installed.
 
+## OOM Guard (Experimental)
+
+The memory pool above only ever sees what DataFusion explicitly reserves
+through it. Arrow buffer growth, join build-side scratch space, and several
+expression kernels allocate native memory without ever going through a
+`MemoryReservation`, so an executor's real memory use can run well above what
+the pool believes is checked out. When that happens the process itself can be
+OOM-killed by the kernel or by Kubernetes.
+
+This is more damaging in Ballista than a single failed task. A dead executor
+takes every shuffle file it had written with it, so every downstream stage
+waiting to read from it fails with a fetch-partition error. That cascades into
+stage rollbacks and re-execution, potentially affecting other jobs running
+concurrently on the same executor.
+
+The `oom-guard` feature adds a second, allocator-backed layer of protection on
+top of `--memory-pool-size`. It is a **build-time** opt-in: it installs a
+global allocator that tracks every byte the executor's process actually hands
+out, so it is only available in binaries built with the feature enabled, and
+it carries no cost otherwise:
+
+```sh
+cargo build --release --features oom-guard
+```
+
+A default build has no tracking allocator and no per-allocation overhead. The
+feature must be compiled in, and it reuses `--memory-pool-size` as its budget.
+If that flag is not set, the guard still tracks usage but never enforces
+anything — with `oom-guard` compiled in but no memory pool configured, the
+feature is a no-op.
+
+Once armed, the tracked usage is compared against the same limit at two
+points:
+
+- A cooperative gate on the memory pool itself: once real usage plus a
+  requested reservation would exceed the budget, the pool rejects the growth
+  so DataFusion spills instead of continuing to allocate. This is the layer
+  that does the useful work — most of the time, a spill is all that happens
+  and no task fails.
+- A circuit breaker that checks the same budget between batches of a running
+  stage. If real usage is already over budget when the cooperative gate could
+  not prevent it, this layer fails just the one task rather than letting the
+  process die. A failed task reports a retriable `ResourcesExhausted`, so the
+  scheduler reschedules it on another attempt, bounded by `--task-max-failures`
+  (default 4), instead of failing the whole job.
+
+A few things to keep in mind before enabling this.
+
+Because the tracked figure is **every live allocation in the process**, not
+just query memory, it also includes gRPC buffers, the Tokio runtime,
+object-store client caches, and so on. With `oom-guard` enabled, an executor
+therefore gates somewhat earlier than the same `--memory-pool-size` value
+implies in a default build — queries may start spilling sooner than expected.
+This is intentional: the whole point is to budget against what the OOM killer
+sees, not just what the query engine reserves.
+
+Enforcement is also batch-granular, not byte-granular: the circuit breaker
+checks the budget between batches, so a single operator that allocates past
+the limit within one batch can still bring down the process before the check
+runs again. The cooperative gate is the layer that actually prevents this in
+most cases; the circuit breaker only shrinks the blast radius once it hasn't.
+
+Finally, the guard tracks bytes requested from the allocator, not resident set
+size (RSS). The two can diverge, because allocators such as mimalloc do not
+return freed pages to the OS immediately. The executor logs a warning when RSS
+runs substantially above the tracked figure — that is the signal that the
+allocator is holding on to freed memory rather than that a spill failed to
+help.
+
+This feature is experimental and disabled by default pending further
+benchmark validation. Treat it as a safety net for production clusters that
+have seen OOM-killed executors, not as a substitute for sizing
+`--memory-pool-size` and `--concurrent-tasks` appropriately.
+
 ## Join Strategy
 
 Ballista defaults to **sort-merge join** rather than hash join. This is the

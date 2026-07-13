@@ -72,3 +72,18 @@ When the `spark-compat` feature is enabled, additional functions like `sha1`, `e
 > **Note:** The `spark-compat` feature provides Spark-compatible expressions and functions only, not full Apache Spark API compatibility.
 
 For more details about Spark-compatible functions, see [Spark-Compatible Functions](../spark-compatible-functions.md).
+
+### OOM Guard (Executor Only)
+
+To enable the executor's allocator-backed OOM guard, install with the `oom-guard` feature:
+
+```bash
+cargo install --locked --features oom-guard ballista-executor
+```
+
+This installs a tracking global allocator, so it is only available in
+executor binaries built with the feature enabled and has no effect on the
+scheduler or CLI. See [Tuning Guide: OOM Guard](../tuning-guide.md#oom-guard-experimental)
+for what it does and how to arm it with `--memory-pool-size`.
+
+> **Note:** This feature is experimental and disabled by default.

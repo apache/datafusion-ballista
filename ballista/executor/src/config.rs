@@ -165,10 +165,31 @@ pub struct Config {
     /// Optional total memory budget for the executor. Accepts human-readable
     /// values like "8GB", "512MiB", or a plain byte count. When set, every
     /// task gets a FairSpillPool of size `memory_pool_size / concurrent_tasks`.
-    #[arg(
-        long,
-        value_parser = parse_memory_pool_size,
-        help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share."
+    ///
+    /// With the `oom-guard` feature compiled in, this value is *also* the ceiling
+    /// the tracking allocator enforces, and that ceiling covers every live byte the
+    /// process has allocated -- gRPC buffers, tokio, object-store caches, shuffle
+    /// writes -- not just query memory. Expect an `oom-guard` build to start
+    /// spilling somewhat earlier at a given budget than the default build does.
+    //
+    // The help text is `cfg`-selected: a default-build executor has no tracking
+    // allocator, so telling its operator about a feature that is not compiled in would
+    // simply be wrong.
+    #[cfg_attr(
+        not(feature = "oom-guard"),
+        arg(
+            long,
+            value_parser = parse_memory_pool_size,
+            help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share."
+        )
+    )]
+    #[cfg_attr(
+        feature = "oom-guard",
+        arg(
+            long,
+            value_parser = parse_memory_pool_size,
+            help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share. This build has the oom-guard feature, so the value is also the process-wide ceiling on live allocator bytes (all process memory, not just query memory) and therefore gates somewhat earlier at the same value."
+        )
     )]
     pub memory_pool_size: Option<u64>,
     /// Maximum number of sessions whose shared runtime state (object-store

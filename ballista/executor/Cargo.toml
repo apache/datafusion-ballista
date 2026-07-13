@@ -36,6 +36,9 @@ required-features = ["build-binary"]
 arrow-ipc-optimizations = []
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary", "mimalloc"]
 default = ["arrow-ipc-optimizations", "build-binary"]
+# Allocator-backed OOM protection. Installs a tracking global allocator, so it is
+# opt-in and off by default; the default build has zero per-allocation overhead.
+oom-guard = []
 spark-compat = ["ballista-core/spark-compat"]
 
 [dependencies]
