@@ -41,3 +41,11 @@ rstest = { workspace = true }
 [lib]
 name = "chaos_testing"
 path = "src/lib.rs"
+
+[[bin]]
+name = "chaos-executor"
+path = "src/bin/chaos-executor.rs"
+
+[[bin]]
+name = "chaos-scheduler"
+path = "src/bin/chaos-scheduler.rs"
