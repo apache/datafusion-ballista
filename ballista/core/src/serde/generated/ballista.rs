@@ -717,7 +717,7 @@ pub struct FailedTask {
     /// Whether this task failure should be counted to the maximum number of times the task is allowed to retry
     #[prost(bool, tag = "3")]
     pub count_to_failures: bool,
-    #[prost(oneof = "failed_task::FailedReason", tags = "4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "failed_task::FailedReason", tags = "4, 5, 6, 7, 8, 9, 10")]
     pub failed_reason: ::core::option::Option<failed_task::FailedReason>,
 }
 /// Nested message and enum types in `FailedTask`.
@@ -737,6 +737,10 @@ pub mod failed_task {
         ResultLost(super::ResultLost),
         #[prost(message, tag = "9")]
         TaskKilled(super::TaskKilled),
+        /// The task ran out of memory. Retriable: the retry may land on a less-loaded
+        /// executor, or run once its peers have drained.
+        #[prost(message, tag = "10")]
+        ResourcesExhausted(super::ResourcesExhausted),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -767,6 +771,8 @@ pub struct ExecutorLost {}
 pub struct ResultLost {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskKilled {}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourcesExhausted {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShuffleWritePartition {
     #[prost(uint64, tag = "1")]

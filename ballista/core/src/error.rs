@@ -24,7 +24,9 @@ use std::{
 };
 
 use crate::serde::protobuf::failed_task::FailedReason;
-use crate::serde::protobuf::{ExecutionError, FailedTask, FetchPartitionError, IoError};
+use crate::serde::protobuf::{
+    ExecutionError, FailedTask, FetchPartitionError, IoError, ResourcesExhausted,
+};
 use datafusion::error::DataFusionError;
 use datafusion::{arrow::error::ArrowError, sql::sqlparser::parser};
 use futures::future::Aborted;
@@ -245,6 +247,25 @@ impl From<BallistaError> for FailedTask {
                     failed_reason: Some(FailedReason::IoError(IoError {})),
                 }
             }
+            BallistaError::DataFusionError(ref e)
+                if matches!(e.find_root(), DataFusionError::ResourcesExhausted(_)) =>
+            {
+                FailedTask {
+                    error: format!(
+                        "Task failed due to exhausted resources (memory or spill capacity): {e}"
+                    ),
+                    // Retriable: the retry may land on a less-loaded executor, or run once
+                    // this executor's other tasks have drained. Bounded by
+                    // --task-max-failures, so a task that is simply too large still fails
+                    // the job -- but with a clear message, rather than an OOM-killed
+                    // executor and a FetchPartitionError cascade.
+                    retryable: true,
+                    count_to_failures: true,
+                    failed_reason: Some(FailedReason::ResourcesExhausted(
+                        ResourcesExhausted {},
+                    )),
+                }
+            }
             other => FailedTask {
                 error: format!("Task failed due to runtime execution error: {other:?}"),
                 retryable: false,
@@ -256,3 +277,143 @@ impl From<BallistaError> for FailedTask {
 }
 
 impl Error for BallistaError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serde::protobuf::failed_task::FailedReason;
+
+    #[test]
+    fn resources_exhausted_maps_to_a_retriable_failed_task() {
+        let err = BallistaError::DataFusionError(Box::new(
+            DataFusionError::ResourcesExhausted("over budget".to_string()),
+        ));
+        let failed: FailedTask = err.into();
+
+        assert!(failed.retryable, "an OOM'd task must be retried");
+        assert!(failed.count_to_failures, "retries must be bounded");
+        assert!(
+            matches!(
+                failed.failed_reason,
+                Some(FailedReason::ResourcesExhausted(_))
+            ),
+            "expected ResourcesExhausted, got {:?}",
+            failed.failed_reason
+        );
+    }
+
+    #[test]
+    fn wrapped_resources_exhausted_is_still_recognized() {
+        // DataFusion routinely wraps errors in `Context`, so the mapping must look at
+        // the root cause rather than the outermost error.
+        let inner = DataFusionError::ResourcesExhausted("over budget".to_string());
+        let err = BallistaError::DataFusionError(Box::new(
+            inner.context("while executing HashJoinExec"),
+        ));
+        let failed: FailedTask = err.into();
+
+        assert!(failed.retryable);
+        assert!(matches!(
+            failed.failed_reason,
+            Some(FailedReason::ResourcesExhausted(_))
+        ));
+    }
+
+    /// `DataFusionError::Shared` is how DataFusion fans *one* stream error out to
+    /// *many* output partitions: `RepartitionExec` and `CoalescePartitionsExec` clone a
+    /// single error into an `Arc` and hand it to every consumer. A memory rejection
+    /// raised inside a join below a `RepartitionExec` therefore reaches the shuffle
+    /// writer wrapped in exactly this variant -- so the whole feature's retriability
+    /// depends on `find_root()` seeing through it. It does (`Shared`'s `Error::source`
+    /// yields the inner `DataFusionError`), and this is what holds that true.
+    #[test]
+    fn a_shared_resources_exhausted_is_still_recognized() {
+        let err = BallistaError::DataFusionError(Box::new(DataFusionError::Shared(
+            std::sync::Arc::new(DataFusionError::ResourcesExhausted(
+                "over budget".to_string(),
+            )),
+        )));
+        let failed: FailedTask = err.into();
+
+        assert!(
+            failed.retryable,
+            "a ResourcesExhausted fanned out through RepartitionExec must still be retried"
+        );
+        assert!(failed.count_to_failures, "retries must be bounded");
+        assert!(
+            matches!(
+                failed.failed_reason,
+                Some(FailedReason::ResourcesExhausted(_))
+            ),
+            "expected ResourcesExhausted, got {:?}",
+            failed.failed_reason
+        );
+    }
+
+    /// The realistic shape: DataFusion adds a `Context` to the pool's rejection as it
+    /// unwinds out of the operator, and *then* the repartition shares it out. Both
+    /// wrappers have to be seen through.
+    #[test]
+    fn a_shared_context_wrapped_resources_exhausted_is_still_recognized() {
+        let inner = DataFusionError::ResourcesExhausted("over budget".to_string());
+        let err = BallistaError::DataFusionError(Box::new(DataFusionError::Shared(
+            std::sync::Arc::new(inner.context("while executing HashJoinExec")),
+        )));
+        let failed: FailedTask = err.into();
+
+        assert!(failed.retryable);
+        assert!(matches!(
+            failed.failed_reason,
+            Some(FailedReason::ResourcesExhausted(_))
+        ));
+    }
+
+    /// The discriminator for the two tests above: `Shared` must not become a blanket
+    /// "retriable" arm. A shared error whose root is *not* `ResourcesExhausted` still
+    /// has to fall through to the non-retriable execution-error arm.
+    #[test]
+    fn a_shared_non_resource_error_remains_non_retriable() {
+        let err = BallistaError::DataFusionError(Box::new(DataFusionError::Shared(
+            std::sync::Arc::new(DataFusionError::Execution("boom".to_string())),
+        )));
+        let failed: FailedTask = err.into();
+
+        assert!(!failed.retryable);
+        assert!(matches!(
+            failed.failed_reason,
+            Some(FailedReason::ExecutionError(_))
+        ));
+    }
+
+    #[test]
+    fn other_errors_remain_non_retriable_execution_errors() {
+        let err = BallistaError::General("boom".to_string());
+        let failed: FailedTask = err.into();
+
+        assert!(!failed.retryable);
+        assert!(matches!(
+            failed.failed_reason,
+            Some(FailedReason::ExecutionError(_))
+        ));
+    }
+
+    #[test]
+    fn other_datafusion_errors_remain_non_retriable_execution_errors() {
+        // Sharper discriminator than a bare `General` error: this is a
+        // `DataFusionError` whose root is NOT `ResourcesExhausted`, so it must
+        // still fall through to the non-retriable arm. It also happens to be
+        // the exact shape the old `format!("{e:?}")` re-wrap at
+        // shuffle_writer.rs used to produce, so it guards against the
+        // resources-exhausted arm accidentally matching every DataFusionError.
+        let err = BallistaError::DataFusionError(Box::new(DataFusionError::Execution(
+            "boom".to_string(),
+        )));
+        let failed: FailedTask = err.into();
+
+        assert!(!failed.retryable);
+        assert!(matches!(
+            failed.failed_reason,
+            Some(FailedReason::ExecutionError(_))
+        ));
+    }
+}
