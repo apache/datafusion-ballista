@@ -293,6 +293,32 @@ impl TestCluster {
         }
     }
 
+    /// Block until the scheduler considers exactly `n` executors registered.
+    ///
+    /// Unlike `await_executors` (which waits for *at least* `n`, the right
+    /// condition when growing a cluster), a SIGKILLed executor is not dropped
+    /// from `/api/executors` the instant it dies — the scheduler keeps
+    /// listing it until its heartbeat times out (`executor_timeout_seconds`).
+    /// A scenario that kills an executor and wants to observe the scheduler
+    /// actually reaping it (rather than just transiently over-counting) needs
+    /// to wait for the count to come down to `n` exactly, not merely reach it.
+    pub async fn await_executor_count(&self, n: usize) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(count) = self.registered_executors().await
+                && count == n
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "timed out waiting for exactly {n} registered executors"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// How many executors the scheduler currently considers registered.
     pub async fn registered_executors(&self) -> Result<usize, String> {
         let body: serde_json::Value =
@@ -542,17 +568,10 @@ mod tests {
         // The scheduler must notice the missing heartbeat and drop the executor.
         // With the defaults (180s timeout, 60s heartbeat) this would never happen
         // inside a test; it works only because the harness turns both down.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if cluster.registered_executors().await.unwrap_or(2) == 1 {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "scheduler never reaped the killed executor"
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        cluster
+            .await_executor_count(1)
+            .await
+            .expect("scheduler never reaped the killed executor");
 
         cluster.restart_executor(0).await.unwrap();
         assert_eq!(

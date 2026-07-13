@@ -65,6 +65,11 @@ use chaos_testing::fixture::Fixture;
 /// exhausted, so the retry must succeed. The load-bearing assertion is that the
 /// result still equals the baseline: a retried stage is exactly where duplicated
 /// or dropped partitions would show up.
+///
+/// The `aqe_on` case below is EXPECTED TO FAIL. This is a confirmed Ballista
+/// bug (see the `FINDING` comment on that case and chaos-testing/README.md,
+/// Finding 2), not a flaky or ill-specified test — the failure itself is the
+/// evidence. It intentionally carries no `#[ignore]`.
 #[rstest]
 #[case::aqe_off(false)]
 // FINDING (real, reproduced every run, not a harness bug): under AQE, this join
@@ -76,9 +81,14 @@ use chaos_testing::fixture::Fixture;
 // falls through to the `other` arm and is misclassified `retryable: false`.
 // The job fails on the first attempt instead of retrying. Reproduced with:
 // `cargo test -p ballista-chaos --test ha retryable_fault -- --test-threads=1`.
-// Fixing this requires unwrapping `DataFusionError::Shared` in ballista/core,
-// which is a production crate this plan may not touch — see chaos-testing/README.md.
-#[ignore = "known bug: AQE-on shared build-side IoError is misclassified non-retryable (ballista/core/src/error.rs); see chaos-testing/README.md"]
+//
+// This case is EXPECTED TO FAIL and is deliberately left unignored: the
+// failure is the evidence for the bug. Fixing it requires unwrapping
+// `DataFusionError::Shared` in ballista/core, which is a production crate
+// this harness does not touch — see chaos-testing/README.md ("Findings",
+// Finding 2) for the full writeup. Do not silence this case by re-adding
+// `#[ignore]` or relaxing its assertions; that would hide a real bug behind a
+// green suite.
 #[case::aqe_on(true)]
 #[tokio::test]
 async fn retryable_fault_is_retried_and_result_is_correct(#[case] aqe: bool) {
@@ -283,6 +293,18 @@ async fn executor_killed_after_shuffle_write_is_recovered(#[case] aqe: bool) {
 }
 
 /// Scenario F: an executor is killed and restarted; the cluster must reabsorb it.
+///
+/// The kill and the restart are separated by a wait for the scheduler to
+/// actually reap the dead executor (`registered_executors` dropping to 1),
+/// rather than restarting immediately. SIGKILL does not deregister the
+/// executor: the scheduler keeps listing it until its heartbeat expires
+/// (`executor_timeout_seconds`), so a restart fired immediately after the
+/// kill lands while the scheduler still counts *three* executors (the dead
+/// one, the survivor, and the freshly restarted one) — a harness race, not a
+/// Ballista bug, that used to make this scenario fail with `left: 3, right:
+/// 2`. Waiting for the reap first means the final assertion is actually
+/// testing what the scenario name promises: that a restarted executor
+/// rejoins a cluster that has already noticed it was gone.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
@@ -292,6 +314,11 @@ async fn restarted_executor_rejoins_and_serves_queries(#[case] aqe: bool) {
     let expected = run.local_baseline().await;
 
     run.cluster.kill_executor(0).expect("kill executor 0");
+    run.cluster
+        .await_executor_count(1)
+        .await
+        .expect("scheduler must reap the killed executor before we restart it");
+
     run.cluster
         .restart_executor(0)
         .await
