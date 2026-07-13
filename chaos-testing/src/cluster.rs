@@ -19,7 +19,9 @@ use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// Reserve a free TCP port by binding to :0 and immediately releasing it.
 ///
@@ -40,18 +42,20 @@ fn open_log(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
-/// Locate a binary built by this crate, honouring CARGO_TARGET_DIR.
+/// Locate a binary built by this crate.
+///
+/// The profile directory is taken from the running test executable
+/// (`<target>/<profile>/deps/<test>`) rather than inferred from the profile's
+/// settings. Inferring it from `cfg!(debug_assertions)` only works for the
+/// stock `dev` and `release` profiles: CI builds under `--profile ci`, which
+/// inherits `dev` but turns debug assertions off, so the binaries land in
+/// `target/ci/` while the inference points at `target/release/`. Deriving the
+/// directory from `current_exe` is correct for any profile and honours
+/// `CARGO_TARGET_DIR` for free.
 fn binary(name: &str) -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // workspace root
-    let target =
-        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
-    path.push(target);
-    path.push(if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    });
+    let mut path = std::env::current_exe().expect("locate the test executable");
+    path.pop(); // deps/
+    path.pop(); // <target>/<profile>/
     path.push(name);
     assert!(
         path.exists(),
@@ -124,6 +128,15 @@ impl TestClusterBuilder {
     }
 
     pub async fn start(self) -> Result<TestCluster, String> {
+        // Held for the cluster's whole lifetime, so only one cluster exists in
+        // this process at a time. `--test-threads=1` gives the same guarantee,
+        // but nothing forces a caller (CI runs a plain `cargo test` over the
+        // whole workspace) to pass it, and a dozen concurrent clusters exhaust
+        // ports and CPU and fail for reasons that have nothing to do with the
+        // scenario under test. Making the harness enforce its own requirement
+        // is more robust than documenting a flag.
+        let cluster_lock = cluster_lock().lock_owned().await;
+
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
@@ -173,6 +186,7 @@ impl TestClusterBuilder {
             temp,
             log_dir,
             builder: self,
+            _cluster_lock: cluster_lock,
         };
 
         for i in 0..cluster.builder.executors {
@@ -193,6 +207,17 @@ pub struct TestCluster {
     temp: tempfile::TempDir,
     log_dir: PathBuf,
     builder: TestClusterBuilder,
+    /// Serializes clusters across the whole test process; see
+    /// [`TestClusterBuilder::start`]. `Drop for TestCluster` reaps every child
+    /// before this field is dropped, so the next cluster never starts until the
+    /// previous one's processes are gone.
+    _cluster_lock: OwnedMutexGuard<()>,
+}
+
+/// The process-wide lock guaranteeing one cluster at a time.
+fn cluster_lock() -> Arc<Mutex<()>> {
+    static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone()
 }
 
 impl TestCluster {

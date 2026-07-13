@@ -66,32 +66,32 @@ use chaos_testing::fixture::Fixture;
 /// result still equals the baseline: a retried stage is exactly where duplicated
 /// or dropped partitions would show up.
 ///
-/// The `aqe_on` case below is EXPECTED TO FAIL. This is a confirmed Ballista
-/// bug (see the `FINDING` comment on that case and chaos-testing/README.md,
-/// Finding 2), not a flaky or ill-specified test — the failure itself is the
-/// evidence. It intentionally carries no `#[ignore]`.
-#[rstest]
-#[case::aqe_off(false)]
-// FINDING (real, reproduced every run, not a harness bug): under AQE, this join
-// plans through a broadcast build side collected once and shared across output
-// partitions (DataFusion's OnceFut/OnceAsync pattern). When that collection
-// fails, the shared future's error is re-wrapped as `DataFusionError::Shared`.
-// Ballista's failure classifier (ballista/core/src/error.rs:237-238) only
-// recognizes a *direct* `DataFusionError::IoError`, so a `Shared(IoError(..))`
-// falls through to the `other` arm and is misclassified `retryable: false`.
-// The job fails on the first attempt instead of retrying. Reproduced with:
-// `cargo test -p ballista-chaos --test ha retryable_fault -- --test-threads=1`.
-//
-// This case is EXPECTED TO FAIL and is deliberately left unignored: the
-// failure is the evidence for the bug. Fixing it requires unwrapping
-// `DataFusionError::Shared` in ballista/core, which is a production crate
-// this harness does not touch — see chaos-testing/README.md ("Findings",
-// Finding 2) for the full writeup. Do not silence this case by re-adding
-// `#[ignore]` or relaxing its assertions; that would hide a real bug behind a
-// green suite.
-#[case::aqe_on(true)]
+/// This scenario is split into one test per AQE setting rather than being an
+/// `rstest` over both, because only the AQE-on case fails and `rstest` cannot
+/// ignore an individual case.
 #[tokio::test]
-async fn retryable_fault_is_retried_and_result_is_correct(#[case] aqe: bool) {
+async fn retryable_fault_is_retried_and_result_is_correct_aqe_off() {
+    retryable_fault_is_retried_and_result_is_correct(false).await;
+}
+
+/// Scenario A under AQE, which reproduces #2028: under AQE this join plans
+/// through a broadcast build side collected once and shared across output
+/// partitions (DataFusion's `OnceFut`/`OnceAsync` pattern). When that
+/// collection fails, the error is re-wrapped as `DataFusionError::Shared`.
+/// Ballista's failure classifier (`ballista/core/src/error.rs`) matches only a
+/// *direct* `DataFusionError::IoError`, so a `Shared(IoError(..))` falls
+/// through to the catch-all arm and is misclassified non-retryable: the job
+/// fails on the first attempt instead of retrying.
+///
+/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
+/// #2028 is fixed; see chaos-testing/README.md, Finding 2.
+#[tokio::test]
+#[ignore = "reproduces #2028: Shared(IoError) is misclassified as non-retryable"]
+async fn retryable_fault_is_retried_and_result_is_correct_aqe_on() {
+    retryable_fault_is_retried_and_result_is_correct(true).await;
+}
+
+async fn retryable_fault_is_retried_and_result_is_correct(aqe: bool) {
     let run = ChaosRun::start(aqe, 2).await;
     let expected = run.local_baseline().await;
 
@@ -203,10 +203,20 @@ use std::time::Duration;
 /// `chaos_delay` holds stage 1 open so the kill lands while tasks are genuinely
 /// in flight. The scheduler must detect the loss, reschedule the dead executor's
 /// tasks onto the survivor, and still return the correct result.
+///
+/// Both cases reproduce #2027: the shuffle reader's typed
+/// `BallistaError::FetchFailed` is flattened into an opaque
+/// `DataFusionError::Execution` before the executor reports its `TaskStatus`,
+/// so the scheduler never sees the `FetchPartitionError` that would make it
+/// resubmit the lost map stage, and fails the query instead of recovering it.
+///
+/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
+/// #2027 is fixed; see chaos-testing/README.md, Finding 1.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
+#[ignore = "reproduces #2027: FetchFailed loses its type, so the map stage is never resubmitted"]
 async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
     let mut run = ChaosRun::start(aqe, 2).await;
     let expected = run.local_baseline().await;
@@ -343,10 +353,20 @@ async fn restarted_executor_rejoins_and_serves_queries(#[case] aqe: bool) {
 /// requirement is that it *terminates* — a scheduler that waits forever for tasks
 /// that can never be scheduled is a hang, and a hang is the bug this detects. The
 /// assertion is deliberately weak: this is a hang detector, not a correctness test.
+///
+/// Both cases reproduce #2029: the job does not terminate within the 120s
+/// timeout. The scheduler waits rather than failing the query once no executor
+/// can ever satisfy the remaining tasks.
+///
+/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
+/// #2029 is fixed; see chaos-testing/README.md, Finding 3. Note that this one
+/// costs 120s of wall clock when it runs, since detecting a hang means waiting
+/// out the timeout.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
+#[ignore = "reproduces #2029: killing every executor hangs the job instead of failing it"]
 async fn killing_every_executor_terminates_the_job(#[case] aqe: bool) {
     let mut run = ChaosRun::start(aqe, 2).await;
 

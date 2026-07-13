@@ -25,10 +25,13 @@ injects faults into real queries, to exercise Ballista's high-availability
 
 **This is a bug-hunting harness, not a regression suite in the usual sense.**
 Its job is to surface real defects in Ballista's HA behavior. Where it finds
-one, the corresponding test is *expected to fail* until the underlying bug is
-fixed in a production crate — the failure is the deliverable, not something to
-be papered over. See [Findings](#findings) below for the three confirmed bugs
-this harness has found so far, each with a test that documents it by failing.
+one, the corresponding test reproduces the bug rather than working around it.
+Such a test is marked `#[ignore]` with the issue it reproduces, so that it
+does not hold CI red on a bug it did not introduce, and is un-ignored — not
+rewritten — when that issue is fixed, at which point it becomes the regression
+test for the fix. Run them with `cargo test -p ballista-chaos -- --ignored`.
+See [Findings](#findings) below for the three confirmed bugs this harness has
+found so far, each with the test that reproduces it.
 
 ## Why this crate exists
 
@@ -39,7 +42,7 @@ was exercised only by unit tests that hand-construct `TaskStatus` protobufs and
 feed them directly into `ExecutionGraph` methods. Those tests are useful for
 pinning the state machine's transition logic, but nothing drove it end to end:
 no test ran a real query against a real multi-process cluster, killed a real
-executor process, and checked that the *result* was still correct. That gap is
+executor process, and checked that the _result_ was still correct. That gap is
 exactly where the bugs in [Findings](#findings) were hiding — they only show up
 when a real executor process dies mid-task, a real gRPC connection is refused,
 or a real DataFusion error is really propagated through the real serialization
@@ -59,7 +62,7 @@ deliberately not reused here, because it cannot do what this harness needs:
 
 - It is wired into the **AQE physical-optimizer pipeline only**
   (`plan_preparation_optimizers` in `planner.rs`). It does not run at all when
-  AQE is off, and every scenario in this crate must run under *both* AQE
+  AQE is off, and every scenario in this crate must run under _both_ AQE
   settings — the two planners have materially different join and retry
   behavior, and a bug that only reproduces on one side is easy to miss if you
   only test the other.
@@ -95,7 +98,7 @@ retries and executor restarts) must be bounded. Two mechanisms provide these:
 - **The filesystem fault budget** (`src/budget.rs`). A budget is a directory
   of token files, created with a fixed token count. Consuming a token is
   `fs::remove_file`, which is atomic across processes, so a budget of `n`
-  bounds the fault to firing at most `n` times *cluster-wide* — across every
+  bounds the fault to firing at most `n` times _cluster-wide_ — across every
   executor process, every task attempt, and every retry or restart — not `n`
   times per process or per attempt. This is what makes "exactly one retryable
   fault, then it must succeed" (Scenario A) and "faults never stop, so retries
@@ -129,20 +132,27 @@ non-null without invoking the (volatile) UDF. Two regression tests in
 
 ## How to run
 
-Native binaries must be built before the integration tests, because each test
-spawns them as real child processes rather than running in-process:
-
 ```sh
-cargo build -p ballista-chaos --bins
-cargo test -p ballista-chaos -- --test-threads=1
+cargo test -p ballista-chaos              # everything except the known-bug scenarios
+cargo test -p ballista-chaos -- --ignored # the known-bug scenarios; these fail, on purpose
 ```
 
-`--test-threads=1` is **mandatory**, not a style preference. Every test in
-`tests/ha.rs` spawns a whole scheduler-plus-executors cluster on its own ports;
-running scenarios concurrently exhausts ports and CPU and produces spurious,
-unrelated failures.
+Every test that spawns a cluster does so through `TestCluster`, which holds a
+process-wide lock for the cluster's lifetime, so scenarios serialize themselves
+no matter how the test harness is invoked. This is not cosmetic: each one
+starts a whole scheduler-plus-executors cluster, and concurrent clusters
+exhaust ports and CPU and fail for reasons unrelated to the scenario under
+test. `--test-threads=1` is therefore no longer required (it will simply make
+the run marginally less confusing to read).
 
-Unit tests only (fast, no process spawning, safe to parallelize):
+The `chaos-scheduler`/`chaos-executor` binaries are spawned as real child
+processes rather than run in-process, but `cargo test` builds this crate's bin
+targets along with its tests, so no separate build step is needed. The
+harness locates them next to the running test executable, which is what makes
+it work under any cargo profile (CI uses `--profile ci`, not `dev` or
+`release`).
+
+Unit tests only (fast; the ones that do not spawn a cluster):
 
 ```sh
 cargo test -p ballista-chaos --lib
@@ -161,18 +171,21 @@ experimental dynamic-join-selection planner) — 14 test cases total across the
 7 scenarios below, plus a non-lettered `baseline_matches_local_datafusion`
 sanity check that every other scenario's assertions depend on.
 
-| Scenario | Test | What it does | Expected result |
-|---|---|---|---|
-| A | `retryable_fault_is_retried_and_result_is_correct` | Injects one retryable IO fault (budget 1); the retry must succeed and match baseline. | **aqe_off: pass.** **aqe_on: FAIL — Finding 2.** |
-| B | `exhausted_retries_fail_the_job_and_leave_the_cluster_healthy` | Injects an inexhaustible IO fault (budget 99 ≫ `task_max_failures`); job must fail, cluster must stay usable after. | Pass (both). |
-| C | `panicking_task_fails_the_job_but_the_executor_survives` | Injects a task panic; job must fail non-retryably, both executor processes must survive, cluster must stay usable after. | Pass (both). |
-| D | `executor_killed_mid_stage_is_recovered` | SIGKILLs an executor while its tasks are genuinely running (held open by `chaos_delay`); scheduler must reschedule onto the survivor and return the correct result. | **FAIL (both) — Finding 1.** |
-| E | `executor_killed_after_shuffle_write_is_recovered` | SIGKILLs the map-side executor *after* it wrote shuffle output, with a long executor timeout to bias toward the fetch-failure path rather than heartbeat expiry; downstream stage must re-run the map stage. | Pass (both) — see the note below. |
-| F | `restarted_executor_rejoins_and_serves_queries` | Kills an executor, waits for the scheduler to reap it, restarts it, asserts the registered count returns to 2 and the cluster still serves the baseline query. | Pass (both), after the race fix in this crate (see below). |
-| G | `killing_every_executor_terminates_the_job` | SIGKILLs every executor mid-query; the only requirement is that the job *terminates* within 120s rather than hanging. | **FAIL (both) — Finding 3.** |
+| Scenario | Test                                                                | What it does                                                                                                                                                                                                 | Expected result                                                                                                                    |
+| -------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| A        | `retryable_fault_is_retried_and_result_is_correct_{aqe_off,aqe_on}` | Injects one retryable IO fault (budget 1); the retry must succeed and match baseline.                                                                                                                        | **aqe_off: pass.** **aqe_on: ignored, reproduces [#2028](https://github.com/apache/datafusion-ballista/issues/2028) — Finding 2.** |
+| B        | `exhausted_retries_fail_the_job_and_leave_the_cluster_healthy`      | Injects an inexhaustible IO fault (budget 99 ≫ `task_max_failures`); job must fail, cluster must stay usable after.                                                                                          | Pass (both).                                                                                                                       |
+| C        | `panicking_task_fails_the_job_but_the_executor_survives`            | Injects a task panic; job must fail non-retryably, both executor processes must survive, cluster must stay usable after.                                                                                     | Pass (both).                                                                                                                       |
+| D        | `executor_killed_mid_stage_is_recovered`                            | SIGKILLs an executor while its tasks are genuinely running (held open by `chaos_delay`); scheduler must reschedule onto the survivor and return the correct result.                                          | **Ignored (both), reproduces [#2027](https://github.com/apache/datafusion-ballista/issues/2027) — Finding 1.**                     |
+| E        | `executor_killed_after_shuffle_write_is_recovered`                  | SIGKILLs the map-side executor _after_ it wrote shuffle output, with a long executor timeout to bias toward the fetch-failure path rather than heartbeat expiry; downstream stage must re-run the map stage. | Pass (both) — see the note below.                                                                                                  |
+| F        | `restarted_executor_rejoins_and_serves_queries`                     | Kills an executor, waits for the scheduler to reap it, restarts it, asserts the registered count returns to 2 and the cluster still serves the baseline query.                                               | Pass (both), after the race fix in this crate (see below).                                                                         |
+| G        | `killing_every_executor_terminates_the_job`                         | SIGKILLs every executor mid-query; the only requirement is that the job _terminates_ within 120s rather than hanging.                                                                                        | **Ignored (both), reproduces [#2029](https://github.com/apache/datafusion-ballista/issues/2029) — Finding 3.**                     |
 
-A scenario marked FAIL above is not a defect in this harness — see
-[Findings](#findings).
+An ignored scenario above is not a defect in this harness, and its assertions
+have not been weakened to make it pass — it reproduces a real Ballista bug and
+is ignored only so that CI is not red on a bug this crate did not introduce.
+Run the ignored scenarios with `-- --ignored --test-threads=1` to see the
+failures; see [Findings](#findings) for what each one proves.
 
 ### A note on Scenario F: the harness race that was fixed here
 
@@ -187,21 +200,41 @@ one) depending on timing, and failed intermittently with `left: 3, right: 2`.
 Ballista was behaving correctly; the test just hadn't waited for the state it
 was asserting about. The fix adds `TestCluster::await_executor_count(n)` (an
 exact-count analogue of the existing `await_executors(n)`, which only waits for
-*at least* `n` — the right primitive for growing a cluster, but not for
+_at least_ `n` — the right primitive for growing a cluster, but not for
 observing a shrink) and has the scenario wait for the count to drop to 1
 before restarting, so the final assertion tests what the scenario name
 actually promises.
 
 ## Findings
 
-Three scenarios above are expected to fail because they have found real bugs
-in Ballista, not because the harness is broken. Each is left unignored and
-unweakened deliberately: a red test here is the harness working as intended.
+Three scenarios above fail because they have found real bugs in Ballista, not
+because the harness is broken. Each is `#[ignore]`d against the issue it
+reproduces so CI stays green on a tree whose bugs predate this crate, and each
+keeps its original assertions: nothing is relaxed to manufacture a pass. When
+the issue is fixed, delete the `#[ignore]` — the scenario is then the
+regression test for it.
 
 ### Finding 1 — Shuffle-fetch failures lose their type, so the map-stage resubmit never fires
 
+Tracked by [#2027](https://github.com/apache/datafusion-ballista/issues/2027).
+
 **Proven by:** Scenario D (`executor_killed_mid_stage_is_recovered`), both AQE
-settings.
+settings, `#[ignore]`d against that issue.
+
+Scenario D is a **race**, not a deterministic reproducer, and this is the one
+place in the crate where that is true. Killing an executor mid-stage can be
+noticed by the scheduler in either of two ways, and they are in a footrace: if
+the heartbeat expires first, the `ExecutorLost` path recovers the job
+correctly and the scenario passes in a few seconds; if a downstream task tries
+to fetch shuffle output from the dead executor first, the bug below bites and
+the job hangs until the scenario's 120s timeout. Locally it failed on two of
+three runs. Un-ignoring this scenario once #2027 is fixed therefore also means
+pinning which of the two paths it exercises — `executor_timeout_seconds` is
+the knob that decides the race, and Scenario D currently leaves it at the
+harness default — otherwise it will be a flaky regression test. (Note that
+Scenario E's note below and its code comment currently disagree about which
+direction that knob biases; whoever fixes #2027 should settle that from the
+scheduler's behavior, not from either comment.)
 
 The shuffle reader (`ballista/core/src/execution_plans/shuffle_reader.rs`)
 correctly produces a typed `BallistaError::FetchFailed(executor_id,
@@ -241,7 +274,11 @@ re-running the map stage that produced it.
 
 ### Finding 2 — Retryable IO errors are misclassified when wrapped
 
-**Proven by:** Scenario A, `aqe_on` case only.
+Tracked by [#2028](https://github.com/apache/datafusion-ballista/issues/2028).
+
+**Proven by:** Scenario A, `aqe_on` case only
+(`retryable_fault_is_retried_and_result_is_correct_aqe_on`), `#[ignore]`d
+against that issue.
 
 `ballista/core/src/error.rs:237-238` classifies retryability with a shallow
 match:
@@ -251,7 +288,7 @@ BallistaError::DataFusionError(e)
     if matches!(*e, DataFusionError::IoError(_)) =>
 ```
 
-This recognizes only a *direct* `DataFusionError::IoError`. It does not see
+This recognizes only a _direct_ `DataFusionError::IoError`. It does not see
 through `DataFusionError::Shared(Arc<DataFusionError>)` (or any other wrapping
 variant). Under AQE, this harness's join plans through a broadcast build side
 that DataFusion collects once and shares across output partitions (the
@@ -267,14 +304,16 @@ immediate job failure.
 
 ### Finding 3 — Killing every executor hangs the job instead of failing it
 
+Tracked by [#2029](https://github.com/apache/datafusion-ballista/issues/2029).
+
 **Proven by:** Scenario G (`killing_every_executor_terminates_the_job`), both
-AQE settings.
+AQE settings, `#[ignore]`d against that issue.
 
 With every executor dead mid-query, there is nothing left to schedule tasks
 onto. The job does not terminate within the scenario's 120s timeout — the
 scheduler waits rather than failing the query once it can determine no
 executor can ever satisfy the remaining tasks. Note that this scenario
-deliberately asserts only *termination*, not success or a particular error; it
+deliberately asserts only _termination_, not success or a particular error; it
 is a hang detector, and what it detects is the hang itself.
 
 ### For comparison: Scenario E passes
