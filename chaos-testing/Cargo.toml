@@ -37,6 +37,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", 
 
 [dev-dependencies]
 rstest = { workspace = true }
+tempfile = "3"
 
 [lib]
 name = "chaos_testing"

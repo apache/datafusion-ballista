@@ -1055,6 +1055,7 @@ dependencies = [
  "env_logger",
  "log",
  "rstest",
+ "tempfile",
  "tokio",
 ]
 
