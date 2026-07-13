@@ -33,6 +33,7 @@ arrow = { workspace = true }
 datafusion = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
+nix = { version = "0.29", features = ["signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde_json = "1.0"
 tempfile = { workspace = true }

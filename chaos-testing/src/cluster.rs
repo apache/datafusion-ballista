@@ -64,13 +64,19 @@ fn binary(name: &str) -> PathBuf {
 
 /// One supervised executor process.
 ///
-/// `port`, `grpc_port`, and `work_dir` are not read yet in this task; Task 6
-/// uses them to target a specific executor for observation and killing.
-#[allow(dead_code)]
+/// `child` is used by this task's `kill_executor`/`executor_is_alive`. `port`,
+/// `grpc_port`, and `work_dir` are still not read anywhere yet — no code in
+/// this task needed to target an executor by its network address or inspect
+/// its working directory — so they keep a narrower `#[allow(dead_code)]` than
+/// the struct-wide one Task 5 left; a later scenario that needs to address a
+/// specific executor's port or inspect its shuffle files can drop it then.
 pub(crate) struct ExecutorHandle {
     pub(crate) child: Child,
+    #[allow(dead_code)]
     pub(crate) port: u16,
+    #[allow(dead_code)]
     pub(crate) grpc_port: u16,
+    #[allow(dead_code)]
     pub(crate) work_dir: PathBuf,
 }
 
@@ -298,6 +304,157 @@ impl TestCluster {
                 .map_err(|e| e.to_string())?;
         Ok(body.as_array().map(|a| a.len()).unwrap_or(0))
     }
+
+    /// The id of the single job the scheduler currently knows about.
+    ///
+    /// The harness runs one query at a time, so "the running job" is unambiguous.
+    pub async fn running_job_id(&self) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let body: serde_json::Value =
+                reqwest::get(format!("{}/api/jobs", self.rest_url()))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .json()
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+            if let Some(job) = body.as_array().and_then(|jobs| jobs.first())
+                && let Some(id) = job.get("job_id").and_then(|v| v.as_str())
+            {
+                return Ok(id.to_string());
+            }
+            if Instant::now() > deadline {
+                return Err("timed out waiting for a job to appear".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn stages(&self, job_id: &str) -> Result<serde_json::Value, String> {
+        reqwest::get(format!("{}/api/job/{job_id}/stages", self.rest_url()))
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Block until `stage_id` has at least one task in state Running.
+    ///
+    /// This is what lets a kill land *while the stage is genuinely executing*,
+    /// rather than after an arbitrary sleep that may fire too early or too late.
+    pub async fn await_stage_running(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+    ) -> Result<(), String> {
+        self.await_stage_task_state(job_id, stage_id, "Running")
+            .await
+    }
+
+    /// Block until every task in `stage_id` is Successful.
+    pub async fn await_stage_successful(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let stages = self.stages(job_id).await?;
+            if let Some(stage) = find_stage(&stages, stage_id)
+                && let Some(tasks) = stage.get("tasks").and_then(|t| t.as_array())
+            {
+                let all_ok = !tasks.is_empty()
+                    && tasks.iter().all(|t| {
+                        t.get("status").and_then(|s| s.as_str()) == Some("Successful")
+                    });
+                if all_ok {
+                    return Ok(());
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(format!("timed out waiting for stage {stage_id} to succeed"));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn await_stage_task_state(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+        state: &str,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let stages = self.stages(job_id).await?;
+            if let Some(stage) = find_stage(&stages, stage_id)
+                && let Some(tasks) = stage.get("tasks").and_then(|t| t.as_array())
+            {
+                let hit = tasks
+                    .iter()
+                    .any(|t| t.get("status").and_then(|s| s.as_str()) == Some(state));
+                if hit {
+                    return Ok(());
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "timed out waiting for a {state} task in stage {stage_id}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// The scheduler's view of the job's status ("Running", "Successful", "Failed").
+    pub async fn job_status(&self, job_id: &str) -> Result<String, String> {
+        let body: serde_json::Value =
+            reqwest::get(format!("{}/api/job/{job_id}", self.rest_url()))
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
+        Ok(body
+            .get("job_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string())
+    }
+
+    /// SIGKILL an executor. Not SIGTERM: a graceful shutdown would let the
+    /// executor deregister, which is a different (and much easier) code path
+    /// than the crash we are trying to test.
+    pub fn kill_executor(&mut self, index: usize) -> Result<(), String> {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let pid = self.executors[index].child.id();
+        kill(Pid::from_raw(pid as i32), Signal::SIGKILL).map_err(|e| e.to_string())?;
+        let _ = self.executors[index].child.wait();
+        Ok(())
+    }
+
+    /// Start a fresh executor process in the given slot and wait for it to register.
+    pub async fn restart_executor(&mut self, index: usize) -> Result<(), String> {
+        let expected = self.executors.len();
+        self.spawn_executor(index)?;
+        self.await_executors(expected).await
+    }
+
+    /// Whether an executor process is still alive.
+    pub fn executor_is_alive(&mut self, index: usize) -> bool {
+        matches!(self.executors[index].child.try_wait(), Ok(None))
+    }
+}
+
+/// Stage ids come back from the REST API as strings.
+fn find_stage(stages: &serde_json::Value, stage_id: usize) -> Option<&serde_json::Value> {
+    stages.get("stages")?.as_array()?.iter().find(|s| {
+        s.get("stage_id").and_then(|v| v.as_str()) == Some(stage_id.to_string().as_str())
+    })
 }
 
 /// If `child` already exited with a non-zero status, log the path of its
@@ -353,6 +510,110 @@ mod tests {
             executors.as_array().map(|a| a.len()),
             Some(2),
             "expected 2 registered executors, got {executors:?}"
+        );
+    }
+
+    // TEMP-VERIFY: throwaway shape-verification test, removed before commit.
+    #[tokio::test]
+    async fn temp_verify_json_shapes() {
+        use crate::fixture::Fixture;
+        use ballista::prelude::{SessionConfigExt, SessionContextExt};
+        use datafusion::execution::SessionStateBuilder;
+        use datafusion::prelude::{SessionConfig, SessionContext};
+
+        let cluster = TestCluster::builder().executors(2).start().await.unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::write(data_dir.path()).await.unwrap();
+
+        let url = cluster.scheduler_url();
+        let session_config = SessionConfig::new_with_ballista().with_target_partitions(4);
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(session_config)
+            .build();
+        let ctx = SessionContext::remote_with_state(&url, state)
+            .await
+            .unwrap();
+        for stmt in fixture.register_sql() {
+            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
+        }
+
+        let ctx2 = ctx.clone();
+        let handle = tokio::spawn(async move {
+            ctx2.sql(Fixture::baseline_query())
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap()
+        });
+
+        let job_id = cluster.running_job_id().await.unwrap();
+        eprintln!("TEMP-VERIFY job_id = {job_id}");
+
+        let jobs_raw: serde_json::Value =
+            reqwest::get(format!("{}/api/jobs", cluster.rest_url()))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        eprintln!("TEMP-VERIFY /api/jobs = {jobs_raw:#}");
+
+        cluster.await_stage_running(&job_id, 1).await.unwrap();
+        let stages_raw: serde_json::Value =
+            reqwest::get(format!("{}/api/job/{job_id}/stages", cluster.rest_url()))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        eprintln!(
+            "TEMP-VERIFY /api/job/{{id}}/stages (while stage 1 running) = {stages_raw:#}"
+        );
+
+        cluster.await_stage_successful(&job_id, 1).await.unwrap();
+        let status = cluster.job_status(&job_id).await.unwrap();
+        eprintln!("TEMP-VERIFY job_status after stage 1 success = {status}");
+
+        handle.await.unwrap();
+        let final_status = cluster.job_status(&job_id).await.unwrap();
+        eprintln!("TEMP-VERIFY job_status after job completion = {final_status}");
+    }
+
+    #[tokio::test]
+    async fn killed_executor_is_reaped_and_can_be_restarted() {
+        let mut cluster = TestCluster::builder()
+            .executors(2)
+            .executor_timeout_seconds(5)
+            .start()
+            .await
+            .unwrap();
+
+        assert_eq!(cluster.registered_executors().await.unwrap(), 2);
+
+        cluster.kill_executor(0).unwrap();
+
+        // The scheduler must notice the missing heartbeat and drop the executor.
+        // With the defaults (180s timeout, 60s heartbeat) this would never happen
+        // inside a test; it works only because the harness turns both down.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if cluster.registered_executors().await.unwrap_or(2) == 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scheduler never reaped the killed executor"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        cluster.restart_executor(0).await.unwrap();
+        assert_eq!(
+            cluster.registered_executors().await.unwrap(),
+            2,
+            "restarted executor must re-register"
         );
     }
 }

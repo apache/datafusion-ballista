@@ -1054,6 +1054,7 @@ dependencies = [
  "datafusion",
  "env_logger",
  "log",
+ "nix 0.29.0",
  "reqwest 0.12.28",
  "rstest",
  "serde_json",
