@@ -316,4 +316,58 @@ mod tests {
             "the token must be consumed: the predicate must force chaos_fail to be evaluated"
         );
     }
+
+    /// CRITICAL INVARIANT: When a chaos fault cannot fire (budget exhausted),
+    /// `chaos_query()` must return EXACTLY the same result as `baseline_query()`.
+    ///
+    /// This invariant underpins every HA scenario: we detect when a re-run stage
+    /// duplicates or drops partitions by asserting that the result after a fault
+    /// is identical to the baseline. The chaos_query predicate `WHERE ... IS NOT
+    /// NULL` preserves the row set only because chaos_fail/chaos_delay always
+    /// return `Some(guard)` (never NULL). If a future change ever returned NULL
+    /// from either UDF, `IS NOT NULL` would silently drop rows and no test would
+    /// catch it — until a real distributed run failed mysteriously. This test
+    /// pins that invariant before any such refactor happens.
+    #[tokio::test]
+    async fn chaos_query_without_a_firing_fault_equals_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::write(dir.path()).await.unwrap();
+        let budget_dir = dir.path().join("budget");
+        // 0 tokens: the fault cannot fire, no matter how many times it is called.
+        let _budget = crate::budget::FaultBudget::create(&budget_dir, 0).unwrap();
+
+        let ctx = SessionContext::new();
+        ctx.register_udf(crate::udf::chaos_fail_udf().as_ref().clone());
+        for stmt in fixture.register_sql() {
+            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
+        }
+
+        let injection =
+            format!("chaos_fail(f.key = 7, 'io', '{}')", budget_dir.display());
+        let chaos_sql = Fixture::chaos_query(&injection);
+        let baseline_sql = Fixture::baseline_query();
+
+        let chaos_rows = ctx.sql(&chaos_sql).await.unwrap().collect().await.unwrap();
+        let baseline_rows = ctx
+            .sql(baseline_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let chaos_str =
+            datafusion::arrow::util::pretty::pretty_format_batches(&chaos_rows)
+                .unwrap()
+                .to_string();
+        let baseline_str =
+            datafusion::arrow::util::pretty::pretty_format_batches(&baseline_rows)
+                .unwrap()
+                .to_string();
+
+        assert_eq!(
+            chaos_str, baseline_str,
+            "chaos_query with a non-firing fault must return the same rows as baseline_query"
+        );
+    }
 }
