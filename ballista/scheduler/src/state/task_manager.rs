@@ -963,3 +963,240 @@ impl From<&ExecutionGraphBox> for JobOverview {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cluster::{JobState, JobStateEventStream};
+    use crate::config::SchedulerConfig;
+    use crate::test_utils::test_aggregation_plan_with_job_id;
+    use ballista_core::serde::BallistaCodec;
+    use dashmap::DashMap;
+    use datafusion::prelude::SessionConfig;
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use futures::stream;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct MockJobState {
+        acquirable: DashMap<JobId, ExecutionGraphBox>,
+        try_acquire_calls: Arc<AtomicUsize>,
+    }
+
+    impl MockJobState {
+        fn new() -> Self {
+            Self {
+                acquirable: DashMap::new(),
+                try_acquire_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn try_acquire_calls(&self) -> usize {
+            self.try_acquire_calls.load(Ordering::SeqCst)
+        }
+
+        fn insert_acquirable(&self, graph: ExecutionGraphBox) {
+            let job_id = graph.job_id().to_owned();
+            self.acquirable.insert(job_id, graph);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl JobState for MockJobState {
+        fn accept_job(&self, _job_id: &JobId, _job_name: &str, _queued_at: u64) -> Result<()> {
+            Ok(())
+        }
+
+        fn pending_job_number(&self) -> usize {
+            0
+        }
+
+        async fn submit_job(
+            &self,
+            _job_id: JobId,
+            _graph: &ExecutionGraphBox,
+            _subscriber: Option<JobStatusSubscriber>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_jobs(&self) -> Result<HashSet<JobId>> {
+            Ok(HashSet::new())
+        }
+
+        async fn get_all_jobs(&self) -> Result<HashSet<JobId>> {
+            Ok(HashSet::new())
+        }
+
+        async fn get_job_status(&self, _job_id: &JobId) -> Result<Option<JobStatus>> {
+            Ok(None)
+        }
+
+        async fn get_execution_graph(
+            &self,
+            _job_id: &JobId,
+        ) -> Result<Option<ExecutionGraphBox>> {
+            Ok(None)
+        }
+
+        async fn save_job(&self, _job_id: &JobId, _graph: &ExecutionGraphBox) -> Result<()> {
+            Ok(())
+        }
+
+        async fn fail_unscheduled_job(
+            &self,
+            _job_id: &JobId,
+            _reason: String,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn remove_job(&self, _job_id: &JobId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn try_acquire_job(
+            &self,
+            job_id: &JobId,
+        ) -> Result<Option<ExecutionGraphBox>> {
+            self.try_acquire_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .acquirable
+                .remove(job_id)
+                .map(|(_, graph)| graph))
+        }
+
+        async fn job_state_events(&self) -> Result<JobStateEventStream> {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        async fn create_or_update_session(
+            &self,
+            _session_id: &str,
+            _config: &SessionConfig,
+        ) -> Result<Arc<SessionContext>> {
+            Err(BallistaError::NotImplemented(
+                "not used in task_manager tests".to_string(),
+            ))
+        }
+
+        async fn remove_session(&self, _session_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn produce_config(&self) -> SessionConfig {
+            SessionConfig::new()
+        }
+    }
+
+    fn test_task_manager(
+        state: Arc<dyn JobState>,
+    ) -> TaskManager<LogicalPlanNode, PhysicalPlanNode> {
+        TaskManager::new(
+            state,
+            BallistaCodec::default(),
+            "test-scheduler".to_owned(),
+            Arc::new(SchedulerConfig::default()),
+        )
+    }
+
+    #[tokio::test]
+    async fn get_or_acquire_returns_cached_graph_without_acquire() -> Result<()> {
+        let job_id: JobId = "cached1".into();
+        let graph = Box::new(test_aggregation_plan_with_job_id(2, &job_id).await)
+            as ExecutionGraphBox;
+
+        let mock_state = Arc::new(MockJobState::new());
+        let task_manager = test_task_manager(mock_state.clone());
+        task_manager
+            .active_job_cache
+            .insert(job_id.clone(), JobInfoCache::new(graph));
+
+        let acquired = task_manager
+            .get_or_acquire_active_execution_graph(&job_id)
+            .await?;
+
+        assert!(acquired.is_some());
+        assert_eq!(mock_state.try_acquire_calls(), 0);
+        assert_eq!(task_manager.running_job_number(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_or_acquire_rehydrates_cache_on_acquire() -> Result<()> {
+        let job_id: JobId = "acquire1".into();
+        let graph = Box::new(test_aggregation_plan_with_job_id(2, &job_id).await)
+            as ExecutionGraphBox;
+
+        let mock_state = Arc::new(MockJobState::new());
+        mock_state.insert_acquirable(graph);
+
+        let task_manager = test_task_manager(mock_state.clone());
+        assert_eq!(task_manager.running_job_number(), 0);
+
+        let acquired = task_manager
+            .get_or_acquire_active_execution_graph(&job_id)
+            .await?;
+
+        let graph = acquired.expect("graph should be acquired");
+        assert_eq!(graph.read().await.job_id(), &job_id);
+        assert_eq!(mock_state.try_acquire_calls(), 1);
+        assert_eq!(task_manager.running_job_number(), 1);
+
+        // Second call should hit the cache, not acquire again.
+        let cached = task_manager
+            .get_or_acquire_active_execution_graph(&job_id)
+            .await?;
+        assert!(cached.is_some());
+        assert_eq!(mock_state.try_acquire_calls(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_or_acquire_returns_none_when_not_acquirable() -> Result<()> {
+        let job_id: JobId = "missing1".into();
+        let mock_state = Arc::new(MockJobState::new());
+        let task_manager = test_task_manager(mock_state.clone());
+
+        let acquired = task_manager
+            .get_or_acquire_active_execution_graph(&job_id)
+            .await?;
+
+        assert!(acquired.is_none());
+        assert_eq!(mock_state.try_acquire_calls(), 1);
+        assert_eq!(task_manager.running_job_number(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_or_acquire_or_insert_preserves_existing_cache_entry() -> Result<()> {
+        let job_id: JobId = "existing1".into();
+        let cached_graph = Box::new(test_aggregation_plan_with_job_id(2, &job_id).await)
+            as ExecutionGraphBox;
+        let acquirable_graph =
+            Box::new(test_aggregation_plan_with_job_id(4, &job_id).await) as ExecutionGraphBox;
+
+        let mock_state = Arc::new(MockJobState::new());
+        mock_state.insert_acquirable(acquirable_graph);
+
+        let task_manager = test_task_manager(mock_state.clone());
+        let cached = task_manager
+            .active_job_cache
+            .insert(job_id.clone(), JobInfoCache::new(cached_graph));
+        assert!(cached.is_none(), "cache should not already contain the job");
+
+        let acquired = task_manager
+            .get_or_acquire_active_execution_graph(&job_id)
+            .await?;
+
+        assert!(acquired.is_some());
+        assert_eq!(mock_state.try_acquire_calls(), 0);
+        assert_eq!(task_manager.running_job_number(), 1);
+
+        Ok(())
+    }
+}
