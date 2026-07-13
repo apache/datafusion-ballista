@@ -408,7 +408,20 @@ impl TestCluster {
         }
     }
 
-    /// The scheduler's view of the job's status ("Running", "Successful", "Failed").
+    /// The scheduler's short categorical job status: "Queued", "Running",
+    /// "Completed", "Failed", or "Invalid".
+    ///
+    /// The brief's original version read the JSON field literally named
+    /// `job_status`, but that field (`JobResponse::job_status` /
+    /// `handlers::format_job_status`'s second return value) is actually a long
+    /// human-readable sentence, e.g. "Completed. Produced 1 partition
+    /// containing 50 rows. Elapsed time: 49 ms." — never `"Successful"` as the
+    /// original doc comment claimed (a completed job reports `"Completed"`,
+    /// not `"Successful"`), and not stable/matchable for assertions. The short
+    /// categorical value the doc comment actually promises lives in the
+    /// sibling `status` field, so this reads that one instead. Verified against
+    /// a live cluster: `{"status": "Completed", "job_status": "Completed.
+    /// Produced 1 partition containing 50 rows. Elapsed time: 49 ms.", ...}`.
     pub async fn job_status(&self, job_id: &str) -> Result<String, String> {
         let body: serde_json::Value =
             reqwest::get(format!("{}/api/job/{job_id}", self.rest_url()))
@@ -418,7 +431,7 @@ impl TestCluster {
                 .await
                 .map_err(|e| e.to_string())?;
         Ok(body
-            .get("job_status")
+            .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string())
