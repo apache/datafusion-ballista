@@ -62,15 +62,20 @@ impl ChaosRun {
         let state = SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
-            .with_scalar_functions(vec![
-                chaos_testing::udf::chaos_fail_udf(),
-                chaos_testing::udf::chaos_delay_udf(),
-            ])
             .build();
 
         let ctx = SessionContext::remote_with_state(&cluster.scheduler_url(), state)
             .await
             .expect("client must connect to the scheduler");
+
+        // Registered *after* `remote_with_state`, not baked into the initial
+        // SessionState: `SessionStateExt::upgrade_for_ballista` (ballista/core)
+        // rebuilds the state via `with_scalar_functions(ballista_scalar_functions())`,
+        // which replaces rather than merges the scalar-function map, silently
+        // dropping any custom UDF registered beforehand. `register_udf` mutates
+        // the already-upgraded state's registry directly, so it survives.
+        ctx.register_udf(chaos_testing::udf::chaos_fail_udf().as_ref().clone());
+        ctx.register_udf(chaos_testing::udf::chaos_delay_udf().as_ref().clone());
 
         for stmt in fixture.register_sql() {
             ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
@@ -115,6 +120,11 @@ impl ChaosRun {
     }
 
     /// A clone of the session context, for running a query concurrently with a fault.
+    ///
+    /// Not used until Task 9's executor-loss scenarios, which submit a query in
+    /// a spawned task while the main task polls the scheduler and kills an
+    /// executor.
+    #[allow(dead_code)]
     pub fn clone_ctx(&self) -> SessionContext {
         self.ctx.clone()
     }
