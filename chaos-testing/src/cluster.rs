@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,16 @@ use std::time::{Duration, Instant};
 fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     listener.local_addr().expect("local addr").port()
+}
+
+/// Open a child process log file for append.
+///
+/// Appending (rather than truncating) matters for Task 6's kill/restart
+/// scenarios: a restarted executor reuses the same log path, and the prior
+/// process's output is the evidence of why it died. It must not be wiped out
+/// by the replacement process starting up.
+fn open_log(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 /// Locate a binary built by this crate, honouring CARGO_TARGET_DIR.
@@ -108,7 +119,17 @@ impl TestClusterBuilder {
 
     pub async fn start(self) -> Result<TestCluster, String> {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let log_dir = temp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
         let scheduler_port = free_port();
+
+        let scheduler_log = log_dir.join("scheduler.log");
+        let scheduler_stdout = open_log(&scheduler_log).map_err(|e| {
+            format!("open scheduler log {}: {e}", scheduler_log.display())
+        })?;
+        let scheduler_stderr = open_log(&scheduler_log).map_err(|e| {
+            format!("open scheduler log {}: {e}", scheduler_log.display())
+        })?;
 
         let mut scheduler = Command::new(binary("chaos-scheduler"));
         scheduler
@@ -133,8 +154,8 @@ impl TestClusterBuilder {
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
             )
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::from(scheduler_stdout))
+            .stderr(Stdio::from(scheduler_stderr));
         let scheduler = scheduler
             .spawn()
             .map_err(|e| format!("spawn scheduler: {e}"))?;
@@ -144,6 +165,7 @@ impl TestClusterBuilder {
             scheduler_port,
             executors: Vec::new(),
             temp,
+            log_dir,
             builder: self,
         };
 
@@ -163,6 +185,7 @@ pub struct TestCluster {
     scheduler_port: u16,
     pub(crate) executors: Vec<ExecutorHandle>,
     temp: tempfile::TempDir,
+    log_dir: PathBuf,
     builder: TestClusterBuilder,
 }
 
@@ -187,11 +210,29 @@ impl TestCluster {
         self.temp.path()
     }
 
+    /// Directory containing each child process's stdout/stderr log
+    /// (`scheduler.log`, `executor-{index}.log`). When a scenario fails, these
+    /// logs are the evidence of what the scheduler and executors were doing.
+    pub fn log_dir(&self) -> &Path {
+        &self.log_dir
+    }
+
     pub(crate) fn spawn_executor(&mut self, index: usize) -> Result<(), String> {
         let port = free_port();
         let grpc_port = free_port();
         let work_dir = self.temp.path().join(format!("executor-{index}"));
         std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+        // Appends rather than truncates: a respawn at this same index (Task 6's
+        // kill/restart scenarios) must not erase the log of the process that
+        // just died.
+        let executor_log = self.log_dir.join(format!("executor-{index}.log"));
+        let executor_stdout = open_log(&executor_log).map_err(|e| {
+            format!("open executor {index} log {}: {e}", executor_log.display())
+        })?;
+        let executor_stderr = open_log(&executor_log).map_err(|e| {
+            format!("open executor {index} log {}: {e}", executor_log.display())
+        })?;
 
         let child = Command::new(binary("chaos-executor"))
             .env("CHAOS_EXECUTOR_PORT", port.to_string())
@@ -207,8 +248,8 @@ impl TestCluster {
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
             )
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(executor_stdout))
+            .stderr(Stdio::from(executor_stderr))
             .spawn()
             .map_err(|e| format!("spawn executor {index}: {e}"))?;
 
@@ -259,14 +300,30 @@ impl TestCluster {
     }
 }
 
+/// If `child` already exited with a non-zero status, log the path of its
+/// output so a human investigating a failed scenario knows where to look.
+/// Then make sure it is actually gone.
+fn reap(child: &mut Child, log_path: &Path) {
+    if let Ok(Some(status)) = child.try_wait()
+        && !status.success()
+    {
+        log::warn!(
+            "process exited with {status}; see log at {}",
+            log_path.display()
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl Drop for TestCluster {
     fn drop(&mut self) {
-        for executor in &mut self.executors {
-            let _ = executor.child.kill();
-            let _ = executor.child.wait();
+        for (index, executor) in self.executors.iter_mut().enumerate() {
+            let log_path = self.log_dir.join(format!("executor-{index}.log"));
+            reap(&mut executor.child, &log_path);
         }
-        let _ = self.scheduler.kill();
-        let _ = self.scheduler.wait();
+        let scheduler_log = self.log_dir.join("scheduler.log");
+        reap(&mut self.scheduler, &scheduler_log);
     }
 }
 
