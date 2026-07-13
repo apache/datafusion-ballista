@@ -286,13 +286,11 @@ mod tests {
         assert_eq!(FaultBudget::open(&dir).remaining(), 1);
     }
 
-    // The panic crosses the async stream boundary and unwinds this test's own
-    // thread before `result.is_err()` below is ever reached, so the test always
-    // reports FAILED regardless of the UDF's behavior. In-process `panic!` is not
-    // observable as an `Err` here; the authoritative check is the end-to-end
-    // Scenario C in Task 8, where the executor's `catch_unwind` converts the
-    // panic into a `FailedTask`. See `.superpowers/sdd/task-2-brief.md`.
-    #[ignore]
+    /// Tests that panic mode injects a panic when a guard row is true.
+    /// The panic crosses the async stream boundary. The authoritative end-to-end
+    /// panic test is Scenario C in Task 8, where the executor's `catch_unwind`
+    /// converts the panic into a `FailedTask`.
+    #[should_panic(expected = "chaos_fail: injected panic")]
     #[tokio::test]
     async fn panic_mode_panics() {
         let dir = temp_dir("panic-fires");
@@ -303,17 +301,7 @@ mod tests {
             "SELECT chaos_fail(guard, 'panic', '{}') FROM t",
             dir.display()
         );
-        let result = ctx.sql(&sql).await.unwrap().collect().await;
-
-        // The panic branch consumes the token before it panics, so an empty budget
-        // proves the branch was actually reached.
-        assert_eq!(
-            FaultBudget::open(&dir).remaining(),
-            0,
-            "panic branch must have been reached"
-        );
-        // However the panic surfaces in-process, it must never look like success.
-        assert!(result.is_err(), "a panicking UDF must not yield a result");
+        let _ = ctx.sql(&sql).await.unwrap().collect().await;
     }
 
     #[tokio::test]
