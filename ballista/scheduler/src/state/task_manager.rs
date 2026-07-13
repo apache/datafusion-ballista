@@ -1004,7 +1004,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl JobState for MockJobState {
-        fn accept_job(&self, _job_id: &JobId, _job_name: &str, _queued_at: u64) -> Result<()> {
+        fn accept_job(
+            &self,
+            _job_id: &JobId,
+            _job_name: &str,
+            _queued_at: u64,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -1040,7 +1045,11 @@ mod tests {
             Ok(None)
         }
 
-        async fn save_job(&self, _job_id: &JobId, _graph: &ExecutionGraphBox) -> Result<()> {
+        async fn save_job(
+            &self,
+            _job_id: &JobId,
+            _graph: &ExecutionGraphBox,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -1061,10 +1070,7 @@ mod tests {
             job_id: &JobId,
         ) -> Result<Option<ExecutionGraphBox>> {
             self.try_acquire_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(self
-                .acquirable
-                .remove(job_id)
-                .map(|(_, graph)| graph))
+            Ok(self.acquirable.remove(job_id).map(|(_, graph)| graph))
         }
 
         async fn job_state_events(&self) -> Result<JobStateEventStream> {
@@ -1178,7 +1184,8 @@ mod tests {
         let cached_graph = Box::new(test_aggregation_plan_with_job_id(2, &job_id).await)
             as ExecutionGraphBox;
         let acquirable_graph =
-            Box::new(test_aggregation_plan_with_job_id(4, &job_id).await) as ExecutionGraphBox;
+            Box::new(test_aggregation_plan_with_job_id(4, &job_id).await)
+                as ExecutionGraphBox;
 
         let mock_state = Arc::new(MockJobState::new());
         mock_state.insert_acquirable(acquirable_graph);
