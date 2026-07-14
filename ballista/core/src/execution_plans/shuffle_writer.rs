@@ -20,9 +20,6 @@
 //! partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 //! will use the ShuffleReaderExec to read these results.
 
-use datafusion::arrow::ipc::CompressionType;
-use datafusion::arrow::ipc::writer::IpcWriteOptions;
-
 use datafusion::arrow::ipc::writer::StreamWriter;
 use std::any::Any;
 use std::fmt::Debug;
@@ -41,6 +38,7 @@ use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
 use crate::serde::scheduler::PartitionStats;
+use crate::utils::create_new_write_options;
 use datafusion::arrow::array::{
     ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
 };
@@ -211,10 +209,8 @@ impl ShuffleWriterExec {
 
         async move {
             let now = Instant::now();
-            let channel_capacity = context
-                .session_config()
-                .ballista_config()
-                .shuffle_writer_channel_capacity();
+            let config = Arc::new(context.session_config().ballista_config());
+            let channel_capacity = config.shuffle_writer_channel_capacity();
             let mut stream = plan.execute(input_partition, context)?;
 
             match output_partitioning {
@@ -239,6 +235,7 @@ impl ShuffleWriterExec {
                         path.as_path(),
                         &write_metrics.write_time,
                         channel_capacity,
+                        config,
                     )
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -314,10 +311,10 @@ impl ShuffleWriterExec {
 
                                             debug!("Writing results to {p:?}");
 
-                                            let options = IpcWriteOptions::default()
-                                                .try_with_compression(Some(
-                                                    CompressionType::LZ4_FRAME,
-                                                ))?;
+                                            let options =
+                                                create_new_write_options(config.clone())
+                                                    .unwrap();
+
                                             let file =
                                                 BufWriter::new(File::create(p.clone())?);
                                             let mut writer =

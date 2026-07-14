@@ -168,6 +168,30 @@ pub fn default_config_producer() -> SessionConfig {
     SessionConfig::new_with_ballista()
 }
 
+/// Creates [IpcWriteOptions] using the compression codec configured in the BallistaConfig
+pub fn create_new_write_options(config: Arc<BallistaConfig>) -> Result<IpcWriteOptions> {
+    let compression_codec: Option<CompressionType> =
+        match config.shuffle_compression_codec().as_str() {
+            "lz4" => Some(CompressionType::LZ4_FRAME),
+            "zstd" => Some(CompressionType::ZSTD),
+            "none" => None,
+            other => {
+                return Err(BallistaError::Configuration(format!(
+                    "Invalid compression type: {}",
+                    other
+                )));
+            }
+        };
+
+    let options = IpcWriteOptions::default()
+        .try_with_compression(compression_codec)
+        .map_err(|err| {
+            BallistaError::Internal(format!("Failed to set compression codec: {}", err))
+        })?;
+
+    Ok(options)
+}
+
 /// Stream data to disk in Arrow IPC format.
 ///
 /// Batches are read from the async stream and forwarded through a bounded
@@ -178,6 +202,7 @@ pub async fn write_stream_to_disk(
     path: &Path,
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
+    config: Arc<BallistaConfig>,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
@@ -191,8 +216,7 @@ pub async fn write_stream_to_disk(
             BallistaError::IoError(e)
         })?);
 
-        let options = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let options = create_new_write_options(config).unwrap();
 
         let mut writer =
             StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
