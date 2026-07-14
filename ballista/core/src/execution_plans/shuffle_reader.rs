@@ -851,7 +851,7 @@ fn send_fetch_partitions(
         let read_metrics = read_metrics.clone();
 
         spawned_tasks.push(SpawnedTask::spawn(async move {
-            let addr = p.executor_meta.id.clone();
+            let addr = p.executor_id.clone();
             let size = block_size(&p, default_block_size);
 
             // Time spent blocked acquiring the three governor permits (#1951).
@@ -980,6 +980,7 @@ async fn fetch_partition_buffered(
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> result::Result<(SchemaRef, Vec<RecordBatch>), BallistaError> {
+    let executor_id = &location.executor_id;
     let stream = fetch_partition_remote(
         location,
         config,
@@ -989,11 +990,10 @@ async fn fetch_partition_buffered(
     )
     .await?;
     let schema = stream.schema();
-    let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let batches = stream.try_collect::<Vec<_>>().await.map_err(|e| {
         BallistaError::FetchFailed(
-            metadata.id.clone(),
+            executor_id.to_string(),
             partition_id.stage_id,
             partition_id.partition_id,
             e.to_string(),
@@ -1654,14 +1654,12 @@ mod tests {
                 stage_id: input_stage_id,
                 partition_id: 0,
             },
-            executor_meta: Arc::new(ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                }),
+            executor_id: String::from("id"),
+            executor_connection: Arc::new(ExecutorConnection {
+                host: "localhost".to_string(),
+                port: 50050,
+                grpc_port: 50052,
+            }),
             partition_stats: Default::default(),
             file_id: None,
             is_sort_shuffle: false,

@@ -1024,7 +1024,7 @@ mod prune_partition_tests {
         CoalescePlan, PartitionGroup, ShuffleReaderExec,
     };
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, PartitionId, PartitionLocation,
+        ExecutorConnection, PartitionId, PartitionLocation,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::Partitioning;
@@ -1039,14 +1039,12 @@ mod prune_partition_tests {
                 stage_id: 0,
                 partition_id: partition,
             },
-            executor_meta: ExecutorMetadata {
-                id: "1".to_string(),
-                host: "1.1.1.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: Default::default(),
-                os_info: Default::default(),
-            },
+            executor_id: String::from("id"),
+            executor_connection: Arc::new(ExecutorConnection {
+                host: "localhost".to_string(),
+                port: 50050,
+                grpc_port: 50052,
+            }),
             partition_stats: Default::default(),
             file_id: None,
             is_sort_shuffle: false,
