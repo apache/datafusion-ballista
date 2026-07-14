@@ -221,10 +221,33 @@ class TestBallistaMagicsConnected:
         result = connected_magics.sql("SELECT 1 as value")
         assert result is not None
 
-    def test_sql_magic_cell_returns_dataframe(self, connected_magics):
-        """Test %%sql cell magic returns a DistributedDataFrame."""
-        result = connected_magics.sql("", cell="SELECT 1 as value")
+    def test_sql_magic_cell_returns_dataframe_without_ipython(self, connected_magics):
+        """Outside IPython, %%sql returns the DataFrame instead of swallowing it.
+
+        The ``return None`` path exists only to suppress IPython's second,
+        un-capped auto-render; with no IPython there is nothing to display or
+        suppress, so the result must be returned so it is not lost.
+        """
+        with patch("ballista.jupyter.IPYTHON_AVAILABLE", False):
+            result = connected_magics.sql("", cell="SELECT 1 as value")
         assert result is not None
+        assert connected_magics._last_result is not None
+
+    def test_sql_magic_cell_renders_and_returns_none_in_ipython(self, connected_magics):
+        """Inside IPython, %%sql renders (capped, cell-locally) and returns None.
+
+        It displays the result itself and returns None to avoid a second
+        un-capped auto-render; the DataFrame remains available via
+        ``_last_result``.
+        """
+        with (
+            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
+            patch("ballista.jupyter.display", create=True) as mock_display,
+        ):
+            result = connected_magics.sql("", cell="SELECT 1 as value")
+        assert result is None
+        mock_display.assert_called_once()
+        assert connected_magics._last_result is not None
 
     def test_sql_magic_cell_stores_in_shell_namespace(self, connected_magics):
         """Test %%sql stores result in shell namespace when var name given."""
@@ -250,24 +273,57 @@ class TestBallistaMagicsConnected:
         mock_shell.user_ns = {}
         connected_magics.shell = mock_shell
 
-        # --limit caps the display formatter but never truncates the stored data.
-        connected_magics.sql(
-            "--limit 2 my_var",
-            cell="SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(x)",
-        )
+        # The row cap is applied only while the cell renders and is reverted
+        # afterwards, so it never leaks into the rest of the session.
+        formatter_max_rows_before = get_formatter().max_rows
+
+        def _capture_max_rows_at_display(_obj):
+            captured.append(get_formatter().max_rows)
+
+        # --limit caps the rows rendered for this cell (checked at display
+        # time) but never truncates the stored data, and is scoped to the cell.
+        captured = []
+        with (
+            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
+            patch(
+                "ballista.jupyter.display", _capture_max_rows_at_display, create=True
+            ),
+        ):
+            result = connected_magics.sql(
+                "--limit 2 my_var",
+                cell="SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(x)",
+            )
         stored = mock_shell.user_ns["my_var"]
         assert sum(batch.num_rows for batch in stored.collect()) == 5
-        assert get_formatter().max_rows == 2
+        assert captured == [2]  # cap active while rendering
+        assert result is None  # no second, un-capped auto-render
+        assert get_formatter().max_rows == formatter_max_rows_before  # restored
 
-        # Without --limit the formatter falls back to the default cap.
-        connected_magics.sql("", cell="SELECT 1 as value")
-        assert get_formatter().max_rows == DEFAULT_DISPLAY_LIMIT
+        # Without --limit the default cap is used at render time, then restored.
+        captured = []
+        with (
+            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
+            patch(
+                "ballista.jupyter.display", _capture_max_rows_at_display, create=True
+            ),
+        ):
+            connected_magics.sql("", cell="SELECT 1 as value")
+        assert captured == [DEFAULT_DISPLAY_LIMIT]
+        assert get_formatter().max_rows == formatter_max_rows_before  # restored
 
         # --no-display stores the result but renders nothing.
-        result = connected_magics.sql(
-            "--no-display other_var", cell="SELECT 1 as value"
-        )
+        captured = []
+        with (
+            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
+            patch(
+                "ballista.jupyter.display", _capture_max_rows_at_display, create=True
+            ),
+        ):
+            result = connected_magics.sql(
+                "--no-display other_var", cell="SELECT 1 as value"
+            )
         assert result is None
+        assert captured == []  # display was never called
         assert mock_shell.user_ns["other_var"] is not None
 
         # An invalid --limit returns the error string instead of raising.

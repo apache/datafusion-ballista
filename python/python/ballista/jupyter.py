@@ -108,7 +108,11 @@ except ImportError:
             return decorator
 
 
-from datafusion import configure_formatter
+from datafusion.dataframe_formatter import (
+    configure_formatter,
+    get_formatter,
+    set_formatter,
+)
 
 from .extension import BallistaSessionContext, DistributedDataFrame
 
@@ -318,13 +322,29 @@ class BallistaMagics(Magics):
             if no_display:
                 return None
 
-            # Display-only cap: limits the rows rendered in the cell, never the
-            # underlying data, so an in-query LIMIT always takes effect. Both
-            # min_rows and max_rows are set because the formatter requires
-            # min_rows <= max_rows (datafusion itself defaults them equal).
+            # Outside IPython there is no auto-render to cap or suppress, so
+            # just return the result rather than swallowing it.
+            if not IPYTHON_AVAILABLE:
+                return result
+
+            # Display-only cap: limits the rows rendered for THIS cell, never
+            # the underlying data, so an in-query LIMIT always takes effect.
+            # datafusion's formatter is a process-global singleton, so we
+            # render eagerly with the cap applied and then restore the previous
+            # formatter, keeping the effect scoped to this cell instead of
+            # leaking into the rest of the session. Both min_rows and max_rows
+            # are set because the formatter requires min_rows <= max_rows.
             rows = limit if limit is not None else DEFAULT_DISPLAY_LIMIT
-            configure_formatter(max_rows=rows, min_rows=rows)
-            return result
+            previous_formatter = get_formatter()
+            try:
+                configure_formatter(max_rows=rows, min_rows=rows)
+                display(result)
+            finally:
+                set_formatter(previous_formatter)
+
+            # Returning None avoids a second, un-capped auto-render by IPython;
+            # the result is still available via the variable and _last_result.
+            return None
 
     def _connect(self, address: str) -> Optional[str]:
         """Connect to a Ballista cluster."""
