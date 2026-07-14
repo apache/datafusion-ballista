@@ -18,7 +18,6 @@
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use std::convert::TryInto;
-
 use crate::error::BallistaError;
 
 use crate::serde::protobuf::{self, NamedPruningMetrics, NamedRatio};
