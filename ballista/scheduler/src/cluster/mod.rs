@@ -317,6 +317,9 @@ pub trait JobState: Send + Sync {
 
     /// Persists the current state of an owned job.
     ///
+    /// Implementations are responsible for applying any backend-specific retry policy.
+    /// Callers must not assume that this operation is safe to retry.
+    ///
     /// Returns an error if the job is not owned by the caller.
     async fn save_job(&self, job_id: &JobId, graph: &ExecutionGraphBox) -> Result<()>;
 

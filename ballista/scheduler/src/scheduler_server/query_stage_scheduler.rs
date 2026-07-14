@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ballista_core::JobId;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus};
 use log::{debug, error, info, trace, warn};
 
@@ -58,6 +59,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             config,
         }
     }
+
+    async fn abort_job(&self, job_id: &JobId, failure_reason: String) -> Result<()> {
+        let executor_manager = self.state.executor_manager.clone();
+        self.state
+            .task_manager
+            .abort_job(job_id, failure_reason, move |running_tasks| async move {
+                if running_tasks.is_empty() {
+                    Ok(())
+                } else {
+                    executor_manager.cancel_running_tasks(running_tasks).await
+                }
+            })
+            .await?;
+        Ok(())
+    }
+
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.metrics_collector.as_ref()
@@ -234,24 +251,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job failed: [{job_id}]");
-                match self
-                    .state
-                    .task_manager
-                    .abort_job(&job_id, fail_message)
-                    .await
-                {
-                    Ok((running_tasks, _pending_tasks)) => {
-                        if !running_tasks.is_empty() {
-                            event_sender
-                                .post_event(QueryStageSchedulerEvent::CancelTasks(
-                                    running_tasks,
-                                ))
-                                .await?;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Fail to invoke abort_job for job {job_id} due to {e:?}");
-                    }
+                if let Err(e) = self.abort_job(&job_id, fail_message).await {
+                    error!("Fail to abort job {job_id} due to {e:?}");
                 }
                 self.state.clean_up_failed_job(job_id);
             }
@@ -265,17 +266,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job cancelled: [{job_id}]");
-                match self.state.task_manager.cancel_job(&job_id).await {
-                    Ok((running_tasks, _pending_tasks)) => {
-                        event_sender
-                            .post_event(QueryStageSchedulerEvent::CancelTasks(
-                                running_tasks,
-                            ))
-                            .await?;
-                    }
-                    Err(e) => {
-                        error!("Fail to invoke cancel_job for job {job_id} due to {e:?}");
-                    }
+                if let Err(e) = self.abort_job(&job_id, "Cancelled".to_owned()).await {
+                    error!("Fail to cancel job {job_id} due to {e:?}");
                 }
                 self.state.clean_up_failed_job(job_id);
             }
