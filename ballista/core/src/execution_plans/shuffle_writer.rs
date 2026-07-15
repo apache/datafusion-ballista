@@ -312,8 +312,7 @@ impl ShuffleWriterExec {
                                             debug!("Writing results to {p:?}");
 
                                             let options =
-                                                create_new_write_options(config.clone())
-                                                    .unwrap();
+                                                create_new_write_options(config.clone())?;
 
                                             let file =
                                                 BufWriter::new(File::create(p.clone())?);

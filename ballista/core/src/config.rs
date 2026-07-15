@@ -20,6 +20,7 @@
 
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
+use datafusion::arrow::ipc::CompressionType;
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
@@ -294,7 +295,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             BALLISTA_SHUFFLE_COMPRESSION_CODEC.to_string(),
             "Compression codec specification \
             used in the shuffle process. Possible values: \
-            none, lz4, zstd. Default to lz4 to preserve current behaviour".to_string(),
+            none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
             DataType::Utf8,
             Some("lz4".to_string()),
         )
@@ -518,8 +519,18 @@ impl BallistaConfig {
     }
 
     /// Returns compression codec that will be used during write stage of shuffle
-    pub fn shuffle_compression_codec(&self) -> String {
-        self.get_string_setting(BALLISTA_SHUFFLE_COMPRESSION_CODEC)
+    pub fn shuffle_compression_codec(
+        &self,
+    ) -> std::result::Result<Option<CompressionType>, String> {
+        match self
+            .get_string_setting(BALLISTA_SHUFFLE_COMPRESSION_CODEC)
+            .as_str()
+        {
+            "lz4" => Ok(Some(CompressionType::LZ4_FRAME)),
+            "zstd" => Ok(Some(CompressionType::ZSTD)),
+            "none" => Ok(None),
+            other => Err(format!("Invalid compression codec: {}", other)),
+        }
     }
 
     /// Returns the target post-coalesce partition byte size in bytes

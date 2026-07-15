@@ -20,10 +20,10 @@ use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionStats;
 
-use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::{SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
@@ -169,24 +169,17 @@ pub fn default_config_producer() -> SessionConfig {
 }
 
 /// Creates [IpcWriteOptions] using the compression codec configured in the BallistaConfig
-pub fn create_new_write_options(config: Arc<BallistaConfig>) -> Result<IpcWriteOptions> {
-    let compression_codec: Option<CompressionType> =
-        match config.shuffle_compression_codec().as_str() {
-            "lz4" => Some(CompressionType::LZ4_FRAME),
-            "zstd" => Some(CompressionType::ZSTD),
-            "none" => None,
-            other => {
-                return Err(BallistaError::Configuration(format!(
-                    "Invalid compression type: {}",
-                    other
-                )));
-            }
-        };
+pub fn create_new_write_options(
+    config: Arc<BallistaConfig>,
+) -> std::result::Result<IpcWriteOptions, DataFusionError> {
+    let compression_codec = config
+        .shuffle_compression_codec()
+        .map_err(DataFusionError::Configuration)?;
 
     let options = IpcWriteOptions::default()
         .try_with_compression(compression_codec)
         .map_err(|err| {
-            BallistaError::Internal(format!("Failed to set compression codec: {}", err))
+            DataFusionError::Internal(format!("Failed to set compression codec: {}", err))
         })?;
 
     Ok(options)
@@ -216,7 +209,7 @@ pub async fn write_stream_to_disk(
             BallistaError::IoError(e)
         })?);
 
-        let options = create_new_write_options(config).unwrap();
+        let options = create_new_write_options(config)?;
 
         let mut writer =
             StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
