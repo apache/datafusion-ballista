@@ -195,11 +195,12 @@ impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
+                writeln!(
                     f,
                     "DistributedQueryExec: scheduler_url={}",
                     self.scheduler_url
-                )
+                )?;
+                write!(f, "logical_plan:\n{}", self.plan.display_indent())
             }
             DisplayFormatType::TreeRender => {
                 writeln!(f, "scheduler_url={}", self.scheduler_url)
@@ -891,6 +892,7 @@ mod test {
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::displayable;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
 
@@ -965,5 +967,31 @@ mod test {
             .unwrap();
 
         assert_eq!(new_exec.job_id(), Some(JobId::new("job-123")));
+    }
+
+    #[test]
+    fn test_display_includes_logical_plan() {
+        let exec = Arc::new(DistributedQueryExec::<LogicalPlanNode>::new(
+            "http://scheduler:50050".to_string(),
+            BallistaConfig::default(),
+            LogicalPlan::default(),
+            "session".to_string(),
+        ));
+
+        let rendered = displayable(exec.as_ref()).indent(false).to_string();
+
+        assert!(
+            rendered.contains("scheduler_url=http://scheduler:50050"),
+            "missing scheduler_url line: {rendered}"
+        );
+        assert!(
+            rendered.contains("logical_plan:"),
+            "missing logical_plan section: {rendered}"
+        );
+        // LogicalPlan::default() renders as EmptyRelation
+        assert!(
+            rendered.contains("EmptyRelation"),
+            "missing rendered logical plan: {rendered}"
+        );
     }
 }
