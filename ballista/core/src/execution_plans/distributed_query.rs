@@ -141,6 +141,42 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         self.job_id.lock().clone()
     }
 
+    /// Fetch and render the physical plan that executed on the cluster for this
+    /// query, one section per query stage.
+    ///
+    /// This must be called after the query has run (i.e. after
+    /// [`ExecutionPlan::execute`]/`collect`), because it relies on the
+    /// scheduler-assigned job id and the plan is only available once the stages
+    /// have completed. Returns an error if the query has not been executed yet.
+    ///
+    /// When `with_metrics` is true the output matches `EXPLAIN ANALYZE`; when
+    /// false the `metrics=[...]` suffixes are omitted.
+    pub async fn explain_executed_plan(
+        &self,
+        session_config: &SessionConfig,
+        with_metrics: bool,
+    ) -> Result<String> {
+        let job_id = self.job_id().ok_or_else(|| {
+            DataFusionError::Execution(
+                "Cannot explain executed plan: query has not been executed yet"
+                    .to_string(),
+            )
+        })?;
+
+        let job_metrics =
+            crate::execution_plans::distributed_explain_analyze::fetch_job_metrics(
+                &self.scheduler_url,
+                &job_id,
+                session_config.clone(),
+            )
+            .await?;
+
+        crate::execution_plans::distributed_explain_analyze::format_job_plan(
+            &job_metrics,
+            with_metrics,
+        )
+    }
+
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
         PlanProperties::new(
             EquivalenceProperties::new(schema),
