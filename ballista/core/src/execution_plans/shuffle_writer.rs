@@ -38,7 +38,7 @@ use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
 use crate::serde::scheduler::PartitionStats;
-use crate::utils::create_new_write_options;
+use crate::utils::create_write_options;
 use datafusion::arrow::array::{
     ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
 };
@@ -211,6 +211,7 @@ impl ShuffleWriterExec {
         async move {
             let now = Instant::now();
             let config = Arc::new(context.session_config().ballista_config());
+            let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
             let mut stream = plan.execute(input_partition, context)?;
 
@@ -236,7 +237,7 @@ impl ShuffleWriterExec {
                         path.as_path(),
                         &write_metrics.write_time,
                         channel_capacity,
-                        config,
+                        compression_type,
                     )
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -313,7 +314,7 @@ impl ShuffleWriterExec {
                                             debug!("Writing results to {p:?}");
 
                                             let options =
-                                                create_new_write_options(config.clone())?;
+                                                create_write_options(compression_type)?;
 
                                             let file =
                                                 BufWriter::new(File::create(p.clone())?);

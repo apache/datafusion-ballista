@@ -691,7 +691,6 @@ pub(crate) fn create_shuffle_writer_with_config(
         if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
             let sort_config = SortShuffleConfig::new(
                 true,
-                datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
                 ballista_config.shuffle_sort_based_batch_size(),
             )
             .with_memory_limit_per_task_bytes(

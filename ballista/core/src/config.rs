@@ -21,6 +21,7 @@
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
 use datafusion::arrow::ipc::CompressionType;
+use datafusion::error::DataFusionError;
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
@@ -345,7 +346,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
             DataType::Utf8,
             Some("lz4".to_string()),
-        )
+        ),
     ];
     entries
         .into_iter()
@@ -600,15 +601,19 @@ impl BallistaConfig {
     /// Returns compression codec that will be used during write stage of shuffle
     pub fn shuffle_compression_codec(
         &self,
-    ) -> std::result::Result<Option<CompressionType>, String> {
+    ) -> std::result::Result<Option<CompressionType>, DataFusionError> {
         match self
             .get_string_setting(BALLISTA_SHUFFLE_COMPRESSION_CODEC)
-            .as_str()
+            .to_lowercase()
+            .trim()
         {
             "lz4" => Ok(Some(CompressionType::LZ4_FRAME)),
             "zstd" => Ok(Some(CompressionType::ZSTD)),
             "none" => Ok(None),
-            other => Err(format!("Invalid compression codec: {}", other)),
+            other => Err(DataFusionError::Configuration(format!(
+                "Got an invalid compression codec {other}: \
+                Valid options are: lz4, zstd and none"
+            ))),
         }
     }
 

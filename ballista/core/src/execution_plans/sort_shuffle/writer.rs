@@ -36,14 +36,17 @@ use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
 use crate::JobId;
 use crate::execution_plans::create_shuffle_path;
+use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::ShuffleWritePartition;
 
+use crate::utils::create_write_options;
 use datafusion::arrow::array::{
     ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use datafusion::arrow::ipc::CompressionType;
+use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::error::{DataFusionError, Result};
@@ -213,6 +216,8 @@ impl SortShuffleWriterExec {
             let now = Instant::now();
             let mut stream = plan.execute(input_partition, context.clone())?;
             let schema = stream.schema();
+            let ballista_config = Arc::new(context.session_config().ballista_config());
+            let compression_type = ballista_config.shuffle_compression_codec()?;
 
             let Partitioning::Hash(exprs, num_output_partitions) = partitioning else {
                 return Err(DataFusionError::Internal(
@@ -226,7 +231,7 @@ impl SortShuffleWriterExec {
                 stage_id,
                 input_partition,
                 schema.clone(),
-                config.compression,
+                compression_type,
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
@@ -318,6 +323,7 @@ impl SortShuffleWriterExec {
                 &mut spill_manager,
                 &schema,
                 &config,
+                compression_type,
             )?;
             timer.done();
 
@@ -425,6 +431,7 @@ fn finalize_output(
     spill_manager: &mut SpillManager,
     schema: &SchemaRef,
     config: &SortShuffleConfig,
+    compression_type: Option<CompressionType>,
 ) -> Result<FinalizeResult> {
     let num_partitions = buffered.num_partitions();
     let mut index = ShuffleIndex::new(num_partitions);
@@ -444,8 +451,7 @@ fn finalize_output(
     let file = File::create(&data_path)?;
     let mut output = BufWriter::new(file);
 
-    let opts =
-        IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
+    let opts = create_write_options(compression_type)?;
 
     // Leading schema-header stream (schema message + EOS, no batches) so the
     // reader can recover the schema even when the requested partition is empty.

@@ -20,6 +20,7 @@ use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionStats;
 
+use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -178,20 +179,14 @@ pub fn default_config_producer() -> SessionConfig {
 }
 
 /// Creates [IpcWriteOptions] using the compression codec configured in the BallistaConfig
-pub fn create_new_write_options(
-    config: Arc<BallistaConfig>,
+pub fn create_write_options(
+    compression_type: Option<CompressionType>,
 ) -> std::result::Result<IpcWriteOptions, DataFusionError> {
-    let compression_codec = config
-        .shuffle_compression_codec()
-        .map_err(DataFusionError::Configuration)?;
-
-    let options = IpcWriteOptions::default()
-        .try_with_compression(compression_codec)
+    IpcWriteOptions::default()
+        .try_with_compression(compression_type)
         .map_err(|err| {
-            DataFusionError::Internal(format!("Failed to set compression codec: {}", err))
-        })?;
-
-    Ok(options)
+            DataFusionError::Internal(format!("Failed to set compression codec: {err}"))
+        })
 }
 
 /// Stream data to disk in Arrow IPC format.
@@ -204,7 +199,7 @@ pub async fn write_stream_to_disk(
     path: &Path,
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
-    config: Arc<BallistaConfig>,
+    compression_type: Option<CompressionType>,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
@@ -218,7 +213,7 @@ pub async fn write_stream_to_disk(
             BallistaError::IoError(e)
         })?);
 
-        let options = create_new_write_options(config)?;
+        let options = create_write_options(compression_type)?;
 
         let mut writer =
             StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
