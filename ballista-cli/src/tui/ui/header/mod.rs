@@ -55,6 +55,11 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
 fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
     use tui_big_text::{BigText, PixelSize};
 
+    let lines = match area.width {
+        0..70 => vec![" DataFusion".into(), " Ballista".into()],
+        _ => vec![" DataFusion Ballista".into()],
+    };
+
     // Quadrant is the densest PixelSize drawn purely from the Block Elements range
     // (U+2580..U+259F), which every monospace font carries. The denser sizes
     // (ThirdHeight/Sextant/QuarterHeight/Octant) need Symbols for Legacy Computing,
@@ -63,7 +68,7 @@ fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
     let big_text = BigText::builder()
         .pixel_size(PixelSize::Quadrant)
         .style(banner_style)
-        .lines(vec![" DataFusion".into(), " Ballista".into()])
+        .lines(lines)
         .build();
     f.render_widget(big_text, area);
 }
