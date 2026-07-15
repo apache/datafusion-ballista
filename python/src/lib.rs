@@ -28,6 +28,7 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 mod cluster;
+mod query_planner;
 mod utils;
 
 pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
@@ -38,12 +39,21 @@ fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
+    m.add_class::<query_planner::PyBallistaQueryPlanner>()?;
 
     m.add_class::<datafusion_python::dataframe::PyParquetWriterOptions>()?;
     m.add_class::<datafusion_python::dataframe::PyParquetColumnOptions>()?;
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
 
     m.add_function(wrap_pyfunction!(create_ballista_data_frame, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(
+        query_planner::ballista_datafusion_config_defaults,
+        m.clone()
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        query_planner::with_ballista_query_planner,
+        m.clone()
+    )?)?;
     m.add_function(wrap_pyfunction!(
         crate::cluster::setup_test_cluster,
         m.clone()

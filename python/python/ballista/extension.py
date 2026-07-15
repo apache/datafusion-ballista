@@ -26,7 +26,9 @@ from datafusion.dataframe import Compression
 from typing import Dict, List, Union, Optional, Callable
 import warnings
 
+from ._internal_ballista import ballista_datafusion_config_defaults
 from ._internal_ballista import create_ballista_data_frame
+from ._internal_ballista import with_ballista_query_planner
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
 
@@ -53,9 +55,9 @@ class RedefiningDataFrameMeta(type):
         def __wrap_dataframe_execution(func):
             def method_wrapper(*args, **kwargs):
                 slf, *argz = args
-                df = slf._to_internal_df()
-
-                return getattr(df, func)(*argz, **kwargs)
+                # The DataFrame already carries the FFI-installed Ballista
+                # planner, so terminal operations execute it directly.
+                return getattr(DataFrame, func)(slf, *argz, **kwargs)
 
             return method_wrapper
 
@@ -66,7 +68,12 @@ class RedefiningDataFrameMeta(type):
                 address = args[0].address
                 session_id = args[0].session_id
                 df = func(*args, **kwargs)
-                return DistributedDataFrame(df, session_id, address)
+                return DistributedDataFrame(
+                    df,
+                    session_id,
+                    address,
+                    args[0].cluster_config,
+                )
 
             return method_wrapper
 
@@ -531,6 +538,9 @@ class ExecutionPlanVisualization:
         return f"ExecutionPlanVisualization(analyze={self.analyze})\n{self.plan_str}"
 
 
+# Keep the compatibility wrapper temporarily for write_* methods: DataFusion's
+# logical codec FFI does not yet transport file-format factories used by COPY.
+# Normal terminal operations execute directly through the installed FFI planner.
 class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextMeta):
     """
     A session context for connecting to and querying a Ballista cluster.
@@ -577,14 +587,22 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         # the plan is shipped to the scheduler. Ballista-namespaced keys
         # are not understood by the local SessionConfig and are forwarded
         # to the scheduler only.
+        if config is None:
+            config = SessionConfig()
+        for key, value in ballista_datafusion_config_defaults().items():
+            config = config.set(key, value)
         if self.cluster_config:
-            if config is None:
-                config = SessionConfig()
             for key, value in self.cluster_config.items():
                 if key.startswith("ballista."):
                     continue
                 config = config.set(key, value)
-        super().__init__(config, runtime)
+        source_ctx = SessionContext(config, runtime)
+        configured_ctx = with_ballista_query_planner(
+            source_ctx,
+            address,
+            self.cluster_config,
+        )
+        self.ctx = configured_ctx.ctx
         self.address = address
         self.session_id_internal = super().session_id()
 

@@ -2914,8 +2914,6 @@ dependencies = [
 [[package]]
 name = "datafusion-python"
 version = "54.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b5da6aab44da83d488e6fb05855f5cd4480c7ab6b44f164166b495cba9fbbb8"
 dependencies = [
  "arrow",
  "arrow-select",
@@ -2946,8 +2944,6 @@ dependencies = [
 [[package]]
 name = "datafusion-python-util"
 version = "54.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba491c15adfebc9ae53aa11f65231814b5199627e9815e2fb62d2f81f4a17fb2"
 dependencies = [
  "arrow",
  "datafusion",
@@ -5612,6 +5608,7 @@ dependencies = [
  "ballista-executor",
  "ballista-scheduler",
  "datafusion",
+ "datafusion-ffi",
  "datafusion-proto",
  "datafusion-python",
  "log",
@@ -5620,6 +5617,7 @@ dependencies = [
  "pyo3-log",
  "tokio",
  "tonic",
+ "url",
 ]
 
 [[package]]

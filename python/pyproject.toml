@@ -65,6 +65,9 @@ profile = "black"
 # whitespace-only diffs. Lint (ruff check) still applies to notebook cells.
 exclude = ["*.ipynb"]
 
+[tool.uv.sources]
+datafusion = { path = "../../datafusion-python", editable = true }
+
 [tool.maturin]
 python-source = "python"
 module-name = "ballista._internal_ballista"
