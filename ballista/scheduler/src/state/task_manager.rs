@@ -52,6 +52,7 @@ use log::{debug, error, info, trace, warn};
 use rand::distr::Alphanumeric;
 use rand::{RngExt, rng};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
@@ -341,7 +342,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get the number of running jobs.
     pub fn running_job_number(&self) -> usize {
-        self.active_job_cache.len()
+        self.active_job_cache
+            .iter()
+            .filter(|job_info| {
+                matches!(job_info.status, Some(job_status::Status::Running(_)))
+            })
+            .count()
     }
 
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
@@ -655,67 +661,101 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(events)
     }
 
+    /// Save a terminal job snapshot and remove it from the active cache.
+    pub(crate) async fn persist_terminal_and_evict(
+        &self,
+        job_id: &JobId,
+        snapshot: &ExecutionGraphBox,
+    ) -> Result<()> {
+        if let Some(mut job_info) = self.active_job_cache.get_mut(job_id) {
+            job_info.status = snapshot.status().status.clone();
+        }
+
+        let save_result = self.state.save_job(job_id, snapshot).await;
+        if let Err(error) = &save_result {
+            warn!(
+                "Failed to persist terminal state for job {job_id}; evicting the local cache entry: {error}"
+            );
+        }
+        let _ = self.remove_active_execution_graph(job_id);
+        save_result
+    }
+
     /// Move a job from Active to Success and return the ids of its intermediate
     /// (non-final) stages so their shuffle data can be reclaimed immediately.
     /// Returns an empty vec if the job is not found or not successful.
     pub(crate) async fn succeed_job(&self, job_id: &JobId) -> Result<Vec<u32>> {
         debug!("Moving job {job_id} from Active to Success");
 
-        if let Some(graph) = self.remove_active_execution_graph(job_id) {
-            let graph = graph.read().await;
-            if graph.is_successful() {
-                self.state.save_job(job_id, &graph).await?;
-                Ok(graph.intermediate_stage_ids())
-            } else {
-                error!("Job {job_id} has not finished and cannot be completed");
-                Ok(vec![])
-            }
+        if let Some(graph) = self.get_active_execution_graph(job_id) {
+            let (snapshot, intermediate_stage_ids) = {
+                let graph = graph.read().await;
+                if !graph.is_successful() {
+                    error!("Job {job_id} has not finished and cannot be completed");
+                    return Ok(vec![]);
+                }
+
+                (graph.cloned(), graph.intermediate_stage_ids())
+            };
+
+            self.persist_terminal_and_evict(job_id, &snapshot).await?;
+            Ok(intermediate_stage_ids)
         } else {
             warn!("Fail to find job {job_id} in the cache");
             Ok(vec![])
         }
     }
 
-    /// Cancel the job and return a Vec of running tasks need to cancel
-    pub(crate) async fn cancel_job(
-        &self,
-        job_id: &JobId,
-    ) -> Result<(Vec<RunningTaskInfo>, usize)> {
-        self.abort_job(job_id, "Cancelled".to_owned()).await
-    }
-
-    /// Abort the job and return a Vec of running tasks need to cancel
-    pub(crate) async fn abort_job(
+    /// Mark a job as failed, cancel its running tasks, and persist terminal state.
+    ///
+    /// Task cancellation is invoked before persistence so executor work is
+    /// stopped even when all terminal-state save attempts fail.
+    pub(crate) async fn abort_job<F, Fut>(
         &self,
         job_id: &JobId,
         failure_reason: String,
-    ) -> Result<(Vec<RunningTaskInfo>, usize)> {
-        let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
-            self.remove_active_execution_graph(job_id)
-        {
-            let mut guard = graph.write().await;
-
-            let pending_tasks = guard.available_tasks();
-            let running_tasks = guard.abort_running(failure_reason);
-
-            info!(
-                "Cancelling {} running tasks for job {}",
-                running_tasks.len(),
-                job_id
-            );
-
-            self.state.save_job(job_id, &guard).await?;
-
-            (running_tasks, pending_tasks)
-        } else {
+        cancel_tasks: F,
+    ) -> Result<usize>
+    where
+        F: FnOnce(Vec<RunningTaskInfo>) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let Some(graph) = self.get_active_execution_graph(job_id) else {
             // TODO listen the job state update event and fix task cancelling
             warn!(
                 "Fail to find job {job_id} in the cache, unable to cancel tasks for job, fail the job state only."
             );
-            (vec![], 0)
+            return Ok(0);
         };
 
-        Ok((tasks_to_cancel, pending_tasks))
+        let (running_tasks, pending_tasks, snapshot) = {
+            let mut guard = graph.write().await;
+            let pending_tasks = guard.available_tasks();
+            let running_tasks = guard.abort_running(failure_reason);
+            let snapshot = guard.cloned();
+            if let Some(mut job_info) = self.active_job_cache.get_mut(job_id) {
+                job_info.status = snapshot.status().status.clone();
+            }
+            (running_tasks, pending_tasks, snapshot)
+        };
+
+        info!(
+            "Cancelling {} running tasks for job {}",
+            running_tasks.len(),
+            job_id
+        );
+
+        let cancel_result = cancel_tasks(running_tasks).await;
+        let persist_result = self.persist_terminal_and_evict(job_id, &snapshot).await;
+        match (cancel_result, persist_result) {
+            (Ok(()), Ok(())) => Ok(pending_tasks),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(cancel_error), Err(persist_error)) => {
+                Err(BallistaError::General(format!(
+                    "Failed to cancel tasks for job {job_id}: {cancel_error}; failed to persist terminal state: {persist_error}"
+                )))
+            }
+        }
     }
 
     /// Mark a unscheduled job as failed. This will create a key under the FailedJobs keyspace
@@ -1013,6 +1053,378 @@ impl From<&ExecutionGraphBox> for JobOverview {
             num_stages: value.stage_count(),
             completed_stages,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cluster::JobStateEventStream;
+    use crate::cluster::memory::InMemoryJobState;
+    use crate::test_utils::{mock_completed_task, mock_executor, test_aggregation_plan};
+    use ballista_core::serde::protobuf::job_status::Status;
+    use ballista_core::utils::{default_config_producer, default_session_builder};
+    use datafusion_proto::protobuf::LogicalPlanNode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+    use tokio::time::timeout;
+
+    struct BlockingJobState {
+        inner: InMemoryJobState,
+        save_started: Notify,
+        allow_save: Notify,
+        failures_remaining: AtomicUsize,
+        save_attempts: AtomicUsize,
+    }
+
+    impl BlockingJobState {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryJobState::new(
+                    "test-scheduler",
+                    Arc::new(default_session_builder),
+                    Arc::new(default_config_producer),
+                ),
+                save_started: Notify::new(),
+                allow_save: Notify::new(),
+                failures_remaining: AtomicUsize::new(0),
+                save_attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl JobState for BlockingJobState {
+        fn accept_job(
+            &self,
+            job_id: &JobId,
+            job_name: &str,
+            queued_at: u64,
+        ) -> Result<()> {
+            self.inner.accept_job(job_id, job_name, queued_at)
+        }
+
+        fn pending_job_number(&self) -> usize {
+            self.inner.pending_job_number()
+        }
+
+        async fn submit_job(
+            &self,
+            job_id: JobId,
+            graph: &ExecutionGraphBox,
+            subscriber: Option<JobStatusSubscriber>,
+        ) -> Result<()> {
+            self.inner.submit_job(job_id, graph, subscriber).await
+        }
+
+        async fn get_jobs(&self) -> Result<HashSet<JobId>> {
+            self.inner.get_jobs().await
+        }
+
+        async fn get_all_jobs(&self) -> Result<HashSet<JobId>> {
+            self.inner.get_all_jobs().await
+        }
+
+        async fn get_job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
+            self.inner.get_job_status(job_id).await
+        }
+
+        async fn get_execution_graph(
+            &self,
+            job_id: &JobId,
+        ) -> Result<Option<ExecutionGraphBox>> {
+            self.inner.get_execution_graph(job_id).await
+        }
+
+        async fn save_job(
+            &self,
+            job_id: &JobId,
+            graph: &ExecutionGraphBox,
+        ) -> Result<()> {
+            let attempt = self.save_attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                self.save_started.notify_one();
+                self.allow_save.notified().await;
+            }
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(BallistaError::General("injected save failure".to_string()));
+            }
+            self.inner.save_job(job_id, graph).await
+        }
+
+        async fn fail_unscheduled_job(
+            &self,
+            job_id: &JobId,
+            reason: String,
+        ) -> Result<()> {
+            self.inner.fail_unscheduled_job(job_id, reason).await
+        }
+
+        async fn remove_job(&self, job_id: &JobId) -> Result<()> {
+            self.inner.remove_job(job_id).await
+        }
+
+        async fn try_acquire_job(
+            &self,
+            job_id: &JobId,
+        ) -> Result<Option<ExecutionGraphBox>> {
+            self.inner.try_acquire_job(job_id).await
+        }
+
+        async fn job_state_events(&self) -> Result<JobStateEventStream> {
+            self.inner.job_state_events().await
+        }
+
+        async fn create_or_update_session(
+            &self,
+            session_id: &str,
+            config: &SessionConfig,
+        ) -> Result<Arc<SessionContext>> {
+            self.inner
+                .create_or_update_session(session_id, config)
+                .await
+        }
+
+        async fn remove_session(&self, session_id: &str) -> Result<()> {
+            self.inner.remove_session(session_id).await
+        }
+
+        fn produce_config(&self) -> SessionConfig {
+            self.inner.produce_config()
+        }
+    }
+
+    type TestTaskManager = TaskManager<LogicalPlanNode, PhysicalPlanNode>;
+
+    async fn setup_job(
+        successful: bool,
+    ) -> Result<(
+        TestTaskManager,
+        Arc<BlockingJobState>,
+        JobId,
+        Arc<RwLock<ExecutionGraphBox>>,
+    )> {
+        let state = Arc::new(BlockingJobState::new());
+        let job_state: Arc<dyn JobState> = state.clone();
+        let manager = TaskManager::new(
+            job_state,
+            BallistaCodec::default(),
+            "test-scheduler".to_string(),
+            Arc::new(SchedulerConfig::default()),
+        );
+
+        let graph: ExecutionGraphBox = Box::new(test_aggregation_plan(2).await);
+        let job_id = graph.job_id().to_owned();
+        state.accept_job(&job_id, graph.job_name(), 0)?;
+        state.submit_job(job_id.clone(), &graph, None).await?;
+
+        manager
+            .active_job_cache
+            .insert(job_id.clone(), JobInfoCache::new(graph));
+        let active_graph = manager
+            .get_active_execution_graph(&job_id)
+            .expect("job should be active");
+
+        if successful {
+            // Complete the graph after it is cached. `JobInfoCache::status` still
+            // contains Running until terminal persistence updates it.
+            let mut graph = active_graph.write().await;
+            let executor = mock_executor("executor-1".to_string());
+            while let Some(task) = graph.pop_next_task(&executor.id)? {
+                graph.update_task_status(
+                    &executor,
+                    vec![mock_completed_task(task, &executor.id)],
+                    1,
+                    1,
+                )?;
+            }
+            graph.succeed_job()?;
+        }
+
+        Ok((manager, state, job_id, active_graph))
+    }
+
+    #[tokio::test]
+    async fn successful_job_stays_visible_and_unlocked_until_persisted() -> Result<()> {
+        let (manager, state, job_id, active_graph) = setup_job(true).await?;
+        let manager_for_save = manager.clone();
+        let job_id_for_save = job_id.clone();
+        let save =
+            tokio::spawn(
+                async move { manager_for_save.succeed_job(&job_id_for_save).await },
+            );
+
+        timeout(Duration::from_secs(1), state.save_started.notified())
+            .await
+            .expect("terminal save should start");
+
+        let status = manager
+            .get_job_status(&job_id)
+            .await?
+            .expect("successful job should remain visible during persistence");
+        assert!(matches!(status.status, Some(Status::Successful(_))));
+        assert!(!manager.get_running_job_cache().contains_key(&job_id));
+        assert_eq!(manager.running_job_number(), 0);
+
+        let graph_guard = timeout(Duration::from_secs(1), active_graph.write())
+            .await
+            .expect("graph lock must not be held across persistence");
+        drop(graph_guard);
+
+        state.allow_save.notify_one();
+        save.await.expect("succeed_job task should not panic")?;
+
+        assert!(manager.get_active_execution_graph(&job_id).is_none());
+        let persisted = state
+            .get_job_status(&job_id)
+            .await?
+            .expect("successful status should be persisted");
+        assert!(matches!(persisted.status, Some(Status::Successful(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_save_is_not_retried_and_evicts_local_cache() -> Result<()> {
+        let (manager, state, job_id, active_graph) = setup_job(true).await?;
+        state.failures_remaining.store(1, Ordering::SeqCst);
+        let manager_for_save = manager.clone();
+        let job_id_for_save = job_id.clone();
+        let save =
+            tokio::spawn(
+                async move { manager_for_save.succeed_job(&job_id_for_save).await },
+            );
+
+        timeout(Duration::from_secs(1), state.save_started.notified())
+            .await
+            .expect("terminal save should start");
+        assert!(manager.get_active_execution_graph(&job_id).is_some());
+        assert_eq!(manager.running_job_number(), 0);
+        state.allow_save.notify_one();
+        assert!(
+            save.await
+                .expect("succeed_job task should not panic")
+                .is_err()
+        );
+
+        assert_eq!(state.save_attempts.load(Ordering::SeqCst), 1);
+        assert!(manager.get_active_execution_graph(&job_id).is_none());
+        assert_eq!(manager.running_job_number(), 0);
+        let authoritative_status = manager
+            .get_job_status(&job_id)
+            .await?
+            .expect("shared status should remain available after local eviction");
+        assert!(matches!(
+            authoritative_status.status,
+            Some(Status::Running(_))
+        ));
+
+        let graph_guard = timeout(Duration::from_secs(1), active_graph.write())
+            .await
+            .expect("graph lock must be released after a failed save");
+        drop(graph_guard);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aborted_tasks_are_cancelled_before_terminal_persistence() -> Result<()> {
+        let (manager, state, job_id, active_graph) = setup_job(false).await?;
+        let executor = mock_executor("executor-1".to_string());
+        active_graph
+            .write()
+            .await
+            .pop_next_task(&executor.id)?
+            .expect("job should have a task to assign");
+
+        let cancelled_tasks = Arc::new(AtomicUsize::new(0));
+        let cancelled_tasks_for_abort = cancelled_tasks.clone();
+        let manager_for_abort = manager.clone();
+        let job_id_for_abort = job_id.clone();
+        let abort = tokio::spawn(async move {
+            manager_for_abort
+                .abort_job(
+                    &job_id_for_abort,
+                    "test failure".to_string(),
+                    move |tasks| async move {
+                        cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .await
+        });
+
+        timeout(Duration::from_secs(1), state.save_started.notified())
+            .await
+            .expect("terminal save should start");
+        assert_eq!(cancelled_tasks.load(Ordering::SeqCst), 1);
+        assert_eq!(state.save_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.running_job_number(), 0);
+
+        let status = manager
+            .get_job_status(&job_id)
+            .await?
+            .expect("failed job should remain visible during persistence");
+        assert!(matches!(status.status, Some(Status::Failed(_))));
+        let graph_guard = timeout(Duration::from_secs(1), active_graph.write())
+            .await
+            .expect("graph lock must not be held across persistence");
+        drop(graph_guard);
+
+        state.allow_save.notify_one();
+        abort.await.expect("abort_job task should not panic")?;
+        assert!(manager.get_active_execution_graph(&job_id).is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aborted_tasks_are_cancelled_when_terminal_save_fails() -> Result<()> {
+        let (manager, state, job_id, active_graph) = setup_job(false).await?;
+        let executor = mock_executor("executor-1".to_string());
+        active_graph
+            .write()
+            .await
+            .pop_next_task(&executor.id)?
+            .expect("job should have a task to assign");
+        state.failures_remaining.store(1, Ordering::SeqCst);
+
+        let cancelled_tasks = Arc::new(AtomicUsize::new(0));
+        let cancelled_tasks_for_abort = cancelled_tasks.clone();
+        let manager_for_abort = manager.clone();
+        let job_id_for_abort = job_id.clone();
+        let abort = tokio::spawn(async move {
+            manager_for_abort
+                .abort_job(
+                    &job_id_for_abort,
+                    "test failure".to_string(),
+                    move |tasks| async move {
+                        cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        timeout(Duration::from_secs(1), state.save_started.notified())
+            .await
+            .expect("terminal save should start");
+        assert_eq!(cancelled_tasks.load(Ordering::SeqCst), 1);
+        state.allow_save.notify_one();
+        assert!(
+            abort
+                .await
+                .expect("abort_job task should not panic")
+                .is_err()
+        );
+
+        assert_eq!(cancelled_tasks.load(Ordering::SeqCst), 1);
+        assert_eq!(state.save_attempts.load(Ordering::SeqCst), 1);
+        assert!(manager.get_active_execution_graph(&job_id).is_none());
+        assert_eq!(manager.running_job_number(), 0);
+        Ok(())
     }
 }
 
