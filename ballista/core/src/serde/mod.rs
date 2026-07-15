@@ -412,12 +412,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     &converter,
                 )?;
 
-                let partitioning = shuffle_output_partitioning.ok_or_else(|| {
-                    DataFusionError::Internal(
-                        "SortShuffleWriterExec requires hash partitioning".to_string(),
-                    )
-                })?;
-
                 let batch_size = if sort_shuffle_writer.batch_size > 0 {
                     sort_shuffle_writer.batch_size as usize
                 } else {
@@ -434,7 +428,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     sort_shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // executor will fill this in
-                    partitioning,
+                    shuffle_output_partitioning,
                     config,
                 )?))
             }
@@ -596,7 +590,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
             let output_partitioning = match exec.shuffle_output_partitioning() {
-                Partitioning::Hash(exprs, partition_count) => {
+                Some(Partitioning::Hash(exprs, partition_count)) => {
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
                         hash_expr: exprs
                             .iter()
@@ -610,9 +604,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partition_count: *partition_count as u64,
                     })
                 }
-                other => {
+                None => None,
+                Some(other) => {
                     return Err(DataFusionError::Internal(format!(
-                        "SortShuffleWriterExec requires Hash partitioning, got: {other:?}"
+                        "SortShuffleWriterExec requires Hash or None partitioning, got: {other:?}"
                     )));
                 }
             };

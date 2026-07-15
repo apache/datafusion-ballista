@@ -120,9 +120,23 @@ impl FlightService for BallistaFlightService {
                 if is_sort_shuffle_output(&path) {
                     debug!("Detected sort-based shuffle format for {path:?}");
                     let index_path = get_index_path(path.as_path());
-                    let stream =
-                        stream_sort_shuffle_partition(&path, &index_path, *partition_id)
-                            .map_err(|e| from_ballista_err(&e))?;
+                    // None-partitioning sort-shuffle files have a single logical
+                    // bucket; the scheduler-level `partition_id` is the input
+                    // partition number, so map any request on a single-bucket
+                    // file to bucket 0.
+                    let index = ShuffleIndex::read_from_file(&index_path)
+                        .map_err(|e| from_ballista_err(&e))?;
+                    let file_partition_id = if index.partition_count() == 1 {
+                        0
+                    } else {
+                        *partition_id
+                    };
+                    let stream = stream_sort_shuffle_partition(
+                        &path,
+                        &index_path,
+                        file_partition_id,
+                    )
+                    .map_err(|e| from_ballista_err(&e))?;
 
                     let schema = stream.schema();
                     // Map DataFusionError to FlightError
@@ -362,6 +376,14 @@ async fn stream_sort_shuffle_block(
     let index_path = get_index_path(data_path);
     let index =
         ShuffleIndex::read_from_file(&index_path).map_err(|e| from_ballista_err(&e))?;
+
+    // None-partitioning sort-shuffle files have a single logical bucket; map
+    // any scheduler-level partition_id on a single-bucket file to bucket 0.
+    let partition_id = if index.partition_count() == 1 {
+        0
+    } else {
+        partition_id
+    };
 
     if partition_id >= index.partition_count() {
         return Err(Status::out_of_range(format!(
