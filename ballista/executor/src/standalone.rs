@@ -50,7 +50,7 @@ use uuid::Uuid;
 /// components.
 pub async fn new_standalone_executor_from_state(
     scheduler: SchedulerGrpcClient<Channel>,
-    concurrent_tasks: usize,
+    vcores: usize,
     session_state: &SessionState,
 ) -> Result<()> {
     let logical = session_state.config().ballista_logical_extension_codec();
@@ -69,7 +69,7 @@ pub async fn new_standalone_executor_from_state(
 
     new_standalone_executor_from_builder(
         scheduler,
-        concurrent_tasks,
+        vcores,
         config_producer,
         runtime_producer,
         codec,
@@ -87,7 +87,7 @@ pub async fn new_standalone_executor_from_state(
 /// The executor binds to a random available port on localhost.
 pub async fn new_standalone_executor_from_builder(
     scheduler: SchedulerGrpcClient<Channel>,
-    concurrent_tasks: usize,
+    vcores: usize,
     config_producer: ConfigProducer,
     runtime_producer: RuntimeProducer,
     codec: BallistaCodec,
@@ -106,7 +106,7 @@ pub async fn new_standalone_executor_from_builder(
         grpc_port: 50020,
         specification: Some(
             ExecutorSpecification::default()
-                .with_task_slots(concurrent_tasks as u32)
+                .with_vcores(vcores as u32)
                 .into(),
         ),
         os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
@@ -126,7 +126,7 @@ pub async fn new_standalone_executor_from_builder(
         config_producer,
         Arc::new(function_registry),
         Arc::new(LoggingMetricsCollector::default()),
-        concurrent_tasks,
+        vcores,
     ));
 
     let service = BallistaFlightService::new(work_dir);
@@ -150,7 +150,7 @@ pub async fn new_standalone_executor_from_builder(
 /// set as default.
 pub async fn new_standalone_executor(
     scheduler: SchedulerGrpcClient<Channel>,
-    concurrent_tasks: usize,
+    vcores: usize,
     codec: BallistaCodec,
 ) -> Result<()> {
     use ballista_core::extension::{
@@ -170,7 +170,7 @@ pub async fn new_standalone_executor(
 
     new_standalone_executor_from_builder(
         scheduler,
-        concurrent_tasks,
+        vcores,
         Arc::new(default_config_producer),
         runtime_producer,
         codec,

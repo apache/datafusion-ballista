@@ -80,25 +80,25 @@ use crate::{execution_loop, executor_server};
 
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
-/// `total_bytes / concurrent_tasks`. The base env's disk manager, cache manager,
+/// `total_bytes / vcores`. The base env's disk manager, cache manager,
 /// and object-store registry are preserved via
 /// [`RuntimeEnvBuilder::from_runtime_env`].
 ///
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
-/// concurrent_tasks`).
+/// vcores`).
 fn memory_pool_policy(
     total_bytes: u64,
-    concurrent_tasks: usize,
+    vcores: usize,
 ) -> Result<MemoryPoolPolicy, BallistaError> {
-    let per_task = (total_bytes / concurrent_tasks as u64) as usize;
-    if per_task == 0 {
+    let per_vcore = (total_bytes / vcores as u64) as usize;
+    if per_vcore == 0 {
         return Err(BallistaError::Configuration(format!(
-            "memory_pool_size ({total_bytes} bytes) is smaller than concurrent_tasks ({concurrent_tasks})"
+            "memory_pool_size ({total_bytes} bytes) is smaller than vcores ({vcores})"
         )));
     }
     Ok(Arc::new(
         move |base: Arc<RuntimeEnv>, _config: &SessionConfig| {
-            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
+            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_vcore));
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(pool)
                 .build_arc()
@@ -132,8 +132,8 @@ pub struct ExecutorProcessConfig {
     pub scheduler_port: u16,
     /// Timeout in seconds for establishing scheduler connection.
     pub scheduler_connect_timeout_seconds: u16,
-    /// Maximum number of concurrent tasks this executor can run.
-    pub concurrent_tasks: usize,
+    /// Virtual cores advertised by this executor to the scheduler.
+    pub vcores: usize,
     /// Task scheduling policy (pull-staged or push-staged).
     pub task_scheduling_policy: TaskSchedulingPolicy,
     /// Directory for storing log files.
@@ -162,7 +162,7 @@ pub struct ExecutorProcessConfig {
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
     /// Optional total memory pool size in bytes. When set, every task's
     /// runtime env receives a FairSpillPool of size
-    /// `memory_pool_size / concurrent_tasks`. When `None`, no pool is
+    /// `memory_pool_size / vcores`. When `None`, no pool is
     /// installed and DataFusion falls back to its unbounded default.
     pub memory_pool_size: Option<u64>,
     /// Maximum number of sessions whose shared base runtime env is retained on
@@ -214,7 +214,7 @@ impl Default for ExecutorProcessConfig {
             scheduler_host: "localhost".into(),
             scheduler_port: 50050,
             scheduler_connect_timeout_seconds: 0,
-            concurrent_tasks: std::thread::available_parallelism().unwrap().get(),
+            vcores: std::thread::available_parallelism().unwrap().get(),
             task_scheduling_policy: Default::default(),
             log_dir: None,
             work_dir: None,
@@ -276,11 +276,11 @@ pub async fn start_executor_process(
         ));
     };
 
-    let concurrent_tasks = if opt.concurrent_tasks == 0 {
+    let vcores = if opt.vcores == 0 {
         // use all available cores if no concurrency level is specified
         std::thread::available_parallelism().unwrap().get()
     } else {
-        opt.concurrent_tasks
+        opt.vcores
     };
     let task_scheduling_policy = opt.task_scheduling_policy;
     // assign this executor an unique ID
@@ -290,13 +290,10 @@ pub async fn start_executor_process(
     );
     info!("Executor id: {executor_id}");
     info!("Executor working directory: {work_dir}");
-    info!(
-        "Executor number of concurrent tasks (available CPU cores): {concurrent_tasks}"
-    );
+    info!("Executor vcores (default: available CPU cores): {vcores}");
     info!("Executor scheduling policy: {task_scheduling_policy:?}");
 
-    let executor_meta =
-        structure_executor_metadata(&executor_id, &opt, concurrent_tasks as u32);
+    let executor_meta = structure_executor_metadata(&executor_id, &opt, vcores as u32);
 
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
@@ -317,10 +314,10 @@ pub async fn start_executor_process(
         });
 
     let pool_policy: MemoryPoolPolicy = if let Some(total) = opt.memory_pool_size {
-        let policy = memory_pool_policy(total, concurrent_tasks)?;
-        let per_task = total / concurrent_tasks as u64;
+        let policy = memory_pool_policy(total, vcores)?;
+        let per_vcore = total / vcores as u64;
         info!(
-            "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
+            "Memory pool: total {total} bytes split into {vcores} tasks ({per_vcore} bytes each)"
         );
         policy
     } else {
@@ -373,7 +370,7 @@ pub async fn start_executor_process(
             config_producer,
             opt.override_function_registry.clone().unwrap_or_default(),
             metrics_collector,
-            concurrent_tasks,
+            vcores,
             opt.override_execution_engine.clone().unwrap_or_else(|| {
                 if opt.client_ttl > 0 {
                     let client_pool =
@@ -896,7 +893,7 @@ pub async fn satisfy_dir_ttl(
 pub fn structure_executor_metadata(
     executor_id: &str,
     options: &Arc<ExecutorProcessConfig>,
-    concurrent_tasks: u32,
+    vcores: u32,
 ) -> ExecutorRegistration {
     let system_name =
         System::name().unwrap_or_else(|| String::from("Unknown system name"));
@@ -925,7 +922,7 @@ pub fn structure_executor_metadata(
         grpc_port: options.grpc_port as u32,
         specification: Some(ExecutorSpecification {
             resources: vec![ExecutorResource {
-                resource: Some(Resource::TaskSlots(concurrent_tasks)),
+                resource: Some(Resource::Vcores(vcores)),
             }],
         }),
         os_info: Some(ExecutorOperatingSystemSpecification {
@@ -1103,26 +1100,26 @@ mod memory_pool_tests {
     use std::sync::Arc;
 
     #[test]
-    fn returns_error_when_total_smaller_than_concurrent_tasks() {
+    fn returns_error_when_total_smaller_than_vcores() {
         let result = memory_pool_policy(4, 8);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("memory_pool_size"));
-        assert!(msg.contains("concurrent_tasks"));
+        assert!(msg.contains("vcores"));
     }
 
     #[test]
-    fn produces_runtime_with_fair_spill_pool_of_per_task_size() {
+    fn produces_runtime_with_fair_spill_pool_of_per_vcore_size() {
         let total = 8u64 * 1024 * 1024 * 1024;
-        let concurrent = 8usize;
-        let expected_per_task = (total / concurrent as u64) as usize;
+        let vcores = 8usize;
+        let expected_per_vcore = (total / vcores as u64) as usize;
 
-        let policy = memory_pool_policy(total, concurrent).unwrap();
+        let policy = memory_pool_policy(total, vcores).unwrap();
         let base = Arc::new(RuntimeEnv::default());
         let env = policy(base, &SessionConfig::new()).unwrap();
 
         match env.memory_pool.memory_limit() {
-            MemoryLimit::Finite(n) => assert_eq!(n, expected_per_task),
+            MemoryLimit::Finite(n) => assert_eq!(n, expected_per_vcore),
             MemoryLimit::Infinite => panic!("expected Finite limit, got Infinite"),
             MemoryLimit::Unknown => panic!("expected Finite limit, got Unknown"),
         }

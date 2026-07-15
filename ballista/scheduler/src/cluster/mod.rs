@@ -24,7 +24,7 @@ use crate::state::execution_graph::{
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{
-    AvailableTaskSlots, ExecutorHeartbeat, JobStatus, job_status,
+    AvailableVcores, ExecutorHeartbeat, JobStatus, job_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
@@ -153,7 +153,7 @@ pub type ExecutorSlot = (String, u32);
 
 /// Trait for maintaining a globally consistent view of cluster resources.
 ///
-/// Implementations track executor registration, heartbeats, and available task slots.
+/// Implementations track executor registration, heartbeats, and free vcores.
 #[async_trait::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
     /// Initializes the cluster state backend.
@@ -163,9 +163,9 @@ pub trait ClusterState: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Binds ready-to-run tasks from active jobs to available executor slots.
+    /// Binds ready-to-run tasks from active jobs to executor vcores.
     ///
-    /// If `executors` is provided, only bind slots from the specified executor IDs.
+    /// If `executors` is provided, only bind on the specified executor IDs.
     async fn bind_schedulable_tasks(
         &self,
         distribution: TaskDistributionPolicy,
@@ -173,9 +173,9 @@ pub trait ClusterState: Send + Sync + 'static {
         executors: Option<HashSet<String>>,
     ) -> Result<Vec<BoundTask>>;
 
-    /// Unbinds executor slots when tasks finish or fail.
+    /// Releases reserved vcores when tasks finish or fail.
     ///
-    /// This operation is atomic: either all slots are released or none are.
+    /// This operation is atomic: either all vcores are released or none are.
     async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()>;
 
     /// Registers a new executor in the cluster.
@@ -352,23 +352,23 @@ pub trait JobState: Send + Sync {
 }
 
 pub(crate) async fn bind_task_bias(
-    mut slots: Vec<&mut AvailableTaskSlots>,
+    mut budgets: Vec<&mut AvailableVcores>,
     running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
-    let total_slots = slots.iter().fold(0, |acc, s| acc + s.slots);
-    if total_slots == 0 {
-        debug!("Not enough available executor slots for task running!!!");
+    let total_vcores = budgets.iter().fold(0, |acc, b| acc + b.vcores);
+    if total_vcores == 0 {
+        debug!("No executor vcores available for task binding");
         return schedulable_tasks;
     }
 
-    // Sort the slots by descending order
-    slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
+    // Sort budgets by free-vcore count, descending.
+    budgets.sort_by(|a, b| Ord::cmp(&b.vcores, &a.vcores));
 
-    let mut idx_slot = 0usize;
-    let mut slot = &mut slots[idx_slot];
+    let mut idx = 0usize;
+    let mut current = &mut budgets[idx];
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!("Job {job_id} is not in running status and will be skipped");
@@ -395,18 +395,18 @@ pub(crate) async fn bind_task_bias(
                 .iter_mut()
                 .enumerate()
                 .filter(|(_partition, info)| info.is_none())
-                .take(total_slots as usize)
+                .take(total_vcores as usize)
                 .collect::<Vec<_>>();
             for (partition_id, task_info) in runnable_tasks {
-                // Assign [`slot`] with a slot available slot number larger than 0
-                while slot.slots == 0 {
-                    idx_slot += 1;
-                    if idx_slot >= slots.len() {
+                // Advance to a budget with free vcores.
+                while current.vcores == 0 {
+                    idx += 1;
+                    if idx >= budgets.len() {
                         return schedulable_tasks;
                     }
-                    slot = &mut slots[idx_slot];
+                    current = &mut budgets[idx];
                 }
-                let executor_id = slot.executor_id.clone();
+                let executor_id = current.executor_id.clone();
                 let task_id = *task_id_gen;
                 *task_id_gen += 1;
                 *task_info = Some(create_task_info(executor_id.clone(), task_id));
@@ -427,7 +427,7 @@ pub(crate) async fn bind_task_bias(
                 };
                 schedulable_tasks.push((executor_id, task_desc));
 
-                slot.slots -= 1;
+                current.vcores -= 1;
             }
         }
     }
@@ -436,23 +436,23 @@ pub(crate) async fn bind_task_bias(
 }
 
 pub(crate) async fn bind_task_round_robin(
-    mut slots: Vec<&mut AvailableTaskSlots>,
+    mut budgets: Vec<&mut AvailableVcores>,
     running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
-    let mut total_slots = slots.iter().fold(0, |acc, s| acc + s.slots);
-    if total_slots == 0 {
-        debug!("Not enough available executor slots for task running!!!");
+    let mut total_vcores = budgets.iter().fold(0, |acc, b| acc + b.vcores);
+    if total_vcores == 0 {
+        debug!("No executor vcores available for task binding");
         return schedulable_tasks;
     }
-    debug!("Total slot number is {total_slots}");
+    debug!("Total free vcores: {total_vcores}");
 
-    // Sort the slots by descending order
-    slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
+    // Sort budgets by free-vcore count, descending.
+    budgets.sort_by(|a, b| Ord::cmp(&b.vcores, &a.vcores));
 
-    let mut idx_slot = 0usize;
+    let mut idx = 0usize;
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!("Job {job_id} is not in running status and will be skipped");
@@ -479,20 +479,20 @@ pub(crate) async fn bind_task_round_robin(
                 .iter_mut()
                 .enumerate()
                 .filter(|(_partition, info)| info.is_none())
-                .take(total_slots as usize)
+                .take(total_vcores as usize)
                 .collect::<Vec<_>>();
             for (partition_id, task_info) in runnable_tasks {
-                // Move to the index which has available slots
-                if idx_slot >= slots.len() {
-                    idx_slot = 0;
+                // Wrap around and skip exhausted budgets.
+                if idx >= budgets.len() {
+                    idx = 0;
                 }
-                if slots[idx_slot].slots == 0 {
-                    idx_slot = 0;
+                if budgets[idx].vcores == 0 {
+                    idx = 0;
                 }
-                // Since the slots is a vector with descending order, and the total available slots is larger than 0,
-                // we are sure the available slot number at idx_slot is larger than 1
-                let slot = &mut slots[idx_slot];
-                let executor_id = slot.executor_id.clone();
+                // Budgets are sorted descending and total_vcores > 0, so
+                // budgets[idx].vcores is guaranteed > 0 here.
+                let current = &mut budgets[idx];
+                let executor_id = current.executor_id.clone();
                 let task_id = *task_id_gen;
                 *task_id_gen += 1;
                 *task_info = Some(create_task_info(executor_id.clone(), task_id));
@@ -513,10 +513,10 @@ pub(crate) async fn bind_task_round_robin(
                 };
                 schedulable_tasks.push((executor_id, task_desc));
 
-                idx_slot += 1;
-                slot.slots -= 1;
-                total_slots -= 1;
-                if total_slots == 0 {
+                idx += 1;
+                current.vcores -= 1;
+                total_vcores -= 1;
+                if total_vcores == 0 {
                     return schedulable_tasks;
                 }
             }
@@ -541,7 +541,7 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     ///
     /// # Parameters
     ///
-    /// * `slots` - vector of available executor slots, there may not be available slots
+    /// * `budgets` - per-executor free-vcore budgets (may be empty)
     /// * `running_jobs` - (JobId -> JobInfoCache) cache must contain only running jobs
     ///
     /// # Returns
@@ -550,7 +550,7 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     ///
     async fn bind_tasks(
         &self,
-        mut slots: Vec<&mut AvailableTaskSlots>,
+        mut budgets: Vec<&mut AvailableVcores>,
         running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     ) -> datafusion::error::Result<Vec<BoundTask>>;
 
@@ -565,7 +565,7 @@ mod test {
 
     use ballista_core::JobId;
     use ballista_core::error::Result;
-    use ballista_core::serde::protobuf::AvailableTaskSlots;
+    use ballista_core::serde::protobuf::AvailableVcores;
     use ballista_core::serde::scheduler::{
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     };
@@ -582,11 +582,10 @@ mod test {
     async fn test_bind_task_bias() -> Result<()> {
         let num_partition = 8usize;
         let active_jobs = mock_active_jobs(num_partition).await?;
-        let mut available_slots = mock_available_slots();
-        let available_slots_ref: Vec<&mut AvailableTaskSlots> =
-            available_slots.iter_mut().collect();
+        let mut budgets = mock_budgets();
+        let budgets_ref: Vec<&mut AvailableVcores> = budgets.iter_mut().collect();
         let bound_tasks =
-            bind_task_bias(available_slots_ref, Arc::new(active_jobs), |_| false).await;
+            bind_task_bias(budgets_ref, Arc::new(active_jobs), |_| false).await;
         assert_eq!(9, bound_tasks.len());
 
         let result = get_result(bound_tasks);
@@ -632,12 +631,10 @@ mod test {
     async fn test_bind_task_round_robin() -> Result<()> {
         let num_partition = 8usize;
         let active_jobs = mock_active_jobs(num_partition).await?;
-        let mut available_slots = mock_available_slots();
-        let available_slots_ref: Vec<&mut AvailableTaskSlots> =
-            available_slots.iter_mut().collect();
+        let mut budgets = mock_budgets();
+        let budgets_ref: Vec<&mut AvailableVcores> = budgets.iter_mut().collect();
         let bound_tasks =
-            bind_task_round_robin(available_slots_ref, Arc::new(active_jobs), |_| false)
-                .await;
+            bind_task_round_robin(budgets_ref, Arc::new(active_jobs), |_| false).await;
         assert_eq!(9, bound_tasks.len());
 
         let result = get_result(bound_tasks);
@@ -730,7 +727,7 @@ mod test {
             host: "localhost".to_string(),
             port: 50051,
             grpc_port: 50052,
-            specification: ExecutorSpecification::default().with_task_slots(32),
+            specification: ExecutorSpecification::default().with_vcores(32),
             os_info: ExecutorOperatingSystemSpecification::default(),
         };
 
@@ -747,19 +744,19 @@ mod test {
         Ok(graph)
     }
 
-    fn mock_available_slots() -> Vec<AvailableTaskSlots> {
+    fn mock_budgets() -> Vec<AvailableVcores> {
         vec![
-            AvailableTaskSlots {
+            AvailableVcores {
                 executor_id: "executor_1".to_string(),
-                slots: 3,
+                vcores: 3,
             },
-            AvailableTaskSlots {
+            AvailableVcores {
                 executor_id: "executor_2".to_string(),
-                slots: 5,
+                vcores: 5,
             },
-            AvailableTaskSlots {
+            AvailableVcores {
                 executor_id: "executor_3".to_string(),
-                slots: 7,
+                vcores: 7,
             },
         ]
     }

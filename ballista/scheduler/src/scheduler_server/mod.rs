@@ -403,8 +403,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     async fn do_register_executor(&self, metadata: ExecutorMetadata) -> Result<()> {
         let executor_data = ExecutorData {
             executor_id: metadata.id.clone(),
-            total_task_slots: metadata.specification.task_slots,
-            available_task_slots: metadata.specification.task_slots,
+            total_vcores: metadata.specification.vcores,
+            available_vcores: metadata.specification.vcores,
         };
 
         // Save the executor to state
@@ -483,11 +483,11 @@ mod test {
         let plan = test_plan();
         // this test will fail when AQE scheduling is used.
         // as AQE will fold plan due to empty scan
-        let task_slots = 4;
+        let total_vcores = 4;
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
 
-        let executors = test_executors(task_slots);
+        let executors = test_executors(total_vcores);
         for (executor_metadata, executor_data) in executors {
             scheduler
                 .state
@@ -497,7 +497,7 @@ mod test {
         }
 
         let config =
-            SessionConfig::new_with_ballista().with_target_partitions(task_slots);
+            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
 
         let ctx = scheduler
             .state
@@ -594,11 +594,11 @@ mod test {
     #[tokio::test]
     async fn test_submit_physical_plan() -> Result<()> {
         let logical_plan = test_plan();
-        let task_slots = 4;
+        let total_vcores = 4;
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
 
-        let executors = test_executors(task_slots);
+        let executors = test_executors(total_vcores);
         for (executor_metadata, executor_data) in executors {
             scheduler
                 .state
@@ -608,7 +608,7 @@ mod test {
         }
 
         let config =
-            SessionConfig::new_with_ballista().with_target_partitions(task_slots);
+            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
 
         let ctx = scheduler
             .state
@@ -1037,7 +1037,7 @@ mod test {
     }
 
     fn test_executors(num_partitions: usize) -> Vec<(ExecutorMetadata, ExecutorData)> {
-        let task_slots = (num_partitions as u32).div_ceil(2);
+        let vcores = (num_partitions as u32).div_ceil(2);
 
         vec![
             (
@@ -1046,14 +1046,13 @@ mod test {
                     host: "localhost1".to_string(),
                     port: 8080,
                     grpc_port: 9090,
-                    specification: ExecutorSpecification::default()
-                        .with_task_slots(task_slots),
+                    specification: ExecutorSpecification::default().with_vcores(vcores),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 ExecutorData {
                     executor_id: "executor-1".to_owned(),
-                    total_task_slots: task_slots,
-                    available_task_slots: task_slots,
+                    total_vcores: vcores,
+                    available_vcores: vcores,
                 },
             ),
             (
@@ -1063,13 +1062,13 @@ mod test {
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification::default()
-                        .with_task_slots(num_partitions as u32 - task_slots),
+                        .with_vcores(num_partitions as u32 - vcores),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 ExecutorData {
                     executor_id: "executor-2".to_owned(),
-                    total_task_slots: num_partitions as u32 - task_slots,
-                    available_task_slots: num_partitions as u32 - task_slots,
+                    total_vcores: num_partitions as u32 - vcores,
+                    available_vcores: num_partitions as u32 - vcores,
                 },
             ),
         ]

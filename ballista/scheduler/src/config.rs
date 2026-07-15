@@ -456,7 +456,7 @@ impl SchedulerConfig {
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskDistribution {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -486,7 +486,7 @@ impl std::str::FromStr for TaskDistribution {
 /// Policy for distributing tasks to available executor slots.
 #[derive(Debug, Clone, Default)]
 pub enum TaskDistributionPolicy {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,

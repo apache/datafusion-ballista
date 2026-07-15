@@ -643,6 +643,11 @@ pub struct ExecutorSpecification {
     #[prost(message, repeated, tag = "1")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResource>,
 }
+/// Virtual cores this executor has been assigned at runtime — analogous to
+/// YARN vcores (yarn.nodemanager.resource.cpu-vcores) or Spark's
+/// spark.executor.cores. Not physical `nproc`: may over- or under-subscribe.
+/// One task per executor drives this many DataFusion partitions in parallel
+/// through one plan-Arc.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResource {
     #[prost(oneof = "executor_resource::Resource", tags = "1")]
@@ -653,7 +658,7 @@ pub mod executor_resource {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
-        TaskSlots(u32),
+        Vcores(u32),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -677,17 +682,20 @@ pub struct ExecutorOperatingSystemSpecification {
     #[prost(uint64, tag = "9")]
     pub open_files_limit: u64,
 }
+/// One instance per executor. Tracks free vcores for scheduler-side task
+/// binding. See ExecutorResource for the vcore definition (YARN vcores or
+/// Spark's spark.executor.cores).
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct AvailableTaskSlots {
+pub struct AvailableVcores {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
-    pub slots: u32,
+    pub vcores: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutorTaskSlots {
+pub struct ExecutorVcores {
     #[prost(message, repeated, tag = "1")]
-    pub task_slots: ::prost::alloc::vec::Vec<AvailableTaskSlots>,
+    pub vcores: ::prost::alloc::vec::Vec<AvailableVcores>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorData {
@@ -822,7 +830,7 @@ pub struct PollWorkParams {
     #[prost(message, optional, tag = "1")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
     #[prost(uint32, tag = "2")]
-    pub num_free_slots: u32,
+    pub num_free_vcores: u32,
     /// All tasks must be reported until they reach the failed or completed state
     #[prost(message, repeated, tag = "3")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,

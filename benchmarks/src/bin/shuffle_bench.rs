@@ -115,7 +115,7 @@ struct Args {
 
     /// Concurrent shuffle tasks to simulate executor parallelism.
     #[arg(long, default_value_t = 1)]
-    concurrent_tasks: usize,
+    vcores: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -315,7 +315,7 @@ fn run_iteration(
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let start = Instant::now();
-        if args.concurrent_tasks <= 1 {
+        if args.vcores <= 1 {
             let work_dir = args.output_dir.join("task_0");
             let metrics = execute_shuffle_write(
                 args,
@@ -331,8 +331,8 @@ fn run_iteration(
             let _ = fs::remove_dir_all(&work_dir);
             (elapsed, Some(metrics))
         } else {
-            let mut handles = Vec::with_capacity(args.concurrent_tasks);
-            for task_id in 0..args.concurrent_tasks {
+            let mut handles = Vec::with_capacity(args.vcores);
+            for task_id in 0..args.vcores {
                 let args = args.clone();
                 let hash_col_indices = hash_col_indices.to_vec();
                 let work_dir = args.output_dir.join(format!("task_{task_id}"));
@@ -464,8 +464,8 @@ fn main() {
     if let Some(m) = args.memory_limit {
         println!("Memory limit:   {m} bytes");
     }
-    if args.concurrent_tasks > 1 {
-        println!("Concurrent:     {} tasks", args.concurrent_tasks);
+    if args.vcores > 1 {
+        println!("Concurrent:     {} tasks", args.vcores);
     }
     println!(
         "Iterations:     {} (warmup {})",
@@ -497,7 +497,7 @@ fn main() {
 
     if !times.is_empty() {
         let avg = times.iter().sum::<f64>() / times.len() as f64;
-        let total_writer_rows = total_rows * args.concurrent_tasks as u64;
+        let total_writer_rows = total_rows * args.vcores as u64;
         println!();
         println!("=== Results ===");
         println!("avg time: {avg:.3}s");
@@ -509,7 +509,7 @@ fn main() {
         println!(
             "throughput: {} rows/s (total across {} tasks)",
             (total_writer_rows as f64 / avg) as u64,
-            args.concurrent_tasks
+            args.vcores
         );
         if let Some(metrics) = last_metrics {
             println!();

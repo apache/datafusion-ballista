@@ -83,7 +83,7 @@ to make sure a change that delights one audience does not quietly break another.
 - **Coming from**: Apache Spark.
 - **Why Ballista**: Keep the Spark mental model — plans split into **stages** at
   shuffle boundaries, one **task** per partition, shuffle files, executors with
-  task slots, and adaptive query execution (**AQE**) for runtime adaptivity — on
+  vcores, and adaptive query execution (**AQE**) for runtime adaptivity — on
   top of DataFusion and Arrow.
 - **Depends on** (must not regress):
   - The stage/task execution model at shuffle boundaries.
@@ -92,7 +92,7 @@ to make sure a change that delights one audience does not quietly break another.
   - Broadcast joins for small build sides, to avoid shuffles and skew (the
     equivalent of Spark's broadcast hash join).
   - The operational surface Spark users expect: a scheduler plus executors,
-    task-slot concurrency, a tunable `target_partitions`, and stage/task
+    vcore concurrency, a tunable `target_partitions`, and stage/task
     observability (task timings, a history server / UI) for debugging skew.
   - Behavior driven by configuration and `SET`, not hard-coded planner choices.
 - **Red flags in a pull request**:

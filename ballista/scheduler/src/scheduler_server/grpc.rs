@@ -22,7 +22,7 @@ use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    AvailableTaskSlots, CancelJobParams, CancelJobResult, CleanJobDataParams,
+    AvailableVcores, CancelJobParams, CancelJobResult, CleanJobDataParams,
     CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
     ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
@@ -82,7 +82,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let remote_addr = extract_connect_info(&request);
         if let PollWorkParams {
             metadata: Some(metadata),
-            num_free_slots,
+            num_free_vcores,
             task_status,
         } = request.into_inner()
         {
@@ -123,22 +123,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            let mut available_slots = [AvailableTaskSlots {
+            let mut budgets = [AvailableVcores {
                 executor_id: executor_id.clone(),
-                slots: num_free_slots,
+                vcores: num_free_vcores,
             }];
-            let available_slots = available_slots.iter_mut().collect();
+            let budgets = budgets.iter_mut().collect();
             let running_jobs = self.state.task_manager.get_running_job_cache();
             let schedulable_tasks = match self.state.config.task_distribution {
                 TaskDistributionPolicy::Bias => {
-                    bind_task_bias(available_slots, running_jobs, |_| false).await
+                    bind_task_bias(budgets, running_jobs, |_| false).await
                 }
                 TaskDistributionPolicy::RoundRobin => {
-                    bind_task_round_robin(available_slots, running_jobs, |_| false).await
+                    bind_task_round_robin(budgets, running_jobs, |_| false).await
                 }
 
                 TaskDistributionPolicy::Custom(ref policy) => policy
-                    .bind_tasks(available_slots, running_jobs)
+                    .bind_tasks(budgets, running_jobs)
                     .await
                     .map_err(|e| Status::internal(e.to_string()))?,
             };
@@ -907,14 +907,12 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(
-                ExecutorSpecification::default().with_task_slots(2).into(),
-            ),
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
-            num_free_slots: 0,
+            num_free_vcores: 0,
             task_status: vec![],
         });
         let response = scheduler
@@ -940,12 +938,12 @@ mod test {
 
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
-            num_free_slots: 1,
+            num_free_vcores: 1,
             task_status: vec![],
         });
         let response = scheduler
@@ -972,7 +970,7 @@ mod test {
 
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
@@ -998,9 +996,7 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(
-                ExecutorSpecification::default().with_task_slots(2).into(),
-            ),
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
@@ -1027,7 +1023,7 @@ mod test {
 
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         let request: Request<ExecutorStoppedParams> =
@@ -1086,9 +1082,7 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(
-                ExecutorSpecification::default().with_task_slots(2).into(),
-            ),
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
@@ -1115,7 +1109,7 @@ mod test {
 
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
@@ -1142,9 +1136,7 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(
-                ExecutorSpecification::default().with_task_slots(2).into(),
-            ),
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
@@ -1171,7 +1163,7 @@ mod test {
 
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         // heartbeat from the executor
@@ -1231,9 +1223,7 @@ mod test {
             host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
-            specification: Some(
-                ExecutorSpecification::default().with_task_slots(2).into(),
-            ),
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         };
 
@@ -1260,7 +1250,7 @@ mod test {
 
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         // Context strictly used for values-based query serialization to avoid

@@ -111,7 +111,7 @@ jobs:
             --bind-port 50051 \
             --scheduler-host 127.0.0.1 \
             --scheduler-connect-timeout-seconds 10 \
-            --concurrent-tasks 4 \
+            --vcores 4 \
             --memory-pool-size 2GB \
             --work-dir "$WORK_DIR" \
             > "$EXECUTOR_LOG" 2>&1 &

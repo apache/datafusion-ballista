@@ -102,7 +102,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     stop_send: mpsc::Sender<bool>,
     shutdown_noti: &ShutdownNotifier,
 ) -> Result<ServerHandle, BallistaError> {
-    let channel_buf_size = executor.concurrent_tasks * 50;
+    let channel_buf_size = executor.vcores * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
     let (tx_task_status, rx_task_status) =
         mpsc::channel::<CuratorTaskStatus>(channel_buf_size);
@@ -766,10 +766,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
 
             // Use a dedicated executor for CPU bound tasks so that the main tokio
             // executor can still answer requests even when under load
-            let dedicated_executor = DedicatedExecutor::new(
-                "task_runner",
-                executor_server.executor.concurrent_tasks,
-            );
+            let dedicated_executor =
+                DedicatedExecutor::new("task_runner", executor_server.executor.vcores);
 
             // As long as the shutdown notification has not been received
             while !task_runner_shutdown.is_shutdown() {

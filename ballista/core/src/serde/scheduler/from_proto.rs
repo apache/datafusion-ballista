@@ -274,12 +274,12 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
 #[allow(clippy::from_over_into)]
 impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
     fn into(self) -> ExecutorSpecification {
-        let mut ret = ExecutorSpecification { task_slots: 0 };
+        let mut ret = ExecutorSpecification { vcores: 0 };
         for resource in self.resources {
             if let Some(resource_spec) = resource.resource {
                 match resource_spec {
-                    protobuf::executor_resource::Resource::TaskSlots(num_slots) => {
-                        ret.task_slots = num_slots
+                    protobuf::executor_resource::Resource::Vcores(vcores) => {
+                        ret.vcores = vcores
                     }
                 }
             }
@@ -313,21 +313,21 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
     fn into(self) -> ExecutorData {
         let mut ret = ExecutorData {
             executor_id: self.executor_id,
-            total_task_slots: 0,
-            available_task_slots: 0,
+            total_vcores: 0,
+            available_vcores: 0,
         };
         for resource in self.resources {
-            if let Some(task_slots) = resource.total
-                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
-                    task_slots.resource
+            if let Some(total) = resource.total
+                && let Some(protobuf::executor_resource::Resource::Vcores(vcores)) =
+                    total.resource
             {
-                ret.total_task_slots = task_slots
+                ret.total_vcores = vcores
             };
-            if let Some(task_slots) = resource.available
-                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
-                    task_slots.resource
+            if let Some(available) = resource.available
+                && let Some(protobuf::executor_resource::Resource::Vcores(vcores)) =
+                    available.resource
             {
-                ret.available_task_slots = task_slots
+                ret.available_vcores = vcores
             };
         }
         ret

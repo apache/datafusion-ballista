@@ -62,10 +62,10 @@ struct Args {
 
     #[clap(
         long,
-        help = "The max concurrent tasks, only for Ballista local mode. Default: all available cores",
-        value_parser(parse_valid_concurrent_tasks_size)
+        help = "Virtual cores for the local Ballista executor. Default: all available physical cores.",
+        value_parser(parse_valid_vcores)
     )]
-    concurrent_tasks: Option<usize>,
+    vcores: Option<usize>,
 
     #[clap(
         short,
@@ -153,9 +153,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionContext::remote_with_state(&address, state).await?
         }
         _ => {
-            if let Some(concurrent_tasks) = args.concurrent_tasks {
-                ballista_config =
-                    ballista_config.with_target_partitions(concurrent_tasks);
+            if let Some(vcores) = args.vcores {
+                ballista_config = ballista_config.with_target_partitions(vcores);
             };
             let state = SessionStateBuilder::new()
                 .with_config(ballista_config)
@@ -225,9 +224,9 @@ fn parse_batch_size(size: &str) -> std::result::Result<usize, String> {
     }
 }
 
-fn parse_valid_concurrent_tasks_size(size: &str) -> std::result::Result<usize, String> {
+fn parse_valid_vcores(size: &str) -> std::result::Result<usize, String> {
     match size.parse::<usize>() {
         Ok(size) if size > 0 => Ok(size),
-        _ => Err(format!("Invalid concurrent_tasks size '{size}'")),
+        _ => Err(format!("Invalid vcores value '{size}'")),
     }
 }

@@ -60,7 +60,7 @@ type ExecutorClients = Arc<DashMap<String, ExecutorGrpcClient<Channel>>>;
 /// - Cleaning up job data on executors
 #[derive(Clone)]
 pub struct ExecutorManager {
-    /// Cluster state for tracking executor registration and task slots.
+    /// Cluster state for tracking executor registration and vcores.
     cluster_state: Arc<dyn ClusterState>,
     /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
@@ -128,7 +128,7 @@ impl ExecutorManager {
             .await
     }
 
-    /// Returns reserved task slots to the pool of available slots.
+    /// Returns reserved vcores to the pool of available slots.
     ///
     /// This operation is atomic: either all slots are returned or none are.
     pub async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()> {
@@ -332,15 +332,15 @@ impl ExecutorManager {
     /// For push-based scheduling, use [`Self::register_executor`] instead.
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         trace!(
-            "save executor metadata {} with {} task slots (pull-based registration)",
-            metadata.id, metadata.specification.task_slots
+            "save executor metadata {} with {} vcores (pull-based registration)",
+            metadata.id, metadata.specification.vcores
         );
         self.cluster_state.save_executor_metadata(metadata).await
     }
 
     /// Registers the executor with the scheduler for push-based task scheduling.
     ///
-    /// This saves both the executor metadata and available task slots to persistent state.
+    /// This saves both the executor metadata and vcore inventory to persistent state.
     /// For pull-based scheduling, use [`Self::save_executor_metadata`] instead.
     pub async fn register_executor(
         &self,
@@ -348,8 +348,8 @@ impl ExecutorManager {
         specification: ExecutorData,
     ) -> Result<()> {
         debug!(
-            "registering executor {} with {} task slots (push-based registration)",
-            metadata.id, specification.total_task_slots
+            "registering executor {} with {} vcores (push-based registration)",
+            metadata.id, specification.total_vcores
         );
 
         ExecutorManager::test_connectivity(&metadata).await?;

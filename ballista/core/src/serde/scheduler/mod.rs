@@ -128,23 +128,27 @@ pub struct ExecutorMetadata {
     pub os_info: ExecutorOperatingSystemSpecification,
 }
 
-/// Specification of an executor, indicating executor resources, like total task slots.
+/// Specification of an executor, indicating its runtime-assigned vcore count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {
-    /// Number of concurrent task slots available on this executor.
-    pub task_slots: u32,
+    /// Virtual cores assigned to this executor at runtime — analogous to YARN
+    /// vcores (`yarn.nodemanager.resource.cpu-vcores`) or Spark's
+    /// `spark.executor.cores`. Not physical `nproc`: may over- or
+    /// under-subscribe. One task per executor drives this many DataFusion
+    /// partitions in parallel through one plan-Arc.
+    pub vcores: u32,
 }
 
 impl Default for ExecutorSpecification {
     fn default() -> Self {
-        Self { task_slots: 1 }
+        Self { vcores: 1 }
     }
 }
 
 impl ExecutorSpecification {
-    /// Setting number of task slots (number of tasks that can be handled by this executor)
-    pub fn with_task_slots(mut self, task_slots: u32) -> Self {
-        self.task_slots = task_slots;
+    /// Set the vcore count. See [`ExecutorSpecification::vcores`].
+    pub fn with_vcores(mut self, vcores: u32) -> Self {
+        self.vcores = vcores;
         self
     }
 }
@@ -247,23 +251,24 @@ impl ExecutorOperatingSystemSpecification {
     }
 }
 
-/// Available resources for an executor, including total and available task slots.
+/// Executor vcore accounting: total assigned vs currently free.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecutorData {
     /// Unique executor identifier.
     pub executor_id: String,
-    /// Total number of task slots.
-    pub total_task_slots: u32,
-    /// Currently available task slots.
-    pub available_task_slots: u32,
+    /// Total vcores assigned to this executor. See
+    /// [`ExecutorSpecification::vcores`].
+    pub total_vcores: u32,
+    /// Currently free vcores (total minus reserved).
+    pub available_vcores: u32,
 }
 
-/// Represents a change in executor task slot availability.
+/// Represents a change in an executor's free-vcore count.
 pub struct ExecutorDataChange {
     /// Unique executor identifier.
     pub executor_id: String,
-    /// Change in available task slots (positive or negative).
-    pub task_slots: i32,
+    /// Change in free vcores (positive to release, negative to reserve).
+    pub vcores: i32,
 }
 
 /// Summary of executed partition

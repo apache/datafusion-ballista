@@ -578,13 +578,13 @@ pub async fn setup_standalone(session_state: Option<&SessionState>) -> Result<St
         }
     };
 
-    let concurrent_tasks = config.ballista_standalone_parallelism();
+    let vcores = config.ballista_standalone_parallelism();
 
     match session_state {
         None => {
             ballista_executor::new_standalone_executor(
                 scheduler,
-                concurrent_tasks,
+                vcores,
                 BallistaCodec::default(),
             )
             .await
@@ -593,7 +593,7 @@ pub async fn setup_standalone(session_state: Option<&SessionState>) -> Result<St
         Some(session_state) => {
             ballista_executor::new_standalone_executor_from_state(
                 scheduler,
-                concurrent_tasks,
+                vcores,
                 session_state,
             )
             .await
