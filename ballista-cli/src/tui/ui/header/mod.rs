@@ -81,13 +81,65 @@ fn render_banner(f: &mut Frame, area: Rect, _banner_style: Style) {
     f.render_widget(Block::default(), area);
 }
 
+fn render_navbar(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0), // Scheduler info
+            Constraint::Min(0), // navigation
+        ])
+        .split(area);
+
+    render_scheduler_state(f, chunks[0], app);
+    render_menu(f, chunks[1], app);
+}
+
+fn render_menu(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(MENU_CONSTRAINTS)
+        .split(area);
+
+    for (index, menu_item) in MENU_ITEMS.iter().enumerate() {
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(app.theme.nav_inactive);
+
+        let first_char = menu_item.chars().next().unwrap().underlined();
+        let rest_chars = menu_item.chars().skip(1).collect::<String>();
+        let line = Line::from(vec![first_char, rest_chars.into()]);
+        let text = Text::from(line);
+
+        let is_active = (app.is_executors_view() && *menu_item == "Executors")
+            || (app.is_jobs_view() && *menu_item == "Jobs")
+            || (app.is_metrics_view() && *menu_item == "Metrics");
+
+        let style = if is_active && app.is_scheduler_up() {
+            block = block
+                .border_style(app.theme.nav_active)
+                .border_type(BorderType::Thick);
+            app.theme.nav_active
+        } else {
+            app.theme.nav_inactive
+        };
+
+        let paragraph = Paragraph::new(text)
+            .style(style)
+            .block(block.clone())
+            .alignment(Alignment::Center);
+
+        f.render_widget(paragraph, chunks[index]);
+    }
+}
+
+
 #[cfg(all(test, not(feature = "web")))]
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
 
     /// The height of the header chunk in `ui::render`, which is what the banner is given.
-    const HEADER_HEIGHT: u16 = 8;
+    const HEADER_HEIGHT: u16 = 6;
     /// The banner area as laid out by `render_header` on a wide terminal: 30% of the width.
     const BANNER_WIDTH: u16 = 60;
 
@@ -144,56 +196,5 @@ mod tests {
             "banner draws {drawn_height} rows but the header reserves {HEADER_HEIGHT}; \
              adjust the banner's PixelSize or the header's Constraint::Length so they agree"
         );
-    }
-}
-
-fn render_navbar(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0), // Scheduler info
-            Constraint::Min(0), // navigation
-        ])
-        .split(area);
-
-    render_scheduler_state(f, chunks[0], app);
-    render_menu(f, chunks[1], app);
-}
-
-fn render_menu(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(MENU_CONSTRAINTS)
-        .split(area);
-
-    for (index, menu_item) in MENU_ITEMS.iter().enumerate() {
-        let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(app.theme.nav_inactive);
-
-        let first_char = menu_item.chars().next().unwrap().underlined();
-        let rest_chars = menu_item.chars().skip(1).collect::<String>();
-        let line = Line::from(vec![first_char, rest_chars.into()]);
-        let text = Text::from(line);
-
-        let is_active = (app.is_executors_view() && *menu_item == "Executors")
-            || (app.is_jobs_view() && *menu_item == "Jobs")
-            || (app.is_metrics_view() && *menu_item == "Metrics");
-
-        let style = if is_active && app.is_scheduler_up() {
-            block = block
-                .border_style(app.theme.nav_active)
-                .border_type(BorderType::Thick);
-            app.theme.nav_active
-        } else {
-            app.theme.nav_inactive
-        };
-
-        let paragraph = Paragraph::new(text)
-            .style(style)
-            .block(block.clone())
-            .alignment(Alignment::Center);
-
-        f.render_widget(paragraph, chunks[index]);
     }
 }
