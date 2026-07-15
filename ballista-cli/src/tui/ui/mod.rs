@@ -51,7 +51,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Header
+            Constraint::Length(6), // Header
             Constraint::Min(0),    // Main view
             Constraint::Length(2), // Footer
         ])

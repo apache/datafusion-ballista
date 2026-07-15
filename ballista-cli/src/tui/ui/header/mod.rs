@@ -66,7 +66,7 @@ fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
     // which most fonts lack and render as tofu. Quadrant costs 4 rows per line, so the
     // header is sized to fit two of them.
     let big_text = BigText::builder()
-        .pixel_size(PixelSize::Quadrant)
+        .pixel_size(PixelSize::Sextant)
         .style(banner_style)
         .lines(lines)
         .build();
