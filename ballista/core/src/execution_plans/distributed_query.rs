@@ -149,6 +149,9 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     /// scheduler-assigned job id and the plan is only available once the stages
     /// have completed. Returns an error if the query has not been executed yet.
     ///
+    /// Only stages that completed successfully are included, inherited from the
+    /// scheduler's `get_job_metrics`.
+    ///
     /// When `with_metrics` is true the output matches `EXPLAIN ANALYZE`; when
     /// false the `metrics=[...]` suffixes are omitted.
     pub async fn explain_executed_plan(
@@ -893,6 +896,7 @@ mod test {
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::displayable;
+    use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
 
@@ -992,6 +996,25 @@ mod test {
         assert!(
             rendered.contains("EmptyRelation"),
             "missing rendered logical plan: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explain_executed_plan_errors_before_execution() {
+        let exec = DistributedQueryExec::<LogicalPlanNode>::new(
+            "http://scheduler:50050".to_string(),
+            BallistaConfig::default(),
+            LogicalPlan::default(),
+            "session".to_string(),
+        );
+        // job_id is None because the query has not been executed
+        let err = exec
+            .explain_executed_plan(&SessionConfig::new(), false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("has not been executed"),
+            "unexpected error: {err}"
         );
     }
 }
