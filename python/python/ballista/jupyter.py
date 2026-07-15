@@ -116,6 +116,11 @@ from datafusion.dataframe_formatter import (
 
 from .extension import BallistaSessionContext, DistributedDataFrame
 
+# Flags accepted by the ``%%sql`` cell magic, kept as constants so the parser
+# and its error messages share a single source of truth.
+LIMIT_FLAG = "--limit"
+NO_DISPLAY_FLAG = "--no-display"
+
 # Default number of rows rendered for a ``%%sql`` cell when ``--limit`` is not
 # given. This caps only the display (via datafusion's HTML formatter); the
 # underlying result keeps all of its rows.
@@ -253,18 +258,22 @@ class BallistaMagics(Magics):
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if token == "--no-display":
+            if token == NO_DISPLAY_FLAG:
                 no_display = True
-            elif token == "--limit":
+            elif token == LIMIT_FLAG:
                 i += 1
                 if i >= len(tokens):
-                    raise ValueError("--limit requires a number, e.g. --limit 5")
+                    raise ValueError(
+                        f"{LIMIT_FLAG} requires a number, e.g. {LIMIT_FLAG} 5"
+                    )
                 try:
                     limit = int(tokens[i])
                 except ValueError:
-                    raise ValueError(f"--limit expects an integer, got '{tokens[i]}'")
+                    raise ValueError(
+                        f"{LIMIT_FLAG} expects an integer, got '{tokens[i]}'"
+                    )
                 if limit < 1:
-                    raise ValueError("--limit must be a positive integer")
+                    raise ValueError(f"{LIMIT_FLAG} must be a positive integer")
             elif not token.startswith("--") and var_name is None:
                 var_name = token
             i += 1
