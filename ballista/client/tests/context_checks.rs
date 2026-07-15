@@ -24,6 +24,8 @@ mod supported {
         standalone_context_with_state,
     };
     use ballista_core::config::BallistaConfig;
+    use ballista_core::execution_plans::DistributedQueryExec;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -1208,6 +1210,53 @@ mod supported {
         ];
 
         assert_batches_eq!(expected, &[sanitized]);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_explain_executed_plan(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let df = ctx
+            .sql(
+                "select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id",
+            )
+            .await?;
+
+        let plan = df.create_physical_plan().await?;
+
+        // Execute so the scheduler assigns a job id and completes the stages.
+        let _ = collect(plan.clone(), ctx.task_ctx()).await?;
+
+        let dqe = plan
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .expect("top operator should be a DistributedQueryExec<LogicalPlanNode>");
+
+        let config = ctx.copied_config();
+
+        // Plan without metrics.
+        let plan_text = dqe.explain_executed_plan(&config, false).await?;
+        assert!(
+            plan_text.contains("SuccessfulStage"),
+            "expected per-stage plan, got: {plan_text}"
+        );
+        assert!(
+            !plan_text.contains("metrics=["),
+            "expected no metrics, got: {plan_text}"
+        );
+
+        // Same plan with metrics.
+        let plan_with_metrics = dqe.explain_executed_plan(&config, true).await?;
+        assert!(
+            plan_with_metrics.contains("metrics=["),
+            "expected metrics, got: {plan_with_metrics}"
+        );
 
         Ok(())
     }
