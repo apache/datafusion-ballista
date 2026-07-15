@@ -37,6 +37,7 @@ log = { workspace = true }
 
 tokio = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 ballista-executor = { path = "../executor", version = "54.0.0" }

@@ -17,15 +17,19 @@
 
 pub use ballista_core::extension::{SessionConfigExt, SessionStateExt};
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
+use datafusion::dataframe::{DataFrame, DataFrameWriteOptions};
+use datafusion::prelude::ParquetReadOptions;
 use datafusion::{
     error::DataFusionError, execution::SessionState, prelude::SessionContext,
 };
 use url::Url;
+use uuid::Uuid;
 
 const DEFAULT_SCHEDULER_PORT: u16 = 50050;
 
 /// Module provides [SessionContextExt] which adds `standalone*` and `remote*`
 /// methods to [SessionContext].
+///
 ///
 /// Provided methods set up [SessionContext] with [BallistaQueryPlanner](ballista_core::utils), which
 /// handles running plans on Ballista clusters.
@@ -59,7 +63,6 @@ const DEFAULT_SCHEDULER_PORT: u16 = 50050;
 /// There are still few limitations on query distribution, thus not all
 /// [SessionContext] functionalities are supported.
 ///
-
 #[async_trait::async_trait]
 pub trait SessionContextExt {
     /// Creates a context for executing queries against a standalone Ballista scheduler instance
@@ -232,5 +235,48 @@ impl Extension {
         }
 
         Ok(scheduler_url)
+    }
+}
+
+/// Providing [DataFrameExt] for an extended functionality on DataFusion DataFrame.
+///
+#[async_trait::async_trait]
+pub trait DataFrameExt {
+    /// Checkpointing DataFrame - storing intermediate result to disk and breaking lineage in the plan
+    async fn checkpoint(self) -> datafusion::error::Result<DataFrame>;
+}
+
+#[async_trait::async_trait]
+impl DataFrameExt for DataFrame {
+    async fn checkpoint(self) -> datafusion::error::Result<DataFrame> {
+        let (state, plan) = self.into_parts();
+        let ctx = SessionContext::new_with_state(state);
+
+        let base_dir =
+            ctx.state()
+                .config()
+                .ballista_checkpoint_dir()
+                .ok_or_else(|| {
+                    DataFusionError::Configuration(
+                    "ballista.checkpoint.dir must be set to use DataFrame::checkpoint()"
+                        .to_string(),
+                )
+                })?;
+
+        let path = format!(
+            "{}/{}/{}",
+            base_dir.trim_end_matches('/'),
+            ctx.state().session_id(),
+            Uuid::new_v4()
+        );
+
+        // Executes the original plan as a normal distributed job.
+        ctx.execute_logical_plan(plan)
+            .await?
+            .write_parquet(&path, DataFrameWriteOptions::new(), None)
+            .await?;
+
+        // Fresh TableScan-rooted plan: lineage to the original plan is gone.
+        ctx.read_parquet(&path, ParquetReadOptions::default()).await
     }
 }

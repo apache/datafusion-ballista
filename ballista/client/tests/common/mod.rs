@@ -245,6 +245,17 @@ pub async fn standalone_context_with_state() -> SessionContext {
 }
 
 #[allow(dead_code)]
+pub async fn standalone_context_with_checkpoint_dir(dir: &str) -> SessionContext {
+    let config =
+        SessionConfig::new_with_ballista().with_ballista_checkpoint_dir(dir.to_string());
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+    SessionContext::standalone_with_state(state).await.unwrap()
+}
+
+#[allow(dead_code)]
 pub async fn remote_context_with_state() -> SessionContext {
     let config = SessionConfig::new_with_ballista();
     let state = SessionStateBuilder::new()

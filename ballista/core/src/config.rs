@@ -142,6 +142,8 @@ pub const BALLISTA_CHAOS_EXECUTION_FAULT_TYPE: &str =
 /// Configuration key for the optional RNG seed used by chaos-monkey execution.
 /// An empty string (default) means non-deterministic; set to a `u64` value for reproducibility.
 pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_execution.seed";
+/// Configuration key for the base object-store location used by `DataFrame::checkpoint()`.
+pub const BALLISTA_CHECKPOINT_DIR: &str = "ballista.checkpoint.dir";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -334,6 +336,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             DataType::Utf8,
             Some("".to_string()),
         ),
+        ConfigEntry::new(
+            BALLISTA_CHECKPOINT_DIR.to_string(),
+            "Optional path to directory, where the DataFrame::checkpoint() results will be stored \
+            If not provided and DataFrame::checkpoint() is called - an error will be thrown".to_string(),
+            DataType::Utf8,
+            Some("".to_string())
+        )
     ];
     entries
         .into_iter()
@@ -626,6 +635,13 @@ impl BallistaConfig {
     pub fn chaos_execution_seed(&self) -> Option<u64> {
         let s = self.get_string_setting(BALLISTA_CHAOS_EXECUTION_SEED);
         if s.is_empty() { None } else { s.parse().ok() }
+    }
+
+    /// Base directory/URL under which checkpoint files are written, if configured.
+    /// `None` means `DataFrame::checkpoint()` cannot be used until this is set.
+    pub fn checkpoint_dir(&self) -> Option<String> {
+        let dir = self.get_string_setting(BALLISTA_CHECKPOINT_DIR);
+        if dir.is_empty() { None } else { Some(dir) }
     }
 
     /// Should client employ pull or push job tracking strategy

@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
-    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
-    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
-    BALLISTA_COALESCE_TARGET_PARTITION_BYTES, BALLISTA_JOB_NAME,
-    BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
-    BallistaConfig,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_CHECKPOINT_DIR,
+    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
+    BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
+    BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_JOB_NAME, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
+    BALLISTA_STANDALONE_PARALLELISM, BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -267,6 +267,11 @@ pub trait SessionConfigExt {
     fn ballista_coalesce_merged_partition_factor(&self) -> f64;
     /// Sets the merged-partition early-flush factor (Spark legacy).
     fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns the configured checkpoint directory, if any.
+    fn ballista_checkpoint_dir(&self) -> Option<String>;
+    /// Sets the base object-store location for `DataFrame::checkpoint()`.
+    fn with_ballista_checkpoint_dir(self, dir: String) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -688,6 +693,19 @@ impl SessionConfigExt for SessionConfig {
             self.with_option_extension(BallistaConfig::default())
                 .set_str(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, &s)
         }
+    }
+
+    fn with_ballista_checkpoint_dir(self, dir: String) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_CHECKPOINT_DIR, &dir)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_CHECKPOINT_DIR, &dir)
+        }
+    }
+
+    fn ballista_checkpoint_dir(&self) -> Option<String> {
+        self.ballista_config().checkpoint_dir()
     }
 }
 
