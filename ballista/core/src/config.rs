@@ -20,6 +20,8 @@
 
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
+use datafusion::arrow::ipc::CompressionType;
+use datafusion::error::DataFusionError;
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
@@ -142,6 +144,9 @@ pub const BALLISTA_CHAOS_EXECUTION_FAULT_TYPE: &str =
 /// Configuration key for the optional RNG seed used by chaos-monkey execution.
 /// An empty string (default) means non-deterministic; set to a `u64` value for reproducibility.
 pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_execution.seed";
+/// Configuration key for the compression codec used in the shuffle write process
+/// Valid values are: none, lz4, zstd
+pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -333,6 +338,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              to get reproducible fault injection across runs.".to_string(),
             DataType::Utf8,
             Some("".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SHUFFLE_COMPRESSION_CODEC.to_string(),
+            "Compression codec specification \
+            used in the shuffle process. Possible values: \
+            none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
+            DataType::Utf8,
+            Some("lz4".to_string()),
         ),
     ];
     entries
@@ -583,6 +596,25 @@ impl BallistaConfig {
     /// Returns whether the AQE propagate empty rule is enabled.
     pub fn propagate_empty_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_PROPAGATE_EMPTY_ENABLED)
+    }
+
+    /// Returns compression codec that will be used during write stage of shuffle
+    pub fn shuffle_compression_codec(
+        &self,
+    ) -> std::result::Result<Option<CompressionType>, DataFusionError> {
+        match self
+            .get_string_setting(BALLISTA_SHUFFLE_COMPRESSION_CODEC)
+            .to_lowercase()
+            .trim()
+        {
+            "lz4" => Ok(Some(CompressionType::LZ4_FRAME)),
+            "zstd" => Ok(Some(CompressionType::ZSTD)),
+            "none" => Ok(None),
+            other => Err(DataFusionError::Configuration(format!(
+                "Got an invalid compression codec {other}: \
+                Valid options are: lz4, zstd and none"
+            ))),
+        }
     }
 
     /// Returns the target post-coalesce partition byte size in bytes
