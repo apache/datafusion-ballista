@@ -18,7 +18,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
-use std::rc::Rc;
 
 pub(crate) fn render_scrollbar(
     frame: &mut Frame,
@@ -38,10 +37,10 @@ pub(crate) fn render_scrollbar(
 /// Splits the given area into two parts:
 /// * the first part is the table area
 /// * the second part is the scrollbar area.
-pub(crate) fn split_area(area: Rect) -> Rc<[Rect]> {
+pub(crate) fn split_area(area: Rect) -> [Rect; 2] {
     Layout::horizontal([
         Constraint::Min(1),    // Table
         Constraint::Length(1), // Scrollbar
     ])
-    .split(area)
+    .areas(area)
 }

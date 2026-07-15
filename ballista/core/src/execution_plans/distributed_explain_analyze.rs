@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::JobId;
 use crate::execution_plans::DistributedQueryExec;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::{
@@ -36,7 +37,6 @@ use datafusion::physical_plan::{
 };
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::StreamExt;
-use std::any::Any;
 use std::convert::TryInto;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -107,10 +107,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
         "DistributedExplainAnalyzeExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
@@ -132,7 +128,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
 
         let query_exec = children.pop().unwrap();
         if query_exec
-            .as_any()
             .downcast_ref::<DistributedQueryExec<T>>()
             .is_some()
         {
@@ -172,7 +167,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
             }
 
             let job_id = query_exec
-                .as_any()
                 .downcast_ref::<DistributedQueryExec<T>>()
                 .ok_or_else(|| {
                     DataFusionError::Internal(
@@ -204,7 +198,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
 
 async fn fetch_job_metrics(
     scheduler_url: &str,
-    job_id: &str,
+    job_id: &JobId,
     session_config: datafusion::prelude::SessionConfig,
 ) -> Result<GetJobMetricsResult> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
@@ -248,7 +242,7 @@ async fn fetch_job_metrics(
 
 fn format_metrics_as_record_batch(
     job_metrics: &GetJobMetricsResult,
-    _job_id: &str,
+    _job_id: &JobId,
     schema: SchemaRef,
     _verbose: bool,
 ) -> Result<RecordBatch> {
@@ -357,7 +351,8 @@ mod tests {
         };
 
         let batch =
-            format_metrics_as_record_batch(&response, "job-1", schema, true).unwrap();
+            format_metrics_as_record_batch(&response, &"job-1".into(), schema, true)
+                .unwrap();
 
         let plan_type = batch
             .column(0)

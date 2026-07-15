@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{MemoryRefreshKind, System};
 use tokio::sync::mpsc;
 
@@ -63,7 +63,7 @@ use tokio::task::JoinHandle;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::{ExecutorProcessConfig, remove_job_dir};
+use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskExecutionTimes, as_task_status};
@@ -386,7 +386,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             &task.session_config,
         );
 
-        let runtime = self.executor.produce_runtime(&task.session_config);
+        let runtime = self
+            .executor
+            .produce_runtime_for_session(&task.session_id, &task.session_config);
 
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {
@@ -398,6 +400,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task.session_id,
                         task.session_config,
                         function_registry.scalar_functions.clone(),
+                        function_registry.higher_order_functions.clone(),
                         function_registry.aggregate_functions.clone(),
                         function_registry.window_functions.clone(),
                         runtime,
@@ -406,6 +409,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
                 info!("Execute task  : [{task_identity}]");
 
+                let task_start = Instant::now();
                 let execution_result = self
                     .executor
                     .execute_query_stage(
@@ -415,7 +419,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         task_context,
                     )
                     .await;
-                info!("Finished task : [{task_identity}]");
+                info!(
+                    "Finished task : [{task_identity}] in {:?}",
+                    task_start.elapsed()
+                );
                 debug!(
                     "Task [{task_identity}], execution statistics: {execution_result:?}"
                 );
@@ -777,14 +784,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 if let Some(curator_task) = maybe_task {
                     let task_identity = format!(
                         "TID {} {}/{}.{}/{}.{}",
-                        &curator_task.task.task_id,
-                        &curator_task.task.job_id,
-                        &curator_task.task.stage_id,
-                        &curator_task.task.stage_attempt_num,
-                        &curator_task.task.partition_id,
-                        &curator_task.task.task_attempt_num,
+                        curator_task.task.task_id,
+                        curator_task.task.job_id,
+                        curator_task.task.stage_id,
+                        curator_task.task.stage_attempt_num,
+                        curator_task.task.partition_id,
+                        curator_task.task.task_attempt_num,
                     );
-                    debug!("Received task {:?}", &task_identity);
+                    debug!("Received task {:?}", task_identity);
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {
@@ -824,6 +831,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                         self.executor.function_registry.scalar_functions.clone(),
                         self.executor.function_registry.aggregate_functions.clone(),
                         self.executor.function_registry.window_functions.clone(),
+                        self.executor
+                            .function_registry
+                            .higher_order_functions
+                            .clone(),
                         self.codec.clone(),
                     )
                     .map_err(|e| Status::invalid_argument(format!("{e}")))?,
@@ -853,6 +864,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 self.executor.function_registry.scalar_functions.clone(),
                 self.executor.function_registry.aggregate_functions.clone(),
                 self.executor.function_registry.window_functions.clone(),
+                self.executor
+                    .function_registry
+                    .higher_order_functions
+                    .clone(),
                 self.codec.clone(),
             )
             .map_err(|e| Status::invalid_argument(format!("{e}")))?;
@@ -906,7 +921,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 .executor
                 .cancel_task(
                     task.task_id as usize,
-                    task.job_id,
+                    task.job_id.into(),
                     task.stage_id as usize,
                     task.partition_id as usize,
                 )
@@ -924,9 +939,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id;
+        let params = request.into_inner();
+        let job_id = params.job_id.into();
 
-        remove_job_dir(&self.executor.work_dir, &job_id)
+        remove_job_data(&self.executor.work_dir, &job_id, &params.remove_stage_ids)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 

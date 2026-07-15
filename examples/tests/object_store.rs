@@ -371,6 +371,149 @@ mod custom_s3_config {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn should_configure_aqe_s3_execute_sql_write_remote()
+    -> datafusion::error::Result<()> {
+        let test_data = examples_test_data();
+
+        //
+        // Minio cluster setup
+        //
+        let container = crate::common::create_minio_container();
+        let node = container.start().await.unwrap();
+
+        node.exec(crate::common::create_bucket_command())
+            .await
+            .unwrap();
+
+        let endpoint_host = node.get_host().await.unwrap();
+        let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
+
+        log::info!(
+            "MINIO testcontainers host: {}, port: {}",
+            endpoint_host,
+            endpoint_port
+        );
+
+        //
+        // Session Context and Ballista cluster setup
+        //
+
+        // Setting up configuration producer
+        //
+        // configuration producer registers user defined config extension
+        // S3Option with relevant S3 configuration
+        let config_producer =
+            Arc::new(ballista_core::object_store::session_config_with_s3_support);
+        // Setting up runtime producer
+        //
+        // Runtime producer creates object store registry
+        // which can create object store connecter based on
+        // S3Option configuration.
+        let runtime_producer: RuntimeProducer =
+            Arc::new(ballista_core::object_store::runtime_env_with_s3_support);
+
+        // Session builder creates SessionState
+        //
+        // which is configured using runtime and configuration producer,
+        // producing same runtime environment, and providing same
+        // object store registry.
+
+        let session_builder =
+            Arc::new(ballista_core::object_store::session_state_with_s3_support);
+
+        let state = session_builder(config_producer())?;
+
+        // setting up ballista cluster with new runtime, configuration, and session state producers
+        let (host, port) = crate::common::setup_test_cluster_with_builders(
+            config_producer,
+            runtime_producer,
+            session_builder,
+        )
+        .await;
+        let url = format!("df://{host}:{port}");
+
+        // establishing cluster connection,
+        let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
+
+        ctx.sql("SET ballista.planner.adaptive.enabled = true")
+            .await?
+            .show()
+            .await?;
+        // setting up relevant S3 options
+        ctx.sql("SET s3.allow_http = true").await?.show().await?;
+        ctx.sql(&format!("SET s3.access_key_id = '{}'", ACCESS_KEY_ID))
+            .await?
+            .show()
+            .await?;
+        ctx.sql(&format!("SET s3.secret_access_key = '{}'", SECRET_KEY))
+            .await?
+            .show()
+            .await?;
+        ctx.sql(&format!(
+            "SET s3.endpoint = 'http://{}:{}'",
+            endpoint_host, endpoint_port
+        ))
+        .await?
+        .show()
+        .await?;
+        ctx.sql("SET s3.allow_http = true").await?.show().await?;
+
+        // verifying that we have set S3Options
+        ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
+
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let write_dir_path =
+            &format!("s3://{}/write_test.parquet", crate::common::BUCKET);
+
+        ctx.sql("select * from test")
+            .await?
+            .write_parquet(write_dir_path, Default::default(), Default::default())
+            .await?;
+
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
+            .await?;
+
+        let result = ctx
+            .sql("select id, string_col, timestamp_col from written_table where id > 4")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+----+------------+---------------------+",
+            "| id | string_col | timestamp_col       |",
+            "+----+------------+---------------------+",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        let result = ctx
+            .sql("select max(id) as max, min(id) as min from written_table")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+-----+-----+",
+            "| max | min |",
+            "+-----+-----+",
+            "| 7   | 0   |",
+            "+-----+-----+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+        Ok(())
+    }
+
     // this test shows how to register external ObjectStoreRegistry and configure it
     // using infrastructure provided by ballista standalone.
     //

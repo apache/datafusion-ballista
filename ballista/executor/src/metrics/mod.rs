@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::execution_engine::QueryStageExecutor;
+use ballista_core::JobId;
 use log::debug;
 use std::{fmt::Display, sync::Arc};
 
@@ -28,7 +29,7 @@ pub trait ExecutorMetricsCollector: Send + Sync {
     /// Record metrics for stage after it is executed
     fn record_stage(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         stage_id: usize,
         partition: usize,
         plan: Arc<dyn QueryStageExecutor>,
@@ -43,7 +44,7 @@ pub struct LoggingMetricsCollector {}
 impl ExecutorMetricsCollector for LoggingMetricsCollector {
     fn record_stage(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         stage_id: usize,
         partition: usize,
         plan: Arc<dyn QueryStageExecutor>,

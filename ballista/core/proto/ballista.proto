@@ -630,6 +630,11 @@ message ExecuteQueryParams {
   oneof query {
     bytes logical_plan = 1;
     bytes substrait_plan = 6;
+    // An already-built physical plan, serialized with the scheduler's
+    // physical extension codec. Lets clients bypass logical-plan creation
+    // on the scheduler, e.g. for plans containing custom operators that
+    // have no logical-plan representation.
+    bytes physical_plan = 7;
   }
   // reserved after removing deprecated `sql` query type.
   reserved 2;
@@ -778,6 +783,9 @@ message CancelJobResult {
 
 message CleanJobDataParams {
   string job_id = 1;
+  // Specific stage ids to remove within the job dir.
+  // Empty means remove the whole job dir (legacy behavior).
+  repeated uint32 remove_stage_ids = 2;
 }
 
 message CleanJobDataResult {
@@ -815,6 +823,9 @@ message CancelTasksResult {
 
 message RemoveJobDataParams {
   string job_id = 1;
+  // Specific stage ids to remove within the job dir.
+  // Empty means remove the whole job dir (legacy behavior).
+  repeated uint32 remove_stage_ids = 2;
 }
 
 message RemoveJobDataResult {

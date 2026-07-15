@@ -25,6 +25,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
+use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
@@ -94,7 +95,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
     /// ID for this job
-    job_id: String,
+    job_id: JobId,
     /// Job name, can be empty string
     job_name: String,
     /// Session ID for this job
@@ -131,7 +132,7 @@ impl AdaptiveExecutionGraph {
     #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         scheduler_id: &str,
-        job_id: &str,
+        job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
@@ -172,8 +173,8 @@ impl AdaptiveExecutionGraph {
         Ok(Self {
             planner,
             scheduler_id: Some(scheduler_id.to_string()),
-            job_id: job_id.to_string(),
-            job_name: job_name.to_string(),
+            job_id: job_id.to_owned(),
+            job_name: job_name.to_owned(),
             session_id: session_id.to_string(),
 
             status: JobStatus {
@@ -503,8 +504,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         Box::new(self.clone())
     }
 
-    fn job_id(&self) -> &str {
-        self.job_id.as_str()
+    fn job_id(&self) -> &JobId {
+        &self.job_id
     }
 
     fn job_name(&self) -> &str {
@@ -655,7 +656,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partition_id = task_status.partition_id as usize;
                         let task_identity = format!(
                             "TID {} {}/{}.{}/{}",
                             task_status.task_id,
@@ -664,19 +665,20 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             task_stage_attempt_num,
                             partition_id
                         );
-                        let operator_metrics = task_status.metrics.clone();
 
-                        if !running_stage
-                            .update_task_info(partition_id, task_status.clone())
-                        {
+                        if !running_stage.update_task_info(partition_id, &task_status) {
                             continue;
                         }
+
+                        let TaskStatus {
+                            status,
+                            metrics: operator_metrics,
+                            ..
+                        } = task_status;
                         //
                         // handle task failure
                         //
-                        if let Some(task_status::Status::Failed(failed_task)) =
-                            task_status.status
-                        {
+                        if let Some(task_status::Status::Failed(failed_task)) = status {
                             let failed_reason = failed_task.failed_reason;
 
                             match failed_reason {
@@ -785,7 +787,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                         //
                         else if let Some(task_status::Status::Successful(
                             successful_task,
-                        )) = task_status.status
+                        )) = status
                         {
                             // update task metrics for successfu task
                             running_stage
@@ -1175,7 +1177,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
                 error,
@@ -1204,7 +1206,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.end_time = timestamp_millis();
 
         self.status = JobStatus {
-            job_id: self.job_id.clone(),
+            job_id: self.job_id.clone().into(),
             job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,

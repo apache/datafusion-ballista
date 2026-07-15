@@ -19,7 +19,7 @@
 name = "ballista-scheduler"
 description = "Ballista Distributed Compute - Scheduler"
 license = "Apache-2.0"
-version = "53.0.0"
+version = "54.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
@@ -49,8 +49,8 @@ substrait = ["dep:datafusion-substrait"]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.9"
-tower-http = { version = "0.6", features = ["cors"] }
-ballista-core = { path = "../core", version = "53.0.0" }
+tower-http = { version = "0.7", features = ["cors"] }
+ballista-core = { path = "../core", version = "54.0.0" }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
@@ -79,7 +79,12 @@ tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }
 
+[[test]]
+name = "tpch_plan_stability"
+path = "tests/tpch_plan_stability/main.rs"
+
 [dev-dependencies]
+regex = "1"
 rstest = { workspace = true }
 
 [build-dependencies]

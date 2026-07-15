@@ -18,7 +18,7 @@
 [package]
 name = "ballista-cli"
 description = "Command Line Client for Ballista distributed query engine."
-version = "53.0.0"
+version = "54.0.0"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
@@ -33,10 +33,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # CLI-only deps (DataFusion/Ballista) — gated by `cli` feature
-ballista = { path = "../ballista/client", version = "53.0.0", features = ["standalone"], optional = true }
+ballista = { path = "../ballista/client", version = "54.0.0", features = ["standalone"], optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-cli = { workspace = true, optional = true }
-rustyline = { version = "17.0.1", optional = true }
+rustyline = { version = "18.0.0", optional = true }
 mimalloc = { workspace = true, optional = true }
 
 # TUI/web shared deps
@@ -54,12 +54,12 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "local-time"] }
-tui-big-text = { version = "0.8.4", optional = true }
 tui-shimmer = { version = "0.1", optional = true }
 
 # Native-only TUI deps
 crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
 tracing-appender = { version = "0.2", optional = true }
+tui-big-text = { version = "0.8.4", optional = true }
 
 # Web-only deps (WASM)
 critical-section = { version = "1.2.0", features = ["std"], optional = true }
@@ -91,13 +91,13 @@ tui = [
     "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text",
     "dep:tui-shimmer", "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
-    "ratatui/layout-cache", "ratatui/underline-color",
+    "ratatui/layout-cache", "ratatui/underline-color", "ratatui/serde"
 ]
 
 web = [
     "dep:chrono", "dep:config", "dep:critical-section", "dep:dotparser", "dep:futures", "dep:percent-encoding",
-    "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
-    "dep:serde", "dep:serde_json", "dep:tui-big-text", "dep:tui-shimmer",
+    "dep:prometheus-parse", "dep:ratatui", "ratatui/serde", "dep:reqwest",
+    "dep:serde", "dep:serde_json", "dep:tui-shimmer",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
     "dep:gloo-timers", "dep:console_error_panic_hook",
     "dep:tracing-web", "dep:web-sys", "dep:js-sys",

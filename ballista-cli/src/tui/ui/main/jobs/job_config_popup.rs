@@ -17,14 +17,14 @@
 
 use crate::tui::app::App;
 use crate::tui::domain::jobs::JobConfigEntry;
+use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::search_box::render_search_input;
 use crate::tui::ui::vertical_scrollbar::{render_scrollbar, split_area};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::prelude::{Color, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table,
+    Block, BorderType, Borders, Cell, HighlightSpacing, Paragraph, Row, Table,
 };
 
 pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
@@ -33,7 +33,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
     };
 
     let area = crate::tui::ui::centered_rect(85, 80, f.area());
-    f.render_widget(Clear, area);
+    clear_area(f, area, app);
 
     let areas = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
 
@@ -44,6 +44,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
         app.is_job_config_search_edit_mode(),
         " Search config [/ to activate] ",
         " Search config ",
+        &app.theme,
     );
 
     let filtered = popup.filtered_entries();
@@ -51,7 +52,7 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
         let block = Block::default()
             .title(format!(" Job config for '{}' ", popup.job_id))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightCyan))
+            .border_style(app.theme.popup_border)
             .border_type(BorderType::Thick);
         let paragraph = Paragraph::new("No matching config entries").block(block);
         f.render_widget(paragraph, areas[1]);
@@ -66,17 +67,12 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
         Cell::from(Text::from("Key")),
         Cell::from(Text::from("Value")),
     ])
-    .style(
-        Style::default()
-            .fg(Color::LightYellow)
-            .bg(Color::Black)
-            .bold(),
-    );
+    .style(app.theme.table_header);
 
     let rows = filtered
         .into_iter()
         .enumerate()
-        .map(|(i, entry)| row_for_entry(i, entry));
+        .map(|(i, entry)| row_for_entry(i, entry, app));
 
     let table = Table::new(
         rows,
@@ -87,26 +83,26 @@ pub(crate) fn render_job_config_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(format!(" Job config for '{}' ", popup.job_id))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightCyan))
+            .border_style(app.theme.popup_border)
             .border_type(BorderType::Thick),
     )
-    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
+    .row_highlight_style(app.theme.row_selected)
     .highlight_spacing(HighlightSpacing::Always);
 
     f.render_stateful_widget(table, table_area[0], &mut table_state);
     render_scrollbar(f, table_area[1], &mut scrollbar_state);
 }
 
-fn row_for_entry(i: usize, entry: &JobConfigEntry) -> Row<'_> {
-    let color = if i.is_multiple_of(2) {
-        Color::DarkGray
+fn row_for_entry<'a>(i: usize, entry: &'a JobConfigEntry, app: &App) -> Row<'a> {
+    let row_style = if i.is_multiple_of(2) {
+        app.theme.row_even
     } else {
-        Color::Black
+        app.theme.row_odd
     };
 
     Row::new(vec![
         Cell::from(entry.key.as_str()),
         Cell::from(entry.value.as_str()),
     ])
-    .style(Style::default().bg(color))
+    .style(row_style)
 }

@@ -19,6 +19,9 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
+use ballista_core::object_store::{
+    session_config_with_s3_support, session_state_with_s3_support,
+};
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -92,9 +95,11 @@ struct BallistaBenchmarkOpt {
     #[structopt(short = "s", long = "batch-size", default_value = "8192")]
     batch_size: usize,
 
-    /// Path to data files
-    #[structopt(parse(from_os_str), required = true, short = "p", long = "path")]
-    path: PathBuf,
+    /// Path to data files. May be a local path or an object-store URL such as
+    /// `s3://bucket/prefix` (credentials/endpoint via AWS_* env vars or
+    /// `-c s3.*` config overrides).
+    #[structopt(required = true, short = "p", long = "path")]
+    path: String,
 
     /// File format: `csv` or `parquet`
     #[structopt(short = "f", long = "format", default_value = "csv")]
@@ -125,6 +130,11 @@ struct BallistaBenchmarkOpt {
     /// -c datafusion.execution.target_partitions=16
     #[structopt(short = "c", long = "config", number_of_values = 1)]
     config_overrides: Vec<String>,
+
+    /// Verify each Ballista result against single-process DataFusion over the
+    /// same data.
+    #[structopt(long = "verify")]
+    verify: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -296,19 +306,19 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let ctx = SessionContext::new_with_config(config);
 
     // register tables
-    for table in TABLES {
-        let table_provider = {
-            let mut session_state = ctx.state();
-            get_table(
-                &mut session_state,
-                opt.path.to_str().unwrap(),
-                table,
-                opt.file_format.as_str(),
-                opt.partitions,
-            )
-            .await?
-        };
-        if opt.mem_table {
+    if opt.mem_table {
+        for table in TABLES {
+            let table_provider = {
+                let mut session_state = ctx.state();
+                get_table(
+                    &mut session_state,
+                    opt.path.to_str().unwrap(),
+                    table,
+                    opt.file_format.as_str(),
+                    opt.partitions,
+                )
+                .await?
+            };
             println!("Loading table '{table}' into memory");
             let start = Instant::now();
             let memtable =
@@ -320,9 +330,15 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                 start.elapsed().as_millis()
             );
             ctx.register_table(*table, Arc::new(memtable))?;
-        } else {
-            ctx.register_table(*table, table_provider)?;
         }
+    } else {
+        register_datafusion_tables(
+            &ctx,
+            opt.path.to_str().unwrap(),
+            opt.file_format.as_str(),
+            opt.partitions,
+        )
+        .await?;
     }
 
     // Determine which queries to run
@@ -347,14 +363,9 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         for i in 0..opt.iterations {
             let start = Instant::now();
             // Execute each SQL statement sequentially (required for queries like q15
-            // that create views and then reference them)
-            for sql in &sqls {
-                if opt.debug {
-                    println!("Executing: {sql}");
-                }
-                let df = ctx.sql(sql).await?;
-                result = df.collect().await?;
-            }
+            // that create views and then reference them), keeping the result of
+            // the answer statement, not a trailing DROP VIEW.
+            result = execute_query_capturing_answer(&ctx, &sqls, opt.debug).await?;
             let elapsed = start.elapsed().as_secs_f64();
             if opt.debug {
                 pretty::print_batches(&result)?;
@@ -410,13 +421,30 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .map(|q| vec![q])
         .unwrap_or_else(|| (1..=22).collect());
 
+    let oracle_ctx = if opt.verify {
+        let cfg = SessionConfig::new()
+            .with_target_partitions(opt.partitions)
+            .with_batch_size(opt.batch_size);
+        let ctx = SessionContext::new_with_config(cfg);
+        register_datafusion_tables(
+            &ctx,
+            opt.path.as_str(),
+            opt.file_format.as_str(),
+            opt.partitions,
+        )
+        .await?;
+        Some(ctx)
+    } else {
+        None
+    };
+
     let mut benchmark_run = BenchmarkRun::new();
     let mut total_elapsed = 0.0;
 
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
 
-        let mut config = SessionConfig::new_with_ballista()
+        let mut config = session_config_with_s3_support()
             .with_target_partitions(opt.partitions)
             .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
             .with_batch_size(opt.batch_size)
@@ -436,14 +464,11 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             }
         }
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .build();
+        let state = session_state_with_s3_support(config)?;
         let ctx = SessionContext::remote_with_state(&address, state).await?;
 
         // register tables with Ballista context
-        let path = opt.path.to_str().unwrap();
+        let path = opt.path.as_str();
         let file_format = opt.file_format.as_str();
 
         register_tables(path, file_format, &ctx, opt.debug).await?;
@@ -456,9 +481,10 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             println!("Running benchmark with query {}:\n {:?}", query, sqls);
         }
         let mut batches = vec![];
+        let answer_idx = answer_statement_index(&sqls);
         for i in 0..opt.iterations {
             let start = Instant::now();
-            for sql in &sqls {
+            for (idx, sql) in sqls.iter().enumerate() {
                 let df = ctx
                     .sql(sql)
                     .await
@@ -468,11 +494,14 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                 if opt.debug {
                     println!("=== Optimized logical plan ===\n{plan:?}\n");
                 }
-                batches = df
+                let collected = df
                     .collect()
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
+                if idx == answer_idx {
+                    batches = collected;
+                }
             }
             let elapsed = start.elapsed().as_secs_f64();
             secs.push(elapsed);
@@ -495,8 +524,19 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
 
             if let Some(expected_results_path) = opt.expected_results.as_ref() {
                 let expected = get_expected_results(query, expected_results_path).await?;
-                assert_expected_results(&expected, &batches)
+                compare_results(&expected, &batches)?;
             }
+        }
+
+        if let Some(oracle_ctx) = &oracle_ctx {
+            let expected =
+                execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug).await?;
+            compare_results(&expected, &batches).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "query {query} verification failed: {e}"
+                ))
+            })?;
+            println!("Query {query} verified against DataFusion: OK");
         }
 
         if opt.iterations > 1 {
@@ -574,7 +614,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
         .split(',')
         .map(|s| s.parse().unwrap())
         .collect();
-    println!("query list: {:?} ", &query_list);
+    println!("query list: {:?} ", query_list);
 
     let total = Instant::now();
     let mut futures = vec![];
@@ -596,7 +636,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                         .unwrap();
                 println!(
                     "Client {} Round {} Query {} started",
-                    &client_id, &i, query_id
+                    client_id, i, query_id
                 );
                 let start = Instant::now();
                 let df = client
@@ -612,7 +652,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 println!(
                     "Client {} Round {} Query {} took {:.1} ms ",
-                    &client_id, &i, query_id, elapsed
+                    client_id, i, query_id, elapsed
                 );
                 if opt.debug && !batches.is_empty() {
                     pretty::print_batches(&batches).unwrap();
@@ -640,6 +680,46 @@ fn get_query_sql_by_path(query: usize, mut sql_path: String) -> Result<String> {
             "invalid query. Expected value between 1 and 22".to_owned(),
         ))
     }
+}
+
+/// Registers all TPC-H tables on a single-process DataFusion context (the
+/// correctness oracle for `--verify`).
+async fn register_datafusion_tables(
+    ctx: &SessionContext,
+    path: &str,
+    file_format: &str,
+    partitions: usize,
+) -> Result<()> {
+    for table in TABLES {
+        let table_provider = {
+            let mut session_state = ctx.state();
+            get_table(&mut session_state, path, table, file_format, partitions).await?
+        };
+        ctx.register_table(*table, table_provider)?;
+    }
+    Ok(())
+}
+
+/// Executes all statements of a query in order and returns the batches of the
+/// answer statement (see `answer_statement_index`).
+async fn execute_query_capturing_answer(
+    ctx: &SessionContext,
+    statements: &[String],
+    debug: bool,
+) -> Result<Vec<RecordBatch>> {
+    let answer_idx = answer_statement_index(statements);
+    let mut answer = vec![];
+    for (idx, sql) in statements.iter().enumerate() {
+        if debug {
+            println!("Executing: {sql}");
+        }
+        let df = ctx.sql(sql).await?;
+        let collected = df.collect().await?;
+        if idx == answer_idx {
+            answer = collected;
+        }
+    }
+    Ok(answer)
 }
 
 async fn register_tables(
@@ -703,6 +783,14 @@ async fn register_tables(
 }
 
 fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
+    // Object-store URLs (e.g. `s3://bucket/prefix`) cannot be probed with the
+    // local filesystem, so register the per-table directory under the base URL
+    // directly. The trailing slash marks it as a directory so the listing table
+    // enumerates the Parquet files inside (e.g. `s3://bucket/prefix/lineitem/`).
+    if path.contains("://") {
+        return Ok(format!("{path}/{table}/"));
+    }
+
     let path1 = format!("{path}/{table}.{ext}");
     let path2 = format!("{path}/{table}");
     if Path::new(&path1).exists() {
@@ -714,6 +802,20 @@ fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
             "Could not find {ext} files at {path1} or {path2}"
         )))
     }
+}
+
+/// Index of the statement whose result is the query answer: the last `SELECT`
+/// or `WITH` statement, or the last statement if none qualifies. TPC-H query
+/// files may wrap the answer in setup/teardown statements (e.g. q15 creates and
+/// drops a view); only the query statement's result is the answer.
+fn answer_statement_index(statements: &[String]) -> usize {
+    statements
+        .iter()
+        .rposition(|s| {
+            let head = s.trim_start().to_ascii_lowercase();
+            head.starts_with("select") || head.starts_with("with")
+        })
+        .unwrap_or_else(|| statements.len().saturating_sub(1))
 }
 
 /// Get the SQL statements from the specified query file
@@ -843,7 +945,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
 
         println!(
             "Converting '{}' to {} files in directory '{}'",
-            &input_path, &opt.file_format, &output_path
+            input_path, opt.file_format, output_path
         );
         match opt.file_format.as_str() {
             "csv" => ctx.write_csv(csv, output_path).await?,
@@ -1116,25 +1218,135 @@ impl BenchmarkRun {
     }
 }
 
-/// Compare actual results against expected results at scale factor 1
-fn assert_expected_results(expected: &[RecordBatch], actual: &[RecordBatch]) {
-    // assert schema equality without comparing nullable values
-    assert_eq!(
-        nullable_schema(expected[0].schema()),
-        nullable_schema(actual[0].schema())
-    );
+/// Maximum relative-or-absolute difference tolerated between floating-point
+/// cells. Distributed (Ballista) and single-process (DataFusion) execution
+/// aggregate in different orders, and float `sum` is non-associative, so ratio
+/// queries can differ in their last digits.
+const FLOAT_TOLERANCE: f64 = 1e-6;
 
-    // convert both datasets to Vec<Vec<String>> for simple comparison
-    let expected_vec = result_vec(expected);
-    let actual_vec = result_vec(actual);
+enum Cell {
+    Null,
+    Float(f64),
+    Text(String),
+}
 
-    // basic result comparison
-    assert_eq!(expected_vec.len(), actual_vec.len());
-
-    // compare each row. this works as all TPC-H queries have deterministically ordered results
-    for i in 0..actual_vec.len() {
-        assert_eq!(expected_vec[i], actual_vec[i]);
+impl std::fmt::Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cell::Null => f.write_str("NULL"),
+            Cell::Float(x) => write!(f, "{x}"),
+            Cell::Text(s) => f.write_str(s),
+        }
     }
+}
+
+fn cell_at(column: &ArrayRef, row: usize) -> Cell {
+    if column.is_null(row) {
+        return Cell::Null;
+    }
+    match column.data_type() {
+        DataType::Float64 => Cell::Float(
+            column
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(row),
+        ),
+        DataType::Float32 => Cell::Float(
+            column
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap()
+                .value(row) as f64,
+        ),
+        _ => Cell::Text(col_str(column, row)),
+    }
+}
+
+fn rows_as_cells(batches: &[RecordBatch]) -> Vec<Vec<Cell>> {
+    let mut rows = vec![];
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            rows.push(batch.columns().iter().map(|c| cell_at(c, row)).collect());
+        }
+    }
+    rows
+}
+
+fn floats_close(a: f64, b: f64) -> bool {
+    if a == b {
+        return true;
+    }
+    (a - b).abs() <= FLOAT_TOLERANCE * a.abs().max(b.abs()).max(1.0)
+}
+
+fn cells_equal(a: &Cell, b: &Cell) -> bool {
+    match (a, b) {
+        (Cell::Null, Cell::Null) => true,
+        (Cell::Float(x), Cell::Float(y)) => floats_close(*x, *y),
+        (Cell::Text(x), Cell::Text(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Canonicalizes Arrow string/binary representation variants so that physical
+/// differences (e.g. `Utf8` vs `Utf8View`) are not treated as result
+/// differences: single-process DataFusion may infer Parquet strings as
+/// `Utf8View` while Ballista produces `Utf8`, but both stringify identically.
+fn canonical_type(dt: &DataType) -> DataType {
+    match dt {
+        DataType::Utf8View | DataType::LargeUtf8 => DataType::Utf8,
+        DataType::BinaryView | DataType::LargeBinary => DataType::Binary,
+        _ => dt.clone(),
+    }
+}
+
+/// Schema reduced to (name, canonical type) pairs, ignoring nullability and
+/// string/binary representation, for result comparison.
+fn comparable_schema(schema: &Schema) -> Vec<(String, DataType)> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| (f.name().clone(), canonical_type(f.data_type())))
+        .collect()
+}
+
+/// Compares two result sets, tolerating tiny floating-point differences.
+/// Returns an error describing the first mismatch instead of panicking, so the
+/// benchmark binary exits non-zero with a useful message.
+fn compare_results(expected: &[RecordBatch], actual: &[RecordBatch]) -> Result<()> {
+    let expected_rows = rows_as_cells(expected);
+    let actual_rows = rows_as_cells(actual);
+
+    if expected_rows.len() != actual_rows.len() {
+        return Err(DataFusionError::Execution(format!(
+            "result mismatch: expected {} rows, got {} rows",
+            expected_rows.len(),
+            actual_rows.len()
+        )));
+    }
+
+    if let (Some(e), Some(a)) = (expected.first(), actual.first()) {
+        let e_schema = comparable_schema(&e.schema());
+        let a_schema = comparable_schema(&a.schema());
+        if e_schema != a_schema {
+            return Err(DataFusionError::Execution(format!(
+                "schema mismatch:\n expected: {e_schema:?}\n actual:   {a_schema:?}"
+            )));
+        }
+    }
+
+    for (i, (erow, arow)) in expected_rows.iter().zip(actual_rows.iter()).enumerate() {
+        for (j, (ecell, acell)) in erow.iter().zip(arow.iter()).enumerate() {
+            if !cells_equal(ecell, acell) {
+                return Err(DataFusionError::Execution(format!(
+                    "result mismatch at row {i}, column {j}: expected `{ecell}`, got `{acell}`"
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Get the expected answer for a specific query at scale factor 1
@@ -1177,37 +1389,6 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
             .collect::<Vec<Expr>>(),
     )?;
     df.collect().await
-}
-
-// convert the schema to the same but with all columns set to nullable=true.
-// this allows direct schema comparison ignoring nullable.
-fn nullable_schema(schema: Arc<Schema>) -> Schema {
-    Schema::new(
-        schema
-            .fields()
-            .iter()
-            .map(|field| {
-                Field::new(Field::name(field), Field::data_type(field).to_owned(), true)
-            })
-            .collect::<Vec<Field>>(),
-    )
-}
-
-/// Converts the results into a 2d array of strings, `result[row][column]`
-/// Special cases nulls to NULL for testing
-fn result_vec(results: &[RecordBatch]) -> Vec<Vec<String>> {
-    let mut result = vec![];
-    for batch in results {
-        for row_index in 0..batch.num_rows() {
-            let row_vec = batch
-                .columns()
-                .iter()
-                .map(|column| col_str(column, row_index))
-                .collect();
-            result.push(row_vec);
-        }
-    }
-    result
 }
 
 fn get_answer_schema(n: usize) -> Schema {
@@ -1757,12 +1938,111 @@ mod tests {
             let expected_schema = get_answer_schema(n);
             let normalized = normalize_for_verification(actual, expected_schema).await?;
 
-            assert_expected_results(&expected, &normalized)
+            compare_results(&expected, &normalized)?;
         } else {
             println!("TPCH_DATA environment variable not set, skipping test");
         }
 
         Ok(())
+    }
+
+    fn f64_batch(values: Vec<f64>) -> RecordBatch {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(values))]).unwrap()
+    }
+
+    fn i64_batch(values: Vec<i64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap()
+    }
+
+    #[test]
+    fn compare_results_equal_ok() {
+        assert!(
+            super::compare_results(&[i64_batch(vec![1, 2])], &[i64_batch(vec![1, 2])])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn compare_results_row_count_mismatch() {
+        let err = super::compare_results(&[i64_batch(vec![1])], &[i64_batch(vec![1, 2])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected 1 rows, got 2 rows"), "{err}");
+    }
+
+    #[test]
+    fn compare_results_value_mismatch() {
+        let err = super::compare_results(&[i64_batch(vec![1])], &[i64_batch(vec![2])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("row 0, column 0"), "{err}");
+    }
+
+    #[test]
+    fn compare_results_floats_within_tolerance_ok() {
+        // differ only beyond the tolerance's significant digits
+        assert!(
+            super::compare_results(
+                &[f64_batch(vec![123.4567890])],
+                &[f64_batch(vec![123.4567891])]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn compare_results_floats_outside_tolerance_err() {
+        assert!(
+            super::compare_results(&[f64_batch(vec![100.0])], &[f64_batch(vec![100.5])])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn answer_statement_index_picks_select_not_drop() {
+        let stmts = vec![
+            "create view revenue0 as select 1".to_string(),
+            "select * from revenue0 order by a".to_string(),
+            "drop view revenue0".to_string(),
+        ];
+        assert_eq!(super::answer_statement_index(&stmts), 1);
+    }
+
+    #[test]
+    fn answer_statement_index_single_select() {
+        let stmts = vec!["select 1".to_string()];
+        assert_eq!(super::answer_statement_index(&stmts), 0);
+    }
+
+    #[test]
+    fn answer_statement_index_with_cte() {
+        let stmts = vec!["WITH t AS (select 1) select * from t".to_string()];
+        assert_eq!(super::answer_statement_index(&stmts), 0);
+    }
+
+    #[test]
+    fn compare_results_ignores_utf8view_vs_utf8() {
+        let view_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let utf8_schema =
+            Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+        let a = RecordBatch::try_new(
+            view_schema,
+            vec![Arc::new(StringViewArray::from(vec!["x", "y"]))],
+        )
+        .unwrap();
+        let b = RecordBatch::try_new(
+            utf8_schema,
+            vec![Arc::new(StringArray::from(vec!["x", "y"]))],
+        )
+        .unwrap();
+        assert!(super::compare_results(&[a], &[b]).is_ok());
     }
 }
 
