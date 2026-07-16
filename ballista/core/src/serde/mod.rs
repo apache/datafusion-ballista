@@ -423,11 +423,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 } else {
                     8192
                 };
-                let config = SortShuffleConfig::new(
-                    true,
-                    datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
-                    batch_size,
-                );
+                let config = SortShuffleConfig::new(true, batch_size);
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
                     sort_shuffle_writer.job_id.clone().into(),

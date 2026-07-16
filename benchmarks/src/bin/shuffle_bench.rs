@@ -43,7 +43,6 @@ use ballista_core::execution_plans::sort_shuffle::{
 use ballista_core::utils;
 use clap::Parser;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
-use datafusion::arrow::ipc::CompressionType;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -286,8 +285,7 @@ async fn execute_shuffle_write(
             exec.metrics().unwrap_or_default()
         }
         WriterKind::Sort => {
-            let cfg =
-                SortShuffleConfig::new(true, CompressionType::LZ4_FRAME, args.batch_size);
+            let cfg = SortShuffleConfig::new(true, args.batch_size);
             let exec = SortShuffleWriterExec::try_new(
                 format!("bench_job_{task_id}").into(),
                 1,
