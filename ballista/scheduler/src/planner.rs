@@ -1533,7 +1533,7 @@ order by
                 host: "localhost".to_string(),
                 port: 50050,
                 grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_task_slots(1),
+                specification: ExecutorSpecification::default().with_vcores(1),
                 os_info: ExecutorOperatingSystemSpecification::default(),
             },
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),

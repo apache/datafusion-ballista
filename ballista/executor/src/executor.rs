@@ -89,8 +89,8 @@ pub struct Executor {
     /// Collector for runtime execution metrics
     pub metrics_collector: Arc<dyn ExecutorMetricsCollector>,
 
-    /// Concurrent tasks can run in executor
-    pub concurrent_tasks: usize,
+    /// Virtual cores assigned to this executor. See CLI docs on `--vcores`.
+    pub vcores: usize,
 
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
@@ -113,7 +113,7 @@ impl Executor {
         work_dir: &str,
         runtime_producer: RuntimeProducer,
         config_producer: ConfigProducer,
-        concurrent_tasks: usize,
+        vcores: usize,
     ) -> Self {
         Self::new(
             metadata,
@@ -122,7 +122,7 @@ impl Executor {
             config_producer,
             Arc::new(BallistaFunctionRegistry::default()),
             Arc::new(LoggingMetricsCollector::default()),
-            concurrent_tasks,
+            vcores,
             Arc::new(DefaultExecutionEngine::new()),
         )
     }
@@ -137,7 +137,7 @@ impl Executor {
         config_producer: ConfigProducer,
         function_registry: Arc<BallistaFunctionRegistry>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
-        concurrent_tasks: usize,
+        vcores: usize,
         execution_engine: Arc<dyn ExecutionEngine>,
     ) -> Self {
         Self {
@@ -147,7 +147,7 @@ impl Executor {
             runtime_producer,
             config_producer,
             metrics_collector,
-            concurrent_tasks,
+            vcores,
             abort_handles: Default::default(),
             execution_engine,
             session_runtime_cache: None,
@@ -162,7 +162,7 @@ impl Executor {
         config_producer: ConfigProducer,
         function_registry: Arc<BallistaFunctionRegistry>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
-        concurrent_tasks: usize,
+        vcores: usize,
     ) -> Self {
         Self {
             metadata,
@@ -171,7 +171,7 @@ impl Executor {
             runtime_producer,
             config_producer,
             metrics_collector,
-            concurrent_tasks,
+            vcores,
             abort_handles: Default::default(),
             execution_engine: Arc::new(DefaultExecutionEngine::new()),
             session_runtime_cache: None,

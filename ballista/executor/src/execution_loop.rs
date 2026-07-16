@@ -75,20 +75,19 @@ where
         .unwrap()
         .clone()
         .into();
-    let available_task_slots =
-        Arc::new(Semaphore::new(executor_specification.task_slots as usize));
+    let free_vcores = Arc::new(Semaphore::new(executor_specification.vcores as usize));
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
     info!("Starting poll work loop with scheduler");
 
     let dedicated_executor =
-        DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
+        DedicatedExecutor::new("task_runner", executor_specification.vcores as usize);
 
     loop {
-        // Wait for task slots to be available before asking for new work
-        let permit = available_task_slots.acquire().await.unwrap();
-        // Make the slot available again
+        // Wait for a vcore permit before asking for new work.
+        let permit = free_vcores.acquire().await.unwrap();
+        // Make the vcore available again for the actual bind below.
         drop(permit);
 
         // Keeps track of whether we received task in last iteration
@@ -102,7 +101,7 @@ where
             scheduler
                 .poll_work(PollWorkParams {
                     metadata: Some(executor.metadata.clone()),
-                    num_free_slots: available_task_slots.available_permits() as u32,
+                    num_free_vcores: free_vcores.available_permits() as u32,
                     task_status,
                 })
                 .await;
@@ -135,9 +134,8 @@ where
                 for task in tasks {
                     let task_status_sender = task_status_sender.clone();
 
-                    // Acquire a permit/slot for the task
-                    let permit =
-                        available_task_slots.clone().acquire_owned().await.unwrap();
+                    // Acquire a vcore permit for the task.
+                    let permit = free_vcores.clone().acquire_owned().await.unwrap();
 
                     let start_exec_time = SystemTime::now()
                         .duration_since(UNIX_EPOCH)

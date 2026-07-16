@@ -520,7 +520,7 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
+            specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
         // next few properties are needed
@@ -552,7 +552,7 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
+            specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
 

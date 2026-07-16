@@ -419,9 +419,14 @@ message ExecutorSpecification {
   repeated ExecutorResource resources = 1;
 }
 
+// Virtual cores this executor has been assigned at runtime — analogous to
+// YARN vcores (yarn.nodemanager.resource.cpu-vcores) or Spark's
+// spark.executor.cores. Not physical `nproc`: may over- or under-subscribe.
+// One task per executor drives this many DataFusion partitions in parallel
+// through one plan-Arc.
 message ExecutorResource {
   oneof resource {
-    uint32 task_slots = 1;
+    uint32 vcores = 1;
   }
 }
 
@@ -437,13 +442,16 @@ message ExecutorOperatingSystemSpecification {
   uint64 open_files_limit = 9;
 }
 
-message AvailableTaskSlots {
+// One instance per executor. Tracks free vcores for scheduler-side task
+// binding. See ExecutorResource for the vcore definition (YARN vcores or
+// Spark's spark.executor.cores).
+message AvailableVcores {
   string executor_id = 1;
-  uint32 slots = 2;
-    }
+  uint32 vcores = 2;
+}
 
-message ExecutorTaskSlots {
-  repeated AvailableTaskSlots task_slots = 1;
+message ExecutorVcores {
+  repeated AvailableVcores vcores = 1;
 }
 
 message ExecutorData {
@@ -536,7 +544,7 @@ message TaskStatus {
 
 message PollWorkParams {
   ExecutorRegistration metadata = 1;
-  uint32 num_free_slots = 2;
+  uint32 num_free_vcores = 2;
   // All tasks must be reported until they reach the failed or completed state
   repeated TaskStatus task_status = 3;
 }

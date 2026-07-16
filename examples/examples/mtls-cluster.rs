@@ -363,7 +363,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
         grpc_port: 0, // Not used in pull-based scheduling
         specification: Some(ExecutorSpecification {
             resources: vec![ExecutorResource {
-                resource: Some(Resource::TaskSlots(4)),
+                resource: Some(Resource::Vcores(4)),
             }],
         }),
         os_info: None,
@@ -388,7 +388,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
         config_producer,
         Default::default(), // function_registry
         Arc::new(LoggingMetricsCollector::default()), // metrics_collector
-        4,                  // concurrent_tasks
+        4,                  // vcores
     ));
 
     // Start Flight service with mTLS for serving shuffle data
