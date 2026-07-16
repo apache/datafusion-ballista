@@ -90,7 +90,7 @@ jobs:
             --no-default-features --features web
 
       - name: Deploy at nightlies.a.o
-        if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
+        #if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
         run: |
           TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
           REMOTE_TARGET_DIR="${{ secrets.NIGHTLIES_RSYNC_PATH }}/${TUI_DIR}/"
