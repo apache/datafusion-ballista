@@ -273,13 +273,16 @@ impl SortShuffleWriterExec {
                 growth += after.saturating_sub(before);
 
                 // Mirror the growth in the runtime pool reservation so the pool
-                // sees this writer's memory usage. Best-effort: if the pool is
-                // bounded and rejects the grow, that's fine — the absolute
-                // counter below still triggers a spill.
-                let _ = reservation.try_grow(growth);
+                // sees this writer's memory usage. A rejected grow means the
+                // pool is under pressure and has *not* accounted for the batch
+                // just buffered, so spill instead of holding memory the pool
+                // believes is free. Spilling flushes that batch to disk and
+                // frees the reservation, which is the response a spillable
+                // consumer owes the pool.
+                let pool_rejected_growth = reservation.try_grow(growth).is_err();
                 buffered_bytes = buffered_bytes.saturating_add(growth);
 
-                if buffered_bytes >= memory_limit {
+                if pool_rejected_growth || buffered_bytes >= memory_limit {
                     let spill_timer = metrics.spill_time.timer();
                     let (event_batches, event_bytes) = spill_all_partitions(
                         &mut buffered,
@@ -872,7 +875,8 @@ mod tests {
     /// `rows_per_batch` rows each with schema `(k: Int64, v: Int64)`, writes
     /// them through `SortShuffleWriterExec` into `num_partitions` output
     /// partitions with a per-task buffered-bytes budget of
-    /// `sort_shuffle_memory_limit_bytes`, reads every partition back via
+    /// `sort_shuffle_memory_limit_bytes` against a `FairSpillPool` of
+    /// `pool_bytes`, reads every partition back via
     /// `stream_sort_shuffle_partition`, and asserts:
     ///   - Every input key `0..total_rows` is present exactly once in the union
     ///     of partition outputs.
@@ -883,6 +887,7 @@ mod tests {
         rows_per_batch: usize,
         num_partitions: usize,
         sort_shuffle_memory_limit_bytes: usize,
+        pool_bytes: usize,
         expect_spills: bool,
     ) -> Result<()> {
         use super::super::reader::stream_sort_shuffle_partition;
@@ -920,13 +925,9 @@ mod tests {
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(DataSourceExec::new(memory_data_source));
 
-        // The runtime pool is sized generously: spill decisions are now driven
-        // by `SortShuffleConfig::memory_limit_per_task_bytes`, but we keep a
-        // bounded pool so the post-test `pool.reserved() == 0` assertion still
-        // checks that the writer releases its `MemoryReservation`.
         let runtime_env = Arc::new(
             RuntimeEnvBuilder::new()
-                .with_memory_pool(Arc::new(FairSpillPool::new(64 * 1024 * 1024)))
+                .with_memory_pool(Arc::new(FairSpillPool::new(pool_bytes)))
                 .build()?,
         );
         let session_ctx = SessionContext::new_with_config_rt(
@@ -1012,6 +1013,11 @@ mod tests {
         Ok(())
     }
 
+    /// A pool generous enough that `try_grow` always succeeds, so spill
+    /// behaviour is driven solely by the per-task buffered-bytes budget. Still
+    /// bounded, so `pool.reserved() == 0` after the run remains meaningful.
+    const UNCONSTRAINED_POOL: usize = 64 * 1024 * 1024;
+
     #[tokio::test]
     async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
         // 10 batches of 8192 rows each. With a 512 KiB per-task buffer budget,
@@ -1021,6 +1027,7 @@ mod tests {
             /* rows_per_batch */ 8192,
             /* num_partitions */ 4,
             /* sort_shuffle_memory_limit_bytes */ 512 * 1024,
+            /* pool_bytes */ UNCONSTRAINED_POOL,
             /* expect_spills */ true,
         )
         .await
@@ -1038,6 +1045,7 @@ mod tests {
             /* rows_per_batch */ 8192,
             /* num_partitions */ 2,
             /* sort_shuffle_memory_limit_bytes */ 256 * 1024,
+            /* pool_bytes */ UNCONSTRAINED_POOL,
             /* expect_spills */ true,
         )
         .await
@@ -1053,7 +1061,29 @@ mod tests {
             /* rows_per_batch */ 1024,
             /* num_partitions */ 4,
             /* sort_shuffle_memory_limit_bytes */ 64 * 1024 * 1024,
+            /* pool_bytes */ UNCONSTRAINED_POOL,
             /* expect_spills */ false,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn spills_when_memory_pool_rejects_growth() -> Result<()> {
+        // The per-task buffered-bytes budget is set far above the total payload,
+        // so the writer's own absolute counter can never trigger a spill. The
+        // only pressure signal is the `MemoryPool`: a 64 KiB pool cannot admit
+        // even one ~128 KiB batch, so every `try_grow` is rejected.
+        //
+        // A rejected grow means the pool has not accounted for the batch we just
+        // buffered. The writer must spill in response rather than keep buffering
+        // memory the pool believes is free.
+        run_round_trip(
+            /* num_batches */ 8,
+            /* rows_per_batch */ 8192,
+            /* num_partitions */ 2,
+            /* sort_shuffle_memory_limit_bytes */ 1024 * 1024 * 1024,
+            /* pool_bytes */ 64 * 1024,
+            /* expect_spills */ true,
         )
         .await
     }
