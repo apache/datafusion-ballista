@@ -1013,21 +1013,35 @@ mod tests {
         Ok(())
     }
 
-    /// A pool generous enough that `try_grow` always succeeds, so spill
-    /// behaviour is driven solely by the per-task buffered-bytes budget. Still
-    /// bounded, so `pool.reserved() == 0` after the run remains meaningful.
-    const UNCONSTRAINED_POOL: usize = 64 * 1024 * 1024;
+    // The writer has two independent spill triggers, and these tests arm exactly
+    // one at a time so a failure names its cause:
+    //
+    //   1. the shared `MemoryPool` rejecting a `try_grow` — sized by `pool_bytes`
+    //   2. the private per-task budget `memory_limit_per_task_bytes` being
+    //      reached — sized by `sort_shuffle_memory_limit_bytes`
+    //
+    // The `*_DISARMED` constants below are the "this trigger is not what is
+    // under test" settings. A test payload batch is 8192 rows x 2 Int64 columns,
+    // i.e. ~128 KiB.
+
+    /// Pool far larger than any test payload, so `try_grow` always succeeds and
+    /// trigger 1 never fires. Still bounded, so the `pool.reserved() == 0`
+    /// assertion after the run stays meaningful.
+    const POOL_NEVER_REJECTS: usize = 64 * 1024 * 1024;
+
+    /// Per-task budget far above any test payload, so trigger 2 never fires.
+    const BUDGET_NEVER_REACHED: usize = 1024 * 1024 * 1024;
 
     #[tokio::test]
-    async fn spills_under_memory_pressure_and_round_trips() -> Result<()> {
-        // 10 batches of 8192 rows each. With a 512 KiB per-task buffer budget,
-        // this forces spilling.
+    async fn spills_when_per_task_budget_reached_and_round_trips() -> Result<()> {
+        // Trigger 2 only: 10 batches (~1.28 MiB) against a 512 KiB per-task
+        // budget forces spilling, while the pool stays out of the picture.
         run_round_trip(
             /* num_batches */ 10,
             /* rows_per_batch */ 8192,
             /* num_partitions */ 4,
             /* sort_shuffle_memory_limit_bytes */ 512 * 1024,
-            /* pool_bytes */ UNCONSTRAINED_POOL,
+            /* pool_bytes */ POOL_NEVER_REJECTS,
             /* expect_spills */ true,
         )
         .await
@@ -1035,17 +1049,17 @@ mod tests {
 
     #[tokio::test]
     async fn multi_spill_round_trips() -> Result<()> {
-        // Larger total payload + tighter buffer budget than the baseline test,
-        // so we expect multiple spill events per partition. The byte-copy
-        // finalize path should produce a partition section that is
-        // `spill_stream || in_memory_stream` (two concatenated IPC streams),
-        // and the reader must yield every input row regardless.
+        // Trigger 2 only, with a larger total payload and a tighter budget than
+        // the baseline test, so we expect multiple spill events per partition.
+        // The byte-copy finalize path should produce a partition section that is
+        // `spill_stream || in_memory_stream` (two concatenated IPC streams), and
+        // the reader must yield every input row regardless.
         run_round_trip(
             /* num_batches */ 20,
             /* rows_per_batch */ 8192,
             /* num_partitions */ 2,
             /* sort_shuffle_memory_limit_bytes */ 256 * 1024,
-            /* pool_bytes */ UNCONSTRAINED_POOL,
+            /* pool_bytes */ POOL_NEVER_REJECTS,
             /* expect_spills */ true,
         )
         .await
@@ -1053,15 +1067,14 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_only_round_trips() -> Result<()> {
-        // Generous per-task buffer budget so no partition spills. Validates
-        // the path where each partition section is exactly one in-memory IPC
-        // stream.
+        // Neither trigger armed, so nothing spills. Validates the path where
+        // each partition section is exactly one in-memory IPC stream.
         run_round_trip(
             /* num_batches */ 4,
             /* rows_per_batch */ 1024,
             /* num_partitions */ 4,
-            /* sort_shuffle_memory_limit_bytes */ 64 * 1024 * 1024,
-            /* pool_bytes */ UNCONSTRAINED_POOL,
+            /* sort_shuffle_memory_limit_bytes */ BUDGET_NEVER_REACHED,
+            /* pool_bytes */ POOL_NEVER_REJECTS,
             /* expect_spills */ false,
         )
         .await
@@ -1069,19 +1082,18 @@ mod tests {
 
     #[tokio::test]
     async fn spills_when_memory_pool_rejects_growth() -> Result<()> {
-        // The per-task buffered-bytes budget is set far above the total payload,
-        // so the writer's own absolute counter can never trigger a spill. The
-        // only pressure signal is the `MemoryPool`: a 64 KiB pool cannot admit
-        // even one ~128 KiB batch, so every `try_grow` is rejected.
+        // Trigger 1 only: a 64 KiB pool cannot admit even one ~128 KiB batch, so
+        // every `try_grow` is rejected, while the per-task budget can never fire.
+        // Pool rejection is therefore the only signal that can produce a spill.
         //
-        // A rejected grow means the pool has not accounted for the batch we just
+        // A rejected grow means the pool has not accounted for the batch just
         // buffered. The writer must spill in response rather than keep buffering
         // memory the pool believes is free.
         run_round_trip(
             /* num_batches */ 8,
             /* rows_per_batch */ 8192,
             /* num_partitions */ 2,
-            /* sort_shuffle_memory_limit_bytes */ 1024 * 1024 * 1024,
+            /* sort_shuffle_memory_limit_bytes */ BUDGET_NEVER_REACHED,
             /* pool_bytes */ 64 * 1024,
             /* expect_spills */ true,
         )
