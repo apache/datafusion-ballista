@@ -205,6 +205,11 @@ executor.wait_for_termination()
 
 ## Development Process
 
+The query-planner FFI API is currently provided by the sibling
+`../datafusion-python` checkout. The Rust and uv manifests use that checkout
+for local development, so both repositories must share the same parent
+directory before running the build commands below.
+
 Detailed development process explanation can be found in [datafusion python documentation](https://datafusion.apache.org/python/contributor-guide/introduction.html#).
 [Improving build speed section](https://datafusion.apache.org/python/contributor-guide/introduction.html#improving-build-speed) can be relevant.
 

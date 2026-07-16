@@ -22,7 +22,7 @@ use crate::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion_session::QueryPlanner;
 use datafusion::logical_expr::{LogicalPlan, TableScan};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -105,7 +105,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session_state: &dyn datafusion_session::Session,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         log::debug!("create_physical_plan - plan: {:?}", logical_plan);
         // we inspect if plan scans local tables only,

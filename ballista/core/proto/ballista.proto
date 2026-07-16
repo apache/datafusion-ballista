@@ -51,7 +51,15 @@ message BallistaPhysicalPlanNode {
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
     ChaosExecNode chaos_exec = 5;
+    DistributedQueryExecNode distributed_query = 6;
   }
+}
+
+message DistributedQueryExecNode {
+  string scheduler_url = 1;
+  repeated KeyValuePair settings = 2;
+  bytes logical_plan = 3;
+  string session_id = 4;
 }
 
 message ChaosExecNode {

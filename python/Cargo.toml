@@ -35,14 +35,16 @@ ballista = { path = "../ballista/client", version = "54.0.0" }
 ballista-core = { path = "../ballista/core", version = "54.0.0" }
 ballista-executor = { path = "../ballista/executor", version = "54.0.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
-datafusion = { version = "54", features = ["avro"] }
-datafusion-proto = { version = "54" }
-datafusion-python = { version = "54", default-features = false }
+datafusion = { workspace = true, features = ["avro"] }
+datafusion-ffi = { workspace = true }
+datafusion-proto = { workspace = true }
+datafusion-python = { path = "../../datafusion-python/crates/core", default-features = false }
 log = { version = "0.4" }
 pyo3 = { version = "0.28", features = ["extension-module", "abi3", "abi3-py310"] }
 pyo3-log = "0.13"
 tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 tonic = { version = "0.14" }
+url = { workspace = true }
 
 [lib]
 crate-type = ["cdylib"]
