@@ -49,6 +49,7 @@ use graphviz_rust::{
 };
 use http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -236,7 +237,7 @@ pub enum PlanFormat {
 /// forwarding any query parameters
 pub async fn get_root(
     header_map: HeaderMap,
-    Query(mut params): Query<std::collections::HashMap<String, String>>,
+    Query(mut params): Query<HashMap<String, String>>,
 ) -> Result<Redirect, (StatusCode, String)> {
     const NIGHTLIES_URL: &str = "https://nightlies.apache.org/datafusion/ballista/tui";
 
