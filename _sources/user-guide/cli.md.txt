@@ -158,7 +158,7 @@ ballista-cli
 
 The TUI provides the following views:
 
-- **Executors**: Lists all registered executors with their host, port, task slots, memory usage, and last seen time.
+- **Executors**: Lists all registered executors with their host, port, vcores, memory usage, and last seen time.
   Supports sorting by any column.
 - **Executor details**: Select an executor and press `Enter` to show extra details about it.
 - **Jobs**: Displays active and completed jobs with their status, start time, and duration. Supports sorting, job
