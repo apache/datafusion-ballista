@@ -336,8 +336,8 @@ mod tests {
     #[test]
     fn selected_queries_excludes_skiplist() {
         // With no explicit --query, we run 1..=99 minus the skip list. Use a
-        // synthetic non-empty skip list so this assertion is non-vacuous
-        // regardless of the real (currently empty) SKIP constant.
+        // synthetic skip list so this assertion is independent of the real
+        // SKIP constant's contents.
         let skip: &[(usize, &str)] = &[(5, "x"), (42, "y")];
         let selected = selected_queries(None, skip);
         assert_eq!(selected.len(), 99 - skip.len());

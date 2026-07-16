@@ -332,9 +332,9 @@ pinned to a fixed rev:
 SCALE_FACTOR=1 OUTPUT_DIR=./data-tpcds ./benchmarks/tpcds-gen.sh
 ```
 
-`SCALE_FACTOR` (default `1`) and `OUTPUT_DIR` (default `./data-tpcds`) are
-env overrides; `TPCGEN_REV` overrides the pinned `tpcgen-cli` git rev if
-needed. Note that, unlike the TPC-H generator, `tpcgen-cli tpcds` has no
+`SCALE_FACTOR` (default `1`) and `OUTPUT_DIR` (default `benchmarks/data-tpcds`,
+resolved relative to the script) are env overrides; `TPCGEN_REV` overrides the
+pinned `tpcgen-cli` git rev if needed. Note that, unlike the TPC-H generator, `tpcgen-cli tpcds` has no
 `--parts` flag — it writes a single `<table>.parquet` file per table for all
 24 TPC-DS tables.
 
@@ -356,21 +356,26 @@ With no `--query` given, this runs every non-skipped query (see "Skip list"
 below) on the Ballista cluster and, because `--verify` is set, also runs it
 against a single-process DataFusion `SessionContext` and diffs the results.
 The process exits non-zero and prints a summary if any query fails or
-mismatches.
+mismatches. `--verify` assumes a local `--path`: the oracle context registers
+the tables directly and does not apply object-store credentials.
 
 ### Skip list
 
-Some queries are not yet runnable through Ballista + the DataFusion oracle
-(e.g. missing operator support). These are listed in the `SKIP` const near
-the top of `benchmarks/src/bin/tpcds.rs`, as `(query_id, reason)` pairs. A
-default run (no `--query`) executes `1..=99` minus `SKIP`.
+Some queries are excluded from the gate. These are listed in the `SKIP` const
+near the top of `benchmarks/src/bin/tpcds.rs`, as `(query_id, reason)` pairs,
+grouped by cause: queries whose distributed result diverges from DataFusion
+(tracked as bugs), queries that are non-deterministic under `LIMIT`/`ORDER BY`
+ties, and queries whose `tpcgen-cli` schema column names differ from the
+DataFusion query text. A default run (no `--query`) executes `1..=99` minus
+`SKIP`.
 
 ### CI
 
-`.github/workflows/tpcds.yml` runs the full SF1 suite against a local
+`.github/workflows/tpcds.yml` runs the SF1 suite against a local
 scheduler + executor on every push/PR touching `ballista/**` or
-`benchmarks/**`, once with AQE off and once with AQE on
-(`ballista.planner.adaptive.enabled=true`), against the same generated data
-and cluster.
+`benchmarks/**`, under the default (static) planner. The adaptive planner
+(AQE on) is not gated yet — it currently fails many TPC-DS queries with an
+`EmptyExec invalid partition` assertion (issue #2047); re-enable an AQE-on run
+once that is fixed.
 
 [1]: http://www.tpc.org/tpch/
