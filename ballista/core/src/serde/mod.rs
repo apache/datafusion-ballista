@@ -1234,4 +1234,60 @@ mod test {
         assert_eq!(decoded_exec.upstream_partition_count, 4);
         assert_eq!(decoded_exec.partition.len(), 1);
     }
+
+    /// `INTERSECT` / `EXCEPT` lower to semi/anti joins with
+    /// `NullEquality::NullEqualsNull` so that NULL matches NULL. Ballista ships
+    /// the client's *logical* plan to the scheduler as protobuf, so that flag
+    /// has to survive the roundtrip: if it decodes back as `NullEqualsNothing`
+    /// the scheduler silently plans a different query than the client asked for
+    /// (NULL stops matching itself, so INTERSECT drops rows and EXCEPT keeps
+    /// them). See https://github.com/apache/datafusion-ballista/issues/2046
+    ///
+    /// `null_equality` is not part of the rendered plan, so this inspects the
+    /// decoded `Join` directly rather than asserting on a plan string.
+    #[tokio::test]
+    async fn logical_join_roundtrip_preserves_null_equality() {
+        use datafusion::common::NullEquality;
+        use datafusion::logical_expr::LogicalPlan;
+
+        fn join_null_equality(plan: &LogicalPlan) -> Option<NullEquality> {
+            if let LogicalPlan::Join(join) = plan {
+                return Some(join.null_equality);
+            }
+            plan.inputs().into_iter().find_map(join_null_equality)
+        }
+
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            "t",
+            "../../examples/testdata/alltypes_plain.parquet",
+            datafusion::prelude::ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let plan = ctx
+            .state()
+            .create_logical_plan(
+                "select string_col from t intersect select string_col from t",
+            )
+            .await
+            .unwrap();
+        let plan = ctx.state().optimize(&plan).unwrap();
+        assert_eq!(
+            join_null_equality(&plan),
+            Some(NullEquality::NullEqualsNull),
+            "precondition: INTERSECT should plan a NullEqualsNull join"
+        );
+
+        let codec = BallistaLogicalExtensionCodec::default();
+        let node = LogicalPlanNode::try_from_logical_plan(&plan, &codec).unwrap();
+        let roundtripped = node.try_into_logical_plan(&ctx.task_ctx(), &codec).unwrap();
+
+        assert_eq!(
+            join_null_equality(&roundtripped),
+            Some(NullEquality::NullEqualsNull),
+            "null_equality must survive the logical plan protobuf roundtrip"
+        );
+    }
 }

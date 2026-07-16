@@ -64,22 +64,15 @@ const TABLES: &[&str] = &[
 const SKIP: &[(usize, &str)] = &[
     // Distributed execution diverges from single-process DataFusion on the same
     // data (confirmed reproducible; DataFusion is correct under both join modes).
+    // Neither query uses a set operation; the root cause is unexplained.
     // See https://github.com/apache/datafusion-ballista/issues/2046
     (
         4,
         "distributed result diverges from DataFusion (issue #2046)",
     ),
     (
-        38,
-        "distributed INTERSECT diverges from DataFusion (issue #2046)",
-    ),
-    (
         78,
         "distributed LIMIT drops rows vs DataFusion (issue #2046)",
-    ),
-    (
-        87,
-        "distributed EXCEPT diverges from DataFusion (issue #2046)",
     ),
     // Non-deterministic: LIMIT/ORDER BY ties without a total order make the
     // result vary run-to-run in both engines, so a row-by-row diff is unstable.
