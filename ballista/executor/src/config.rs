@@ -93,6 +93,16 @@ pub struct Config {
         help = "Virtual cores advertised to the scheduler (defaults to physical CPU count if zero)."
     )]
     pub vcores: usize,
+    /// Deprecated alias for `--vcores`. Retained for one release to keep
+    /// in-place cluster upgrades working; will be removed in the next
+    /// major release.
+    #[arg(
+        long = "concurrent-tasks",
+        hide = true,
+        conflicts_with = "vcores",
+        help = "[deprecated] renamed to --vcores"
+    )]
+    pub concurrent_tasks: Option<usize>,
     /// Task scheduling policy: pull-staged (executor polls) or push-staged (scheduler pushes).
     #[arg(short = 's', long, default_value_t = ballista_core::config::TaskSchedulingPolicy::default(), help = "The task scheduling policy used by scheduler. Configuration must match with scheduler configured policy.")]
     pub task_scheduling_policy: ballista_core::config::TaskSchedulingPolicy,
@@ -197,6 +207,15 @@ impl TryFrom<Config> for ExecutorProcessConfig {
     type Error = BallistaError;
 
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
+        let vcores = match opt.concurrent_tasks {
+            Some(value) => {
+                eprintln!(
+                    "warning: --concurrent-tasks is deprecated; use --vcores instead"
+                );
+                value
+            }
+            None => opt.vcores,
+        };
         Ok(ExecutorProcessConfig {
             special_mod_log_level: opt.log_level_setting,
             external_host: opt.external_host,
@@ -206,7 +225,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
-            vcores: opt.vcores,
+            vcores,
             task_scheduling_policy: opt.task_scheduling_policy,
             work_dir: opt.work_dir,
             log_dir: opt.log_dir,

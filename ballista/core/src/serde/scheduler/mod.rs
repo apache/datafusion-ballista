@@ -151,6 +151,18 @@ impl ExecutorSpecification {
         self.vcores = vcores;
         self
     }
+
+    /// Deprecated alias for [`Self::with_vcores`].
+    #[deprecated(note = "renamed to `with_vcores`")]
+    pub fn with_task_slots(self, task_slots: u32) -> Self {
+        self.with_vcores(task_slots)
+    }
+
+    /// Deprecated getter that returns [`Self::vcores`].
+    #[deprecated(note = "the `task_slots` field was renamed to `vcores`")]
+    pub fn task_slots(&self) -> u32 {
+        self.vcores
+    }
 }
 
 /// Operating system level specification of an executor
@@ -263,12 +275,36 @@ pub struct ExecutorData {
     pub available_vcores: u32,
 }
 
+impl ExecutorData {
+    /// Deprecated getter that returns [`Self::total_vcores`].
+    #[deprecated(note = "the `total_task_slots` field was renamed to `total_vcores`")]
+    pub fn total_task_slots(&self) -> u32 {
+        self.total_vcores
+    }
+
+    /// Deprecated getter that returns [`Self::available_vcores`].
+    #[deprecated(
+        note = "the `available_task_slots` field was renamed to `available_vcores`"
+    )]
+    pub fn available_task_slots(&self) -> u32 {
+        self.available_vcores
+    }
+}
+
 /// Represents a change in an executor's free-vcore count.
 pub struct ExecutorDataChange {
     /// Unique executor identifier.
     pub executor_id: String,
     /// Change in free vcores (positive to release, negative to reserve).
     pub vcores: i32,
+}
+
+impl ExecutorDataChange {
+    /// Deprecated getter that returns [`Self::vcores`].
+    #[deprecated(note = "the `task_slots` field was renamed to `vcores`")]
+    pub fn task_slots(&self) -> i32 {
+        self.vcores
+    }
 }
 
 /// Summary of executed partition

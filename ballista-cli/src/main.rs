@@ -68,6 +68,15 @@ struct Args {
     vcores: Option<usize>,
 
     #[clap(
+        long = "concurrent-tasks",
+        hide = true,
+        conflicts_with = "vcores",
+        help = "[deprecated] renamed to --vcores",
+        value_parser(parse_valid_vcores)
+    )]
+    concurrent_tasks: Option<usize>,
+
+    #[clap(
         short,
         long,
         num_args = 0..,
@@ -153,7 +162,16 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionContext::remote_with_state(&address, state).await?
         }
         _ => {
-            if let Some(vcores) = args.vcores {
+            let vcores = match args.concurrent_tasks {
+                Some(value) => {
+                    eprintln!(
+                        "warning: --concurrent-tasks is deprecated; use --vcores instead"
+                    );
+                    Some(value)
+                }
+                None => args.vcores,
+            };
+            if let Some(vcores) = vcores {
                 ballista_config = ballista_config.with_target_partitions(vcores);
             };
             let state = SessionStateBuilder::new()
