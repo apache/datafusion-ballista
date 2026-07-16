@@ -196,7 +196,7 @@ impl Extension {
             .map(|s| s.config().clone())
             .unwrap_or_else(default_config_producer);
 
-        let scheduler_url = format!("http://localhost:{}", addr.port());
+        let scheduler_url = format!("http://127.0.0.1:{}", addr.port());
 
         let scheduler = loop {
             match SchedulerGrpcClient::connect(scheduler_url.clone()).await {

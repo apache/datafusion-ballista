@@ -20,10 +20,10 @@ mod common;
 mod supported {
 
     use crate::common::{
-        remote_context, remote_context_with_state, standalone_context,
-        standalone_context_with_state,
+        remote_context_with_scheduling, remote_context_with_state_and_scheduling,
+        standalone_context_with_scheduling, standalone_context_with_state_and_scheduling,
     };
-    use ballista_core::config::BallistaConfig;
+    use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
 
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -32,8 +32,31 @@ mod supported {
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use rstest::*;
+    use std::future::Future;
     use std::path::PathBuf;
+    use std::pin::Pin;
     use std::sync::Arc;
+
+    type ContextFuture = Pin<Box<dyn Future<Output = SessionContext> + Send>>;
+    type ContextFactory = fn(TaskSchedulingPolicy) -> ContextFuture;
+
+    fn standalone(scheduling_policy: TaskSchedulingPolicy) -> ContextFuture {
+        Box::pin(standalone_context_with_scheduling(scheduling_policy))
+    }
+
+    fn remote(scheduling_policy: TaskSchedulingPolicy) -> ContextFuture {
+        Box::pin(remote_context_with_scheduling(scheduling_policy))
+    }
+
+    fn standalone_with_state(scheduling_policy: TaskSchedulingPolicy) -> ContextFuture {
+        Box::pin(standalone_context_with_state_and_scheduling(
+            scheduling_policy,
+        ))
+    }
+
+    fn remote_with_state(scheduling_policy: TaskSchedulingPolicy) -> ContextFuture {
+        Box::pin(remote_context_with_state_and_scheduling(scheduling_policy))
+    }
 
     #[rstest::fixture]
     fn test_data() -> String {
@@ -41,15 +64,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_collect(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -80,15 +104,16 @@ mod supported {
     // tests if client will collect statistics for
     // collect/show operation
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_collect_client_statistics_for_show(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -160,15 +185,16 @@ mod supported {
     // tests if client will collect statistics for
     // insert operation
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_collect_client_statistics_for_insert(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -231,14 +257,15 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_show_configs(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         let result = ctx
             .sql("select name from information_schema.df_settings where name like 'datafusion.%' order by name limit 5")
             .await?
@@ -262,14 +289,15 @@ mod supported {
         Ok(())
     }
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_show_configs_ballista(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         let state = ctx.state();
         let ballista_config_extension =
             state.config().options().extensions.get::<BallistaConfig>();
@@ -298,14 +326,15 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_set_configs(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
             .await?
             .show()
@@ -333,15 +362,16 @@ mod supported {
     // select from ballista config
     // check for SET =
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_show_tables(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         // registering table to show in show tables
         ctx.register_parquet(
             "test",
@@ -373,15 +403,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_create_external_table(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.sql(&format!("CREATE EXTERNAL TABLE tbl_test STORED AS PARQUET LOCATION '{test_data}/alltypes_plain.parquet'", )).await?.show().await?;
 
         let result = ctx
@@ -405,15 +436,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_collect_from_dataframe(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         let df = ctx
             .read_parquet(
                 &format!("{test_data}/alltypes_plain.parquet"),
@@ -440,15 +472,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_write(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -492,14 +525,15 @@ mod supported {
     // `datafusion.execution.parquet.schema_force_view_types` have been disabled
     // temporary as they could break shuffle reader/writer.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_disable_view_types(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'datafusion.execution.parquet.schema_force_view_types' or name like 'datafusion.sql_parser.map_string_types_to_utf8view' order by name limit 2")
             .await?
@@ -524,14 +558,15 @@ mod supported {
     // join resolver can collect a small build side into a broadcast
     // (CollectLeft) hash join instead of repartitioning it.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_set_collect_left_thresholds(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name in ('datafusion.optimizer.hash_join_single_partition_threshold', 'datafusion.optimizer.hash_join_single_partition_threshold_rows') order by name limit 2")
             .await?
@@ -553,15 +588,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_sql_show_with_url_table(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         // tests check if this configuration option
         // will work
         let ctx = ctx.enable_url_table();
@@ -588,15 +624,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_support_sql_insert_into(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -647,17 +684,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::standalone_state(standalone_context_with_state())]
-    #[case::remote_state(remote_context_with_state())]
+    #[case::standalone(standalone_with_state)]
+    #[case::remote(remote_with_state)]
     #[tokio::test]
     async fn should_execute_sql_write_read_roundtrip(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -744,17 +780,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::standalone_state(standalone_context_with_state())]
-    #[case::remote_state(remote_context_with_state())]
+    #[case::standalone(standalone_with_state)]
+    #[case::remote(remote_with_state)]
     #[tokio::test]
     async fn should_execute_sql_show_multiple_times(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -788,17 +823,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[case::standalone_state(standalone_context_with_state())]
-    #[case::remote_state(remote_context_with_state())]
+    #[case::standalone(standalone_with_state)]
+    #[case::remote(remote_with_state)]
     #[tokio::test]
     async fn should_execute_group_by(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -827,15 +861,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_force_local_read(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -885,15 +920,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_force_local_read_with_flight(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -951,15 +987,16 @@ mod supported {
     // Ballista defaults to sort-merge join (see issue #1648). This test
     // verifies that default by inspecting the physical plan.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_support_sort_merge_join(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         // Exercise the plain sort-merge-join execution path: disable the
         // default SortMergeJoinExec broadcast conversion so the join stays a
         // SortMergeJoinExec in the distributed plan.
@@ -967,7 +1004,6 @@ mod supported {
             .await?
             .collect()
             .await?;
-
         ctx.register_parquet(
             "t0",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -1014,15 +1050,16 @@ mod supported {
     // Users can opt back into hash join via the standard DataFusion knob,
     // even though Ballista defaults `prefer_hash_join` to false. See #1648.
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_support_hash_join_when_opted_in(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "t0",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -1072,14 +1109,15 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_explain_query_correctly(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) {
+        let ctx = context(scheduling_policy).await;
         let result = ctx
             .sql("EXPLAIN select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id")
             .await
@@ -1129,14 +1167,15 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_execute_explain_analyze_query(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         let result = ctx
             .sql(
                 "EXPLAIN ANALYZE select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id",
@@ -1213,15 +1252,16 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_force_client_pull(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -1271,16 +1311,17 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
 
     async fn should_execute_sql_collect_from_arrow_file(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.register_arrow(
             "test",
             &format!("{test_data}/alltypes_plain.arrow"),
@@ -1309,14 +1350,15 @@ mod supported {
     }
 
     #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
+    #[case::standalone(standalone)]
+    #[case::remote(remote)]
     #[tokio::test]
     async fn should_set_io_retry_config(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
+        #[case] context: ContextFactory,
+        #[values(TaskSchedulingPolicy::PullStaged, TaskSchedulingPolicy::PushStaged)]
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> datafusion::error::Result<()> {
+        let ctx = context(scheduling_policy).await;
         ctx.sql("SET ballista.client.io_retries_times = 5")
             .await?
             .show()

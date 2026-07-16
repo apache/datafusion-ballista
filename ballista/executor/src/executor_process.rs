@@ -76,7 +76,7 @@ use crate::runtime_cache::{
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
-use crate::{execution_loop, executor_server};
+use crate::{execution_loop, executor_server, executor_server::ExecutorGrpcListen};
 
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
@@ -525,6 +525,15 @@ pub async fn start_executor_process(
     // PullStaged => executor is polling the scheduler when it is idle
     match scheduler_policy {
         TaskSchedulingPolicy::PushStaged => {
+            let grpc_listen_addr: SocketAddr =
+                format!("{}:{}", opt.bind_host, executor.metadata.grpc_port)
+                    .parse()
+                    .map_err(|e| {
+                        BallistaError::Configuration(format!(
+                            "invalid executor gRPC listen address ({}:{}): {e}",
+                            opt.bind_host, executor.metadata.grpc_port
+                        ))
+                    })?;
             service_handlers.push(
                 // If there is executor registration error during startup, return the error and stop early.
                 executor_server::startup(
@@ -533,6 +542,7 @@ pub async fn start_executor_process(
                     executor.clone(),
                     default_codec,
                     stop_send,
+                    ExecutorGrpcListen::Dynamic(grpc_listen_addr),
                     &shutdown_notification,
                 )
                 .await?,
