@@ -307,19 +307,19 @@ same query.
 
 ### Vendoring the queries
 
-The 99 TPC-DS queries are not stored in this repo; they are vendored from
-DataFusion's `branch-54` (the queries DataFusion uses in its own TPC-DS
-tests):
+The 99 TPC-DS queries are checked in at `benchmarks/queries-tpcds/qN.sql`, so
+no fetch step is needed to run the harness. They were vendored from DataFusion's
+`branch-54` (the queries DataFusion uses in its own TPC-DS tests) with:
 
 ```bash
 ./dev/vendor-tpcds-queries.sh
 ```
 
-This fetches `1.sql` .. `99.sql` from
-`datafusion/core/tests/tpc-ds` on the configured branch (`DATAFUSION_BRANCH`,
-default `branch-54`) and writes them to `benchmarks/queries-tpcds/qN.sql`
-(prefixed with `q` to match the TPC-H naming convention). Re-run the script to
-refresh the queries when the DataFusion pin changes.
+That script fetches `1.sql` .. `99.sql` from `datafusion/core/tests/tpc-ds` on
+the configured branch (`DATAFUSION_BRANCH`, default `branch-54`) and writes them
+to `benchmarks/queries-tpcds/qN.sql` (prefixed with `q` to match the TPC-H
+naming convention). Re-run it only to refresh the committed queries when the
+DataFusion pin changes.
 
 ### Generating Test Data
 
