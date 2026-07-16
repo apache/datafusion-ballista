@@ -99,6 +99,13 @@ fn memory_pool_policy(
     Ok(Arc::new(
         move |base: Arc<RuntimeEnv>, _config: &SessionConfig| {
             let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_task));
+            // The tracked-reservation pool above only sees explicit reservations. Wrap it
+            // so growth is also gated on the *real* allocator balance against the whole
+            // executor budget, which catches untracked Arrow / join / kernel bytes.
+            #[cfg(feature = "oom-guard")]
+            let pool: Arc<dyn MemoryPool> = Arc::new(
+                crate::memory_pools::RealUsagePool::new(pool, total_bytes as usize),
+            );
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(pool)
                 .build_arc()
@@ -322,8 +329,44 @@ pub async fn start_executor_process(
         info!(
             "Memory pool: total {total} bytes split into {concurrent_tasks} tasks ({per_task} bytes each)"
         );
+        // Set the breaker's limit to the same threshold as the cooperative gate. The two
+        // order correctly: the gate trips on *projected* usage (balance + request) so it
+        // spills first; the breaker trips on *actual* usage as the backstop.
+        #[cfg(feature = "oom-guard")]
+        {
+            crate::memory_pools::oom_guard::arm(total as usize);
+            info!("OOM guard armed at {total} bytes of tracked live allocator usage");
+
+            // Advisory only: this ticker samples RSS and *logs*, it never writes the
+            // enforced balance. Enforcement reads the allocator's exact live-bytes
+            // counter, which drops the instant memory is freed -- so a spill un-trips the
+            // guard immediately. Feeding RSS back into that counter would be actively
+            // harmful: an allocator like mimalloc `MADV_FREE`s pages but leaves them
+            // resident, so RSS stays high after a successful spill and would re-raise the
+            // balance over the limit, latching the guard into failing every batch of
+            // every task on this executor. What RSS is good for is telling an operator
+            // *which* of those two situations they are in, which is what this logs.
+            tokio::spawn(async move {
+                let mut ticker = time::interval(Duration::from_secs(1));
+                loop {
+                    ticker.tick().await;
+                    crate::memory_pools::oom_guard::observe_rss(
+                        memory_stats::memory_stats().map(|usage| usage.physical_mem),
+                    );
+                }
+            });
+        }
         policy
     } else {
+        // Two log lines, `cfg`-selected: the default build has no guard at all, and
+        // mentioning one there would send an operator hunting for something that does
+        // not exist in their binary.
+        #[cfg(feature = "oom-guard")]
+        info!(
+            "Memory pool: unbounded (--memory-pool-size not set); the OOM guard tracks allocations but does not enforce a limit"
+        );
+        #[cfg(not(feature = "oom-guard"))]
+        info!("Memory pool: unbounded (--memory-pool-size not set)");
         identity_pool_policy()
     };
 

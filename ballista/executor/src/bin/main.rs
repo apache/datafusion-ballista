@@ -30,9 +30,25 @@ use std::env;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(feature = "oom-guard")))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(feature = "oom-guard", feature = "mimalloc"))]
+#[global_allocator]
+static GLOBAL: ballista_executor::memory_pools::oom_guard::AccountingAllocator<
+    mimalloc::MiMalloc,
+> = ballista_executor::memory_pools::oom_guard::AccountingAllocator::new(
+    mimalloc::MiMalloc,
+);
+
+#[cfg(all(feature = "oom-guard", not(feature = "mimalloc")))]
+#[global_allocator]
+static GLOBAL: ballista_executor::memory_pools::oom_guard::AccountingAllocator<
+    std::alloc::System,
+> = ballista_executor::memory_pools::oom_guard::AccountingAllocator::new(
+    std::alloc::System,
+);
 
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
