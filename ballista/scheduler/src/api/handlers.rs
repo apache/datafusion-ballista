@@ -232,7 +232,7 @@ pub enum PlanFormat {
 }
 
 /// A handler for GET requests to the root (`/`).
-/// It redirects to https://nightlies.apache.org/datafusion/ballista/tui/<BALLISTA_VERSION>/
+/// It redirects to `https://nightlies.apache.org/datafusion/ballista/tui/<BALLISTA_VERSION>/`
 /// forwarding any query parameters
 pub async fn get_root(
     header_map: HeaderMap,
@@ -247,16 +247,28 @@ pub async fn get_root(
                 .get("host")
                 .map(|hv| hv.to_str().unwrap_or(default_scheduler_url))
                 .unwrap_or(default_scheduler_url);
-            format!("http://{scheduler_url}")
+            let proto = header_map
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("http");
+            format!("{proto}://{scheduler_url}")
         });
 
-    let mut target = format!(
-        "{NIGHTLIES_URL}/{BALLISTA_VERSION}/?ballista_scheduler_url={ballista_scheduler_url}",
-    );
+    let mut query_string = String::new();
+    query_string.push_str(&format!(
+        "ballista_scheduler_url={}",
+        url_escape::encode_query(&ballista_scheduler_url)
+    ));
 
     for (k, v) in params.iter() {
-        target.push_str(format!("&{}={}", k, v).as_str());
+        query_string.push_str(&format!(
+            "&{}={}",
+            url_escape::encode_query(k),
+            url_escape::encode_query(v)
+        ));
     }
+
+    let target = format!("{NIGHTLIES_URL}/{BALLISTA_VERSION}/?{query_string}");
 
     Ok(Redirect::temporary(&target))
 }
