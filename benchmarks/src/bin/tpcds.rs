@@ -135,14 +135,106 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
     )))
 }
 
-/// The queries to run: an explicit `--query`, else 1..=99 minus SKIP.
-fn selected_queries(explicit: Option<usize>) -> Vec<usize> {
+/// The queries to run: an explicit `--query`, else 1..=99 minus `skip`.
+fn selected_queries(explicit: Option<usize>, skip: &[(usize, &str)]) -> Vec<usize> {
     if let Some(q) = explicit {
         return vec![q];
     }
     let skipped: std::collections::HashSet<usize> =
-        SKIP.iter().map(|(id, _)| *id).collect();
+        skip.iter().map(|(id, _)| *id).collect();
     (1..=99).filter(|q| !skipped.contains(q)).collect()
+}
+
+/// Run a single TPC-DS query end to end: load its SQL, stand up a fresh
+/// Ballista session, execute it on the cluster, and (if `oracle_ctx` is
+/// set) verify the result against single-process DataFusion.
+///
+/// Every fallible step is tagged with a `<phase>: ` prefix and returned as
+/// an `Err` rather than aborting the process, so the caller can record the
+/// failure against this query and move on to the next one.
+async fn run_one_query(
+    opt: &Opt,
+    address: &str,
+    oracle_ctx: Option<&SessionContext>,
+    query: usize,
+) -> Result<()> {
+    let sqls = get_query_sql(query)
+        .map_err(|e| DataFusionError::Execution(format!("load: {e}")))?;
+
+    // Build a fresh Ballista session per query (mirrors tpch.rs).
+    let mut config = session_config_with_s3_support()
+        .with_target_partitions(opt.partitions)
+        .with_ballista_job_name(&format!("TPC-DS q{query}"))
+        .with_batch_size(opt.batch_size)
+        .with_collect_statistics(true);
+    for kv in &opt.config_overrides {
+        if let Some((k, v)) = kv.split_once('=') {
+            if let Err(e) = config.options_mut().set(k.trim(), v.trim()) {
+                println!("Warning: could not set config '{kv}': {e}");
+            }
+        } else {
+            println!("Warning: ignoring invalid config override '{kv}'");
+        }
+    }
+    let state = session_state_with_s3_support(config)
+        .map_err(|e| DataFusionError::Execution(format!("session-state: {e}")))?;
+    let ctx = SessionContext::remote_with_state(address, state)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("connect: {e}")))?;
+    register_parquet_tables(&ctx, TABLES, opt.path.as_str(), opt.debug)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("register-tables: {e}")))?;
+
+    // Run the query on the cluster, capturing the answer statement's result.
+    let answer_idx = answer_statement_index(&sqls);
+    let start = Instant::now();
+    let mut batches = vec![];
+    let mut run_err = None;
+    for (idx, sql) in sqls.iter().enumerate() {
+        if opt.debug {
+            println!("Query {query} SQL:\n{sql}");
+        }
+        match ctx.sql(sql).await {
+            Ok(df) => match df.collect().await {
+                Ok(collected) => {
+                    if idx == answer_idx {
+                        batches = collected;
+                    }
+                }
+                Err(e) => {
+                    run_err = Some(format!("collect: {e}"));
+                    break;
+                }
+            },
+            Err(e) => {
+                run_err = Some(format!("plan: {e}"));
+                break;
+            }
+        }
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+
+    if let Some(e) = run_err {
+        println!("Query {query} FAILED to run in {elapsed:.3}s: {e}");
+        return Err(DataFusionError::Execution(e));
+    }
+    let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+    println!("Query {query} took {elapsed:.3}s and returned {row_count} rows");
+
+    if let Some(oracle_ctx) = oracle_ctx {
+        let expected = execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("oracle: {e}")))?;
+        match compare_results(&expected, &batches) {
+            Ok(()) => println!("Query {query} verified against DataFusion: OK"),
+            Err(e) => {
+                println!("Query {query} VERIFY MISMATCH: {e}");
+                return Err(DataFusionError::Execution(format!("verify: {e}")));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -152,6 +244,7 @@ async fn main() -> Result<()> {
     let address = format!("df://{}:{}", opt.host, opt.port);
 
     // Oracle context (single-process DataFusion), built once when verifying.
+    // Not per-query, so a failure here is genuinely fatal to the whole run.
     let oracle_ctx = if opt.verify {
         let cfg = SessionConfig::new()
             .with_target_partitions(opt.partitions)
@@ -165,72 +258,10 @@ async fn main() -> Result<()> {
 
     let mut failures: Vec<(usize, String)> = vec![];
 
-    for query in selected_queries(opt.query) {
-        let sqls = get_query_sql(query)?;
-
-        // Build a fresh Ballista session per query (mirrors tpch.rs).
-        let mut config = session_config_with_s3_support()
-            .with_target_partitions(opt.partitions)
-            .with_ballista_job_name(&format!("TPC-DS q{query}"))
-            .with_batch_size(opt.batch_size)
-            .with_collect_statistics(true);
-        for kv in &opt.config_overrides {
-            if let Some((k, v)) = kv.split_once('=') {
-                if let Err(e) = config.options_mut().set(k.trim(), v.trim()) {
-                    println!("Warning: could not set config '{kv}': {e}");
-                }
-            } else {
-                println!("Warning: ignoring invalid config override '{kv}'");
-            }
-        }
-        let state = session_state_with_s3_support(config)?;
-        let ctx = SessionContext::remote_with_state(&address, state).await?;
-        register_parquet_tables(&ctx, TABLES, opt.path.as_str(), opt.debug).await?;
-
-        // Run the query on the cluster, capturing the answer statement's result.
-        let answer_idx = answer_statement_index(&sqls);
-        let start = Instant::now();
-        let mut batches = vec![];
-        let mut run_err = None;
-        for (idx, sql) in sqls.iter().enumerate() {
-            match ctx.sql(sql).await {
-                Ok(df) => match df.collect().await {
-                    Ok(collected) => {
-                        if idx == answer_idx {
-                            batches = collected;
-                        }
-                    }
-                    Err(e) => {
-                        run_err = Some(format!("collect: {e}"));
-                        break;
-                    }
-                },
-                Err(e) => {
-                    run_err = Some(format!("plan: {e}"));
-                    break;
-                }
-            }
-        }
-        let elapsed = start.elapsed().as_secs_f64();
-
-        if let Some(e) = run_err {
-            println!("Query {query} FAILED to run in {elapsed:.3}s: {e}");
-            failures.push((query, e));
-            continue;
-        }
-        let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-        println!("Query {query} took {elapsed:.3}s and returned {row_count} rows");
-
-        if let Some(oracle_ctx) = &oracle_ctx {
-            let expected =
-                execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug).await?;
-            match compare_results(&expected, &batches) {
-                Ok(()) => println!("Query {query} verified against DataFusion: OK"),
-                Err(e) => {
-                    println!("Query {query} VERIFY MISMATCH: {e}");
-                    failures.push((query, format!("verify: {e}")));
-                }
-            }
+    for query in selected_queries(opt.query, SKIP) {
+        if let Err(e) = run_one_query(&opt, &address, oracle_ctx.as_ref(), query).await {
+            eprintln!("Query {query} FAILED: {e}");
+            failures.push((query, e.to_string()));
         }
     }
 
@@ -260,16 +291,20 @@ mod tests {
 
     #[test]
     fn selected_queries_excludes_skiplist() {
-        // With no explicit --query, we run 1..=99 minus SKIP.
-        let selected = selected_queries(None);
-        assert_eq!(selected.len(), 99 - SKIP.len());
-        for (id, _) in SKIP {
+        // With no explicit --query, we run 1..=99 minus the skip list. Use a
+        // synthetic non-empty skip list so this assertion is non-vacuous
+        // regardless of the real (currently empty) SKIP constant.
+        let skip: &[(usize, &str)] = &[(5, "x"), (42, "y")];
+        let selected = selected_queries(None, skip);
+        assert_eq!(selected.len(), 99 - skip.len());
+        for (id, _) in skip {
             assert!(!selected.contains(id), "skip {id} must be excluded");
         }
     }
 
     #[test]
     fn explicit_query_overrides_skiplist() {
-        assert_eq!(selected_queries(Some(1)), vec![1]);
+        let skip: &[(usize, &str)] = &[(1, "should be overridden")];
+        assert_eq!(selected_queries(Some(1), skip), vec![1]);
     }
 }
