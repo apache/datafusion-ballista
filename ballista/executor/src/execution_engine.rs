@@ -36,6 +36,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::prelude::SessionConfig;
 use log::warn;
 use std::any::Any;
@@ -165,6 +166,65 @@ fn restrict_scan_to_partition(
     Some(DataSourceExec::from_data_source(config))
 }
 
+/// Restrict every file scan in `plan` to the file group the task running
+/// `partition` will actually poll.
+///
+/// A task executes exactly one partition of its stage, so each scan beneath it
+/// must be pinned to the one file group that partition reads (see
+/// [`restrict_scan_to_partition`]). Which group that is depends on the path from
+/// the stage root: most operators pass a partition straight through to their
+/// children, but a `UnionExec` concatenates its children's partitions, so its
+/// child `i` sees `partition` minus the partition counts of the children before
+/// it. Applying the stage's partition number directly to a scan under a union
+/// therefore addresses the wrong group, and for partitions past the scan's group
+/// count it addresses none at all — leaving that scan unrestricted and free to
+/// read the whole table.
+///
+/// Children a partition never reaches are left untouched: this task will not
+/// execute them.
+fn restrict_scans_for_partition(
+    plan: &Arc<dyn ExecutionPlan>,
+    partition: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if plan.downcast_ref::<UnionExec>().is_some() {
+        // `UnionExec::execute(p)` walks its children subtracting each one's
+        // partition count until `p` lands inside a child, then executes that
+        // child alone. Mirror that walk so the scan under the serving child is
+        // pinned to the group that child's local partition reads.
+        let mut local = Some(partition);
+        let mut children = Vec::with_capacity(plan.children().len());
+        for child in plan.children() {
+            let count = child.properties().output_partitioning().partition_count();
+            match local {
+                Some(p) if p < count => {
+                    children.push(restrict_scans_for_partition(child, p)?);
+                    local = None;
+                }
+                Some(p) => {
+                    local = Some(p - count);
+                    children.push(Arc::clone(child));
+                }
+                None => children.push(Arc::clone(child)),
+            }
+        }
+        return Arc::clone(plan).with_new_children(children);
+    }
+
+    if let Some(rewritten) = restrict_scan_to_partition(plan, partition) {
+        return Ok(rewritten);
+    }
+
+    let children = plan
+        .children()
+        .into_iter()
+        .map(|child| restrict_scans_for_partition(child, partition))
+        .collect::<Result<Vec<_>>>()?;
+    if children.is_empty() {
+        return Ok(Arc::clone(plan));
+    }
+    Arc::clone(plan).with_new_children(children)
+}
+
 impl ExecutionEngine for DefaultExecutionEngine {
     fn create_query_stage_exec(
         &self,
@@ -188,15 +248,12 @@ impl ExecutionEngine for DefaultExecutionEngine {
                             reader.with_work_dir(work_dir.to_string()),
                         ))),
                     }
-                } else if let Some(rewritten) =
-                    restrict_scan_to_partition(&p, partition_id)
-                {
-                    Ok(Transformed::yes(rewritten))
                 } else {
                     Ok(Transformed::no(p))
                 }
             })?
             .data;
+        let plan = restrict_scans_for_partition(&plan, partition_id)?;
 
         // the query plan created by the scheduler always starts with a shuffle writer
         // (either ShuffleWriterExec or SortShuffleWriterExec)
@@ -382,5 +439,81 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
         assert!(restrict_scan_to_partition(&plan, 0).is_none());
+    }
+
+    /// Find the file-group layout of each scan under a union, left child first.
+    fn union_group_counts(plan: &Arc<dyn ExecutionPlan>) -> Vec<Vec<usize>> {
+        plan.children().into_iter().map(group_file_counts).collect()
+    }
+
+    /// A `UnionExec` concatenates its children's partitions, so stage partition
+    /// `left_count + k` is the right child's local partition `k`. The scan under
+    /// the serving child must be pinned to that local group.
+    #[test]
+    fn union_partition_maps_to_the_right_childs_local_group() {
+        let union: Arc<dyn ExecutionPlan> =
+            UnionExec::try_new(vec![scan_with_file_groups(4), scan_with_file_groups(4)])
+                .unwrap();
+        assert_eq!(
+            union.properties().output_partitioning().partition_count(),
+            8
+        );
+
+        // Partition 1 is served by the left child's local partition 1.
+        let restricted = restrict_scans_for_partition(&union, 1).unwrap();
+        assert_eq!(
+            union_group_counts(&restricted),
+            vec![vec![0, 1, 0, 0], vec![1, 1, 1, 1]],
+            "left scan pinned to group 1; right scan is never polled for this partition"
+        );
+
+        // Partition 6 is served by the right child's local partition 2 (6 - 4).
+        // Before the mapping existed this addressed no group at all and left the
+        // scan free to read the whole table.
+        let restricted = restrict_scans_for_partition(&union, 6).unwrap();
+        assert_eq!(
+            union_group_counts(&restricted),
+            vec![vec![1, 1, 1, 1], vec![0, 0, 1, 0]],
+            "right scan pinned to local group 2"
+        );
+    }
+
+    /// Every partition of a union must pin exactly one group in exactly one
+    /// child, so across the whole stage each file group is read exactly once.
+    #[test]
+    fn every_union_partition_pins_exactly_one_group() {
+        let union: Arc<dyn ExecutionPlan> =
+            UnionExec::try_new(vec![scan_with_file_groups(3), scan_with_file_groups(3)])
+                .unwrap();
+        for partition in 0..6 {
+            let restricted = restrict_scans_for_partition(&union, partition).unwrap();
+            let counts = union_group_counts(&restricted);
+            let (serving, idle) = if partition < 3 { (0, 1) } else { (1, 0) };
+            let expected_local = partition % 3;
+            assert_eq!(
+                counts[serving].iter().sum::<usize>(),
+                1,
+                "partition {partition}: serving child must keep exactly one group"
+            );
+            assert_eq!(
+                counts[serving][expected_local], 1,
+                "partition {partition}: expected local group {expected_local}, got {:?}",
+                counts[serving]
+            );
+            assert_eq!(
+                counts[idle],
+                vec![1, 1, 1],
+                "partition {partition}: the child it never polls is left untouched"
+            );
+        }
+    }
+
+    /// Without a union a partition passes straight through, so the behaviour is
+    /// unchanged from restricting the scan directly.
+    #[test]
+    fn scan_without_union_is_pinned_to_its_own_partition() {
+        let plan = scan_with_file_groups(4);
+        let restricted = restrict_scans_for_partition(&plan, 2).unwrap();
+        assert_eq!(group_file_counts(&restricted), vec![0, 0, 1, 0]);
     }
 }
