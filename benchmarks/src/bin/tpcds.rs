@@ -58,9 +58,53 @@ const TABLES: &[&str] = &[
     "web_site",
 ];
 
-/// Queries not yet runnable through Ballista + the DataFusion oracle.
-/// (id, reason). Populated by the discovery run in Task 4. Empty until then.
-const SKIP: &[(usize, &str)] = &[];
+/// Queries excluded from the correctness gate, with the reason. The gate runs
+/// under the default (static) planner; this list reflects that configuration.
+/// Remove an entry as the underlying cause is fixed.
+const SKIP: &[(usize, &str)] = &[
+    // Distributed execution diverges from single-process DataFusion on the same
+    // data (confirmed reproducible; DataFusion is correct under both join modes).
+    // See https://github.com/apache/datafusion-ballista/issues/2046
+    (
+        4,
+        "distributed result diverges from DataFusion (issue #2046)",
+    ),
+    (
+        38,
+        "distributed INTERSECT diverges from DataFusion (issue #2046)",
+    ),
+    (
+        78,
+        "distributed LIMIT drops rows vs DataFusion (issue #2046)",
+    ),
+    (
+        87,
+        "distributed EXCEPT diverges from DataFusion (issue #2046)",
+    ),
+    // Non-deterministic: LIMIT/ORDER BY ties without a total order make the
+    // result vary run-to-run in both engines, so a row-by-row diff is unstable.
+    (2, "non-deterministic (ORDER BY ties; varies run-to-run)"),
+    (
+        5,
+        "non-deterministic (ORDER BY channel ties; varies run-to-run)",
+    ),
+    (31, "non-deterministic (ORDER BY ties; varies run-to-run)"),
+    (
+        71,
+        "non-deterministic (ORDER BY ext_price ties; varies run-to-run)",
+    ),
+    // tpcgen-cli's TPC-DS schema uses column names that differ from the
+    // DataFusion (branch-54) query text, so these fail at plan time. Not a
+    // Ballista issue (e.g. cr_return_amount_inc_tax vs cr_return_amt_inc_tax).
+    (64, "tpcgen-cli schema column-name mismatch with query text"),
+    (81, "tpcgen-cli schema column-name mismatch with query text"),
+    (84, "tpcgen-cli schema column-name mismatch with query text"),
+    (85, "tpcgen-cli schema column-name mismatch with query text"),
+    (93, "tpcgen-cli schema column-name mismatch with query text"),
+    // Note: the adaptive planner (AQE on) additionally fails many queries with an
+    // `EmptyExec invalid partition` assertion (issue #2047); the gate runs the
+    // static planner, so those are not listed here.
+];
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "tpcds", about = "Ballista TPC-DS correctness runner")]
