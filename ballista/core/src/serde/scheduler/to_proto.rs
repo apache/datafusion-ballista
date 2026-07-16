@@ -25,8 +25,9 @@ use crate::serde::protobuf::{self, NamedPruningMetrics, NamedRatio};
 use datafusion_proto::protobuf as datafusion_protobuf;
 
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
-    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+    Action, ExecutorConnection, ExecutorData, ExecutorMetadata,
+    ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
+    PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
 use protobuf::{NamedCount, NamedGauge, NamedTime, action::ActionType, operator_metric};
@@ -78,11 +79,22 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
         Ok(protobuf::PartitionLocation {
             map_partition_id: self.map_partition_id as u32,
             partition_id: Some(self.partition_id.into()),
-            executor_meta: Some(self.executor_meta.into()),
+            executor_id: self.executor_id,
             partition_stats: Some(self.partition_stats.into()),
             file_id: self.file_id,
             is_sort_shuffle: self.is_sort_shuffle,
         })
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorConnection> for ExecutorConnection {
+    fn into(self) -> protobuf::ExecutorConnection {
+        protobuf::ExecutorConnection {
+            host: self.host,
+            port: self.port as u32,
+            grpc_port: self.grpc_port as u32,
+        }
     }
 }
 

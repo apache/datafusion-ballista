@@ -35,6 +35,7 @@ use ballista_core::serde::scheduler::{
 use ballista_core::utils::get_current_time;
 use ballista_core::{BALLISTA_VERSION, JobId};
 use datafusion::DATAFUSION_VERSION;
+use datafusion::error::DataFusionError;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
@@ -767,13 +768,22 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
             ("Failed".to_string(), format!("Failed: {}", error.error))
         }
         Some(Status::Successful(completed)) => {
-            let num_rows = completed
-                .partition_location
+            let locations = completed
+                .locations
+                .as_ref()
+                .ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "SuccessfulJob missing locations".to_string(),
+                    )
+                })
+                .unwrap();
+            let num_rows = locations
+                .location
                 .iter()
                 .map(|p| p.partition_stats.as_ref().map(|s| s.num_rows).unwrap_or(0))
                 .sum::<i64>();
             let num_rows_term = if num_rows == 1 { "row" } else { "rows" };
-            let num_partitions = completed.partition_location.len();
+            let num_partitions = locations.location.len();
             let num_partitions_term = if num_partitions == 1 {
                 "partition"
             } else {

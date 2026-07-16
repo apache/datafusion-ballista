@@ -36,9 +36,9 @@ use crate::error::BallistaError;
 use crate::extension::SessionConfigHelperExt;
 use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
-    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
+    Action, BallistaFunctionRegistry, ExecutorConnection, ExecutorData, ExecutorMetadata,
     ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats, TaskDefinition,
+    PartitionStats, TaskDefinition,
 };
 
 use crate::serde::{BallistaCodec, protobuf};
@@ -92,42 +92,6 @@ impl Into<PartitionStats> for protobuf::PartitionStats {
 
 fn foo(n: i64) -> Option<u64> {
     if n < 0 { None } else { Some(n as u64) }
-}
-
-impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<PartitionLocation, Self::Error> {
-        Ok(PartitionLocation {
-            map_partition_id: self.map_partition_id as usize,
-            partition_id: self
-                .partition_id
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "partition_id in PartitionLocation is missing.".to_owned(),
-                    )
-                })?
-                .into(),
-            executor_meta: self
-                .executor_meta
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "executor_meta in PartitionLocation is missing".to_owned(),
-                    )
-                })?
-                .into(),
-            partition_stats: self
-                .partition_stats
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "partition_stats in PartitionLocation is missing".to_owned(),
-                    )
-                })?
-                .into(),
-            file_id: self.file_id,
-            is_sort_shuffle: self.is_sort_shuffle,
-        })
-    }
 }
 
 impl TryInto<MetricValue> for protobuf::OperatorMetric {
@@ -265,8 +229,19 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
             host: self.host,
             port: self.port as u16,
             grpc_port: self.grpc_port as u16,
-            specification: self.specification.unwrap().into(),
-            os_info: self.os_info.unwrap().into(),
+            specification: self.specification.map(|s| s.into()).unwrap_or_default(),
+            os_info: self.os_info.map(|o| o.into()).unwrap_or_default(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorConnection> for protobuf::ExecutorConnection {
+    fn into(self) -> ExecutorConnection {
+        ExecutorConnection {
+            host: self.host,
+            port: self.port as u16,
+            grpc_port: self.grpc_port as u16,
         }
     }
 }

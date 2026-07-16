@@ -87,14 +87,27 @@ pub struct PartitionLocation {
     pub map_partition_id: usize,
     /// The partition identifier.
     pub partition_id: PartitionId,
+    /// ID of current executor
+    pub executor_id: String,
     /// Metadata about the executor hosting this partition.
-    pub executor_meta: ExecutorMetadata,
+    pub executor_connection: Arc<ExecutorConnection>,
     /// Statistics about the partition data.
     pub partition_stats: PartitionStats,
     /// shuffle file id
     pub file_id: Option<u64>,
     /// whether this partition uses sort shuffle
     pub is_sort_shuffle: bool,
+}
+
+/// Connection information about the executor.
+#[derive(Debug, Clone)]
+pub struct ExecutorConnection {
+    /// Host of the executor.
+    pub host: String,
+    /// Port of the executor.
+    pub port: u16,
+    /// gRPC port of the executor.
+    pub grpc_port: u16,
 }
 
 impl PartitionLocation {

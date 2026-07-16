@@ -133,7 +133,7 @@ pub struct ShuffleReaderExecNode {
 pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
-    pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+    pub locations: ::prost::alloc::vec::Vec<PartitionLocationExt>,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).
@@ -405,14 +405,25 @@ pub struct PartitionLocation {
     /// partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
     #[prost(message, optional, tag = "2")]
     pub partition_id: ::core::option::Option<PartitionId>,
-    #[prost(message, optional, tag = "3")]
-    pub executor_meta: ::core::option::Option<ExecutorMetadata>,
+    #[prost(string, tag = "3")]
+    pub executor_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "4")]
     pub partition_stats: ::core::option::Option<PartitionStats>,
     #[prost(uint64, optional, tag = "6")]
     pub file_id: ::core::option::Option<u64>,
     #[prost(bool, tag = "7")]
     pub is_sort_shuffle: bool,
+}
+/// Holding both partition info and executor metadata for connection
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PartitionLocationExt {
+    #[prost(message, repeated, tag = "1")]
+    pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+    #[prost(map = "string, message", tag = "2")]
+    pub executor_map: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ExecutorConnection,
+    >,
 }
 /// Unique identifier for a materialized partition of data
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -542,6 +553,15 @@ pub mod operator_metric {
         #[prost(uint64, tag = "15")]
         OutputBatches(u64),
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecutorConnection {
+    #[prost(string, tag = "2")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub port: u32,
+    #[prost(uint32, tag = "4")]
+    pub grpc_port: u32,
 }
 /// Used by scheduler
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1094,8 +1114,8 @@ pub struct GetJobMetricsResult {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulJob {
-    #[prost(message, repeated, tag = "1")]
-    pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
+    #[prost(message, optional, tag = "1")]
+    pub locations: ::core::option::Option<PartitionLocationExt>,
     #[prost(uint64, tag = "2")]
     pub queued_at: u64,
     #[prost(uint64, tag = "3")]

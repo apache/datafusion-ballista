@@ -47,6 +47,7 @@ use datafusion_proto::{
 };
 
 use prost::Message;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -61,7 +62,7 @@ use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
     ballista_physical_plan_node::PhysicalPlanType,
 };
-use crate::serde::scheduler::PartitionLocation;
+use crate::serde::scheduler::{ExecutorConnection, PartitionLocation};
 pub use generated::ballista as protobuf;
 
 /// Generated protobuf code from Ballista protocol definitions.
@@ -442,16 +443,65 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .partition
                     .iter()
                     .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {e:?}"
-                                    ))
+                        let mut all_locations = vec![];
+                        for ext in &p.locations {
+                            let executor_map: HashMap<String, Arc<ExecutorConnection>> =
+                                ext.executor_map
+                                    .iter()
+                                    .map(|(id, conn)| {
+                                        let converted: ExecutorConnection =
+                                            conn.clone().into();
+                                        (id.clone(), Arc::new(converted))
+                                    })
+                                    .collect();
+
+                            let locs = ext
+                                .location
+                                .iter()
+                                .map(|l| {
+                                    let executor_connection = executor_map
+                                        .get(&l.executor_id)
+                                        .ok_or_else(|| {
+                                            DataFusionError::Internal(format!(
+                                                "executor {} not in map",
+                                                l.executor_id
+                                            ))
+                                        })?
+                                        .clone();
+
+                                    Ok(PartitionLocation {
+                                        map_partition_id: l.map_partition_id as usize,
+                                        partition_id: l
+                                            .partition_id
+                                            .as_ref()
+                                            .ok_or_else(|| {
+                                                DataFusionError::Internal(
+                                                    "missing partition_id".to_string(),
+                                                )
+                                            })?
+                                            .clone()
+                                            .into(),
+                                        executor_id: l.executor_id.clone(),
+                                        executor_connection,
+                                        partition_stats: l
+                                            .partition_stats
+                                            .as_ref()
+                                            .ok_or_else(|| {
+                                                DataFusionError::Internal(
+                                                    "missing partition_stats".to_string(),
+                                                )
+                                            })?
+                                            .clone()
+                                            .into(),
+                                        file_id: l.file_id,
+                                        is_sort_shuffle: l.is_sort_shuffle,
+                                    })
                                 })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
+                                .collect::<Result<Vec<_>, DataFusionError>>()?;
+
+                            all_locations.extend(locs);
+                        }
+                        Ok(all_locations)
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let partitioning = parse_protobuf_partitioning(
@@ -636,18 +686,35 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         } else if let Some(exec) = node.downcast_ref::<ShuffleReaderExec>() {
             let stage_id = exec.stage_id as u32;
             let mut partition = vec![];
-            for location in &exec.partition {
-                partition.push(protobuf::ShuffleReaderPartition {
-                    location: location
-                        .iter()
-                        .map(|l| {
-                            l.clone().try_into().map_err(|e| {
-                                DataFusionError::Internal(format!(
-                                    "Fail to get partition location due to {e:?}"
-                                ))
-                            })
+            for location_group in &exec.partition {
+                let mut executor_map: HashMap<String, protobuf::ExecutorConnection> =
+                    HashMap::new();
+
+                let locations = location_group
+                    .iter()
+                    .map(|l| {
+                        // Build dedup map as side effect
+                        executor_map
+                            .entry(l.executor_id.clone())
+                            .or_insert_with(|| protobuf::ExecutorConnection {
+                                host: l.executor_connection.host.clone(),
+                                port: l.executor_connection.port as u32,
+                                grpc_port: l.executor_connection.grpc_port as u32,
+                            });
+
+                        l.clone().try_into().map_err(|e| {
+                            DataFusionError::Internal(format!(
+                                "Fail to get partition location due to {e:?}"
+                            ))
                         })
-                        .collect::<Result<Vec<_>, _>>()?,
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                partition.push(protobuf::ShuffleReaderPartition {
+                    locations: vec![protobuf::PartitionLocationExt {
+                        location: locations,
+                        executor_map,
+                    }],
                 });
             }
             let converter = DefaultPhysicalProtoConverter {};
