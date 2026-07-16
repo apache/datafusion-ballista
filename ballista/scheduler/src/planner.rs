@@ -33,10 +33,12 @@ use ballista_core::{
     serde::scheduler::PartitionLocation,
 };
 use datafusion::arrow::datatypes::DataType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::joins::{
     HashJoinExec, HashJoinExecBuilder, PartitionMode, SortMergeJoinExec,
 };
@@ -672,6 +674,42 @@ pub fn rollback_resolved_shuffles(
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
+/// Rewrites every multi-partition [`EmptyExec`] into a round-robin [`RepartitionExec`]
+/// over a single-partition [`EmptyExec`], which is an equivalent plan whose partition
+/// count survives serialization.
+///
+/// `datafusion-proto` encodes an `EmptyExec` as its schema alone, so a multi-partition
+/// `EmptyExec` decodes on the executor with a single partition
+/// (<https://github.com/apache/datafusion/issues/23642>). A stage is sized from the
+/// scheduler-side partition count, so every task above partition 0 would then fail with
+/// `EmptyExec invalid partition N (expected less than 1)`. A `RepartitionExec` carries
+/// its partitioning on the wire, so the count arrives intact.
+///
+/// This runs at the point the stage plan is built for the wire, after all physical
+/// optimizer rules, so no later rule can collapse the rewrite. It can be removed once
+/// the partition count survives `EmptyExec` serialization upstream.
+fn make_empty_exec_serde_safe(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|node| {
+            let Some(empty) = node.downcast_ref::<EmptyExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let partition_count =
+                empty.properties().output_partitioning().partition_count();
+            if partition_count <= 1 {
+                return Ok(Transformed::no(node));
+            }
+            let single: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(empty.schema()));
+            Ok(Transformed::yes(Arc::new(RepartitionExec::try_new(
+                single,
+                Partitioning::RoundRobinBatch(partition_count),
+            )?)))
+        })?
+        .data)
+}
+
 pub(crate) fn create_shuffle_writer_with_config(
     job_id: &JobId,
     stage_id: usize,
@@ -679,6 +717,8 @@ pub(crate) fn create_shuffle_writer_with_config(
     partitioning: Option<Partitioning>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ShuffleWriter>> {
+    let plan = make_empty_exec_serde_safe(plan)?;
+
     // Check if sort-based shuffle is enabled
     let ballista_config = config
         .extensions
@@ -746,6 +786,41 @@ mod test {
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
+
+    #[test]
+    fn multi_partition_empty_exec_is_rewritten_for_the_wire() {
+        use super::make_empty_exec_serde_safe;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema).with_partitions(4));
+
+        let rewritten = make_empty_exec_serde_safe(plan).unwrap();
+
+        assert_eq!(
+            displayable(rewritten.as_ref()).indent(false).to_string(),
+            "RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1\n  EmptyExec\n"
+        );
+    }
+
+    #[test]
+    fn single_partition_empty_exec_is_left_alone() {
+        use super::make_empty_exec_serde_safe;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+
+        let rewritten = make_empty_exec_serde_safe(plan).unwrap();
+
+        assert_eq!(
+            displayable(rewritten.as_ref()).indent(false).to_string(),
+            "EmptyExec\n"
+        );
+    }
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
