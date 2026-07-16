@@ -29,7 +29,7 @@ on:
       - "dev/build-ballista-docker.sh"
       - ".github/workflows/docker.yml"
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "ballista/**"
       - "ballista-cli/**"
@@ -64,7 +64,7 @@ jobs:
           rustup update stable
           rustup toolchain install stable
           rustup default stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run script
         run: |
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
