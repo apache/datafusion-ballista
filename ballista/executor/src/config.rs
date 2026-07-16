@@ -180,11 +180,12 @@ pub struct Config {
         help = "Max number of sessions whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). 0 disables caching."
     )]
     pub session_runtime_cache_capacity: usize,
-    /// Number of seconds established client connection should be cached if not used (0 means no cache)
+    /// Number of seconds an established client connection is cached while idle
+    /// (0 disables the cache, so every shuffle fetch opens a new connection)
     #[arg(
         long,
-        default_value_t = 0,
-        help = "Number of seconds established client connection should be cached if not used (0 means no cache, connection will be disposed)."
+        default_value_t = 30,
+        help = "Number of seconds established client connection should be cached if not used (0 means no cache, connection will be disposed; a shuffle-heavy query can then exhaust the host's ephemeral ports)."
     )]
     pub client_ttl: u64,
 }
@@ -255,5 +256,21 @@ mod tests {
     fn parse_rejects_invalid() {
         assert!(parse_memory_pool_size("banana").is_err());
         assert!(parse_memory_pool_size("").is_err());
+    }
+
+    /// The client pool is what keeps shuffle fetches from opening a fresh TCP
+    /// connection each time; with it off, one shuffle-heavy query can exhaust
+    /// the host's ephemeral ports and take the executor down with it. Pin the
+    /// default on so it cannot regress to the disabled state unnoticed.
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn client_pool_is_enabled_by_default() {
+        use clap::Parser;
+        let opt = super::Config::parse_from(["ballista-executor"]);
+        assert!(
+            opt.client_ttl > 0,
+            "client_ttl must default to a pooling value, got {}",
+            opt.client_ttl
+        );
     }
 }
