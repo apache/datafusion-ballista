@@ -66,15 +66,6 @@ SortShuffleWriterExec: partitioning=Hash([p_partkey@0, ps_supplycost@7], 16)
 ShuffleWriterExec: partitioning: None
   UnresolvedShuffleExec: stage=11, partitioning: Hash([p_partkey@0, ps_supplycost@7], 16)
 
-=== Stage 13 ===
-SortShuffleWriterExec: partitioning=Hash([r_regionkey@0], 16)
-  FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
-    StatsExec: rows=5
-
-=== Stage 14 ===
-ShuffleWriterExec: partitioning: None
-  UnresolvedShuffleExec: stage=13, partitioning: Hash([r_regionkey@0], 16)
-
 === Stage 15 ===
 SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
   StatsExec: rows=25
@@ -114,7 +105,7 @@ SortShuffleWriterExec: partitioning=Hash([ps_partkey@0], 16)
     ProjectionExec: expr=[ps_partkey@0 as ps_partkey, ps_supplycost@1 as ps_supplycost]
       ProjectionExec: expr=[ps_partkey@1 as ps_partkey, ps_supplycost@2 as ps_supplycost, n_regionkey@3 as n_regionkey, r_regionkey@0 as r_regionkey]
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(r_regionkey@0, n_regionkey@2)]
-          UnresolvedShuffleExec: stage=14, broadcast=true, upstream_partitions: 16
+          UnresolvedShuffleExec: stage=2, broadcast=true, upstream_partitions: 16
           UnresolvedShuffleExec: stage=20, partitioning: Hash([n_regionkey@2], 16)
 
 === Stage 22 ===

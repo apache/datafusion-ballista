@@ -366,6 +366,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
+        let extension_codec = self.codec.physical_extension_codec();
+        let reuse_canonical = move |plan: &Arc<dyn ExecutionPlan>| {
+            crate::physical_optimizer::reuse_exchange::protobuf_canonical_key::<U>(
+                plan,
+                extension_codec,
+            )
+        };
         let session_state = ctx.state();
         let session_config = session_state.config();
 
@@ -397,7 +404,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
                             .await?;
 
-                    Box::new(StaticExecutionGraph::new(
+                    Box::new(StaticExecutionGraph::new_with_reuse(
                         &self.scheduler_id,
                         job_id,
                         job_name,
@@ -407,6 +414,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         session_config,
                         &mut planner,
                         Some(logical_plan.display_indent().to_string()),
+                        Some(&reuse_canonical),
                     )?) as ExecutionGraphBox
                 }
             }
@@ -419,7 +427,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 debug!("Using static query planner for physical-plan job submission");
                 let session_config = Arc::new(ctx.copied_config());
 
-                Box::new(StaticExecutionGraph::new(
+                Box::new(StaticExecutionGraph::new_with_reuse(
                     &self.scheduler_id,
                     job_id,
                     job_name,
@@ -429,6 +437,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     session_config,
                     &mut planner,
                     None,
+                    Some(&reuse_canonical),
                 )?) as ExecutionGraphBox
             }
         };

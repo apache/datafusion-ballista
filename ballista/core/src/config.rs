@@ -84,6 +84,10 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
+/// Configuration key for enabling reuse of structurally-identical shuffle
+/// exchanges in the distributed planner (Spark `ReuseExchange` analog).
+pub const BALLISTA_REUSE_EXCHANGE_ENABLED: &str =
+    "ballista.optimizer.reuse_exchange_enabled";
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
@@ -220,6 +224,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_REUSE_EXCHANGE_ENABLED.to_string(),
+                         "Reuse structurally-identical shuffle exchanges across the stage DAG so a repeated subplan is materialized once (Spark ReuseExchange analog)".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
@@ -550,6 +558,11 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
     }
 
+    /// Returns whether exchange reuse is enabled in the distributed planner.
+    pub fn reuse_exchange_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_REUSE_EXCHANGE_ENABLED)
+    }
+
     /// Returns whether sort-based shuffle is enabled.
     ///
     /// When enabled, shuffle writes produce a single consolidated file per input
@@ -857,5 +870,10 @@ mod tests {
     fn broadcast_sort_merge_join_enabled_by_default() {
         let config = BallistaConfig::default();
         assert!(config.broadcast_sort_merge_join_enabled());
+    }
+
+    #[test]
+    fn reuse_exchange_enabled_defaults_true() {
+        assert!(BallistaConfig::default().reuse_exchange_enabled());
     }
 }
