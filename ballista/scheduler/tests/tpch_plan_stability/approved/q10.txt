@@ -1,60 +1,57 @@
 === Stage 1 ===
-SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
-  StatsExec: rows=25
-
-=== Stage 2 ===
-ShuffleWriterExec: partitioning: None
-  UnresolvedShuffleExec: stage=1, partitioning: Hash([n_nationkey@0], 16)
-
-=== Stage 3 ===
 SortShuffleWriterExec: partitioning=Hash([c_custkey@0], 16)
   StatsExec: rows=15000000
 
-=== Stage 4 ===
+=== Stage 2 ===
 SortShuffleWriterExec: partitioning=Hash([o_custkey@1], 16)
   FilterExec: o_orderdate@2 >= 1993-10-01 AND o_orderdate@2 < 1994-01-01, projection=[o_orderkey@0, o_custkey@1]
     StatsExec: rows=150000000
 
-=== Stage 5 ===
+=== Stage 3 ===
 SortShuffleWriterExec: partitioning=Hash([o_orderkey@7], 16)
   ProjectionExec: expr=[c_custkey@0 as c_custkey, c_name@1 as c_name, c_address@2 as c_address, c_nationkey@3 as c_nationkey, c_phone@4 as c_phone, c_acctbal@5 as c_acctbal, c_comment@6 as c_comment, o_orderkey@7 as o_orderkey]
     SortMergeJoinExec: join_type=Inner, on=[(c_custkey@0, o_custkey@1)]
       SortExec: expr=[c_custkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=3, partitioning: Hash([c_custkey@0], 16)
+        UnresolvedShuffleExec: stage=1, partitioning: Hash([c_custkey@0], 16)
       SortExec: expr=[o_custkey@1 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=4, partitioning: Hash([o_custkey@1], 16)
+        UnresolvedShuffleExec: stage=2, partitioning: Hash([o_custkey@1], 16)
 
-=== Stage 6 ===
+=== Stage 4 ===
 SortShuffleWriterExec: partitioning=Hash([l_orderkey@0], 16)
   FilterExec: l_returnflag@3 = R, projection=[l_orderkey@0, l_extendedprice@1, l_discount@2]
     StatsExec: rows=600037902
 
-=== Stage 7 ===
+=== Stage 5 ===
 SortShuffleWriterExec: partitioning=Hash([c_nationkey@3], 16)
   ProjectionExec: expr=[c_custkey@0 as c_custkey, c_name@1 as c_name, c_address@2 as c_address, c_nationkey@3 as c_nationkey, c_phone@4 as c_phone, c_acctbal@5 as c_acctbal, c_comment@6 as c_comment, l_extendedprice@9 as l_extendedprice, l_discount@10 as l_discount]
     SortMergeJoinExec: join_type=Inner, on=[(o_orderkey@7, l_orderkey@0)]
       SortExec: expr=[o_orderkey@7 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=5, partitioning: Hash([o_orderkey@7], 16)
+        UnresolvedShuffleExec: stage=3, partitioning: Hash([o_orderkey@7], 16)
       SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=6, partitioning: Hash([l_orderkey@0], 16)
+        UnresolvedShuffleExec: stage=4, partitioning: Hash([l_orderkey@0], 16)
 
-=== Stage 8 ===
+=== Stage 6 ===
+SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
+  StatsExec: rows=25
+
+=== Stage 7 ===
 SortShuffleWriterExec: partitioning=Hash([c_custkey@0, c_name@1, c_acctbal@2, c_phone@3, n_name@4, c_address@5, c_comment@6], 16)
   AggregateExec: mode=Partial, gby=[c_custkey@0 as c_custkey, c_name@1 as c_name, c_acctbal@4 as c_acctbal, c_phone@3 as c_phone, n_name@8 as n_name, c_address@2 as c_address, c_comment@5 as c_comment], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
     ProjectionExec: expr=[c_custkey@0 as c_custkey, c_name@1 as c_name, c_address@2 as c_address, c_phone@4 as c_phone, c_acctbal@5 as c_acctbal, c_comment@6 as c_comment, l_extendedprice@7 as l_extendedprice, l_discount@8 as l_discount, n_name@10 as n_name]
-      ProjectionExec: expr=[c_custkey@2 as c_custkey, c_name@3 as c_name, c_address@4 as c_address, c_nationkey@5 as c_nationkey, c_phone@6 as c_phone, c_acctbal@7 as c_acctbal, c_comment@8 as c_comment, l_extendedprice@9 as l_extendedprice, l_discount@10 as l_discount, n_nationkey@0 as n_nationkey, n_name@1 as n_name]
-        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, c_nationkey@3)]
-          UnresolvedShuffleExec: stage=2, broadcast=true, upstream_partitions: 16
-          UnresolvedShuffleExec: stage=7, partitioning: Hash([c_nationkey@3], 16)
+      SortMergeJoinExec: join_type=Inner, on=[(c_nationkey@3, n_nationkey@0)]
+        SortExec: expr=[c_nationkey@3 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=5, partitioning: Hash([c_nationkey@3], 16)
+        SortExec: expr=[n_nationkey@0 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=6, partitioning: Hash([n_nationkey@0], 16)
 
-=== Stage 9 ===
+=== Stage 8 ===
 ShuffleWriterExec: partitioning: None
   SortExec: TopK(fetch=20), expr=[revenue@2 DESC], preserve_partitioning=[true]
     ProjectionExec: expr=[c_custkey@0 as c_custkey, c_name@1 as c_name, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@7 as revenue, c_acctbal@2 as c_acctbal, n_name@4 as n_name, c_address@5 as c_address, c_phone@3 as c_phone, c_comment@6 as c_comment]
       AggregateExec: mode=FinalPartitioned, gby=[c_custkey@0 as c_custkey, c_name@1 as c_name, c_acctbal@2 as c_acctbal, c_phone@3 as c_phone, n_name@4 as n_name, c_address@5 as c_address, c_comment@6 as c_comment], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-        UnresolvedShuffleExec: stage=8, partitioning: Hash([c_custkey@0, c_name@1, c_acctbal@2, c_phone@3, n_name@4, c_address@5, c_comment@6], 16)
+        UnresolvedShuffleExec: stage=7, partitioning: Hash([c_custkey@0, c_name@1, c_acctbal@2, c_phone@3, n_name@4, c_address@5, c_comment@6], 16)
 
-=== Stage 10 ===
+=== Stage 9 ===
 ShuffleWriterExec: partitioning: None
   SortPreservingMergeExec: [revenue@2 DESC], fetch=20
-    UnresolvedShuffleExec: stage=9, partitioning: Hash([c_custkey@0, c_name@1, c_acctbal@3, c_phone@6, n_name@4, c_address@5, c_comment@7], 16)
+    UnresolvedShuffleExec: stage=8, partitioning: Hash([c_custkey@0, c_name@1, c_acctbal@3, c_phone@6, n_name@4, c_address@5, c_comment@7], 16)
