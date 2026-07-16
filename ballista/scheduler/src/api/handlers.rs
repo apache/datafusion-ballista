@@ -270,7 +270,7 @@ pub async fn get_root(
 
     let target = format!("{NIGHTLIES_URL}/{BALLISTA_VERSION}/?{query_string}");
 
-    Ok(Redirect::temporary(&target))
+    Ok(Redirect::to(&target))
 }
 
 pub async fn get_scheduler_state<
