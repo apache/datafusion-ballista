@@ -298,4 +298,79 @@ $SPARK_HOME/bin/spark-submit \
   --debug
 ```
 
+## TPC-DS Correctness Tests
+
+Unlike the TPC-H suite above (which measures performance), the TPC-DS suite is
+a correctness gate: it runs each query on a Ballista cluster and compares the
+result, row-by-row, against a single-process DataFusion oracle running the
+same query.
+
+### Vendoring the queries
+
+The 99 TPC-DS queries are not stored in this repo; they are vendored from
+DataFusion's `branch-54` (the queries DataFusion uses in its own TPC-DS
+tests):
+
+```bash
+./dev/vendor-tpcds-queries.sh
+```
+
+This fetches `1.sql` .. `99.sql` from
+`datafusion/core/tests/tpc-ds` on the configured branch (`DATAFUSION_BRANCH`,
+default `branch-54`) and writes them to `benchmarks/queries-tpcds/qN.sql`
+(prefixed with `q` to match the TPC-H naming convention). Re-run the script to
+refresh the queries when the DataFusion pin changes.
+
+### Generating Test Data
+
+TPC-DS data is generated with the same [tpchgen-rs](https://github.com/clflushopt/tpchgen-rs)
+project as TPC-H, via its `tpcgen-cli tpcds` subcommand. TPC-DS support is not
+yet published to crates.io, so the script installs `tpcgen-cli` from git,
+pinned to a fixed rev:
+
+```bash
+SCALE_FACTOR=1 OUTPUT_DIR=./data-tpcds ./benchmarks/tpcds-gen.sh
+```
+
+`SCALE_FACTOR` (default `1`) and `OUTPUT_DIR` (default `./data-tpcds`) are
+env overrides; `TPCGEN_REV` overrides the pinned `tpcgen-cli` git rev if
+needed. Note that, unlike the TPC-H generator, `tpcgen-cli tpcds` has no
+`--parts` flag — it writes a single `<table>.parquet` file per table for all
+24 TPC-DS tables.
+
+### Running the correctness check
+
+Bring up a scheduler and executor as described above in "Running the
+Ballista Benchmarks", then run the `tpcds` binary with `--verify`:
+
+```bash
+cargo run --release --bin tpcds -- \
+  --host localhost --port 50050 \
+  --path $(pwd)/data-tpcds \
+  --partitions 16 \
+  --verify \
+  -c datafusion.optimizer.prefer_hash_join=false
+```
+
+With no `--query` given, this runs every non-skipped query (see "Skip list"
+below) on the Ballista cluster and, because `--verify` is set, also runs it
+against a single-process DataFusion `SessionContext` and diffs the results.
+The process exits non-zero and prints a summary if any query fails or
+mismatches.
+
+### Skip list
+
+Some queries are not yet runnable through Ballista + the DataFusion oracle
+(e.g. missing operator support). These are listed in the `SKIP` const near
+the top of `benchmarks/src/bin/tpcds.rs`, as `(query_id, reason)` pairs. A
+default run (no `--query`) executes `1..=99` minus `SKIP`.
+
+### CI
+
+`.github/workflows/tpcds.yml` runs the full SF1 suite against a local
+scheduler + executor on every push/PR touching `ballista/**` or
+`benchmarks/**`, once with AQE off and once with AQE on
+(`ballista.planner.adaptive.enabled=true`), against the same generated data
+and cluster.
+
 [1]: http://www.tpc.org/tpch/
