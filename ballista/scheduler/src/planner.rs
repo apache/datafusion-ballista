@@ -34,6 +34,9 @@ use ballista_core::{
 };
 use datafusion::arrow::datatypes::DataType;
 use datafusion::config::ConfigOptions;
+use datafusion::physical_expr::{
+    LexOrdering, LexRequirement, OrderingRequirements, PhysicalSortRequirement,
+};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -54,6 +57,120 @@ use crate::physical_optimizer::join_selection::{
 };
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
+
+/// Returns the `Hard` ordering requirements `parent` places on the child at
+/// `index`, or `None` when the child's ordering is unconstrained. `Soft`
+/// requirements are opportunistic and are deliberately ignored.
+fn hard_ordering_requirement(
+    parent: &Arc<dyn ExecutionPlan>,
+    index: usize,
+) -> Option<Vec<LexRequirement>> {
+    match parent.required_input_ordering().into_iter().nth(index) {
+        Some(Some(OrderingRequirements::Hard(reqs))) => Some(reqs),
+        _ => None,
+    }
+}
+
+/// Whether `child` already carries one of the orderings in `reqs`.
+fn ordering_is_satisfied(
+    child: &Arc<dyn ExecutionPlan>,
+    reqs: &[LexRequirement],
+) -> Result<bool> {
+    for req in reqs {
+        if child
+            .properties()
+            .equivalence_properties()
+            .ordering_satisfy_requirement(req.clone())?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Re-establishes any input ordering a rewritten child no longer carries.
+///
+/// Lowering a plan into stages rewrites nodes, and a rewrite can drop an
+/// ordering its parent depends on: promoting a `SortMergeJoinExec` to a
+/// broadcast `HashJoinExec(CollectLeft)` yields a join that does not preserve
+/// input order, so a parent `SortMergeJoinExec` reading it would merge unsorted
+/// input and silently drop rows. Sorts are only added, never removed, so a
+/// child that already satisfies its requirement is returned untouched.
+fn restore_required_input_ordering(
+    parent: &Arc<dyn ExecutionPlan>,
+    children: Vec<Arc<dyn ExecutionPlan>>,
+) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
+    let mut restored = Vec::with_capacity(children.len());
+    for (index, child) in children.into_iter().enumerate() {
+        let Some(reqs) = hard_ordering_requirement(parent, index) else {
+            restored.push(child);
+            continue;
+        };
+        if ordering_is_satisfied(&child, &reqs)? {
+            restored.push(child);
+            continue;
+        }
+        // Enforce the first alternative, dropping requirements on expressions
+        // that are constant for this child and so already trivially ordered.
+        let Some(req) = reqs.into_iter().next() else {
+            restored.push(child);
+            continue;
+        };
+        let mut sort_reqs: Vec<PhysicalSortRequirement> = req.into();
+        sort_reqs.retain(|sort_expr| {
+            child
+                .properties()
+                .equivalence_properties()
+                .is_expr_constant(&sort_expr.expr)
+                .is_none()
+        });
+        let Some(ordering) =
+            LexOrdering::new(sort_reqs.into_iter().map(Into::into).collect::<Vec<_>>())
+        else {
+            restored.push(child);
+            continue;
+        };
+        debug!(
+            "restoring ordering {ordering} required by {} on input {index}",
+            parent.name(),
+        );
+        let mut sort = SortExec::new(ordering, Arc::clone(&child));
+        if child.properties().output_partitioning().partition_count() > 1 {
+            sort = sort.with_preserve_partitioning(true);
+        }
+        restored.push(Arc::new(sort));
+    }
+    Ok(restored)
+}
+
+/// Verifies that every `SortMergeJoinExec` in `plan` has inputs carrying the
+/// ordering the join requires.
+///
+/// A merge join reads both inputs as sorted streams; given unsorted input it
+/// does not error, it simply stops matching once the cursors diverge and
+/// returns a wrong answer. Checking the planned stages turns that silent
+/// corruption into a loud failure.
+pub fn validate_sort_merge_join_orderings(plan: &Arc<dyn ExecutionPlan>) -> Result<()> {
+    if plan.downcast_ref::<SortMergeJoinExec>().is_some() {
+        for (index, child) in plan.children().into_iter().enumerate() {
+            let Some(reqs) = hard_ordering_requirement(plan, index) else {
+                continue;
+            };
+            if !ordering_is_satisfied(child, &reqs)? {
+                return Err(BallistaError::Internal(format!(
+                    "SortMergeJoinExec input {index} does not satisfy its required \
+                     ordering; merging unsorted input would silently drop rows. \
+                     Required one of {reqs:?}, input plan:\n{}",
+                    datafusion::physical_plan::displayable(child.as_ref()).indent(false)
+                )));
+            }
+        }
+    }
+    for child in plan.children() {
+        validate_sort_merge_join_orderings(child)?;
+    }
+    Ok(())
+}
 
 /// Trait for breaking an execution plan into distributed query stages.
 ///
@@ -122,6 +239,11 @@ impl DistributedPlanner for DefaultDistributedPlanner {
             None,
             config,
         )?);
+        for stage in &stages {
+            for child in stage.children() {
+                validate_sort_merge_join_orderings(child)?;
+            }
+        }
         Ok(stages)
     }
 }
@@ -195,6 +317,7 @@ impl DefaultDistributedPlanner {
             children.push(new_child);
             stages.append(&mut child_stages);
         }
+        let children = restore_required_input_ordering(&execution_plan, children)?;
 
         if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
@@ -721,7 +844,10 @@ pub(crate) fn create_shuffle_writer_with_config(
 #[cfg(test)]
 mod test {
     use crate::assert_plan;
-    use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
+    use crate::planner::{
+        DefaultDistributedPlanner, DistributedPlanner, restore_required_input_ordering,
+        validate_sort_merge_join_orderings,
+    };
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
@@ -1854,5 +1980,116 @@ order by
         let result_exec_plan: Arc<dyn ExecutionPlan> =
             (proto).try_into_physical_plan(ctx, codec.physical_extension_codec())?;
         Ok(result_exec_plan)
+    }
+
+    /// Lowering can replace a `SortMergeJoinExec` with a broadcast
+    /// `HashJoinExec`, which does not preserve input order. A parent
+    /// `SortMergeJoinExec` reading that output must have its ordering restored,
+    /// or it merges unsorted input and silently drops rows.
+    #[tokio::test]
+    async fn restores_ordering_for_sort_merge_join_input() -> Result<(), BallistaError> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::common::{JoinType, NullEquality};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::joins::SortMergeJoinExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let unsorted: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(Arc::clone(&schema)));
+        let on = vec![(
+            Arc::new(Column::new("a", 0)) as _,
+            Arc::new(Column::new("a", 0)) as _,
+        )];
+        let smj: Arc<dyn ExecutionPlan> = Arc::new(SortMergeJoinExec::try_new(
+            Arc::clone(&unsorted),
+            Arc::clone(&unsorted),
+            on,
+            None,
+            JoinType::Left,
+            vec![SortOptions::default()],
+            NullEquality::NullEqualsNothing,
+        )?);
+
+        // Both inputs lack the join's required ordering, so both gain a sort.
+        let restored = restore_required_input_ordering(
+            &smj,
+            vec![Arc::clone(&unsorted), Arc::clone(&unsorted)],
+        )?;
+        let rebuilt = smj.clone().with_new_children(restored.clone())?;
+        assert_plan!(
+            rebuilt.as_ref(),
+            @r"
+        SortMergeJoinExec: join_type=Left, on=[(a@0, a@0)]
+          SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+            EmptyExec
+          SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+            EmptyExec
+        "
+        );
+
+        // An input that already carries the ordering is left untouched rather
+        // than being wrapped in a second, redundant sort.
+        let sorted = restored[0].clone();
+        let already_ok = restore_required_input_ordering(
+            &smj,
+            vec![Arc::clone(&sorted), Arc::clone(&sorted)],
+        )?;
+        let rebuilt = smj.with_new_children(already_ok)?;
+        assert_plan!(
+            rebuilt.as_ref(),
+            @r"
+        SortMergeJoinExec: join_type=Left, on=[(a@0, a@0)]
+          SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+            EmptyExec
+          SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+            EmptyExec
+        "
+        );
+        Ok(())
+    }
+
+    /// The validation rejects a `SortMergeJoinExec` whose inputs are unsorted,
+    /// so the wrong-results failure mode surfaces as an error.
+    #[tokio::test]
+    async fn validate_rejects_unsorted_sort_merge_join_input() -> Result<(), BallistaError>
+    {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::common::{JoinType, NullEquality};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::joins::SortMergeJoinExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let unsorted: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(Arc::clone(&schema)));
+        let on = vec![(
+            Arc::new(Column::new("a", 0)) as _,
+            Arc::new(Column::new("a", 0)) as _,
+        )];
+        let smj: Arc<dyn ExecutionPlan> = Arc::new(SortMergeJoinExec::try_new(
+            Arc::clone(&unsorted),
+            Arc::clone(&unsorted),
+            on,
+            None,
+            JoinType::Left,
+            vec![SortOptions::default()],
+            NullEquality::NullEqualsNothing,
+        )?);
+
+        let err = validate_sort_merge_join_orderings(&smj)
+            .expect_err("unsorted SortMergeJoinExec input must be rejected");
+        assert!(
+            err.to_string()
+                .contains("does not satisfy its required ordering"),
+            "unexpected error: {err}"
+        );
+
+        let restored = restore_required_input_ordering(
+            &smj,
+            vec![Arc::clone(&unsorted), Arc::clone(&unsorted)],
+        )?;
+        let repaired = smj.with_new_children(restored)?;
+        validate_sort_merge_join_orderings(&repaired)
+            .expect("restored plan must satisfy the join's ordering requirement");
+        Ok(())
     }
 }

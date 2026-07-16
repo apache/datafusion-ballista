@@ -62,20 +62,12 @@ const TABLES: &[&str] = &[
 /// under the default (static) planner; this list reflects that configuration.
 /// Remove an entry as the underlying cause is fixed.
 const SKIP: &[(usize, &str)] = &[
-    // Distributed execution diverges from single-process DataFusion on the same
-    // data (confirmed reproducible; DataFusion is correct under both join modes).
-    // See https://github.com/apache/datafusion-ballista/issues/2046
-    (
-        4,
-        "distributed result diverges from DataFusion (issue #2046)",
-    ),
+    // Distributed set operations diverge from single-process DataFusion on the
+    // same data (confirmed reproducible; DataFusion is correct under both join
+    // modes). See https://github.com/apache/datafusion-ballista/issues/2046
     (
         38,
         "distributed INTERSECT diverges from DataFusion (issue #2046)",
-    ),
-    (
-        78,
-        "distributed LIMIT drops rows vs DataFusion (issue #2046)",
     ),
     (
         87,
