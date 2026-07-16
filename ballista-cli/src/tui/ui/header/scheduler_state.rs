@@ -97,7 +97,7 @@ fn render_scheduler_state_up(
 
     let scheduler_url_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Scheduler URL ");
+        .title(" Ballista Scheduler URL ");
     let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)
         .left_aligned();
