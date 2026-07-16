@@ -187,7 +187,10 @@ pub struct ExecutorProcessConfig {
     pub override_arrow_flight_service: Option<Arc<ArrowFlightServerProvider>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
-    /// Number of seconds established client connection should be cached (0 means no cache)
+    /// Number of seconds an established client connection is cached while idle.
+    /// `0` disables the pool, so every shuffle fetch opens and drops its own
+    /// connection and a shuffle-heavy query can exhaust the host's ephemeral
+    /// ports.
     pub client_ttl: u64,
 }
 
@@ -238,7 +241,7 @@ impl Default for ExecutorProcessConfig {
             override_physical_codec: None,
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
-            client_ttl: 0,
+            client_ttl: 30,
         }
     }
 }
