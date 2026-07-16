@@ -83,11 +83,6 @@ const SKIP: &[(usize, &str)] = &[
     ),
     // Non-deterministic: LIMIT/ORDER BY ties without a total order make the
     // result vary run-to-run in both engines, so a row-by-row diff is unstable.
-    (2, "non-deterministic (ORDER BY ties; varies run-to-run)"),
-    (
-        5,
-        "non-deterministic (ORDER BY channel ties; varies run-to-run)",
-    ),
     (31, "non-deterministic (ORDER BY ties; varies run-to-run)"),
     (
         71,
