@@ -302,7 +302,10 @@ message TaskId {
   uint32 task_attempt_num = 2;
   // Global partition ids covered by this task, in slice order. Position i in
   // the restricted plan corresponds to `global_output_partition_ids[i]` globally.
-  repeated uint32 global_output_partition_ids = 4;
+  // `[packed=false]` keeps the single-partition case wire-compatible with the
+  // legacy `uint32 partition_id = 3` field: one element writes as a single
+  // varint at tag 3, exactly matching the old scalar encoding.
+  repeated uint32 global_output_partition_ids = 3 [packed=false];
   // Vcores this task consumed from the executor's budget at bind time.
   // The executor uses this to size the task's memory pool proportionally
   // (`pool = total_memory * vcores_consumed / total_vcores`), so a

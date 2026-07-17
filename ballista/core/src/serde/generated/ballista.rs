@@ -439,7 +439,10 @@ pub struct TaskId {
     pub task_attempt_num: u32,
     /// Global partition ids covered by this task, in slice order. Position i in
     /// the restricted plan corresponds to `global_output_partition_ids\[i\]` globally.
-    #[prost(uint32, repeated, tag = "4")]
+    /// `\[packed=false\]` keeps the single-partition case wire-compatible with the
+    /// legacy `uint32 partition_id = 3` field: one element writes as a single
+    /// varint at tag 3, exactly matching the old scalar encoding.
+    #[prost(uint32, repeated, packed = "false", tag = "3")]
     pub global_output_partition_ids: ::prost::alloc::vec::Vec<u32>,
     /// Vcores this task consumed from the executor's budget at bind time.
     /// The executor uses this to size the task's memory pool proportionally
