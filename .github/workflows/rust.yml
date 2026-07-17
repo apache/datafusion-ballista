@@ -38,6 +38,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   pull_request:
     paths:
       - "ballista/**"
@@ -53,6 +55,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:

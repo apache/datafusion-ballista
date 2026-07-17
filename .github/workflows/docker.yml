@@ -28,6 +28,8 @@ on:
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
       - ".github/workflows/docker.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   push:
     branches: [ "main" ]
     paths:
@@ -40,6 +42,8 @@ on:
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
       - ".github/workflows/docker.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
