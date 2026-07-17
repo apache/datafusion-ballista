@@ -271,31 +271,31 @@ Versions under test:
 Each figure is from a **full 22-query suite run**, one query after another in a
 single session, unless marked otherwise.
 
-|     Query |      Spark | Comet | Ballista (AQE off) | Ballista (AQE on) |   Rows |
-| --------: | ---------: | ----: | -----------------: | ----------------: | -----: |
-|         1 |      444.8 |   TBD |                TBD |               TBD |      4 |
-|         2 |       74.3 |   TBD |                TBD |               TBD |    100 |
-|         3 |      158.4 |   TBD |                TBD |               TBD |     10 |
-|         4 |      104.1 |   TBD |                TBD |               TBD |      5 |
-|         5 |      364.9 |   TBD |                TBD |               TBD |      5 |
-|         6 |       22.0 |   TBD |                TBD |               TBD |      1 |
-|         7 |      196.1 |   TBD |                TBD |               TBD |      4 |
-|         8 |      412.7 |   TBD |                TBD |               TBD |      2 |
-|         9 |      570.2 |   TBD |                TBD |               TBD |    175 |
-|        10 |      147.3 |   TBD |                TBD |               TBD |     20 |
-|        11 |       58.3 |   TBD |                TBD |               TBD |      0 |
-|        12 |       75.9 |   TBD |                TBD |               TBD |      2 |
-|        13 |      114.1 |   TBD |                TBD |               TBD |     30 |
-|        14 |       44.6 |   TBD |                TBD |               TBD |      1 |
-|        15 |      108.9 |   TBD |                TBD |               TBD |      0 |
-|        16 |       33.9 |   TBD |                TBD |               TBD |  27840 |
-|        17 |      519.5 |   TBD |                TBD |               TBD |      1 |
-|        18 |      492.8 |   TBD |                TBD |         750.5 [1] |    100 |
-|        19 |       53.7 |   TBD |                TBD |               TBD |      1 |
-|        20 |      108.1 |   TBD |                TBD |               TBD | 110759 |
-|        21 |      536.4 |   TBD |                TBD |               TBD |    100 |
-|        22 |       47.0 |   TBD |                TBD |               TBD |      7 |
-| **Total** | **4687.9** |   TBD |                TBD |               TBD |        |
+|     Query |      Spark |      Comet | Ballista (AQE off) | Ballista (AQE on) |   Rows |
+| --------: | ---------: | ---------: | -----------------: | ----------------: | -----: |
+|         1 |      444.8 |       49.3 |                TBD |               TBD |      4 |
+|         2 |       74.3 |       37.3 |                TBD |               TBD |    100 |
+|         3 |      158.4 |       99.1 |                TBD |               TBD |     10 |
+|         4 |      104.1 |       42.3 |                TBD |               TBD |      5 |
+|         5 |      364.9 |      234.6 |                TBD |               TBD |      5 |
+|         6 |       22.0 |       15.3 |                TBD |               TBD |      1 |
+|         7 |      196.1 |      141.8 |                TBD |               TBD |      4 |
+|         8 |      412.7 |      291.6 |                TBD |               TBD |      2 |
+|         9 |      570.2 |      392.1 |                TBD |               TBD |    175 |
+|        10 |      147.3 |      112.5 |                TBD |               TBD |     20 |
+|        11 |       58.3 |       48.7 |                TBD |               TBD |  0 [2] |
+|        12 |       75.9 |       52.9 |                TBD |               TBD |      2 |
+|        13 |      114.1 |       71.9 |                TBD |               TBD |     30 |
+|        14 |       44.6 |       29.0 |                TBD |               TBD |      1 |
+|        15 |      108.9 |       63.8 |                TBD |               TBD | \* [3] |
+|        16 |       33.9 |       18.7 |                TBD |               TBD |  27840 |
+|        17 |      519.5 |      308.2 |                TBD |               TBD |      1 |
+|        18 |      492.8 |      234.2 |                TBD |         750.5 [1] |    100 |
+|        19 |       53.7 |       39.4 |                TBD |               TBD |      1 |
+|        20 |      108.1 |       74.6 |                TBD |               TBD | 110759 |
+|        21 |      536.4 |      351.4 |                TBD |               TBD |    100 |
+|        22 |       47.0 |       29.8 |                TBD |               TBD |      7 |
+| **Total** | **4687.9** | **2738.5** |                TBD |               TBD |        |
 
 [1] Standalone single-query run, not part of a suite run. Recorded here because it
 is the only Ballista measurement so far; it will be replaced by the suite figure.
@@ -303,10 +303,17 @@ The distinction is not cosmetic — Q18 on Spark measured 458.0 s standalone ver
 492.8 s in the suite, a 7.6% spread on the same build, so suite and standalone
 figures are not interchangeable.
 
+[2] Q11 returns 0 rows for every engine at this scale factor: the query's threshold
+constant is tuned for SF1.
+
+[3] **Row counts disagree on Q15: Spark returns 0, Comet returns 1.** Q15 is a
+multi-statement query (`CREATE VIEW` / `SELECT` / `DROP VIEW`), and how many rows a
+harness reports depends on which statement it takes as the result. This disagreement
+is recorded rather than resolved; it is not yet established which count is correct
+or whether the engines actually computed different answers.
+
 The `Rows` column is the row count the query returned, recorded so a time is never
-read without the answer it produced. Q11 and Q15 return 0 rows for every engine:
-Q11's threshold constant is tuned for SF1, and Q15 is a multi-statement query whose
-harness reports only the final statement.
+read without the answer it produced. Except where noted, all engines agreed.
 
 This table records **one current result set**. When results are refreshed, the
 table and the pinned versions above are replaced together — a row must never mix
