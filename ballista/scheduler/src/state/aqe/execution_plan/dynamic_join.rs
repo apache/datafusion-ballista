@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::config::BallistaConfig;
 use datafusion::{
     arrow::compute::SortOptions,
     common::{JoinType, NullEquality, Result, exec_err, internal_err},
@@ -214,20 +215,35 @@ impl DynamicJoinSelectionExec {
         config: &ConfigOptions,
     ) -> Result<JoinSelectionAction> {
         let prefer_hash_join = config.optimizer.prefer_hash_join;
-        let threshold_collect_left_join_bytes =
-            config.optimizer.hash_join_single_partition_threshold;
+        // The byte threshold comes from Ballista's own broadcast config so that a
+        // single key governs broadcast selection under both the static planner
+        // (`maybe_promote_to_broadcast`) and AQE. A value of 0 disables broadcast
+        // promotion entirely, matching the static planner. The row threshold is
+        // only a fallback used when byte statistics are absent, so it stays on
+        // DataFusion's setting.
+        let bc = config
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_default();
+        let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
         let threshold_collect_left_join_rows =
             config.optimizer.hash_join_single_partition_threshold_rows;
 
-        let under_threshold = Self::supports_collect_by_thresholds(
-            self.left.as_ref(),
-            threshold_collect_left_join_bytes,
-            threshold_collect_left_join_rows,
-        ) || Self::supports_collect_by_thresholds(
-            self.right.as_ref(),
-            threshold_collect_left_join_bytes,
-            threshold_collect_left_join_rows,
-        );
+        // The `!= 0` guard sits here rather than inside
+        // `supports_collect_by_thresholds`: that helper falls back to the row
+        // check when the byte threshold is 0/absent, so gating at this level is
+        // what makes a 0 threshold disable both the byte and row broadcast paths.
+        let under_threshold = threshold_collect_left_join_bytes != 0
+            && (Self::supports_collect_by_thresholds(
+                self.left.as_ref(),
+                threshold_collect_left_join_bytes,
+                threshold_collect_left_join_rows,
+            ) || Self::supports_collect_by_thresholds(
+                self.right.as_ref(),
+                threshold_collect_left_join_bytes,
+                threshold_collect_left_join_rows,
+            ));
 
         // The resolver collects the smaller side onto the build (left) input,
         // swapping the join type when the right side is the smaller one (the
@@ -445,6 +461,7 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::config::ExtensionOptions;
     use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
@@ -473,6 +490,27 @@ mod tests {
         right_rows: usize,
         prefer_hash_join: bool,
     ) -> JoinSelectionAction {
+        // 10 MiB is large enough for the tiny StatisticsExec sides below to be
+        // collectable, matching the default broadcast threshold.
+        actual_join_with_threshold(
+            join_type,
+            left_rows,
+            right_rows,
+            prefer_hash_join,
+            10 * 1024 * 1024,
+        )
+    }
+
+    /// Same as [`actual_join_for`] but with an explicit
+    /// `broadcast_join_threshold_bytes`, so tests can prove the Ballista config
+    /// drives the byte cutoff (0 disables broadcast promotion).
+    fn actual_join_with_threshold(
+        join_type: JoinType,
+        left_rows: usize,
+        right_rows: usize,
+        prefer_hash_join: bool,
+        broadcast_threshold_bytes: usize,
+    ) -> JoinSelectionAction {
         let left = stats_exec(left_rows);
         let right = stats_exec(right_rows);
         let on: JoinOn =
@@ -492,8 +530,14 @@ mod tests {
         };
         let mut config = ConfigOptions::new();
         config.optimizer.prefer_hash_join = prefer_hash_join;
-        config.optimizer.hash_join_single_partition_threshold = 10 * 1024 * 1024;
         config.optimizer.hash_join_single_partition_threshold_rows = 1_000_000;
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "optimizer.broadcast_join_threshold_bytes",
+            &broadcast_threshold_bytes.to_string(),
+        )
+        .unwrap();
+        config.extensions.insert(bc);
         dj.to_actual_join(&config).unwrap()
     }
 
@@ -550,6 +594,45 @@ mod tests {
         assert!(
             !is_collected(&actual_join_for(JoinType::Right, 1000, 10, true)),
             "RIGHT with small right swaps to an unsafe LEFT join and must repartition"
+        );
+    }
+
+    // The byte cutoff comes from `ballista.optimizer.broadcast_join_threshold_bytes`,
+    // not DataFusion's `hash_join_single_partition_threshold`. `stats_exec(n)`
+    // reports `n * 16` bytes, so the smaller side here is 1600 bytes. A threshold
+    // above it collects; a threshold below it repartitions.
+    #[test]
+    fn broadcast_threshold_bytes_drives_collect_decision() {
+        // smaller (left) side = 100 * 16 = 1600 bytes, larger = 16000 bytes
+        assert!(
+            is_collected(&actual_join_with_threshold(
+                JoinType::Inner,
+                100,
+                1000,
+                true,
+                2000,
+            )),
+            "smaller side (1600 B) is under a 2000 B threshold and must collect"
+        );
+        assert!(
+            !is_collected(&actual_join_with_threshold(
+                JoinType::Inner,
+                100,
+                1000,
+                true,
+                1000,
+            )),
+            "neither side is under a 1000 B threshold, so the join must repartition"
+        );
+    }
+
+    // A threshold of 0 disables broadcast promotion entirely, matching the static
+    // planner, even for a side small enough to collect under any positive cutoff.
+    #[test]
+    fn zero_broadcast_threshold_disables_collect() {
+        assert!(
+            !is_collected(&actual_join_with_threshold(JoinType::Inner, 1, 1, true, 0,)),
+            "broadcast_join_threshold_bytes=0 must disable CollectLeft promotion"
         );
     }
 

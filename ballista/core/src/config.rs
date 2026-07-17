@@ -236,7 +236,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
                          "Byte-size threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern. \
-                          Set to 0 to disable promotion.".to_string(),
+                          Governs broadcast selection under both the static distributed \
+                          planner and adaptive query planning (AQE). Set to 0 to disable \
+                          promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
