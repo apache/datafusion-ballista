@@ -268,31 +268,45 @@ Versions under test:
 | Spark    | 3.5.3 (vanilla, Comet disabled) |
 | Comet    | 0.17.0                          |
 
-|     Query |     Spark |     Comet | Ballista (AQE off) | Ballista (AQE on) |
-| --------: | --------: | --------: | -----------------: | ----------------: |
-|         1 |       TBD |       TBD |                TBD |               TBD |
-|         2 |       TBD |       TBD |                TBD |               TBD |
-|         3 |       TBD |       TBD |                TBD |               TBD |
-|         4 |       TBD |       TBD |                TBD |               TBD |
-|         5 |       TBD |       TBD |                TBD |               TBD |
-|         6 |       TBD |       TBD |                TBD |               TBD |
-|         7 |       TBD |       TBD |                TBD |               TBD |
-|         8 |       TBD |       TBD |                TBD |               TBD |
-|         9 |       TBD |       TBD |                TBD |               TBD |
-|        10 |       TBD |       TBD |                TBD |               TBD |
-|        11 |       TBD |       TBD |                TBD |               TBD |
-|        12 |       TBD |       TBD |                TBD |               TBD |
-|        13 |       TBD |       TBD |                TBD |               TBD |
-|        14 |       TBD |       TBD |                TBD |               TBD |
-|        15 |       TBD |       TBD |                TBD |               TBD |
-|        16 |       TBD |       TBD |                TBD |               TBD |
-|        17 |       TBD |       TBD |                TBD |               TBD |
-|        18 | **458.0** | **225.5** |                TBD |         **750.5** |
-|        19 |       TBD |       TBD |                TBD |               TBD |
-|        20 |       TBD |       TBD |                TBD |               TBD |
-|        21 |       TBD |       TBD |                TBD |               TBD |
-|        22 |       TBD |       TBD |                TBD |               TBD |
-| **Total** |       TBD |       TBD |                TBD |               TBD |
+Each figure is from a **full 22-query suite run**, one query after another in a
+single session, unless marked otherwise.
+
+|     Query |      Spark | Comet | Ballista (AQE off) | Ballista (AQE on) |   Rows |
+| --------: | ---------: | ----: | -----------------: | ----------------: | -----: |
+|         1 |      444.8 |   TBD |                TBD |               TBD |      4 |
+|         2 |       74.3 |   TBD |                TBD |               TBD |    100 |
+|         3 |      158.4 |   TBD |                TBD |               TBD |     10 |
+|         4 |      104.1 |   TBD |                TBD |               TBD |      5 |
+|         5 |      364.9 |   TBD |                TBD |               TBD |      5 |
+|         6 |       22.0 |   TBD |                TBD |               TBD |      1 |
+|         7 |      196.1 |   TBD |                TBD |               TBD |      4 |
+|         8 |      412.7 |   TBD |                TBD |               TBD |      2 |
+|         9 |      570.2 |   TBD |                TBD |               TBD |    175 |
+|        10 |      147.3 |   TBD |                TBD |               TBD |     20 |
+|        11 |       58.3 |   TBD |                TBD |               TBD |      0 |
+|        12 |       75.9 |   TBD |                TBD |               TBD |      2 |
+|        13 |      114.1 |   TBD |                TBD |               TBD |     30 |
+|        14 |       44.6 |   TBD |                TBD |               TBD |      1 |
+|        15 |      108.9 |   TBD |                TBD |               TBD |      0 |
+|        16 |       33.9 |   TBD |                TBD |               TBD |  27840 |
+|        17 |      519.5 |   TBD |                TBD |               TBD |      1 |
+|        18 |      492.8 |   TBD |                TBD |         750.5 [1] |    100 |
+|        19 |       53.7 |   TBD |                TBD |               TBD |      1 |
+|        20 |      108.1 |   TBD |                TBD |               TBD | 110759 |
+|        21 |      536.4 |   TBD |                TBD |               TBD |    100 |
+|        22 |       47.0 |   TBD |                TBD |               TBD |      7 |
+| **Total** | **4687.9** |   TBD |                TBD |               TBD |        |
+
+[1] Standalone single-query run, not part of a suite run. Recorded here because it
+is the only Ballista measurement so far; it will be replaced by the suite figure.
+The distinction is not cosmetic — Q18 on Spark measured 458.0 s standalone versus
+492.8 s in the suite, a 7.6% spread on the same build, so suite and standalone
+figures are not interchangeable.
+
+The `Rows` column is the row count the query returned, recorded so a time is never
+read without the answer it produced. Q11 and Q15 return 0 rows for every engine:
+Q11's threshold constant is tuned for SF1, and Q15 is a multi-statement query whose
+harness reports only the final statement.
 
 This table records **one current result set**. When results are refreshed, the
 table and the pinned versions above are replaced together — a row must never mix
@@ -302,15 +316,15 @@ regression.
 The table is being filled in incrementally; `TBD` means not yet measured on this
 cluster at this commit, not "failed".
 
-All three engines returned **100 rows** for Q18; Spark and Comet produced identical
-result hashes.
-
 ### Recording a result
 
 - Pin the **exact commit** the numbers came from, not a branch name.
 - Report **AQE on and AQE off** from the **same** commit and cluster. Comparing an
   AQE-on number against an AQE-off number from an older build attributes the build
   difference to the planner.
+- Take the figure from a **full suite run**, not a standalone single-query run. The
+  two differ measurably: a long-lived executor deep into a suite is not in the same
+  state as a freshly started one.
 - Note the **row count** each query returned. A fast wrong answer is not a result,
   and distributed execution has produced silently wrong row counts before.
 - Flag any stage whose runtime is dominated by a few partitions — that is the
