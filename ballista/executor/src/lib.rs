@@ -37,6 +37,8 @@ pub mod executor_process;
 pub mod executor_server;
 /// Arrow Flight service for streaming shuffle data between executors.
 pub mod flight_service;
+/// HTTP server for Kubernetes-style /healthz and /readyz probes.
+pub mod health;
 /// Metrics collection for executor runtime statistics.
 pub mod metrics;
 /// Session-scoped cache of shared executor runtime environments.

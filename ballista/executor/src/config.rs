@@ -71,6 +71,13 @@ pub struct Config {
     /// Port for the executor's gRPC service (used for task management).
     #[arg(long, default_value_t = 50052, help = "Grpc service bind port.")]
     pub bind_grpc_port: u16,
+    /// Port for the executor's HTTP health server (/healthz and /readyz).
+    #[arg(
+        long,
+        default_value_t = 50053,
+        help = "HTTP port for the executor's Kubernetes health probes (/healthz and /readyz)."
+    )]
+    pub bind_health_port: u16,
     /// Timeout in seconds for establishing connection to scheduler (0 = fail immediately).
     #[arg(
         long,
@@ -223,6 +230,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             bind_host: opt.bind_host,
             port: opt.bind_port,
             grpc_port: opt.bind_grpc_port,
+            health_port: opt.bind_health_port,
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,

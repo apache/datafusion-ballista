@@ -61,7 +61,9 @@ use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
     default_config_producer, get_time_before,
 };
-use ballista_core::{BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer};
+use ballista_core::{
+    BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
+};
 
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
@@ -126,6 +128,8 @@ pub struct ExecutorProcessConfig {
     pub port: u16,
     /// Port for the executor's gRPC service.
     pub grpc_port: u16,
+    /// Port for the executor's HTTP health server (`/healthz` and `/readyz`).
+    pub health_port: u16,
     /// Hostname of the scheduler to connect to.
     pub scheduler_host: String,
     /// Port of the scheduler's gRPC service.
@@ -214,6 +218,7 @@ impl Default for ExecutorProcessConfig {
             external_host: None,
             port: 50051,
             grpc_port: 50052,
+            health_port: 50053,
             scheduler_host: "localhost".into(),
             scheduler_port: 50050,
             scheduler_connect_timeout_seconds: 0,
@@ -519,6 +524,10 @@ pub async fn start_executor_process(
     // Channels used to receive stop requests from Executor grpc service.
     let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
 
+    // Shared health/readiness signal. Flipped by the heartbeat/poll_work loop
+    // and observed by the /readyz probe served on `health_port`.
+    let health = crate::health::ExecutorHealth::new();
+
     // Starting main executor process based on the TaskSchedulingPolicy
     //
     // PushStaged => starting new executor_server that waits for tasks from the schedule
@@ -534,6 +543,7 @@ pub async fn start_executor_process(
                     default_codec,
                     stop_send,
                     &shutdown_notification,
+                    health.clone(),
                 )
                 .await?,
             );
@@ -543,9 +553,31 @@ pub async fn start_executor_process(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                health.clone(),
             )));
         }
     };
+
+    // Start the health probe HTTP server. It listens for the shutdown
+    // broadcast and stops gracefully, so the pod is not held up by /healthz.
+    {
+        let health_addr: SocketAddr = format!("{}:{}", opt.bind_host, opt.health_port)
+            .parse()
+            .map_err(|e| {
+                BallistaError::General(format!("invalid health_port address: {e}"))
+            })?;
+        let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut probe_shutdown = shutdown_notification.subscribe_for_shutdown();
+        tokio::spawn(async move {
+            probe_shutdown.recv().await;
+            let _ = health_shutdown_tx.send(());
+        });
+        service_handlers.push(crate::health::spawn_health_server(
+            health_addr,
+            health,
+            health_shutdown_rx,
+        ));
+    }
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
 
@@ -939,6 +971,7 @@ pub fn structure_executor_metadata(
             total_available_disk_space,
             open_files_limit,
         }),
+        ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     }
 }
 

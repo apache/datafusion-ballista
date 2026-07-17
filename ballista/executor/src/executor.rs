@@ -436,11 +436,7 @@ mod test {
 
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: None,
-            host: None,
-            os_info: None,
+            ..Default::default()
         };
         let config_producer = Arc::new(default_config_producer);
         let ctx = SessionContext::new();
@@ -501,11 +497,7 @@ mod test {
     fn produce_runtime_for_session_shares_read_side_state() {
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: None,
-            host: None,
-            os_info: None,
+            ..Default::default()
         };
         let config_producer = Arc::new(default_config_producer);
 
@@ -540,11 +532,7 @@ mod test {
     fn produce_runtime_for_session_falls_back_without_cache() {
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: None,
-            host: None,
-            os_info: None,
+            ..Default::default()
         };
         let config_producer = Arc::new(default_config_producer);
         let base_producer: RuntimeProducer =

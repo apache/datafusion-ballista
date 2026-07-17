@@ -144,6 +144,18 @@ spec:
           ports:
             - containerPort: 50050
               name: flight
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 50050
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 50050
+            failureThreshold: 3
+            periodSeconds: 5
           volumeMounts:
             - mountPath: /mnt
               name: data
@@ -177,6 +189,20 @@ spec:
           ports:
             - containerPort: 50051
               name: flight
+            - containerPort: 50053
+              name: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 50053
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 50053
+            failureThreshold: 3
+            periodSeconds: 5
           volumeMounts:
             - mountPath: /mnt
               name: data
@@ -216,6 +242,78 @@ INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
 ```
+
+## Health Probes and Rolling Upgrades
+
+Both the scheduler and executor expose two Kubernetes-style HTTP probe endpoints:
+
+- **`/healthz`** — liveness. Always returns `200 OK` while the process is
+  running. Failing this signals only "the process is dead," which is the sole
+  case where a restart can actually recover. Do **not** make liveness reflect
+  scheduler connectivity — a flapping scheduler would then take the whole
+  executor fleet down with it in a restart cascade.
+- **`/readyz`** — readiness. Returns `200 OK` when the pod is prepared to
+  accept traffic (scheduler: at least `--min-ready-executors` executors
+  registered; executor: last heartbeat to the scheduler succeeded).
+  A failing `/readyz` removes the pod from `Service` endpoints but does
+  **not** trigger a restart, so it is safe to gate on cluster state.
+
+The scheduler serves both probes on the same port as its gRPC/REST API
+(default `50050`). The executor serves them on a dedicated HTTP port
+(`--bind-health-port`, default `50053`) since the Arrow Flight port is not
+HTTP.
+
+### Protocol version and forced upgrades
+
+Every executor sends a compile-time `BALLISTA_PROTOCOL_VERSION` on
+registration and heartbeat. The scheduler compares against its own compiled
+value and rejects mismatches with `FailedPrecondition`; the executor then
+flips `/readyz` off and, after several consecutive failures, self-terminates
+so the operator (or Deployment controller) can bring a matching version up.
+
+Bump `BALLISTA_PROTOCOL_VERSION` only on releases that change the
+executor↔scheduler wire format. Most releases will not bump it.
+
+### Rolling both Deployments together
+
+The scheduler and executor live in separate Deployments; there is no single
+"app roll." When you cut a release that bumps `BALLISTA_PROTOCOL_VERSION`,
+update **both** Deployments' image tags in the same change and apply them
+together. Kubernetes will roll each Deployment independently under its own
+rollout policy, but the fleet stays serving throughout:
+
+| scheduler ↔ executor | outcome                                          |
+| -------------------- | ------------------------------------------------ |
+| old ↔ old            | works (old scheduler pre-dates the check)        |
+| old ↔ new            | works (old scheduler ignores the unknown field)  |
+| new ↔ new            | works                                            |
+| new ↔ old            | rejected — new scheduler fails `/readyz` until enough new executors register |
+
+Because the *old* scheduler is permissive (it never learned to check the
+field), executors that reach it during the transition are always accepted.
+The rejection happens only when a *new* scheduler sees an *old* executor,
+which is the case the version check is designed to protect against —
+mismatched pairs never exchange work, so they cannot corrupt state.
+
+Give each Deployment a `maxSurge` so Kubernetes brings new pods up before
+tearing old ones down; this keeps executor capacity at roughly 100% during
+the roll:
+
+```yaml
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+```
+
+The scheduler's `/readyz` gate (`--min-ready-executors`, default `1`) means
+a fresh scheduler pod does not receive `Service` traffic until at least one
+matching-version executor has registered with it, so clients keep hitting
+the old scheduler until the new one has real capacity behind it. Set
+`--min-ready-executors=0` if you want the scheduler to advertise readiness
+immediately (e.g. single-node development clusters).
 
 ## Port Forwarding
 
