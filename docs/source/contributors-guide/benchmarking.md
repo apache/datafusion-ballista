@@ -76,14 +76,14 @@ All results on this page use the following shape. It is a reference point, not a
 requirement — the commands below work on any cluster, but numbers are only
 comparable when the shape matches.
 
-| | |
-|---|---|
-| Executors | 2, one per physical node |
-| Per executor | 8 cores, 56 GiB, `--memory-pool-size=48GB` |
-| Per task slot | 8 concurrent tasks → 6 GB pool each |
-| Scheduler | 1 |
-| Data | TPC-H SF1000 Parquet, node-local disk |
-| `target_partitions` | 32 |
+|                     |                                            |
+| ------------------- | ------------------------------------------ |
+| Executors           | 2, one per physical node                   |
+| Per executor        | 8 cores, 56 GiB, `--memory-pool-size=48GB` |
+| Per task slot       | 8 concurrent tasks → 6 GB pool each        |
+| Scheduler           | 1                                          |
+| Data                | TPC-H SF1000 Parquet, node-local disk      |
+| `target_partitions` | 32                                         |
 
 Two details matter more than they look:
 
@@ -217,7 +217,7 @@ Comet is the most informative comparison available to Ballista, because **Comet 
 Ballista execute DataFusion physical plans using the same DataFusion operators**.
 The scan, filter, join, and aggregate implementations doing the work are largely
 shared code. When Ballista and Comet diverge on a query, the difference therefore
-points at what is *not* shared — how work is distributed, scheduled, shuffled, and
+points at what is _not_ shared — how work is distributed, scheduled, shuffled, and
 bounded by memory — rather than at the speed of the operators themselves. That is
 precisely the surface Ballista is trying to improve, which makes the comparison
 diagnostic rather than merely competitive.
@@ -225,7 +225,7 @@ diagnostic rather than merely competitive.
 That said, **the two do not necessarily run the same plan shape**, and the numbers
 should not be read as an operator-level A/B:
 
-- **Different planners produce the plan.** Comet accelerates a plan that *Spark's*
+- **Different planners produce the plan.** Comet accelerates a plan that _Spark's_
   optimizer produced: Spark chooses the join order and join strategies, and
   **Spark's AQE** coalesces shuffle partitions, converts joins, and splits skewed
   partitions at runtime. Ballista plans with DataFusion's optimizer and, when
@@ -238,8 +238,8 @@ should not be read as an operator-level A/B:
 - **The distribution models differ.** Comet executes within Spark's task model and
   shuffle service; Ballista has its own scheduler, stage/task model, and shuffle.
 
-So a Comet-vs-Ballista gap is best read as a question — *what is Spark's planner or
-execution model doing here that Ballista's is not?* — rather than as a verdict on
+So a Comet-vs-Ballista gap is best read as a question — _what is Spark's planner or
+execution model doing here that Ballista's is not?_ — rather than as a verdict on
 DataFusion. Vanilla Spark is included as the third data point, since it isolates
 how much of any Comet result comes from DataFusion acceleration versus from Spark's
 planner.
@@ -252,37 +252,37 @@ lower is better.
 
 Versions under test:
 
-| Engine | Version |
-|---|---|
-| Ballista | `main` @ `0f6ec8c6` |
-| Spark | 3.5.3 (vanilla, Comet disabled) |
-| Comet | 0.17.0 |
+| Engine   | Version                         |
+| -------- | ------------------------------- |
+| Ballista | `main` @ `0f6ec8c6`             |
+| Spark    | 3.5.3 (vanilla, Comet disabled) |
+| Comet    | 0.17.0                          |
 
-| Query | Spark | Comet | Ballista (AQE off) | Ballista (AQE on) |
-|---:|---:|---:|---:|---:|
-| 1 | TBD | TBD | TBD | TBD |
-| 2 | TBD | TBD | TBD | TBD |
-| 3 | TBD | TBD | TBD | TBD |
-| 4 | TBD | TBD | TBD | TBD |
-| 5 | TBD | TBD | TBD | TBD |
-| 6 | TBD | TBD | TBD | TBD |
-| 7 | TBD | TBD | TBD | TBD |
-| 8 | TBD | TBD | TBD | TBD |
-| 9 | TBD | TBD | TBD | TBD |
-| 10 | TBD | TBD | TBD | TBD |
-| 11 | TBD | TBD | TBD | TBD |
-| 12 | TBD | TBD | TBD | TBD |
-| 13 | TBD | TBD | TBD | TBD |
-| 14 | TBD | TBD | TBD | TBD |
-| 15 | TBD | TBD | TBD | TBD |
-| 16 | TBD | TBD | TBD | TBD |
-| 17 | TBD | TBD | TBD | TBD |
-| 18 | **458.0** | **225.5** | TBD | **750.5** |
-| 19 | TBD | TBD | TBD | TBD |
-| 20 | TBD | TBD | TBD | TBD |
-| 21 | TBD | TBD | TBD | TBD |
-| 22 | TBD | TBD | TBD | TBD |
-| **Total** | TBD | TBD | TBD | TBD |
+|     Query |     Spark |     Comet | Ballista (AQE off) | Ballista (AQE on) |
+| --------: | --------: | --------: | -----------------: | ----------------: |
+|         1 |       TBD |       TBD |                TBD |               TBD |
+|         2 |       TBD |       TBD |                TBD |               TBD |
+|         3 |       TBD |       TBD |                TBD |               TBD |
+|         4 |       TBD |       TBD |                TBD |               TBD |
+|         5 |       TBD |       TBD |                TBD |               TBD |
+|         6 |       TBD |       TBD |                TBD |               TBD |
+|         7 |       TBD |       TBD |                TBD |               TBD |
+|         8 |       TBD |       TBD |                TBD |               TBD |
+|         9 |       TBD |       TBD |                TBD |               TBD |
+|        10 |       TBD |       TBD |                TBD |               TBD |
+|        11 |       TBD |       TBD |                TBD |               TBD |
+|        12 |       TBD |       TBD |                TBD |               TBD |
+|        13 |       TBD |       TBD |                TBD |               TBD |
+|        14 |       TBD |       TBD |                TBD |               TBD |
+|        15 |       TBD |       TBD |                TBD |               TBD |
+|        16 |       TBD |       TBD |                TBD |               TBD |
+|        17 |       TBD |       TBD |                TBD |               TBD |
+|        18 | **458.0** | **225.5** |                TBD |         **750.5** |
+|        19 |       TBD |       TBD |                TBD |               TBD |
+|        20 |       TBD |       TBD |                TBD |               TBD |
+|        21 |       TBD |       TBD |                TBD |               TBD |
+|        22 |       TBD |       TBD |                TBD |               TBD |
+| **Total** |       TBD |       TBD |                TBD |               TBD |
 
 This table records **one current result set**. When results are refreshed, the
 table and the pinned versions above are replaced together — a row must never mix
@@ -311,8 +311,8 @@ result hashes.
 Benchmarking at SF1000 is how most of the following were found. They are worth
 knowing about before interpreting a number:
 
-| Issue | Summary |
-|---|---|
-| [#1359](https://github.com/apache/datafusion-ballista/issues/1359) | Umbrella issue for adaptive (AQE) query execution. |
+| Issue                                                              | Summary                                                                                                                                                                                                  |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#1359](https://github.com/apache/datafusion-ballista/issues/1359) | Umbrella issue for adaptive (AQE) query execution.                                                                                                                                                       |
 | [#2025](https://github.com/apache/datafusion-ballista/issues/2025) | Q18's hash-join build side exhausts the memory pool at SF1000. DataFusion's hash-join build side does not spill, so a per-partition build side larger than one task slot's pool fails the task outright. |
-| [#2063](https://github.com/apache/datafusion-ballista/issues/2063) | AQE can hang when a re-plan cancels an in-flight stage; the job never reports completion. |
+| [#2063](https://github.com/apache/datafusion-ballista/issues/2063) | AQE can hang when a re-plan cancels an in-flight stage; the job never reports completion.                                                                                                                |
