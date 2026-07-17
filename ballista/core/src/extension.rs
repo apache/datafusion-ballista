@@ -774,6 +774,7 @@ impl SessionConfigHelperExt for SessionConfig {
     }
 
     fn ballista_restricted_configuration(self) -> Self {
+        let ballista_defaults = BallistaConfig::default();
         self
             // round robbin repartition does not work well with ballista.
             // this setting it will also be enforced by the scheduler
@@ -798,13 +799,17 @@ impl SessionConfigHelperExt for SessionConfig {
             //
             // A build side smaller than these thresholds is collected into a
             // CollectLeft (broadcast) hash join rather than being repartitioned.
+            // The values mirror Ballista's own broadcast thresholds so a single
+            // set of `ballista.optimizer.broadcast_join_threshold_*` defaults
+            // drives both DataFusion's built-in JoinSelection (static planner)
+            // and Ballista's AQE join selection.
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                10 * 1024 * 1024,
+                ballista_defaults.broadcast_join_threshold_bytes() as u64,
             )
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-                1_000_000,
+                ballista_defaults.broadcast_join_threshold_rows() as u64,
             )
             //
             // DataFusion's hash join has no spill support, so each parallel
