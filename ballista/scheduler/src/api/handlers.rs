@@ -245,7 +245,7 @@ pub async fn get_root<
 ) -> Result<Redirect, (StatusCode, String)> {
     const NIGHTLIES_URL: &str = "https://nightlies.apache.org/datafusion/ballista/tui";
     let external_host = data_server.state.config.external_host.clone();
-    let bind_port = data_server.state.config.bind_port.clone();
+    let bind_port = data_server.state.config.bind_port;
 
     let ballista_scheduler_url =
         params.remove("ballista_scheduler_url").unwrap_or_else(|| {

@@ -232,7 +232,7 @@ pub struct Config {
     )]
     pub cors_allowed_methods: String,
     #[cfg(feature = "rest-api")]
-    /// The HTTP path that will redirect to the WebTUI app at https://nightlies.apache.org
+    /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
     #[arg(
         long,
         default_value_t = String::from("/"),
@@ -308,7 +308,8 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
-    /// The HTTP path that will redirect to the WebTUI app at https://nightlies.apache.org
+    #[cfg(feature = "rest-api")]
+    /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
     pub web_tui_route: String,
 }
 
