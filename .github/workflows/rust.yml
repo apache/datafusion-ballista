@@ -17,6 +17,9 @@
 
 name: Ballista Rust
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
@@ -33,6 +36,8 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "ci/scripts/**"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
       - ".github/actions/setup-builder/**"
       - ".github/actions/setup-macos-builder/**"
       - ".github/actions/setup-windows-builder/**"
@@ -50,6 +55,8 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "ci/scripts/**"
+      - "dev/docker/**"
+      - "dev/build-ballista-docker.sh"
       - ".github/actions/setup-builder/**"
       - ".github/actions/setup-macos-builder/**"
       - ".github/actions/setup-windows-builder/**"
@@ -82,6 +89,7 @@ jobs:
 
   linux-test:
     name: test linux crates
+    needs: lint-gate
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -115,6 +123,7 @@ jobs:
 
   linux-build-workspace:
     name: check linux workspace
+    needs: lint-gate
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -135,6 +144,7 @@ jobs:
 
   ballista-test:
     name: test linux ballista
+    needs: lint-gate
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -157,6 +167,7 @@ jobs:
 
   macos-test:
     name: macos test
+    needs: lint-gate
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7.0.0
@@ -177,6 +188,7 @@ jobs:
   # verify that the benchmark queries return the correct results
   verify-benchmark-results:
     name: verify benchmark results (amd64)
+    needs: lint-gate
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -255,6 +267,18 @@ jobs:
               exit 1
           fi
 
+  # Aggregating gate: every expensive job below `needs:` this, so it only runs
+  # once rustfmt, clippy, and Cargo.toml formatting have all passed. A failed
+  # dependency skips this job, which in turn skips everything gated on it, so no
+  # expensive build/test/benchmark work runs on a PR with lint errors.
+  lint-gate:
+    name: Lint gate
+    needs: [lint, clippy, cargo-toml-formatting-checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lint checks passed
+        run: echo "rustfmt, clippy, and Cargo.toml formatting all passed"
+
   datafusion-proto-sync-check:
     name: Check vendored DataFusion proto is in sync
     runs-on: ubuntu-latest
@@ -269,6 +293,398 @@ jobs:
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Check vendored DataFusion proto matches pinned crate
         run: ci/scripts/rust_proto_check.sh
+
+  tpch-sf10:
+    name: TPC-H SF10 (all queries, AQE off + on)
+    needs: lint-gate
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y netcat-traditional
+
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: stable
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+
+      - name: Build Ballista binaries
+        run: |
+          cargo build --profile tpch-ci --locked \
+            -p ballista-scheduler \
+            -p ballista-executor \
+            -p ballista-benchmarks
+
+      - name: Install tpchgen-cli
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2.83.3
+        with:
+          tool: tpchgen-cli@2.0.2
+
+      - name: Generate TPC-H SF10 data
+        run: |
+          mkdir -p "$RUNNER_TEMP/tpch-data"
+          tpchgen-cli \
+            --scale-factor 10 \
+            --parts 16 \
+            --format=parquet \
+            --output-dir "$RUNNER_TEMP/tpch-data"
+
+      - name: Run TPC-H queries against Ballista cluster
+        env:
+          DATA_DIR: ${{ runner.temp }}/tpch-data
+          WORK_DIR: ${{ runner.temp }}/work
+          SCHEDULER_LOG: ${{ runner.temp }}/scheduler.log
+          EXECUTOR_LOG: ${{ runner.temp }}/executor.log
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORK_DIR"
+
+          ./target/tpch-ci/ballista-scheduler \
+            --bind-host 127.0.0.1 \
+            > "$SCHEDULER_LOG" 2>&1 &
+          SCHEDULER_PID=$!
+
+          ./target/tpch-ci/ballista-executor \
+            --bind-host 127.0.0.1 \
+            --bind-port 50051 \
+            --scheduler-host 127.0.0.1 \
+            --scheduler-connect-timeout-seconds 10 \
+            --vcores 4 \
+            --memory-pool-size 2GB \
+            --work-dir "$WORK_DIR" \
+            > "$EXECUTOR_LOG" 2>&1 &
+          EXECUTOR_PID=$!
+
+          cleanup() {
+            echo "::group::scheduler log (tail)"
+            tail -n 200 "$SCHEDULER_LOG" || true
+            echo "::endgroup::"
+            echo "::group::executor log (tail)"
+            tail -n 200 "$EXECUTOR_LOG" || true
+            echo "::endgroup::"
+            kill "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+            wait "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for scheduler on 127.0.0.1:50050..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50050; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
+
+          echo "Waiting for executor on 127.0.0.1:50051..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50051; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
+
+          # Run the suite once per planner mode against the same data and
+          # cluster. AQE on/off is a per-query session setting, so the scheduler
+          # picks the planner per job; no need to regenerate data or restart the
+          # cluster.
+          run_suite() {
+            local label="$1"; shift
+            # q16 omitted: still unsupported (matches benchmarks/run.sh).
+            for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
+              echo "::group::[$label] Query $q"
+              ./target/tpch-ci/tpch benchmark ballista \
+                --host 127.0.0.1 --port 50050 \
+                --query "$q" \
+                --path "$DATA_DIR" \
+                --format parquet \
+                --partitions 16 \
+                --iterations 1 \
+                "$@"
+              echo "::endgroup::"
+            done
+          }
+
+          run_suite "AQE off" \
+            --verify \
+            -c datafusion.optimizer.prefer_hash_join=false
+          run_suite "AQE on" \
+            --verify \
+            -c datafusion.optimizer.prefer_hash_join=false \
+            -c ballista.planner.adaptive.enabled=true
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tpch-sf10-cluster-logs
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/scheduler.log
+            ${{ runner.temp }}/executor.log
+          if-no-files-found: ignore
+  tpcds-sf1:
+    name: TPC-DS SF1 (all queries, static planner)
+    needs: lint-gate
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y netcat-traditional
+
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: stable
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+
+      - name: Build Ballista binaries
+        run: |
+          cargo build --profile tpch-ci --locked \
+            -p ballista-scheduler \
+            -p ballista-executor \
+            -p ballista-benchmarks
+
+      - name: Install tpcgen-cli
+        run: |
+          cargo install --git https://github.com/clflushopt/tpchgen-rs \
+            --rev 573fd0018dd1b41e52880162f615e9903418c397 --locked tpcgen-cli
+
+      - name: Generate TPC-DS SF1 data
+        run: |
+          mkdir -p "$RUNNER_TEMP/tpcds-data"
+          tpcgen-cli tpcds parquet \
+            --scale-factor 1 \
+            --output-dir "$RUNNER_TEMP/tpcds-data"
+
+      - name: Run TPC-DS queries against Ballista cluster
+        env:
+          DATA_DIR: ${{ runner.temp }}/tpcds-data
+          WORK_DIR: ${{ runner.temp }}/work
+          SCHEDULER_LOG: ${{ runner.temp }}/scheduler.log
+          EXECUTOR_LOG: ${{ runner.temp }}/executor.log
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORK_DIR"
+
+          ./target/tpch-ci/ballista-scheduler \
+            --bind-host 127.0.0.1 \
+            > "$SCHEDULER_LOG" 2>&1 &
+          SCHEDULER_PID=$!
+
+          ./target/tpch-ci/ballista-executor \
+            --bind-host 127.0.0.1 \
+            --bind-port 50051 \
+            --scheduler-host 127.0.0.1 \
+            --scheduler-connect-timeout-seconds 10 \
+            --concurrent-tasks 4 \
+            --memory-pool-size 2GB \
+            --work-dir "$WORK_DIR" \
+            > "$EXECUTOR_LOG" 2>&1 &
+          EXECUTOR_PID=$!
+
+          cleanup() {
+            echo "::group::scheduler log (tail)"
+            tail -n 200 "$SCHEDULER_LOG" || true
+            echo "::endgroup::"
+            echo "::group::executor log (tail)"
+            tail -n 200 "$EXECUTOR_LOG" || true
+            echo "::endgroup::"
+            kill "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+            wait "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for scheduler on 127.0.0.1:50050..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50050; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
+
+          echo "Waiting for executor on 127.0.0.1:50051..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50051; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
+
+          # Run the suite under the default (static) planner. The tpcds binary
+          # internally loops all non-skipped queries and exits non-zero on any
+          # failure, so a single invocation covers the whole suite.
+          #
+          # The adaptive planner (AQE on) is intentionally not run here yet: it
+          # currently fails many TPC-DS queries with an `EmptyExec invalid
+          # partition` assertion (issue #2047). Re-add an `AQE on` invocation
+          # once that is fixed.
+          run_suite() {
+            local label="$1"; shift
+            echo "::group::[$label] TPC-DS suite"
+            ./target/tpch-ci/tpcds \
+              --host 127.0.0.1 --port 50050 \
+              --path "$DATA_DIR" \
+              --partitions 16 \
+              --verify \
+              "$@"
+            echo "::endgroup::"
+          }
+
+          run_suite "static planner" \
+            -c datafusion.optimizer.prefer_hash_join=false
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tpcds-sf1-cluster-logs
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/scheduler.log
+            ${{ runner.temp }}/executor.log
+          if-no-files-found: ignore
+  build_docker:
+    name: Run Build Docker Script
+    needs: lint-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+      - name: Setup Rust toolchain
+        run: |
+          rustup update stable
+          rustup toolchain install stable
+          rustup default stable
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Run script
+        run: |
+          git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
+
+          ./dev/build-ballista-docker.sh
+
+          docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
+          docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:latest
+          docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:latest
+
+          # release dockers only when there is a release tag
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
+          then
+
+            docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+
+            echo "publishing docker tag $DOCKER_TAG"
+
+            docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
+            docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
+            docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG
+
+            docker push ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
+            docker push ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
+            docker push ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG
+
+            echo "publishing docker tag latest"
+
+            docker push ghcr.io/apache/datafusion-ballista-standalone:latest
+            docker push ghcr.io/apache/datafusion-ballista-executor:latest
+            docker push ghcr.io/apache/datafusion-ballista-scheduler:latest
+
+          fi
+        env:
+          DOCKER_USER: ${{ github.actor }}
+          DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
+  web-tui:
+    name: Build Web TUI WASM32 application
+    needs: lint-gate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2.83.3
+        with:
+          tool: trunk@0.21.14
+
+      - name: Install cargo-get
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2.83.3
+        with:
+          tool: cargo-get@1.4.0
+
+      - name: Get package.version
+        id: cargo_metadata
+        run: |
+          BALLISTA_VERSION=$(cargo get --entry ballista/core/ package.version)
+          echo "ballista_version=${BALLISTA_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: ballista-cli
+        run: |
+          trunk build --cargo-profile release-nonlto --minify --locked \
+            --no-default-features --features web
+
+      - name: Deploy at nightlies.a.o
+        if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
+          REMOTE_TARGET_DIR="${{ secrets.NIGHTLIES_RSYNC_PATH }}/${TUI_DIR}/"
+
+          echo "${{ secrets.NIGHTLIES_RSYNC_KEY }}" | ssh-add -
+
+          ssh-keyscan -H "${{ secrets.NIGHTLIES_RSYNC_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${REMOTE_TARGET_DIR}"
+
+          rsync --times --compress --delete --verbose -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" ./target/web-tui/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
+
+      - name: Upload WASM32 application
+        uses: actions/upload-artifact@v7
+        with:
+          name: ballista-web-tui
+          retention-days: 7
+          path: target/web-tui/
 
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
