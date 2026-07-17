@@ -273,62 +273,57 @@ static planner's sort-merge-join broadcast conversion, which changes the AQE-off
 path specifically. A number from before that commit is not comparable to one after
 it, and only the exact commit makes that visible.
 
-Each figure is from a **full 22-query suite run**, one query after another in a
-single session, unless marked otherwise.
+Every figure is from a **full 22-query suite run** — one query after another in a
+single session, on freshly started executors.
 
 |     Query |      Spark |      Comet | Ballista (AQE off) | Ballista (AQE on) |   Rows |
 | --------: | ---------: | ---------: | -----------------: | ----------------: | -----: |
-|         1 |      444.8 |       49.3 |               70.8 |               TBD |      4 |
-|         2 |       74.3 |       37.3 |              155.5 |               TBD |    100 |
-|         3 |      158.4 |       99.1 |              206.2 |               TBD |     10 |
-|         4 |      104.1 |       42.3 |               76.8 |               TBD |      5 |
-|         5 |      364.9 |      234.6 |              542.7 |               TBD |      5 |
-|         6 |       22.0 |       15.3 |               18.3 |               TBD |      1 |
-|         7 |      196.1 |      141.8 |              575.5 |               TBD |      4 |
-|         8 |      412.7 |      291.6 |              657.1 |               TBD |      2 |
-|         9 |      570.2 |      392.1 |              891.8 |               TBD |    175 |
-|        10 |      147.3 |      112.5 |              240.3 |               TBD |     20 |
-|        11 |       58.3 |       48.7 |              105.1 |               TBD |  0 [2] |
-|        12 |       75.9 |       52.9 |               79.4 |               TBD |      2 |
-|        13 |      114.1 |       71.9 |               96.7 |               TBD |     30 |
-|        14 |       44.6 |       29.0 |               38.0 |               TBD |      1 |
-|        15 |      108.9 |       63.8 |               45.9 |               TBD | \* [3] |
-|        16 |       33.9 |       18.7 |               21.9 |               TBD |  27840 |
-|        17 |      519.5 |      308.2 |              697.8 |               TBD |      1 |
-|        18 |      492.8 |      234.2 |              620.7 |         750.5 [1] |    100 |
-|        19 |       53.7 |       39.4 |               39.6 |               TBD |      1 |
-|        20 |      108.1 |       74.6 |               80.5 |               TBD | 110759 |
-|        21 |      536.4 |      351.4 |             1083.0 |               TBD |    100 |
-|        22 |       47.0 |       29.8 |               34.9 |               TBD |      7 |
-| **Total** | **4687.9** | **2738.5** |         **6378.2** |               TBD |        |
+|         1 |      444.8 |       49.3 |               70.8 |              36.2 |      4 |
+|         2 |       74.3 |       37.3 |              155.5 |              63.6 |    100 |
+|         3 |      158.4 |       99.1 |              206.2 |             255.0 |     10 |
+|         4 |      104.1 |       42.3 |               76.8 |              53.9 |      5 |
+|         5 |      364.9 |      234.6 |              542.7 |             700.5 |      5 |
+|         6 |       22.0 |       15.3 |               18.3 |              12.7 |      1 |
+|         7 |      196.1 |      141.8 |              575.5 |             531.4 |      4 |
+|         8 |      412.7 |      291.6 |              657.1 |             801.2 |      2 |
+|         9 |      570.2 |      392.1 |              891.8 |            1025.2 |    175 |
+|        10 |      147.3 |      112.5 |              240.3 |             166.7 |     20 |
+|        11 |       58.3 |       48.7 |              105.1 |              76.2 |  0 [1] |
+|        12 |       75.9 |       52.9 |               79.4 |              85.2 |      2 |
+|        13 |      114.1 |       71.9 |               96.7 |              95.6 |     30 |
+|        14 |       44.6 |       29.0 |               38.0 |              34.3 |      1 |
+|        15 |      108.9 |       63.8 |               45.9 |              52.7 | \* [2] |
+|        16 |       33.9 |       18.7 |               21.9 |              23.0 |  27840 |
+|        17 |      519.5 |      308.2 |              697.8 |             400.4 |      1 |
+|        18 |      492.8 |      234.2 |              620.7 |             820.9 |    100 |
+|        19 |       53.7 |       39.4 |               39.6 |              42.1 |      1 |
+|        20 |      108.1 |       74.6 |               80.5 |              82.9 | 110759 |
+|        21 |      536.4 |      351.4 |             1083.0 |             926.6 |    100 |
+|        22 |       47.0 |       29.8 |               34.9 |              34.6 |      7 |
+| **Total** | **4687.9** | **2738.5** |         **6378.2** |        **6320.7** |        |
 
-All 22 queries completed on every engine measured so far; no failures to report.
+**All 22 queries completed on all four configurations**; there are no failures to
+report. Row counts agreed across every engine except Q15.
 
-[1] **Does not match this table's pinned versions**, on two counts: it is a
-standalone single-query run rather than part of a suite, and it was measured at
-`0f6ec8c6` rather than `26b29391`. It is recorded only because it is the sole
-AQE-on measurement so far, and will be replaced by the suite figure. Neither caveat
-is cosmetic — Q18 on Spark measured 458.0 s standalone versus 492.8 s in the suite,
-a 7.6% spread on the same build.
-
-[2] Q11 returns 0 rows for every engine at this scale factor: the query's threshold
+[1] Q11 returns 0 rows for every engine at this scale factor: the query's threshold
 constant is tuned for SF1.
 
-[3] **Row counts disagree on Q15: Spark returns 0, Comet and Ballista both return 1.** Q15 is a multi-statement query (`CREATE VIEW` / `SELECT` / `DROP VIEW`), and
+[2] **Row counts disagree on Q15: Spark returns 0, Comet and Ballista both return 1.** Q15 is a multi-statement query (`CREATE VIEW` / `SELECT` / `DROP VIEW`), and
 how many rows a harness reports depends on which statement it takes as the result.
 Recorded rather than resolved: it is not established which count is correct, or
 whether the engines computed different answers at all.
 
 The `Rows` column is the row count the query returned, recorded so a time is never
-read without the answer it produced. Except where noted, all engines agreed.
+read without the answer it produced.
 
 This table records **one current result set**. When results are refreshed, the
 table and the pinned versions above are replaced together — a row must never mix
 numbers from different commits, because a stale row silently misattributes a
 regression.
 
-The table is being filled in incrementally; `TBD` means not yet measured on this
-cluster at this commit, not "failed".
+`TBD` means not yet measured on this cluster at this commit; a query that ran but
+did not produce an answer is recorded as `FAIL`, or `OOM` where the failure is a
+known memory exhaustion.
 
 ### Recording a result
 
