@@ -1,0 +1,1010 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Benchmarking &#8212; Apache DataFusion Ballista  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributors-guide/benchmarking';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Communication" href="../community/communication.html" />
+    <link rel="prev" title="Ballista Development" href="development.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/ballista_black.svg" class="logo__image only-light" alt="Apache DataFusion Ballista  documentation - Home"/>
+    <img src="../_static/ballista_white.svg" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Ballista  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/introduction.html">Introduction</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cluster Deployment</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/deployment/index.html">Deployment</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/quick-start.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/cargo-install.html">Cargo Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker.html">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker-compose.html">Docker Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/kubernetes.html">Kubernetes</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/scheduler.html">Scheduler</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Clients</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/python/index.html">Python</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/quickstart.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/cloud-storage.html">Querying S3 Data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/jupyter.html">Jupyter Notebooks</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/rust.html">Rust</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/cli.html">SQL CLI</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/configs.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/tuning-guide.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/metrics.html">Ballista Scheduler Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/faq.html">Frequently Asked Questions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extending-components.html">Extending Ballista Scheduler And Executors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/spark-compatible-functions.html">Spark-Compatible Functions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extensions-example.html">Extensions Example</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Changelog</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../changelog/index.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/53.0.0.html">Apache DataFusion Ballista 53.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/52.0.0.html">Apache DataFusion Ballista 52.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/51.0.0.html">Apache DataFusion Ballista 51.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/50.0.0.html">Apache DataFusion Ballista 50.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/49.0.0.html">Apache DataFusion Ballista 49.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/48.0.0.html">Apache DataFusion Ballista 48.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/47.0.0.html">Apache DataFusion Ballista 47.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/46.0.0.html">Apache DataFusion Ballista 46.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/45.0.0.html">Apache DataFusion Ballista 45.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/44.0.0.html">Apache DataFusion Ballista 44.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/43.0.0.html">Apache DataFusion Ballista 43.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.12.0.html">Apache DataFusion Ballista 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.11.0.html">Apache DataFusion Ballista 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.10.0.html">Apache DataFusion Ballista 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.9.0.html">Apache DataFusion Ballista 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.8.0.html">Apache DataFusion Ballista 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.7.0.html">Apache DataFusion Ballista 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.6.0.html">Apache DataFusion Ballista 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.5.0.html">Apache DataFusion Ballista 0.5.0 Changelog</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="user-personas.html">User Personas</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Ballista Development</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Benchmarking</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Benchmarking</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="benchmarking">
+<h1>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h1>
+<p>This page describes how Ballista is benchmarked at scale, and records the current
+results. It is aimed at contributors who want to reproduce a number, understand why
+a comparison is set up the way it is, or add a result of their own.</p>
+<p>The benchmark used here is derived from TPC-H. For running TPC-H locally at small
+scale factors, see <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md"><code class="docutils literal notranslate"><span class="pre">benchmarks/README.md</span></code></a> in the repository; this
+page covers the multi-node, large-scale-factor setup and the cross-engine
+comparisons.</p>
+<section id="what-we-measure-and-why">
+<h2>What we measure, and why<a class="headerlink" href="#what-we-measure-and-why" title="Link to this heading">#</a></h2>
+<p>Ballista’s central performance question is <strong>how evenly work is spread across
+executor tasks</strong>. A distributed query is only as fast as its slowest stage, and a
+stage is only as fast as its slowest task, so a query whose work concentrates onto
+a few partitions will underperform no matter how fast the underlying operators are.
+Benchmarks are therefore run at a scale where that imbalance actually shows up.</p>
+<p>Two configurations are always measured, because they select <strong>different planners</strong>
+with materially different join behaviour:</p>
+<ul class="simple">
+<li><p><strong>AQE off</strong> (<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=false</span></code>, the default) — the static
+<code class="docutils literal notranslate"><span class="pre">DefaultDistributedPlanner</span></code>.</p></li>
+<li><p><strong>AQE on</strong> (<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code>, experimental) — the adaptive
+planner, which can re-plan stages using runtime statistics.</p></li>
+</ul>
+<p>A change that helps one planner can be a no-op or a regression under the other, so
+results are reported for both rather than for whichever looks better.</p>
+</section>
+<section id="environment">
+<h2>Environment<a class="headerlink" href="#environment" title="Link to this heading">#</a></h2>
+<p>The results on this page currently come from a <strong>small homelab cluster</strong>: two
+bare-metal nodes running Kubernetes, with the TPC-H data staged on node-local disk.
+This is a deliberate starting point rather than a final destination. A two-node
+cluster with local disk removes as many confounds as possible — no object-store
+latency, no cloud network variance, no noisy neighbours — so that when a query is
+slow, the cause is Ballista and not the environment.</p>
+<p>The intent is to <strong>move these benchmarks to AWS with data in S3</strong> once the results
+here are good. That environment is the one users actually run, and it exercises
+things a homelab cannot: object-store reads instead of local disk, higher and more
+variable network latency between executors, and larger executor counts. Some of
+Ballista’s behaviour is expected to change there — a shuffle that is cheap over a
+local link is not cheap over a cloud network, and object-store reads make scan
+parallelism matter differently.</p>
+<p>So results on this page should be read as <strong>relative comparisons on controlled
+hardware</strong>, useful for “did this change help”, not as absolute throughput numbers
+for a cloud deployment.</p>
+</section>
+<section id="reference-cluster">
+<h2>Reference cluster<a class="headerlink" href="#reference-cluster" title="Link to this heading">#</a></h2>
+<p>All results on this page use the following shape. It is a reference point, not a
+requirement — the commands below work on any cluster, but numbers are only
+comparable when the shape matches.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Executors</p></td>
+<td><p>2, one per physical node</p></td>
+</tr>
+<tr class="row-odd"><td><p>Per executor</p></td>
+<td><p>8 cores, 56 GiB, <code class="docutils literal notranslate"><span class="pre">--memory-pool-size=48GB</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Per task slot</p></td>
+<td><p>8 concurrent tasks → 6 GB pool each</p></td>
+</tr>
+<tr class="row-odd"><td><p>Scheduler</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p>Data</p></td>
+<td><p>TPC-H SF1000 Parquet, node-local disk</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">target_partitions</span></code></p></td>
+<td><p>32</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Two details matter more than they look:</p>
+<ul class="simple">
+<li><p><strong>Executors are spread one per node.</strong> Packing two executors onto one node makes
+them contend for the same disk and memory bandwidth, which is measuring the host,
+not the engine.</p></li>
+<li><p><strong>Data is on node-local disk, not object storage.</strong> With a modest network between
+nodes, reading from object storage makes the interconnect the bottleneck and the
+engine comparison becomes an I/O comparison.</p></li>
+</ul>
+<p>The memory pool is deliberately set below the container limit. Ballista splits
+<code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> into one <code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> per task slot, and that accounting
+does not cover every allocation, so leaving headroom between the pool and the
+container limit avoids the container being killed outright instead of reporting a
+graceful resource error.</p>
+</section>
+<section id="queries">
+<h2>Queries<a class="headerlink" href="#queries" title="Link to this heading">#</a></h2>
+<p>All engines run the <strong>same SQL</strong>, which is what makes a cross-engine comparison
+apples-to-apples.</p>
+<p>The shared set is the TPC-H queries from <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>
+(SQLBench-H). Ballista’s bundled queries in <code class="docutils literal notranslate"><span class="pre">benchmarks/queries/</span></code> are the classic
+TPC-H phrasing and differ in places, so the shared set is overlaid over them for a
+comparison run.</p>
+<p>Spark and Comet are driven through Comet’s benchmark harness, which reads its own
+bundled copy of the queries (labelled CometBench-H). That copy is textually
+identical to the SQLBench-H set — all 22 queries match once the licence header
+comment is ignored — so the engines are executing the same statements even though
+they load them from different paths. Worth re-checking if either set is ever
+regenerated.</p>
+</section>
+<section id="running-the-benchmark">
+<h2>Running the benchmark<a class="headerlink" href="#running-the-benchmark" title="Link to this heading">#</a></h2>
+<section id="ballista">
+<h3>Ballista<a class="headerlink" href="#ballista" title="Link to this heading">#</a></h3>
+<p>Start a scheduler and one executor per node:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># scheduler</span>
+ballista-scheduler<span class="w"> </span>--bind-host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50050</span>
+
+<span class="c1"># executor (one per node; --concurrent-tasks defaults to the detected core count)</span>
+ballista-executor<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bind-host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--scheduler-host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--scheduler-port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--memory-pool-size<span class="o">=</span>48GB<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--work-dir<span class="w"> </span>/work<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--client-ttl<span class="o">=</span><span class="m">60</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--client-ttl=60</span></code> enables shuffle-client connection caching. Without it every
+shuffle fetch opens a new connection, and a high <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> can exhaust
+ephemeral ports.</p>
+<p>Run a query:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>tpch<span class="w"> </span>benchmark<span class="w"> </span>ballista<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--query<span class="w"> </span><span class="m">18</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--path<span class="w"> </span>/mnt/bigdata/tpch/sf1000<span class="w"> </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--partitions<span class="w"> </span><span class="m">32</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-c<span class="w"> </span>datafusion.optimizer.prefer_hash_join<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-c<span class="w"> </span>datafusion.optimizer.enable_dynamic_filter_pushdown<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-c<span class="w"> </span>ballista.planner.adaptive.enabled<span class="o">=</span><span class="nb">true</span>
+</pre></div>
+</div>
+<p>Omit <code class="docutils literal notranslate"><span class="pre">--query</span></code> to run all 22. Flip <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code>
+for the AQE-off number.</p>
+<p>Note <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.enable_dynamic_filter_pushdown=false</span></code>: DataFusion’s
+dynamic filter pushdown assumes single-process execution and can deadlock
+distributed execution, so it is pinned off for benchmark runs.</p>
+</section>
+<section id="spark">
+<h3>Spark<a class="headerlink" href="#spark" title="Link to this heading">#</a></h3>
+<p>Spark runs the same queries via <code class="docutils literal notranslate"><span class="pre">tpcbench.py</span></code> from
+<a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--master<span class="w"> </span>&lt;master&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>8G<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.shuffle.sort.SortShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>tpcbench.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--data<span class="w"> </span>/mnt/bigdata/tpch/sf1000<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--query<span class="w"> </span><span class="m">18</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.enabled=false</span></code> and the stock <code class="docutils literal notranslate"><span class="pre">SortShuffleManager</span></code> are what make this a
+<strong>vanilla</strong> Spark baseline, in case the image being used ships Comet.</p>
+</section>
+<section id="comet">
+<h3>Comet<a class="headerlink" href="#comet" title="Link to this heading">#</a></h3>
+<p><a class="reference external" href="https://datafusion.apache.org/comet/">Apache DataFusion Comet</a> accelerates Spark by translating supported
+operators to DataFusion. Same queries, same sizing; the difference is the plugin,
+the Comet shuffle manager, and the jar on the classpath:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--master<span class="w"> </span>&lt;master&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span>--driver-class-path<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.replaceSortMergeJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool<span class="o">=</span>fair_unified<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool.fraction<span class="o">=</span><span class="m">0</span>.8<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>8G<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>tpcbench.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--data<span class="w"> </span>/mnt/bigdata/tpch/sf1000<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--query<span class="w"> </span><span class="m">18</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="why-compare-against-comet">
+<h2>Why compare against Comet<a class="headerlink" href="#why-compare-against-comet" title="Link to this heading">#</a></h2>
+<p>Comet is the most informative comparison available to Ballista, because <strong>Comet and
+Ballista execute DataFusion physical plans using the same DataFusion operators</strong>.
+The scan, filter, join, and aggregate implementations doing the work are largely
+shared code. When Ballista and Comet diverge on a query, the difference therefore
+points at what is <em>not</em> shared — how work is distributed, scheduled, shuffled, and
+bounded by memory — rather than at the speed of the operators themselves. That is
+precisely the surface Ballista is trying to improve, which makes the comparison
+diagnostic rather than merely competitive.</p>
+<p>That said, <strong>the two do not necessarily run the same plan shape</strong>, and the numbers
+should not be read as an operator-level A/B:</p>
+<ul class="simple">
+<li><p><strong>Different planners produce the plan.</strong> Comet accelerates a plan that <em>Spark’s</em>
+optimizer produced: Spark chooses the join order and join strategies, and
+<strong>Spark’s AQE</strong> coalesces shuffle partitions, converts joins, and splits skewed
+partitions at runtime. Ballista plans with DataFusion’s optimizer and, when
+enabled, its own experimental AQE. Spark’s AQE is a mature implementation and
+Ballista’s is not, so the same SQL can arrive at execution with materially
+different plans.</p></li>
+<li><p><strong>Comet falls back to Spark.</strong> Operators and expressions Comet does not support
+stay on the JVM, so a Comet run is generally a mix of DataFusion and Spark
+execution rather than an all-DataFusion one.</p></li>
+<li><p><strong>The distribution models differ.</strong> Comet executes within Spark’s task model and
+shuffle service; Ballista has its own scheduler, stage/task model, and shuffle.</p></li>
+</ul>
+<p>So a Comet-vs-Ballista gap is best read as a question — <em>what is Spark’s planner or
+execution model doing here that Ballista’s is not?</em> — rather than as a verdict on
+DataFusion. Vanilla Spark is included as the third data point, since it isolates
+how much of any Comet result comes from DataFusion acceleration versus from Spark’s
+planner.</p>
+</section>
+<section id="results">
+<h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
+<p>TPC-H <strong>SF1000</strong>, reference cluster above, 1 iteration, <code class="docutils literal notranslate"><span class="pre">target_partitions=32</span></code>,
+<code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>, <code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>. Times in seconds;
+lower is better.</p>
+<p>Versions under test:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Engine</p></th>
+<th class="head"><p>Version</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Ballista</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">main</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">26b29391</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark</p></td>
+<td><p>3.5.3 (vanilla, Comet disabled)</p></td>
+</tr>
+<tr class="row-even"><td><p>Comet</p></td>
+<td><p>0.17.0</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Pinning the Ballista commit rather than “main” matters: <code class="docutils literal notranslate"><span class="pre">26b29391</span></code> removed the
+static planner’s sort-merge-join broadcast conversion, which changes the AQE-off
+path specifically. A number from before that commit is not comparable to one after
+it, and only the exact commit makes that visible.</p>
+<p>Every figure is from a <strong>full 22-query suite run</strong> — one query after another in a
+single session, on freshly started executors.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head text-right"><p>Query</p></th>
+<th class="head text-right"><p>Spark</p></th>
+<th class="head text-right"><p>Comet</p></th>
+<th class="head text-right"><p>Ballista (AQE off)</p></th>
+<th class="head text-right"><p>Ballista (AQE on)</p></th>
+<th class="head text-right"><p>Rows</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td class="text-right"><p>1</p></td>
+<td class="text-right"><p>444.8</p></td>
+<td class="text-right"><p>49.3</p></td>
+<td class="text-right"><p>70.8</p></td>
+<td class="text-right"><p>36.2</p></td>
+<td class="text-right"><p>4</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>2</p></td>
+<td class="text-right"><p>74.3</p></td>
+<td class="text-right"><p>37.3</p></td>
+<td class="text-right"><p>155.5</p></td>
+<td class="text-right"><p>63.6</p></td>
+<td class="text-right"><p>100</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>3</p></td>
+<td class="text-right"><p>158.4</p></td>
+<td class="text-right"><p>99.1</p></td>
+<td class="text-right"><p>206.2</p></td>
+<td class="text-right"><p>255.0</p></td>
+<td class="text-right"><p>10</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>4</p></td>
+<td class="text-right"><p>104.1</p></td>
+<td class="text-right"><p>42.3</p></td>
+<td class="text-right"><p>76.8</p></td>
+<td class="text-right"><p>53.9</p></td>
+<td class="text-right"><p>5</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>5</p></td>
+<td class="text-right"><p>364.9</p></td>
+<td class="text-right"><p>234.6</p></td>
+<td class="text-right"><p>542.7</p></td>
+<td class="text-right"><p>700.5</p></td>
+<td class="text-right"><p>5</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>6</p></td>
+<td class="text-right"><p>22.0</p></td>
+<td class="text-right"><p>15.3</p></td>
+<td class="text-right"><p>18.3</p></td>
+<td class="text-right"><p>12.7</p></td>
+<td class="text-right"><p>1</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>7</p></td>
+<td class="text-right"><p>196.1</p></td>
+<td class="text-right"><p>141.8</p></td>
+<td class="text-right"><p>575.5</p></td>
+<td class="text-right"><p>531.4</p></td>
+<td class="text-right"><p>4</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>8</p></td>
+<td class="text-right"><p>412.7</p></td>
+<td class="text-right"><p>291.6</p></td>
+<td class="text-right"><p>657.1</p></td>
+<td class="text-right"><p>801.2</p></td>
+<td class="text-right"><p>2</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>9</p></td>
+<td class="text-right"><p>570.2</p></td>
+<td class="text-right"><p>392.1</p></td>
+<td class="text-right"><p>891.8</p></td>
+<td class="text-right"><p>1025.2</p></td>
+<td class="text-right"><p>175</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>10</p></td>
+<td class="text-right"><p>147.3</p></td>
+<td class="text-right"><p>112.5</p></td>
+<td class="text-right"><p>240.3</p></td>
+<td class="text-right"><p>166.7</p></td>
+<td class="text-right"><p>20</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>11</p></td>
+<td class="text-right"><p>58.3</p></td>
+<td class="text-right"><p>48.7</p></td>
+<td class="text-right"><p>105.1</p></td>
+<td class="text-right"><p>76.2</p></td>
+<td class="text-right"><p>0 [1]</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>12</p></td>
+<td class="text-right"><p>75.9</p></td>
+<td class="text-right"><p>52.9</p></td>
+<td class="text-right"><p>79.4</p></td>
+<td class="text-right"><p>85.2</p></td>
+<td class="text-right"><p>2</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>13</p></td>
+<td class="text-right"><p>114.1</p></td>
+<td class="text-right"><p>71.9</p></td>
+<td class="text-right"><p>96.7</p></td>
+<td class="text-right"><p>95.6</p></td>
+<td class="text-right"><p>30</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>14</p></td>
+<td class="text-right"><p>44.6</p></td>
+<td class="text-right"><p>29.0</p></td>
+<td class="text-right"><p>38.0</p></td>
+<td class="text-right"><p>34.3</p></td>
+<td class="text-right"><p>1</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>15</p></td>
+<td class="text-right"><p>108.9</p></td>
+<td class="text-right"><p>63.8</p></td>
+<td class="text-right"><p>45.9</p></td>
+<td class="text-right"><p>52.7</p></td>
+<td class="text-right"><p>* [2]</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>16</p></td>
+<td class="text-right"><p>33.9</p></td>
+<td class="text-right"><p>18.7</p></td>
+<td class="text-right"><p>21.9</p></td>
+<td class="text-right"><p>23.0</p></td>
+<td class="text-right"><p>27840</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>17</p></td>
+<td class="text-right"><p>519.5</p></td>
+<td class="text-right"><p>308.2</p></td>
+<td class="text-right"><p>697.8</p></td>
+<td class="text-right"><p>400.4</p></td>
+<td class="text-right"><p>1</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>18</p></td>
+<td class="text-right"><p>492.8</p></td>
+<td class="text-right"><p>234.2</p></td>
+<td class="text-right"><p>620.7</p></td>
+<td class="text-right"><p>820.9</p></td>
+<td class="text-right"><p>100</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>19</p></td>
+<td class="text-right"><p>53.7</p></td>
+<td class="text-right"><p>39.4</p></td>
+<td class="text-right"><p>39.6</p></td>
+<td class="text-right"><p>42.1</p></td>
+<td class="text-right"><p>1</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>20</p></td>
+<td class="text-right"><p>108.1</p></td>
+<td class="text-right"><p>74.6</p></td>
+<td class="text-right"><p>80.5</p></td>
+<td class="text-right"><p>82.9</p></td>
+<td class="text-right"><p>110759</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>21</p></td>
+<td class="text-right"><p>536.4</p></td>
+<td class="text-right"><p>351.4</p></td>
+<td class="text-right"><p>1083.0</p></td>
+<td class="text-right"><p>926.6</p></td>
+<td class="text-right"><p>100</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>22</p></td>
+<td class="text-right"><p>47.0</p></td>
+<td class="text-right"><p>29.8</p></td>
+<td class="text-right"><p>34.9</p></td>
+<td class="text-right"><p>34.6</p></td>
+<td class="text-right"><p>7</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
+<td class="text-right"><p><strong>4687.9</strong></p></td>
+<td class="text-right"><p><strong>2738.5</strong></p></td>
+<td class="text-right"><p><strong>6378.2</strong></p></td>
+<td class="text-right"><p><strong>6320.7</strong></p></td>
+<td class="text-right"><p></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>All 22 queries completed on all four configurations</strong>; there are no failures to
+report. Row counts agreed across every engine except Q15.</p>
+<p>[1] Q11 returns 0 rows for every engine at this scale factor: the query’s threshold
+constant is tuned for SF1.</p>
+<p>[2] <strong>Row counts disagree on Q15: Spark returns 0, Comet and Ballista both return 1.</strong> Q15 is a multi-statement query (<code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">VIEW</span></code> / <code class="docutils literal notranslate"><span class="pre">SELECT</span></code> / <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">VIEW</span></code>), and
+how many rows a harness reports depends on which statement it takes as the result.
+Recorded rather than resolved: it is not established which count is correct, or
+whether the engines computed different answers at all.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">Rows</span></code> column is the row count the query returned, recorded so a time is never
+read without the answer it produced.</p>
+<p>This table records <strong>one current result set</strong>. When results are refreshed, the
+table and the pinned versions above are replaced together — a row must never mix
+numbers from different commits, because a stale row silently misattributes a
+regression.</p>
+<p><code class="docutils literal notranslate"><span class="pre">TBD</span></code> means not yet measured on this cluster at this commit; a query that ran but
+did not produce an answer is recorded as <code class="docutils literal notranslate"><span class="pre">FAIL</span></code>, or <code class="docutils literal notranslate"><span class="pre">OOM</span></code> where the failure is a
+known memory exhaustion.</p>
+<section id="recording-a-result">
+<h3>Recording a result<a class="headerlink" href="#recording-a-result" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Pin the <strong>exact commit</strong> the numbers came from, not a branch name.</p></li>
+<li><p>Report <strong>AQE on and AQE off</strong> from the <strong>same</strong> commit and cluster. Comparing an
+AQE-on number against an AQE-off number from an older build attributes the build
+difference to the planner.</p></li>
+<li><p>Take the figure from a <strong>full suite run</strong>, not a standalone single-query run. The
+two differ measurably: a long-lived executor deep into a suite is not in the same
+state as a freshly started one.</p></li>
+<li><p>Note the <strong>row count</strong> each query returned. A fast wrong answer is not a result,
+and distributed execution has produced silently wrong row counts before.</p></li>
+<li><p>Flag any stage whose runtime is dominated by a few partitions — that is the
+imbalance this page exists to surface.</p></li>
+</ul>
+</section>
+</section>
+<section id="known-issues-found-by-benchmarking">
+<h2>Known issues found by benchmarking<a class="headerlink" href="#known-issues-found-by-benchmarking" title="Link to this heading">#</a></h2>
+<p>Benchmarking at SF1000 is how most of the following were found. They are worth
+knowing about before interpreting a number:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Issue</p></th>
+<th class="head"><p>Summary</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1359">#1359</a></p></td>
+<td><p>Umbrella issue for adaptive (AQE) query execution.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a></p></td>
+<td><p>Q18’s hash-join build side exhausts the memory pool at SF1000. DataFusion’s hash-join build side does not spill, so a per-partition build side larger than one task slot’s pool fails the task outright.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2063">#2063</a></p></td>
+<td><p>AQE can hang when a re-plan cancels an in-flight stage; the job never reports completion.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="development.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Ballista Development</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../community/communication.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Communication</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-we-measure-and-why">What we measure, and why</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment">Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-cluster">Reference cluster</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#queries">Queries</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-benchmark">Running the benchmark</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista">Ballista</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark">Spark</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#comet">Comet</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-compare-against-comet">Why compare against Comet</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-a-result">Recording a result</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-issues-found-by-benchmarking">Known issues found by benchmarking</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/contributors-guide/benchmarking.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/contributors-guide/benchmarking.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
