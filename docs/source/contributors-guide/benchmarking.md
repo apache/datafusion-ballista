@@ -102,10 +102,20 @@ graceful resource error.
 
 ## Queries
 
-All engines run the **same query set**: the TPC-H queries from
-[apache/datafusion-benchmarks][dfb] (SQLBench-H). Ballista's bundled queries in
-`benchmarks/queries/` are the classic TPC-H phrasing and differ in places, so
-overlaying the shared set is what makes an engine comparison apples-to-apples.
+All engines run the **same SQL**, which is what makes a cross-engine comparison
+apples-to-apples.
+
+The shared set is the TPC-H queries from [apache/datafusion-benchmarks][dfb]
+(SQLBench-H). Ballista's bundled queries in `benchmarks/queries/` are the classic
+TPC-H phrasing and differ in places, so the shared set is overlaid over them for a
+comparison run.
+
+Spark and Comet are driven through Comet's benchmark harness, which reads its own
+bundled copy of the queries (labelled CometBench-H). That copy is textually
+identical to the SQLBench-H set — all 22 queries match once the licence header
+comment is ignored — so the engines are executing the same statements even though
+they load them from different paths. Worth re-checking if either set is ever
+regenerated.
 
 [dfb]: https://github.com/apache/datafusion-benchmarks
 
