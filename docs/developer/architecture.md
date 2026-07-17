@@ -48,6 +48,47 @@ processes.
 
 ![Query Execution Flow](images/query-execution.png)
 
+## Multi-Partition Tasks
+
+Ballista dispatches at the *slice* level, not the partition level. Each executor advertises a fixed number of
+virtual cores (`vcores`), and the scheduler packs up to that many of a stage's output partitions into a single
+task. All partitions in the slice execute concurrently under one DataFusion plan invocation: scans and shuffle
+readers are rewritten to see only the assigned partition ids, and DataFusion's per-partition `execute(N)`
+contract fans the work across the executor's threads. Slice size is bounded by the executor's free vcore count
+and by `ballista.scheduler.max_partitions_per_task` (`0` = unbounded, `1` = one task per partition — the
+pre-multi-partition-tasks model).
+
+Compared to Apache Spark, whose unit of dispatch is one task per partition, Ballista's unit is one task per
+slice of partitions bound to a single executor. Spark achieves cluster-scale parallelism the same way — many
+tasks running concurrently across cores — but each task is single-threaded and doesn't share state with its
+neighbours. Ballista's slice model preserves cluster-scale parallelism *and* adds intra-task shared-memory
+parallelism: partitions inside one slice share DataFusion's per-task memory pool budget, share the collect-left
+build side of a broadcast hash join (one hash table probed by every partition, instead of one materialization
+per task), share segment-tree indices needed for degenerate window aggregates (non-invertible aggregates like
+MIN/MAX, or wide/data-dependent frames where a sliding accumulator degrades to O(n × frame)), and can cooperate
+on shared-memory algorithms like PSRS parallel sort that a shuffle-based system can't express within a stage.
+It also unlocks pipelines whose intra-task state must be global-per-slice — e.g.
+`SELECT sum(v2) OVER (ORDER BY v2 RANGE 3 PRECEDING) FROM large`, which today collapses onto a single-partition
+sort+window and OOMs at h2o 10 GB scale; with the KLL-adaptive range-repartition rewrite that builds on this
+model, one slice-task per executor holds the sketch, buffered input, and per-partition halo state inside a
+single plan.
+
+### Composition with in-flight DataFusion AQE
+
+Two upstream DataFusion PoCs are converging on the same primitives at the single-plan level:
+[apache/datafusion#23026](https://github.com/apache/datafusion/pull/23026) adds `RangeRepartitionExec`,
+`HaloDropExec`, and a `runtime_partition_extremes` trait method to parallelize `RANGE`-frame windows inside one
+plan; [apache/datafusion#23167](https://github.com/apache/datafusion/pull/23167) adds `PipelineBreakerBuffer` +
+`RuntimeOptimizerExec` + a `RuntimeRule` trait so a plan-root coordinator can observe post-pipeline-breaker
+runtime stats and mutate adaptive operators — build-side swaps, split points, skew fixes — in place,
+streaming-native, no disk materialization. Multi-partition tasks widens the plan a single coordinator sees: one
+`RuntimeOptimizerExec` now observes the full slice's pipeline-breaker state, so `RangeRepartitionExec`'s
+halo-aware routing and any `RuntimeRule`'s adaptive decisions cover an executor's whole vcore budget instead of
+one core. Ballista's AQE stage barriers are the cluster-scale analog of that plan-root coordinator, and the same
+rule library lifts unchanged: sketches and row counts collected inside each slice-task get reported at the
+shuffle boundary, and the scheduler applies the same rules cluster-wide. Three levels, one rule library —
+intra-plan (DataFusion), intra-executor slice (this PR), inter-executor stage boundary (Ballista AQE).
+
 ## Scheduler Process
 
 The scheduler process implements a gRPC interface (defined in
