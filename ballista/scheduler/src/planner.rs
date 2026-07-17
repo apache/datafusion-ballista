@@ -266,36 +266,27 @@ impl DefaultDistributedPlanner {
         self.next_stage_id
     }
 
-    /// If `plan` is a `HashJoinExec(Partitioned)` whose smaller side fits
-    /// under the broadcast threshold, returns a rewritten
-    /// `HashJoinExec(CollectLeft)` (with a swap if the small side was on
-    /// the right) wrapped so the build subtree is a single-partition input.
+    /// Reconciles a join's partition mode with the Ballista broadcast
+    /// threshold (`ballista.optimizer.broadcast_join_threshold_bytes`).
+    ///
+    /// - A `HashJoinExec(Partitioned)` whose smaller side fits under the
+    ///   threshold is rewritten as a `HashJoinExec(CollectLeft)` (with a swap
+    ///   if the small side was on the right) wrapped so the build subtree is a
+    ///   single-partition input.
+    /// - A `HashJoinExec(CollectLeft)` that DataFusion's `JoinSelection` chose
+    ///   using its own session threshold is demoted back to `Partitioned` when
+    ///   its join type is not broadcast-safe, or when the build side is not
+    ///   under the Ballista threshold (including a threshold of `0`, which
+    ///   disables broadcast joins). This makes the Ballista key authoritative
+    ///   even when it is overridden at runtime below the DataFusion session
+    ///   value. Null-aware anti joins are never demoted (they require
+    ///   `CollectLeft`).
+    ///
     /// Otherwise returns the input unchanged.
     fn maybe_promote_to_broadcast(
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // DataFusion's own `JoinSelection` may have already stamped
-        // `CollectLeft` on this join (it does so for any build side under
-        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
-        // restricting by join type). A `CollectLeft` join replicates the build
-        // side to every probe task, which is only correct for probe-driven join
-        // types. If the join type is not broadcast-safe, demote it back to a
-        // partitioned (shuffle) join. This is a correctness guard, so it runs
-        // regardless of the Ballista broadcast threshold below.
-        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
-            && *hash_join.partition_mode() == PartitionMode::CollectLeft
-        {
-            if collect_left_broadcast_safe(*hash_join.join_type()) {
-                return Ok(plan);
-            }
-            debug!(
-                "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
-                hash_join.join_type(),
-            );
-            return Self::demote_collect_left_to_partitioned(hash_join, config);
-        }
-
         let threshold_bytes = config
             .extensions
             .get::<BallistaConfig>()
@@ -303,6 +294,46 @@ impl DefaultDistributedPlanner {
             .unwrap_or_else(|| {
                 BallistaConfig::default().broadcast_join_threshold_bytes()
             });
+
+        // DataFusion's own `JoinSelection` may have already stamped
+        // `CollectLeft` on this join (it does so for any build side under
+        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
+        // restricting by join type). A `CollectLeft` join replicates the build
+        // side to every probe task.
+        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
+            && *hash_join.partition_mode() == PartitionMode::CollectLeft
+        {
+            // Broadcasting is only correct for probe-driven join types. If the
+            // join type is not broadcast-safe, demote it back to a partitioned
+            // (shuffle) join. Correctness guard, independent of the threshold.
+            if !collect_left_broadcast_safe(*hash_join.join_type()) {
+                debug!(
+                    "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
+                    hash_join.join_type(),
+                );
+                return Self::demote_collect_left_to_partitioned(hash_join, config);
+            }
+            // Null-aware anti joins must stay `CollectLeft`: they track
+            // probe-side state that a partitioned join cannot reconstruct, so
+            // never demote them regardless of the threshold.
+            if hash_join.null_aware {
+                return Ok(plan);
+            }
+            // Safe join type: honor the Ballista broadcast threshold. DataFusion
+            // decided `CollectLeft` using its own session threshold, which can
+            // exceed a user's runtime `broadcast_join_threshold_bytes` override.
+            // If broadcasts are disabled (0) or the build (left) side is not
+            // under the Ballista threshold, demote so the Ballista key is
+            // authoritative in the static planner path too.
+            if threshold_bytes == 0 || !under(&**hash_join.left(), threshold_bytes) {
+                debug!(
+                    "broadcast check: demoting CollectLeft join to Partitioned; build side not under Ballista threshold={threshold_bytes} (or broadcasts disabled)",
+                );
+                return Self::demote_collect_left_to_partitioned(hash_join, config);
+            }
+            return Ok(plan);
+        }
+
         if threshold_bytes == 0 {
             debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
@@ -1321,6 +1352,109 @@ order by
                 walker.extend(node.children().iter().map(|c| (*c).clone()));
             }
         }
+        Ok(())
+    }
+
+    // Plans `big join small` with DataFusion's own hash-join threshold high
+    // enough for its `JoinSelection` to promote to `CollectLeft`, and the
+    // Ballista broadcast threshold set to `ballista_threshold_bytes`. Returns
+    // the partition modes of every `HashJoinExec` across the resulting stages.
+    async fn collect_left_modes_for_ballista_threshold(
+        ballista_threshold_bytes: usize,
+    ) -> Result<Vec<datafusion::physical_plan::joins::PartitionMode>, BallistaError> {
+        use ballista_core::extension::SessionConfigExt;
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("w", DataType::Int32, false),
+        ]));
+        let big_batch = RecordBatch::try_new(
+            big_schema,
+            vec![
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+        let small_batch = RecordBatch::try_new(
+            small_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![10, 20])),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        // DF threshold high so DataFusion's JoinSelection promotes to
+        // CollectLeft on its own; the Ballista threshold is what we vary.
+        let session_config = SessionConfig::new()
+            .with_target_partitions(2)
+            .set_bool("datafusion.optimizer.prefer_hash_join", true)
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                10 * 1024 * 1024,
+            )
+            .with_ballista_broadcast_join_threshold_bytes(ballista_threshold_bytes);
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+        ctx.register_batch("small", small_batch)?;
+        let options = ctx.state().config().options().clone();
+
+        let plan = ctx
+            .sql("select * from big join small on big.k = small.k")
+            .await?
+            .into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        let mut modes = vec![];
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    modes.push(*hj.partition_mode());
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+        Ok(modes)
+    }
+
+    // DataFusion's `JoinSelection` promotes a small build side to `CollectLeft`
+    // using its own session threshold. When the Ballista broadcast threshold is
+    // lowered below that build size at runtime, the distributed planner must
+    // demote the `CollectLeft` join back to `Partitioned` so the Ballista key is
+    // authoritative; a high Ballista threshold leaves the broadcast in place.
+    #[tokio::test]
+    async fn df_collect_left_demoted_when_over_ballista_threshold()
+    -> Result<(), BallistaError> {
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let kept = collect_left_modes_for_ballista_threshold(10 * 1024 * 1024).await?;
+        assert!(
+            kept.contains(&PartitionMode::CollectLeft),
+            "a high Ballista threshold must keep the DataFusion-promoted CollectLeft join, got {kept:?}"
+        );
+
+        let demoted = collect_left_modes_for_ballista_threshold(8).await?;
+        assert!(
+            !demoted.contains(&PartitionMode::CollectLeft),
+            "a Ballista threshold below the build side must demote the CollectLeft join to Partitioned, got {demoted:?}"
+        );
+
         Ok(())
     }
 
