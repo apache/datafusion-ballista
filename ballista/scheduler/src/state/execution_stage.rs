@@ -1160,54 +1160,28 @@ impl Debug for FailedStage {
     }
 }
 
-/// Sum of output-partition counts across every leaf of `plan`. Leaves are
-/// where physical work originates (scans, shuffle reads, empty execs);
-/// intermediate operators — including partition-count-changing ones like
-/// DynamicRangeRepartitionExec — are walked past. Multi-child operators
-/// (union, cross join, nested-loop join) sum across branches, matching how
-/// task work fans out.
-///
-/// Aligned-input joins (`HashJoinExec`, `SortMergeJoinExec`) are treated as
-/// leaves — their operator semantics pair partition `i` of one side with
-/// partition `i` of the other, so the natural work unit is the operator's
-/// own `output_partitioning().partition_count()`, not the sum of both
-/// sides. Walking past would double-count.
-///
-/// This gives task assignment the true amount of input work in a stage,
-/// independent of any within-stage repartitioning that would otherwise
-/// obscure it in `plan.output_partitioning().partition_count()`.
-fn sum_leaf_scan_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
-    use datafusion::physical_plan::joins::{HashJoinExec, SortMergeJoinExec};
-
-    if plan.downcast_ref::<HashJoinExec>().is_some()
-        || plan.downcast_ref::<SortMergeJoinExec>().is_some()
-    {
-        return plan.properties().output_partitioning().partition_count();
-    }
-    let children = plan.children();
-    if children.is_empty() {
-        return plan.properties().output_partitioning().partition_count();
-    }
-    children.into_iter().map(sum_leaf_scan_partitions).sum()
-}
-
 /// Total plan input partitions a stage must process. Frozen at resolve.
 /// Number of TASKS is emergent — bind time draws slices from a cursor
 /// (`PendingPartitions`) sized to whichever executor's free vcores show
 /// up, so one 16-vcore exec covers 16 partitions in a single task while
 /// four 4-vcore execs cover the same 16 in four tasks.
 ///
-/// TODO: right-sizing this is genuinely hard. Summing leaves is correct
-/// for DRR-shaped operators that poll all inputs simultaneously
-/// (parallelism ∝ input count) but overcounts stages whose plan aligns
-/// co-dependent inputs (e.g. `HashJoinExec` produces K output partitions
-/// from 2K leaf partitions — natural unit is K, not 2K). The right answer
-/// depends on operator semantics we don't currently inspect here.
+/// The count comes from the shuffle writer's immediate child's
+/// `output_partitioning().partition_count()`. That is the number of
+/// independent output-partition polling contexts the writer needs to
+/// drive, which matches the "one tokio worker per vcore" invariant: one
+/// task = one `execute(i)` on the top plan = one primary tokio pipeline.
+/// Anything an internal `RepartitionExec` spawns is per-plan-instance
+/// machinery shared across those polls and does not become a separate
+/// scheduling unit.
 fn stage_input_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
     if plan.downcast_ref::<ShuffleWriterExec>().is_some()
         || plan.downcast_ref::<SortShuffleWriterExec>().is_some()
     {
-        sum_leaf_scan_partitions(&plan.children()[0].clone())
+        plan.children()[0]
+            .properties()
+            .output_partitioning()
+            .partition_count()
     } else {
         plan.properties().output_partitioning().partition_count()
     }
