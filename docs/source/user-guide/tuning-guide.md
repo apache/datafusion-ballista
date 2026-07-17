@@ -196,9 +196,11 @@ Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes onl
 
 ### Configuration
 
-| key                               | type    | default | description                                 |
-| --------------------------------- | ------- | ------- | ------------------------------------------- |
-| ballista.planner.adaptive.enabled | Boolean | false   | Enables the adaptive planner. Experimental. |
+| key                                              | type    | default  | description                                                                                                                                                             |
+| ------------------------------------------------ | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.planner.adaptive.enabled                | Boolean | false    | Enables the adaptive planner. Experimental.                                                                                                                            |
+| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 10485760 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Governs both the static planner and AQE. Set to 0 to disable broadcast joins. |
+| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 131072   | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                      |
 
 ### What AQE does today
 
@@ -209,6 +211,9 @@ implemented:
 
 - **Join reordering.** Uses runtime row counts from completed stages so the
   smaller side drives the join.
+- **Broadcast join selection.** When a join input's runtime size falls under
+  `ballista.optimizer.broadcast_join_threshold_bytes` (or the row-count
+  fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
 - **Empty stage elimination.** When a completed stage produces zero rows, its
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.

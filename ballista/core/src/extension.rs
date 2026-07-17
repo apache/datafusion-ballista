@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
-    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
-    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
-    BALLISTA_COALESCE_TARGET_PARTITION_BYTES, BALLISTA_JOB_NAME,
-    BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
-    BallistaConfig,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS,
+    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
+    BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
+    BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_JOB_NAME, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
+    BALLISTA_STANDALONE_PARALLELISM, BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -191,6 +191,18 @@ pub trait SessionConfigExt {
     /// the distributed planner. Setting `0` disables promotion.
     fn with_ballista_broadcast_join_threshold_bytes(self, threshold_bytes: usize)
     -> Self;
+
+    /// retrieves the row-count threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern, used
+    /// as a fallback when byte-size statistics are unavailable. `0` disables
+    /// promotion via the row-count path.
+    fn ballista_broadcast_join_threshold_rows(&self) -> usize;
+
+    /// Sets the row-count threshold below which a hash join's smaller side is
+    /// promoted to `CollectLeft` and lowered via the broadcast pattern, used as
+    /// a fallback when byte-size statistics are unavailable. Setting `0`
+    /// disables promotion via the row-count path.
+    fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self;
 
     /// retrieves grpc client max message size
     fn ballista_grpc_client_max_message_size(&self) -> usize;
@@ -481,6 +493,23 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, threshold_bytes)
+        }
+    }
+
+    fn ballista_broadcast_join_threshold_rows(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.broadcast_join_threshold_rows())
+            .unwrap_or_else(|| BallistaConfig::default().broadcast_join_threshold_rows())
+    }
+
+    fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
         }
     }
 

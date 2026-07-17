@@ -215,20 +215,19 @@ impl DynamicJoinSelectionExec {
         config: &ConfigOptions,
     ) -> Result<JoinSelectionAction> {
         let prefer_hash_join = config.optimizer.prefer_hash_join;
-        // The byte threshold comes from Ballista's own broadcast config so that a
-        // single key governs broadcast selection under both the static planner
-        // (`maybe_promote_to_broadcast`) and AQE. A value of 0 disables broadcast
-        // promotion entirely, matching the static planner. The row threshold is
-        // only a fallback used when byte statistics are absent, so it stays on
-        // DataFusion's setting.
+        // Both broadcast thresholds come from Ballista's own config so that a
+        // single set of keys governs broadcast selection under both the static
+        // planner (`maybe_promote_to_broadcast`) and AQE. A byte threshold of 0
+        // disables broadcast promotion entirely, matching the static planner.
+        // The row threshold is only consulted as a fallback when byte-size
+        // statistics are absent.
         let bc = config
             .extensions
             .get::<BallistaConfig>()
             .cloned()
             .unwrap_or_default();
         let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
-        let threshold_collect_left_join_rows =
-            config.optimizer.hash_join_single_partition_threshold_rows;
+        let threshold_collect_left_join_rows = bc.broadcast_join_threshold_rows();
 
         // The `!= 0` guard sits here rather than inside
         // `supports_collect_by_thresholds`: that helper falls back to the row
@@ -461,8 +460,8 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::config::ExtensionOptions;
     use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
+    use datafusion::config::ExtensionOptions;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::test::exec::StatisticsExec;
@@ -480,6 +479,61 @@ mod tests {
             },
             Schema::new(vec![Field::new("k", DataType::Int32, false)]),
         ))
+    }
+
+    /// A source that reports a row count but no byte-size statistic, so the
+    /// resolver must fall back to the row-count broadcast threshold.
+    fn stats_exec_rows_only(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
+        ))
+    }
+
+    /// Core driver: runs the join-strategy decision for the given children with
+    /// explicit Ballista broadcast thresholds.
+    fn run_to_actual_join(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+        join_type: JoinType,
+        prefer_hash_join: bool,
+        broadcast_threshold_bytes: usize,
+        broadcast_threshold_rows: usize,
+    ) -> JoinSelectionAction {
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+        let dj = DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Unknown,
+            null_aware: false,
+            plan_id: 0,
+        };
+        let mut config = ConfigOptions::new();
+        config.optimizer.prefer_hash_join = prefer_hash_join;
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "optimizer.broadcast_join_threshold_bytes",
+            &broadcast_threshold_bytes.to_string(),
+        )
+        .unwrap();
+        bc.set(
+            "optimizer.broadcast_join_threshold_rows",
+            &broadcast_threshold_rows.to_string(),
+        )
+        .unwrap();
+        config.extensions.insert(bc);
+        dj.to_actual_join(&config).unwrap()
     }
 
     /// Run the resolver's join-strategy decision for `join_type` with `left_rows`
@@ -511,34 +565,16 @@ mod tests {
         prefer_hash_join: bool,
         broadcast_threshold_bytes: usize,
     ) -> JoinSelectionAction {
-        let left = stats_exec(left_rows);
-        let right = stats_exec(right_rows);
-        let on: JoinOn =
-            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
-        let dj = DynamicJoinSelectionExec {
-            properties: Arc::clone(left.properties()),
-            left,
-            right,
-            on,
-            filter: None,
+        run_to_actual_join(
+            stats_exec(left_rows),
+            stats_exec(right_rows),
             join_type,
-            projection: None,
-            null_equality: NullEquality::NullEqualsNothing,
-            selection_state: JoinInputState::Unknown,
-            null_aware: false,
-            plan_id: 0,
-        };
-        let mut config = ConfigOptions::new();
-        config.optimizer.prefer_hash_join = prefer_hash_join;
-        config.optimizer.hash_join_single_partition_threshold_rows = 1_000_000;
-        let mut bc = BallistaConfig::default();
-        bc.set(
-            "optimizer.broadcast_join_threshold_bytes",
-            &broadcast_threshold_bytes.to_string(),
+            prefer_hash_join,
+            broadcast_threshold_bytes,
+            // Large row threshold: byte stats are present here, so the row path
+            // is never consulted; keep it out of the way of the byte decision.
+            1_000_000,
         )
-        .unwrap();
-        config.extensions.insert(bc);
-        dj.to_actual_join(&config).unwrap()
     }
 
     fn is_collected(action: &JoinSelectionAction) -> bool {
@@ -623,6 +659,38 @@ mod tests {
                 1000,
             )),
             "neither side is under a 1000 B threshold, so the join must repartition"
+        );
+    }
+
+    // When byte-size statistics are absent, the decision falls back to the
+    // Ballista row-count threshold (`broadcast_join_threshold_rows`), not
+    // DataFusion's `hash_join_single_partition_threshold_rows`.
+    #[test]
+    fn broadcast_threshold_rows_drives_fallback_decision() {
+        // Byte-size is Absent on both sides, so only the row threshold applies.
+        // Smaller side = 100 rows. A generous byte threshold keeps the byte
+        // guard open so the row fallback is what decides.
+        assert!(
+            is_collected(&run_to_actual_join(
+                stats_exec_rows_only(100),
+                stats_exec_rows_only(1000),
+                JoinType::Inner,
+                true,
+                10 * 1024 * 1024,
+                200,
+            )),
+            "smaller side (100 rows) is under a 200-row threshold and must collect"
+        );
+        assert!(
+            !is_collected(&run_to_actual_join(
+                stats_exec_rows_only(100),
+                stats_exec_rows_only(1000),
+                JoinType::Inner,
+                true,
+                10 * 1024 * 1024,
+                50,
+            )),
+            "neither side is under a 50-row threshold, so the join must repartition"
         );
     }
 

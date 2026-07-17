@@ -103,6 +103,13 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
+/// Configuration key for the row-count threshold below which a hash join's
+/// smaller side is promoted to `CollectLeft` and lowered via the broadcast
+/// pattern. Used as a fallback when byte-size statistics are unavailable.
+/// Set to `0` to disable promotion via the row-count path.
+pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
+    "ballista.optimizer.broadcast_join_threshold_rows";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -241,6 +248,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
+                         "Row-count threshold below which a hash join's smaller side is \
+                          promoted to CollectLeft and lowered via the broadcast pattern, \
+                          used as a fallback when byte-size statistics are unavailable. \
+                          Applies to adaptive query planning (AQE). Set to 0 to disable \
+                          promotion via the row-count path.".to_string(),
+                         DataType::UInt64,
+                         Some((128 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -569,6 +584,14 @@ impl BallistaConfig {
     /// `0` disables promotion.
     pub fn broadcast_join_threshold_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
+    }
+
+    /// Returns the row-count threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern.
+    /// Used as a fallback when byte-size statistics are unavailable. `0`
+    /// disables promotion via the row-count path.
+    pub fn broadcast_join_threshold_rows(&self) -> usize {
+        self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
