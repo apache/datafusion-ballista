@@ -235,7 +235,7 @@ pub enum PlanFormat {
 /// A handler for GET requests to the root (`/`).
 /// It redirects to `https://nightlies.apache.org/datafusion/ballista/tui/<BALLISTA_VERSION>/`
 /// forwarding any query parameters
-pub async fn get_root<
+pub async fn get_webtui<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
 >(
@@ -244,21 +244,26 @@ pub async fn get_root<
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> Result<Redirect, (StatusCode, String)> {
     const NIGHTLIES_URL: &str = "https://nightlies.apache.org/datafusion/ballista/tui";
-    let external_host = data_server.state.config.external_host.clone();
+    let external_host = &data_server.state.config.external_host;
     let bind_port = data_server.state.config.bind_port;
 
     let ballista_scheduler_url =
         params.remove("ballista_scheduler_url").unwrap_or_else(|| {
             let default_scheduler_url = &format!("{external_host}:{bind_port}");
-            let scheduler_url = header_map
-                .get("host")
-                .map(|hv| hv.to_str().unwrap_or(default_scheduler_url))
-                .unwrap_or(default_scheduler_url);
             let proto = header_map
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("http");
-            format!("{proto}://{scheduler_url}")
+            let host = header_map
+                .get("x-forwarded-host")
+                .and_then(|hv| hv.to_str().ok())
+                .unwrap_or(external_host);
+            let port = header_map
+                .get("x-forwarded-port")
+                .and_then(|hv| hv.to_str().ok())
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(bind_port);
+            format!("{proto}://{host}:{port}")
         });
 
     let mut query_string = String::new();
