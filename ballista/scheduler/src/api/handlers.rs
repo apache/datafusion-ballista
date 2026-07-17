@@ -235,15 +235,21 @@ pub enum PlanFormat {
 /// A handler for GET requests to the root (`/`).
 /// It redirects to `https://nightlies.apache.org/datafusion/ballista/tui/<BALLISTA_VERSION>/`
 /// forwarding any query parameters
-pub async fn get_root(
+pub async fn get_root<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
     header_map: HeaderMap,
     Query(mut params): Query<HashMap<String, String>>,
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> Result<Redirect, (StatusCode, String)> {
     const NIGHTLIES_URL: &str = "https://nightlies.apache.org/datafusion/ballista/tui";
+    let external_host = data_server.state.config.external_host.clone();
+    let bind_port = data_server.state.config.bind_port.clone();
 
     let ballista_scheduler_url =
         params.remove("ballista_scheduler_url").unwrap_or_else(|| {
-            let default_scheduler_url = "localhost:50050";
+            let default_scheduler_url = &format!("{external_host}:{bind_port}");
             let scheduler_url = header_map
                 .get("host")
                 .map(|hv| hv.to_str().unwrap_or(default_scheduler_url))
