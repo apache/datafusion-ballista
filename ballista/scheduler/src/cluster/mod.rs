@@ -22,6 +22,7 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
 use crate::state::task_manager::JobInfoCache;
+use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::ShuffleReaderExec;
 use ballista_core::serde::protobuf::{
@@ -428,10 +429,22 @@ fn bind_one(
     budget: &mut AvailableVcores,
 ) -> Option<BoundTask> {
     let is_collapse = stage_has_input_collapse(&running_stage.plan);
+    // Cap non-collapse slices at the configured `max_partitions_per_task`.
+    // Collapse stages must still pack their full pending queue into a single
+    // task for correctness — a split collapse would produce partial results
+    // downstream can't merge.
+    let cap = running_stage
+        .session_config
+        .options()
+        .extensions
+        .get::<BallistaConfig>()
+        .map(|bc| bc.max_partitions_per_task())
+        .filter(|&n| n > 0)
+        .unwrap_or(usize::MAX);
     let max_partitions = if is_collapse {
         usize::MAX
     } else {
-        budget.vcores as usize
+        (budget.vcores as usize).min(cap)
     };
     let input_partition_ids = running_stage.pending.next_slice(max_partitions);
     if input_partition_ids.is_empty() {
