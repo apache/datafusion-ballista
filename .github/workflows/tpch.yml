@@ -35,6 +35,8 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/tpch.yml"
       - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   pull_request:
     paths:
       - "ballista/**"
@@ -44,6 +46,8 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/tpch.yml"
       - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   workflow_dispatch:
 
 jobs:
