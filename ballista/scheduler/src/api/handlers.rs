@@ -565,12 +565,12 @@ pub async fn get_query_stages<
                             .task_infos
                             .iter()
                             .enumerate()
-                            .map(|(task_index, info)| {
+                            .map(|(task_id, info)| {
                                 let (input_rows, output_rows) = running_stage
                                     .stage_metrics
                                     .as_deref()
                                     .map(|metrics| {
-                                        get_partition_counts(metrics, task_index)
+                                        get_partition_counts(metrics, task_id)
                                     })
                                     .unwrap_or((0, 0));
 
@@ -581,7 +581,7 @@ pub async fn get_query_stages<
 
                                 Some(TaskSummary {
                                     id: info.task_id,
-                                    partition_id: task_index as u32,
+                                    partition_id: task_id as u32,
                                     scheduled_time: info.scheduled_time as u64,
                                     launch_time: info.launch_time as u64,
                                     start_exec_time,

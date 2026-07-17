@@ -120,9 +120,9 @@ impl ExecutionStage {
         }
     }
 
-    /// TaskInfos indexed by task_index for stages that have started binding
-    /// tasks. Returns `None` for UnResolved/Resolved stages that haven't
-    /// bound anything yet.
+    /// TaskInfos indexed by task_id (the append-order slot) for stages
+    /// that have started binding tasks. Returns `None` for
+    /// UnResolved/Resolved stages that haven't bound anything yet.
     pub fn task_infos(&self) -> Option<&[TaskInfo]> {
         match self {
             ExecutionStage::Running(stage) => Some(&stage.task_infos),
@@ -206,12 +206,12 @@ pub struct RunningStage {
     /// partitions are pushed back to the front for re-attempt.
     pub pending: PendingPartitions,
     /// TaskInfo of every task ever started for this stage (append-only).
-    /// Indexed by task_index (the bind-order slot). Retries append new
-    /// entries with fresh task_index rather than reusing slots.
+    /// Indexed by task_id (the bind-order slot). Retries append new
+    /// entries with fresh task_ids rather than reusing slots.
     pub task_infos: Vec<TaskInfo>,
     /// Number of times each plan input partition has been tried and
     /// failed. Indexed by partition id (real plan input index), not by
-    /// task_index. When any partition exceeds `stage_max_failures`, the
+    /// task_id. When any partition exceeds `stage_max_failures`, the
     /// stage is failed.
     pub task_failure_numbers: Vec<usize>,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
@@ -263,7 +263,7 @@ pub struct FailedStage {
     /// `ExecutionPlan` for this stage
     pub plan: Arc<dyn ExecutionPlan>,
     /// TaskInfo of every task ever started before the stage failed.
-    /// Append-only, indexed by task_index (bind order).
+    /// Append-only, indexed by task_id (bind order).
     pub task_infos: Vec<TaskInfo>,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
     #[allow(dead_code)] // not used at the moment, will be used later
@@ -742,14 +742,15 @@ impl RunningStage {
     }
 
     /// Returns a vector of currently running tasks in this stage: tuples of
-    /// `(task_id, stage_id, task_index, executor_id)`.
-    pub fn running_tasks(&self) -> Vec<(usize, usize, usize, String)> {
+    /// `(task_id, stage_id, executor_id)`. `task_id` is the task's append
+    /// slot in `task_infos`.
+    pub fn running_tasks(&self) -> Vec<(usize, usize, String)> {
         self.task_infos
             .iter()
             .enumerate()
-            .filter_map(|(task_index, info)| match &info.task_status {
+            .filter_map(|(task_id, info)| match &info.task_status {
                 task_status::Status::Running(RunningTask { executor_id }) => {
-                    Some((info.task_id, self.stage_id, task_index, executor_id.clone()))
+                    Some((task_id, self.stage_id, executor_id.clone()))
                 }
                 _ => None,
             })
@@ -764,28 +765,19 @@ impl RunningStage {
         self.pending.remaining()
     }
 
-    /// Apply a status update for the task at `task_index`.
+    /// Apply a status update for the task at `task_id` (its append slot in
+    /// `task_infos`).
     ///
-    /// Rejects (returns false) if:
-    /// - the incoming `status.task_id` is older than the current task at
-    ///   this slot (a newer retry has superseded it), or
-    /// - the task's status is already terminal Failed with a lost/killed
-    ///   reason (i.e., `reset_tasks` moved its partitions back to pending
-    ///   because the executor died).
+    /// Rejects (returns false) if the task's status is already terminal
+    /// Failed with a lost/killed reason (i.e., `reset_tasks` moved its
+    /// partitions back to pending because the executor died) — a late
+    /// status from that attempt should be ignored.
     ///
     /// On success, updates the task's status and adjusts per-partition
     /// failure counters using the task's `global_input_partition_ids`.
-    pub fn update_task_info(&mut self, task_index: usize, status: TaskStatus) -> bool {
-        debug!("Updating TaskInfo for task_index {task_index}");
-        let task_info = &self.task_infos[task_index];
-        let task_id = task_info.task_id;
-        if (status.task_id as usize) < task_id {
-            warn!(
-                "Ignore TaskStatus update with TID {} because there is more recent task attempt with TID {} running at task_index {}",
-                status.task_id, task_id, task_index
-            );
-            return false;
-        }
+    pub fn update_task_info(&mut self, task_id: usize, status: TaskStatus) -> bool {
+        debug!("Updating TaskInfo for task_id {task_id}");
+        let task_info = &self.task_infos[task_id];
         if let task_status::Status::Failed(FailedTask {
             failed_reason:
                 Some(FailedReason::TaskKilled(_)) | Some(FailedReason::ResultLost(_)),
@@ -793,8 +785,7 @@ impl RunningStage {
         }) = &task_info.task_status
         {
             warn!(
-                "Ignore TaskStatus update with TID {} because task_index {} was already reset (executor lost)",
-                status.task_id, task_index
+                "Ignore TaskStatus update for task_id {task_id} because it was already reset (executor lost)"
             );
             return false;
         }
@@ -816,7 +807,7 @@ impl RunningStage {
             global_input_partition_ids: global_input_partition_ids.clone(),
             vcores_consumed,
         };
-        self.task_infos[task_index] = updated_task_info;
+        self.task_infos[task_id] = updated_task_info;
 
         match task_status {
             task_status::Status::Failed(failed_task) if failed_task.retryable => {
@@ -918,8 +909,8 @@ impl RunningStage {
     /// Returns the highest per-partition failure count across the
     /// partitions in the given task's slice. Callers use this to decide
     /// whether any partition in the task has exhausted its retry budget.
-    pub fn task_failure_number(&self, task_index: usize) -> usize {
-        self.task_infos[task_index]
+    pub fn task_failure_number(&self, task_id: usize) -> usize {
+        self.task_infos[task_id]
             .global_input_partition_ids
             .iter()
             .map(|p| self.task_failure_numbers[*p])
@@ -930,8 +921,8 @@ impl RunningStage {
     /// Mark the task as lost/killed and push its partitions back to the
     /// front of `pending` so they are retried on the next bind. Does not
     /// touch failure counts — those are updated in `update_task_info`.
-    pub fn reset_task_info(&mut self, task_index: usize) {
-        let task = &mut self.task_infos[task_index];
+    pub fn reset_task_info(&mut self, task_id: usize) {
+        let task = &mut self.task_infos[task_id];
         let partitions = task.global_input_partition_ids.clone();
         task.task_status = task_status::Status::Failed(FailedTask {
             error: "task reset for retry".to_string(),
@@ -1279,13 +1270,12 @@ mod tests {
         )
     }
 
-    fn make_task_status(task_id: u32, task_index: u32) -> TaskStatus {
+    fn make_task_status(task_id: u32) -> TaskStatus {
         TaskStatus {
             task_id,
             job_id: "test-job".to_string(),
             stage_id: 1,
             stage_attempt_num: 0,
-            task_index,
             launch_time: 100,
             start_exec_time: 200,
             end_exec_time: 300,
@@ -1345,7 +1335,7 @@ mod tests {
         let mut stage = make_running_stage(2);
         append_running_task(&mut stage, 0, "executor-1", vec![0]);
 
-        let status = make_task_status(0, 0);
+        let status = make_task_status(0);
         let result = stage.update_task_info(0, status);
 
         assert!(result);
@@ -1379,7 +1369,7 @@ mod tests {
         ));
 
         // Late status update from the (now lost) executor.
-        let status = make_task_status(0, 0);
+        let status = make_task_status(0);
         let result = stage.update_task_info(0, status);
 
         // Should gracefully reject the update, not panic.

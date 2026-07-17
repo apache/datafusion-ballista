@@ -252,12 +252,12 @@ pub struct ShuffleWriterExec {
     /// Optional shuffle output partitioning.
     /// If it's none, it means there's no need to do repartitioning.
     shuffle_output_partitioning: Option<Partitioning>,
-    /// Monotonic index of this task within the stage — used as `file_id` in
-    /// shuffle paths so files from different tasks (including retries) don't
-    /// collide. Seeded by the executor's `create_query_stage_exec`; defaults
-    /// to 0 for plans that arrive from `try_new` directly (proto decode
-    /// before executor stamping, or tests).
-    task_index: usize,
+    /// Task id (the task's append-order slot in `RunningStage.task_infos`)
+    /// used as `file_id` in shuffle paths so files from different tasks
+    /// (including retries) don't collide. Seeded by the executor's
+    /// `create_query_stage_exec`; defaults to 0 for plans that arrive from
+    /// `try_new` directly (proto decode before executor stamping, or tests).
+    task_id: usize,
     /// Global partition ids this task's restricted plan covers, in slice
     /// order. Position `i` in the child plan corresponds to
     /// `global_output_partition_ids[i]` globally.
@@ -287,7 +287,7 @@ impl Clone for ShuffleWriterExec {
             plan: self.plan.clone(),
             work_dir: self.work_dir.clone(),
             shuffle_output_partitioning: self.shuffle_output_partitioning.clone(),
-            task_index: self.task_index,
+            task_id: self.task_id,
             global_output_partition_ids: self.global_output_partition_ids.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
@@ -349,8 +349,8 @@ impl ShuffleWriteMetrics {
 }
 
 impl ShuffleWriterExec {
-    /// Create a new shuffle writer. `task_index` defaults to 0; the executor
-    /// stamps the real value via [`Self::with_task_index`] at
+    /// Create a new shuffle writer. `task_id` defaults to 0; the executor
+    /// stamps the real value via [`Self::with_task_id`] at
     /// `create_query_stage_exec` time.
     pub fn try_new(
         job_id: JobId,
@@ -385,7 +385,7 @@ impl ShuffleWriterExec {
             plan,
             work_dir,
             shuffle_output_partitioning,
-            task_index: 0,
+            task_id: 0,
             global_output_partition_ids: default_partition_slice,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
@@ -396,17 +396,18 @@ impl ShuffleWriterExec {
         })
     }
 
-    /// Bind this writer to a specific task_index. Called by the executor
+    /// Bind this writer to a specific task_id. Called by the executor
     /// after decoding the plan so shuffle files from different tasks in
     /// the same stage don't collide on file_id.
-    pub fn with_task_index(mut self, task_index: usize) -> Self {
-        self.task_index = task_index;
+    pub fn with_task_id(mut self, task_id: usize) -> Self {
+        self.task_id = task_id;
         self
     }
 
-    /// Task index (within the stage) this writer instance is bound to.
-    pub fn task_index(&self) -> usize {
-        self.task_index
+    /// Task id (append-order slot within the stage) this writer instance
+    /// is bound to.
+    pub fn task_id(&self) -> usize {
+        self.task_id
     }
 
     /// Bind this writer to the task's assigned global partition slice.
@@ -461,8 +462,8 @@ impl ShuffleWriterExec {
         self,
         context: Arc<TaskContext>,
     ) -> impl Future<Output = Result<Vec<(usize, ShuffleWritePartition)>>> {
-        let task_index = self.task_index;
-        let write_metrics = ShuffleWriteMetrics::new(task_index, &self.metrics);
+        let task_id = self.task_id;
+        let write_metrics = ShuffleWriteMetrics::new(task_id, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
         let partition_map =
@@ -494,7 +495,7 @@ impl ShuffleWriterExec {
                             &self.job_id,
                             self.stage_id,
                             global_partition,
-                            Some(task_index as u64),
+                            Some(task_id as u64),
                             false,
                         )?;
 
@@ -541,14 +542,14 @@ impl ShuffleWriterExec {
                                 num_batches: stats.num_batches.unwrap_or(0),
                                 num_rows: stats.num_rows.unwrap_or(0),
                                 num_bytes: stats.num_bytes.unwrap_or(0),
-                                file_id: Some(task_index as u64),
+                                file_id: Some(task_id as u64),
                                 is_sort_shuffle: false,
                             },
                         ));
                     }
                     debug!(
-                        "task_index {} drained {} partitions in {}s",
-                        task_index,
+                        "task_id {} drained {} partitions in {}s",
+                        task_id,
                         num_partitions,
                         now.elapsed().as_secs()
                     );
@@ -558,7 +559,7 @@ impl ShuffleWriterExec {
                 Some(Partitioning::Hash(exprs, num_output_partitions)) => {
                     // Task drains ALL of the child's (already slice-restricted)
                     // input partitions and routes rows into K writers by hash.
-                    // file_id = task_index so files from different tasks
+                    // file_id = task_id so files from different tasks
                     // (including retries) don't collide. Hash buckets 0..K are
                     // a global K-space and aren't further sliced.
                     let num_input_partitions =
@@ -599,7 +600,7 @@ impl ShuffleWriterExec {
                                                 &job_id,
                                                 stage_id,
                                                 output_partition,
-                                                Some(task_index as u64),
+                                                Some(task_id as u64),
                                                 false,
                                             )?;
 
@@ -653,7 +654,7 @@ impl ShuffleWriterExec {
                                         num_batches: w.num_batches as u64,
                                         num_rows: w.num_rows as u64,
                                         num_bytes,
-                                        file_id: Some(task_index as u64),
+                                        file_id: Some(task_id as u64),
                                         is_sort_shuffle: false,
                                     },
                                 ));
@@ -773,7 +774,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.work_dir.clone(),
                     self.shuffle_output_partitioning.clone(),
                 )?
-                .with_task_index(self.task_index)
+                .with_task_id(self.task_id)
                 .with_global_output_partition_ids(
                     self.global_output_partition_ids.clone(),
                 ),

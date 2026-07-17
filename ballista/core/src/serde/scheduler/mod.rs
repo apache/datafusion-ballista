@@ -69,13 +69,14 @@ pub struct PartitionId {
     pub partition_id: usize,
 }
 
-/// Locator for a task within an execution graph: (job, stage, task_index).
+/// Locator for a task within an execution graph: (job, stage, task_id).
 ///
 /// One task processes a partition slice, so the third component is
-/// `task_index` (the task's index within the stage), not a partition
-/// index. Sibling to [`PartitionId`] — [`PartitionId`] identifies an
-/// operator output partition (shuffle location, etc.), [`TaskKey`]
-/// identifies a scheduled task attempt.
+/// `task_id` — the task's append-order slot in
+/// `RunningStage.task_infos`, not a partition index. Sibling to
+/// [`PartitionId`] — [`PartitionId`] identifies an operator output
+/// partition (shuffle location, etc.), [`TaskKey`] identifies a scheduled
+/// task attempt.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskKey {
     /// The job identifier.
@@ -83,7 +84,7 @@ pub struct TaskKey {
     /// The stage identifier within the job.
     pub stage_id: usize,
     /// Task slot within the stage.
-    pub task_index: usize,
+    pub task_id: usize,
 }
 
 impl PartitionId {
@@ -518,7 +519,10 @@ impl ExecutePartitionResult {
 /// Definition of a task to be executed on an executor.
 #[derive(Clone, Debug)]
 pub struct TaskDefinition {
-    /// Unique task identifier.
+    /// Append-order slot of this task in `RunningStage.task_infos`. Not a
+    /// partition index — one task processes a slice of partitions given
+    /// by `global_output_partition_ids`. `(job_id, stage_id, task_id)` is
+    /// globally unique.
     pub task_id: usize,
     /// Current attempt number for this task.
     pub task_attempt_num: usize,
@@ -528,9 +532,6 @@ pub struct TaskDefinition {
     pub stage_id: usize,
     /// Current attempt number for the stage.
     pub stage_attempt_num: usize,
-    /// Monotonic index of this task within the stage. Not a partition index —
-    /// one task processes a slice of partitions given by `global_output_partition_ids`.
-    pub task_index: usize,
     /// Global partition ids this task's restricted plan covers, in slice
     /// order. `plan.output_partitioning().partition_count() == global_output_partition_ids.len()`
     /// for pass-through shapes; writers use the slice to attach global

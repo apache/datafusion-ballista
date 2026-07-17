@@ -368,20 +368,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let job_id = task.job_id;
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
-        let task_index = task.task_index;
         let global_output_partition_ids = task.global_output_partition_ids;
         let plan = task.plan;
 
         let key = TaskKey {
             job_id: job_id.clone(),
             stage_id,
-            task_index,
+            task_id,
         };
 
         let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
-            task_index,
+            task_id,
             global_output_partition_ids,
             plan,
             &self.executor.work_dir,
@@ -416,7 +415,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 let task_start = Instant::now();
                 let execution_result = self
                     .executor
-                    .execute_query_stage(task_id, key.clone(), exec.clone(), task_context)
+                    .execute_query_stage(key.clone(), exec.clone(), task_context)
                     .await;
                 info!(
                     "Finished task : [{task_identity}] in {:?}",
@@ -447,7 +446,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 let task_status = as_task_status(
                     execution_result,
                     executor_id.clone(),
-                    task_id,
                     stage_attempt_num,
                     key.clone(),
                     operator_metrics,
@@ -472,7 +470,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 let task_status = as_task_status(
                     Err(e),
                     self.executor.metadata.id.clone(),
-                    task_id,
                     stage_attempt_num,
                     key.clone(),
                     None,
@@ -780,12 +777,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 };
                 if let Some(curator_task) = maybe_task {
                     let task_identity = format!(
-                        "TID {} {}/{}.{}/{}.{}",
-                        curator_task.task.task_id,
+                        "TID {}/{}.{}/{}.{}",
                         curator_task.task.job_id,
                         curator_task.task.stage_id,
                         curator_task.task.stage_attempt_num,
-                        curator_task.task.task_index,
+                        curator_task.task.task_id,
                         curator_task.task.task_attempt_num,
                     );
                     debug!("Received task {:?}", task_identity);
@@ -917,10 +913,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             if let Err(e) = self
                 .executor
                 .cancel_task(
-                    task.task_id as usize,
                     task.job_id.into(),
                     task.stage_id as usize,
-                    task.task_index as usize,
+                    task.task_id as usize,
                 )
                 .await
             {

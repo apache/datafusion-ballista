@@ -294,19 +294,13 @@ pub fn default_task_runner() -> impl TaskRunner {
             })
             .collect();
 
-        for TaskId {
-            task_id,
-            task_index,
-            ..
-        } in task.task_ids
-        {
+        for TaskId { task_id, .. } in task.task_ids {
             let timestamp = timestamp_millis();
             statuses.push(TaskStatus {
                 task_id,
                 job_id: task.job_id.clone(),
                 stage_id: task.stage_id,
                 stage_attempt_num: task.stage_attempt_num,
-                task_index,
                 launch_time: timestamp,
                 start_exec_time: timestamp,
                 end_exec_time: timestamp,
@@ -1187,11 +1181,10 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
 
     // Complete the task
     protobuf::TaskStatus {
-        task_id: task.task_id as u32,
+        task_id: task.key.task_id as u32,
         job_id: task.key.job_id.clone().into(),
         stage_id: task.key.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
-        task_index: task.key.task_index as u32,
         launch_time: 0,
         start_exec_time: 0,
         end_exec_time: 0,
@@ -1222,11 +1215,10 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
 
     // Fail the task
     protobuf::TaskStatus {
-        task_id: task.task_id as u32,
+        task_id: task.key.task_id as u32,
         job_id: task.key.job_id.clone().into(),
         stage_id: task.key.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
-        task_index: task.key.task_index as u32,
         launch_time: 0,
         start_exec_time: 0,
         end_exec_time: 0,

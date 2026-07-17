@@ -423,7 +423,6 @@ fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
 ///   collapse would produce partial results downstream can't merge).
 fn bind_one(
     running_stage: &mut crate::state::execution_stage::RunningStage,
-    task_id_gen: &mut usize,
     session_id: &str,
     job_id: &JobId,
     budget: &mut AvailableVcores,
@@ -466,9 +465,10 @@ fn bind_one(
         is_collapse,
     );
     let executor_id = budget.executor_id.clone();
-    let task_id = *task_id_gen;
-    *task_id_gen += 1;
-    let task_index = running_stage.task_infos.len();
+    // task_id is the append-order slot in `task_infos` — since we're
+    // about to push, that's `task_infos.len()`. `(job_id, stage_id,
+    // task_id)` is globally unique.
+    let task_id = running_stage.task_infos.len();
     let task_attempt = input_partition_ids
         .iter()
         .map(|pid| running_stage.task_failure_numbers[*pid])
@@ -481,13 +481,12 @@ fn bind_one(
     let key = TaskKey {
         job_id: job_id.clone(),
         stage_id: running_stage.stage_id,
-        task_index,
+        task_id,
     };
     let task_desc = TaskDescription {
         session_id: session_id.to_string(),
         key,
         stage_attempt_num: running_stage.stage_attempt_num,
-        task_id,
         task_attempt,
         global_input_partition_ids: input_partition_ids,
         vcores_consumed,
@@ -524,9 +523,7 @@ pub(crate) async fn bind_task_bias(
         let mut graph = job_info.execution_graph.write().await;
         let session_id = graph.session_id().to_string();
         let mut black_list = vec![];
-        while let Some((running_stage, task_id_gen)) =
-            graph.fetch_running_stage(&black_list)
-        {
+        while let Some(running_stage) = graph.fetch_running_stage(&black_list) {
             if if_skip(running_stage.plan.clone()) {
                 debug!(
                     "Will skip stage {}/{} for bias task binding",
@@ -542,13 +539,7 @@ pub(crate) async fn bind_task_bias(
                 if idx >= budgets.len() {
                     return schedulable_tasks;
                 }
-                match bind_one(
-                    running_stage,
-                    task_id_gen,
-                    &session_id,
-                    job_id,
-                    &mut *budgets[idx],
-                ) {
+                match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
                     Some(bound) => schedulable_tasks.push(bound),
                     None => break, // stage's pending is drained
                 }
@@ -585,9 +576,7 @@ pub(crate) async fn bind_task_round_robin(
         let mut graph = job_info.execution_graph.write().await;
         let session_id = graph.session_id().to_string();
         let mut black_list = vec![];
-        while let Some((running_stage, task_id_gen)) =
-            graph.fetch_running_stage(&black_list)
-        {
+        while let Some(running_stage) = graph.fetch_running_stage(&black_list) {
             if if_skip(running_stage.plan.clone()) {
                 debug!(
                     "Will skip stage {}/{} for round robin task binding",
@@ -605,13 +594,7 @@ pub(crate) async fn bind_task_round_robin(
                         return schedulable_tasks;
                     }
                 }
-                match bind_one(
-                    running_stage,
-                    task_id_gen,
-                    &session_id,
-                    job_id,
-                    &mut *budgets[idx],
-                ) {
+                match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
                     Some(bound) => {
                         schedulable_tasks.push(bound);
                         idx = (idx + 1) % budgets.len();

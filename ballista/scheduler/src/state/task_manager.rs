@@ -96,7 +96,7 @@ impl TaskLauncher for DefaultTaskLauncher {
                     let task_ids: Vec<u32> = task
                         .task_ids
                         .iter()
-                        .map(|task_id| task_id.task_index)
+                        .map(|task_id| task_id.task_id)
                         .collect();
                     format!("{}/{}/{:?}", task.job_id, task.stage_id, task_ids)
                 })
@@ -512,7 +512,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// leftover vcores forever, because `bind_one` consumes `slice.len()`
     /// vcores per task under the multi-partition-task model.
     ///
-    /// Statuses whose (job, stage, task_index) can no longer be resolved
+    /// Statuses whose (job, stage, task_id) can no longer be resolved
     /// (e.g. the job's graph has been evicted) contribute 0.
     pub(crate) async fn sum_vcores_for_statuses(&self, statuses: &[TaskStatus]) -> u32 {
         let mut statuses_by_job: HashMap<String, Vec<&TaskStatus>> = HashMap::new();
@@ -529,8 +529,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             };
             let graph = graph_arc.read().await;
             for status in job_statuses {
-                if let Some(vcores) = graph
-                    .task_vcores(status.stage_id as usize, status.task_index as usize)
+                if let Some(vcores) =
+                    graph.task_vcores(status.stage_id as usize, status.task_id as usize)
                 {
                     total_vcores += vcores;
                 }
@@ -786,12 +786,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             plan_proto.try_encode(&mut plan_buf)?;
 
             let task_definition = TaskDefinition {
-                task_id: task.task_id as u32,
+                task_id: task.key.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
                 job_id: job_id.into(),
                 stage_id: stage_id as u32,
                 stage_attempt_num: task.stage_attempt_num as u32,
-                task_index: task.key.task_index as u32,
                 plan: plan_buf,
                 session_id: task.session_id,
                 launch_time: SystemTime::now()
@@ -860,7 +859,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         if log::max_level() >= log::Level::Debug {
             let task_ids: Vec<usize> =
-                tasks.iter().map(|task| task.key.task_index).collect();
+                tasks.iter().map(|task| task.key.task_id).collect();
             debug!(
                 "Preparing multi task definition for tasks {task_ids:?} belonging to job stage {job_id}/{stage_id}"
             );
@@ -890,9 +889,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             plan_proto.try_encode(&mut plan_buf)?;
             let props = task.session_config.to_key_value_pairs();
             let task_ids = vec![TaskId {
-                task_id: task.task_id as u32,
+                task_id: task.key.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
-                task_index: task.key.task_index as u32,
                 global_output_partition_ids: compute_global_output_partition_ids(
                     &task.plan,
                     &task.global_input_partition_ids,

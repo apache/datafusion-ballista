@@ -159,11 +159,10 @@ where
                             // as scheduler expects notification.
                             //
 
-                            let task_index = task.task_index as usize;
                             let task_key = TaskKey {
                                 job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
-                                task_index,
+                                task_id: task.task_id as usize,
                             };
 
                             warn!(
@@ -186,7 +185,6 @@ where
                             if let Err(error) = task_status_sender.send(as_task_status(
                                 Err(e),
                                 executor.metadata.id.clone(),
-                                task.task_id as usize,
                                 task.task_attempt_num as usize,
                                 task_key,
                                 None,
@@ -238,13 +236,12 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
-    let task_index = task.task_index;
     let start_exec_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
     let task_identity = format!(
-        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{task_index}.{task_attempt_num}"
+        "TID {job_id}/{stage_id}.{stage_attempt_num}/{task_id}.{task_attempt_num}"
     );
     info!("Received task: [{task_identity}]");
 
@@ -293,7 +290,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
         job_id.clone(),
         stage_id as usize,
-        task_index as usize,
+        task_id as usize,
         global_output_partition_ids,
         plan,
         &executor.work_dir,
@@ -304,12 +301,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         let key = TaskKey {
             job_id: job_id.clone(),
             stage_id: stage_id as usize,
-            task_index: task_index as usize,
+            task_id: task_id as usize,
         };
 
         let task_start = Instant::now();
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
-            task_id as usize,
             key.clone(),
             query_stage_exec.clone(),
             task_context,
@@ -352,7 +348,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
-            task_id as usize,
             stage_attempt_num as usize,
             key,
             operator_metrics,

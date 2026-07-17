@@ -58,7 +58,7 @@ pub trait ExecutionEngine: Sync + Send {
         &self,
         job_id: JobId,
         stage_id: usize,
-        task_index: usize,
+        task_id: usize,
         global_output_partition_ids: Vec<usize>,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
@@ -74,13 +74,13 @@ pub trait ExecutionEngine: Sync + Send {
 /// Arrow IPC format. Subsequent stages read these results via ShuffleReaderExec.
 #[async_trait::async_trait]
 pub trait QueryStageExecutor: Sync + Send + Debug + Display {
-    /// Executes a single partition of this query stage.
+    /// Executes this query stage's assigned partition slice.
     ///
     /// Returns metadata about the shuffle partitions written to disk,
     /// including file paths and statistics.
     async fn execute_query_stage(
         &self,
-        input_partition: usize,
+        task_id: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>>;
 
@@ -115,7 +115,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
         &self,
         job_id: JobId,
         stage_id: usize,
-        task_index: usize,
+        task_id: usize,
         global_output_partition_ids: Vec<usize>,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
@@ -157,7 +157,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 work_dir.to_string(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
             )?
-            .with_task_index(task_index)
+            .with_task_id(task_id)
             .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Hash(exec),
@@ -173,7 +173,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 sort_shuffle_writer.shuffle_output_partitioning().clone(),
                 sort_shuffle_writer.config().clone(),
             )?
-            .with_task_index(task_index)
+            .with_task_id(task_id)
             .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Sort(exec),
@@ -252,7 +252,7 @@ impl Display for DefaultQueryStageExec {
 impl QueryStageExecutor for DefaultQueryStageExec {
     async fn execute_query_stage(
         &self,
-        task_index: usize,
+        task_id: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
@@ -261,7 +261,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 ShuffleWriterVariant::Sort(writer) => (Arc::new(writer.clone()), true),
             };
         info!(
-            "executor plan pre-run (task_index={task_index}):\n{}",
+            "executor plan pre-run (task_id={task_id}):\n{}",
             DisplayableExecutionPlan::new(plan_arc.as_ref()).indent(true)
         );
 
@@ -273,7 +273,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             drive_shuffle_writer_stage(plan_arc.clone(), context, is_sort_shuffle).await;
 
         info!(
-            "executor plan post-run (task_index={task_index}, ok={}):\n{}",
+            "executor plan post-run (task_id={task_id}, ok={}):\n{}",
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
         );

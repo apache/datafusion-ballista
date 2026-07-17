@@ -110,11 +110,12 @@ pub struct SortShuffleWriterExec {
     shuffle_output_partitioning: Partitioning,
     /// Sort shuffle configuration
     config: SortShuffleConfig,
-    /// Monotonic index of this task within the stage. Stamped by the
-    /// executor's `create_query_stage_exec`; defaults to 0 for plans that
-    /// arrive from `try_new` directly (proto decode before executor
-    /// stamping, or tests). Kept for symmetry with `ShuffleWriterExec`.
-    task_index: usize,
+    /// Task id (the task's append-order slot in
+    /// `RunningStage.task_infos`). Stamped by the executor's
+    /// `create_query_stage_exec`; defaults to 0 for plans that arrive from
+    /// `try_new` directly (proto decode before executor stamping, or
+    /// tests). Kept for symmetry with `ShuffleWriterExec`.
+    task_id: usize,
     /// Global input-partition ids this task's restricted plan covers, in
     /// slice order. Position `i` of the local plan maps to
     /// `global_output_partition_ids[i]` globally — used in file paths and
@@ -141,7 +142,7 @@ impl Clone for SortShuffleWriterExec {
             work_dir: self.work_dir.clone(),
             shuffle_output_partitioning: self.shuffle_output_partitioning.clone(),
             config: self.config.clone(),
-            task_index: self.task_index,
+            task_id: self.task_id,
             global_output_partition_ids: self.global_output_partition_ids.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
@@ -228,7 +229,7 @@ impl SortShuffleWriterExec {
             work_dir,
             shuffle_output_partitioning,
             config,
-            task_index: 0,
+            task_id: 0,
             global_output_partition_ids: default_partition_slice,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
@@ -239,17 +240,18 @@ impl SortShuffleWriterExec {
         })
     }
 
-    /// Bind this writer to a specific task_index. Called by the executor
+    /// Bind this writer to a specific task_id. Called by the executor
     /// after decoding the plan so writer instances from different tasks in
     /// the same stage carry their identity for logging / debugging.
-    pub fn with_task_index(mut self, task_index: usize) -> Self {
-        self.task_index = task_index;
+    pub fn with_task_id(mut self, task_id: usize) -> Self {
+        self.task_id = task_id;
         self
     }
 
-    /// Task index (within the stage) this writer instance is bound to.
-    pub fn task_index(&self) -> usize {
-        self.task_index
+    /// Task id (append-order slot within the stage) this writer instance
+    /// is bound to.
+    pub fn task_id(&self) -> usize {
+        self.task_id
     }
 
     /// Bind this writer to the task's assigned global partition slice.
@@ -301,7 +303,7 @@ impl SortShuffleWriterExec {
     ///
     /// `input_partition` is a **local** index into this task's restricted
     /// plan (0..N_local). All on-disk paths and the returned `file_id`
-    /// bit-pack `(task_index, input_partition)` into one u64 so files from
+    /// bit-pack `(task_id, input_partition)` into one u64 so files from
     /// different tasks (and different local inputs within a task) never
     /// collide. `global_output_partition_ids` is not used for file naming
     /// here — for `SortShuffleWriterExec` it holds the K-space (0..K),
@@ -318,11 +320,11 @@ impl SortShuffleWriterExec {
         let job_id = self.job_id.clone();
         let stage_id = self.stage_id;
         let partitioning = self.shuffle_output_partitioning.clone();
-        // Pack (task_index, input_partition) into a single u64 so file paths
+        // Pack (task_id, input_partition) into a single u64 so file paths
         // are globally unique. Reader also uses this opaquely — path is
         // `.../{file_id}/data.arrow` and the reader gets `file_id` back
         // through `ShuffleWritePartition`.
-        let file_id: u64 = ((self.task_index as u64) << 32) | (input_partition as u64);
+        let file_id: u64 = ((self.task_id as u64) << 32) | (input_partition as u64);
         let file_id_usize = file_id as usize;
 
         async move {

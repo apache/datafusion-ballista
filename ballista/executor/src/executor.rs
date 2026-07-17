@@ -66,7 +66,7 @@ impl Future for TasksDrainedFuture {
     }
 }
 
-type AbortHandles = Arc<DashMap<(usize, TaskKey), AbortHandle>>;
+type AbortHandles = Arc<DashMap<TaskKey, AbortHandle>>;
 
 /// Ballista executor
 #[derive(Clone)]
@@ -225,17 +225,15 @@ impl Executor {
     /// and statistics.
     pub async fn execute_query_stage(
         &self,
-        task_id: usize,
         key: TaskKey,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
-            query_stage_exec.execute_query_stage(key.task_index, task_ctx),
+            query_stage_exec.execute_query_stage(key.task_id, task_ctx),
         );
 
-        self.abort_handles
-            .insert((task_id, key.clone()), abort_handle);
+        self.abort_handles.insert(key.clone(), abort_handle);
 
         let partitions = match std::panic::AssertUnwindSafe(task).catch_unwind().await {
             Ok(Ok(result)) => {
@@ -252,12 +250,12 @@ impl Executor {
             }
         };
 
-        self.abort_handles.remove(&(task_id, key.clone()));
+        self.abort_handles.remove(&key);
 
         self.metrics_collector.record_stage(
             &key.job_id,
             key.stage_id,
-            key.task_index,
+            key.task_id,
             query_stage_exec,
         );
 
@@ -269,19 +267,15 @@ impl Executor {
     /// Returns `Ok(true)` if the task was found and cancelled, `Ok(false)` if not found.
     pub async fn cancel_task(
         &self,
-        task_id: usize,
         job_id: JobId,
         stage_id: usize,
-        task_index: usize,
+        task_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some((_, handle)) = self.abort_handles.remove(&(
+        if let Some((_, handle)) = self.abort_handles.remove(&TaskKey {
+            job_id,
+            stage_id,
             task_id,
-            TaskKey {
-                job_id,
-                stage_id,
-                task_index,
-            },
-        )) {
+        }) {
             handle.abort();
             Ok(true)
         } else {
@@ -467,10 +461,10 @@ mod test {
             let key = TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
-                task_index: 0,
+                task_id: 0,
             };
             let task_result = executor_clone
-                .execute_query_stage(1, key, Arc::new(query_stage_exec), ctx.task_ctx())
+                .execute_query_stage(key, Arc::new(query_stage_exec), ctx.task_ctx())
                 .await;
             sender.send(task_result).expect("sending result");
         });
@@ -479,7 +473,7 @@ mod test {
         // poll until that happens.
         for _ in 0..20 {
             if executor
-                .cancel_task(1, "job-id".into(), 1, 0)
+                .cancel_task("job-id".into(), 1, 0)
                 .await
                 .expect("cancelling task")
             {

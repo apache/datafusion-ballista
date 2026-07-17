@@ -104,18 +104,17 @@ pub struct TaskExecutionTimes {
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,
-    task_id: usize,
     stage_attempt_num: usize,
     key: TaskKey,
     operator_metrics: Option<Vec<OperatorMetricsSet>>,
     execution_times: TaskExecutionTimes,
 ) -> TaskStatus {
     let metrics = operator_metrics.unwrap_or_default();
+    let task_id = key.task_id;
     match execution_result {
         Ok(partitions) => {
             debug!(
-                "Task {:?} finished with operator_metrics array size {}",
-                task_id,
+                "Task {task_id} finished with operator_metrics array size {}",
                 metrics.len()
             );
             TaskStatus {
@@ -123,7 +122,6 @@ pub fn as_task_status(
                 job_id: key.job_id.clone().into(),
                 stage_id: key.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                task_index: key.task_index as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,
@@ -136,14 +134,13 @@ pub fn as_task_status(
         }
         Err(e) => {
             let error_msg = e.to_string();
-            info!("Task {task_id:?} failed: {error_msg}");
+            info!("Task {task_id} failed: {error_msg}");
 
             TaskStatus {
                 task_id: task_id as u32,
                 job_id: key.job_id.clone().into(),
                 stage_id: key.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                task_index: key.task_index as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,
