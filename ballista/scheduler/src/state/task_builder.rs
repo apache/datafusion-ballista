@@ -48,6 +48,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::with_new_children_if_necessary;
 use log::warn;
 use std::any::Any;
@@ -62,7 +63,6 @@ pub fn restrict_plan_to_partitions(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    // TODO: test with unions
     restrict(plan, partitions, /* under_collect */ false)
 }
 
@@ -82,6 +82,25 @@ fn restrict(
         return Ok(rewritten);
     }
 
+    // UnionExec: parent partition `p` maps to exactly one child's local
+    // partition (`p` minus the sum of preceding children's counts). Split
+    // `partitions` into disjoint per-child sub-slices and recurse; a child
+    // that gets `[]` becomes a 0-partition subplan, and UnionExec's
+    // partition-index math routes `execute(i)` past it correctly. Under
+    // `under_collect`, every descendant reads the full upstream anyway,
+    // so the generic recursion below applies instead.
+    if !under_collect && plan.is::<UnionExec>() {
+        let per_child = union_child_partitions(&plan, partitions);
+        let new_children: Vec<Arc<dyn ExecutionPlan>> = plan
+            .children()
+            .into_iter()
+            .cloned()
+            .zip(per_child)
+            .map(|(child, sub)| restrict(child, &sub, false))
+            .collect::<Result<Vec<_>>>()?;
+        return with_new_children_if_necessary(plan, new_children);
+    }
+
     // Interior: compute per-child scope, recurse, rebuild the node.
     let per_child = child_scopes(&plan, under_collect);
     let new_children: Vec<Arc<dyn ExecutionPlan>> = plan
@@ -92,6 +111,33 @@ fn restrict(
         .map(|(child, collect)| restrict(child, partitions, collect))
         .collect::<Result<Vec<_>>>()?;
     with_new_children_if_necessary(plan, new_children)
+}
+
+/// Bucket each parent partition of a `UnionExec` into its owning child's
+/// local index. Iterates over `partitions` and, for each, subtracts each
+/// child's count until the remainder lands inside a child. Returns one
+/// sub-slice per child (empty for children this task never polls).
+fn union_child_partitions(
+    plan: &Arc<dyn ExecutionPlan>,
+    partitions: &[usize],
+) -> Vec<Vec<usize>> {
+    let child_counts: Vec<usize> = plan
+        .children()
+        .iter()
+        .map(|c| c.properties().output_partitioning().partition_count())
+        .collect();
+    let mut per_child: Vec<Vec<usize>> = vec![vec![]; child_counts.len()];
+    for &p in partitions {
+        let mut remaining = p;
+        for (i, &count) in child_counts.iter().enumerate() {
+            if remaining < count {
+                per_child[i].push(remaining);
+                break;
+            }
+            remaining -= count;
+        }
+    }
+    per_child
 }
 
 /// The `under_collect` value to pass to each child of `plan`.
@@ -105,12 +151,10 @@ fn restrict(
 ///   `required_input_distribution()`. Typically only the build side is
 ///   `SinglePartition`, so the probe side inherits `false` and remains
 ///   partition-aligned.
-/// - TODO(union): `UnionExec` needs per-child sub-ranges of `partitions`
-///   (the parent's partition indices map to disjoint index ranges across
-///   children). That's an orthogonal `Scope::ScopedPartitions(start, end)`
-///   variant on the DQE side; add it here when a query with a `UnionExec`
-///   under partition-aligned parents demands it. See the ignored test
-///   `restrict_union_splits_partitions_per_child` for the assertion we owe.
+///
+/// `UnionExec` is handled by the caller before reaching this function —
+/// its children need per-child *partition* sub-slices, not just per-child
+/// scope, so a `Vec<bool>` can't express what it needs.
 fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool> {
     let children = plan.children();
     if under_collect {
@@ -382,5 +426,124 @@ mod tests {
             assert_eq!(loc.len(), 1);
             assert_eq!(loc[0].partition_id.partition_id, i);
         }
+    }
+
+    // --- UnionExec routing ---
+    //
+    // These tests exercise the walker's UnionExec branch. Under a union, the
+    // parent's partition indices are disjointly allocated across children by
+    // subtracting each preceding child's partition count. A child that owns
+    // none of the requested partitions is restricted to `[]` and produces a
+    // 0-partition subplan; UnionExec's `execute(i)` math routes past it. The
+    // upstream fix used a per-single-partition helper on the executor side;
+    // this suite ports the same invariants to the scheduler-side rewriter.
+
+    use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::ParquetSource;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::physical_plan::union::UnionExec;
+
+    /// Build a `DataSourceExec` over `n` file groups (one file each), so
+    /// every group is exactly one partition. The scan's output partition
+    /// count equals `n`.
+    fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let source = Arc::new(ParquetSource::new(schema));
+        let mut builder =
+            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
+        for i in 0..n {
+            builder =
+                builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
+                    format!("file{i}.parquet"),
+                    100,
+                )]));
+        }
+        DataSourceExec::from_data_source(builder.build())
+    }
+
+    /// File counts per file group of a `DataSourceExec` — the shape a union
+    /// test cares about after restriction.
+    fn group_file_counts(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
+        let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
+        let source: &dyn Any = exec.data_source().as_ref();
+        let config = source.downcast_ref::<FileScanConfig>().unwrap();
+        config.file_groups.iter().map(|g| g.len()).collect()
+    }
+
+    fn union_child_file_counts(plan: &Arc<dyn ExecutionPlan>) -> Vec<Vec<usize>> {
+        plan.children().into_iter().map(group_file_counts).collect()
+    }
+
+    /// A `UnionExec` concatenates its children's partitions, so stage
+    /// partition `left_count + k` is the right child's local partition
+    /// `k`. Applying the parent's index directly to every child (the pre-
+    /// port behaviour) would route every partition into every child and
+    /// most would land out of range, emptying every scan.
+    #[test]
+    fn union_partition_maps_to_the_right_childs_local_group() {
+        let union: Arc<dyn ExecutionPlan> =
+            UnionExec::try_new(vec![scan_with_file_groups(4), scan_with_file_groups(4)])
+                .unwrap();
+        assert_eq!(
+            union.properties().output_partitioning().partition_count(),
+            8
+        );
+
+        // Parent partition 1 is served by the left child's local partition 1.
+        let restricted = restrict_plan_to_partitions(union.clone(), &[1]).unwrap();
+        assert_eq!(
+            union_child_file_counts(&restricted),
+            vec![vec![1], vec![]],
+            "left scan keeps only its local group 1; right scan is not polled \
+             and becomes 0-partition"
+        );
+
+        // Parent partition 6 is served by the right child's local partition 2
+        // (6 - 4). Before the mapping existed this would have addressed no
+        // group at all in either child.
+        let restricted = restrict_plan_to_partitions(union, &[6]).unwrap();
+        assert_eq!(
+            union_child_file_counts(&restricted),
+            vec![vec![], vec![1]],
+            "right scan keeps only its local group 2; left scan is not polled"
+        );
+    }
+
+    /// Every partition of a union must pin exactly one group in exactly one
+    /// child, so across the whole stage each file group is read exactly once.
+    #[test]
+    fn every_union_partition_pins_exactly_one_group() {
+        for partition in 0..6 {
+            let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
+                scan_with_file_groups(3),
+                scan_with_file_groups(3),
+            ])
+            .unwrap();
+            let restricted = restrict_plan_to_partitions(union, &[partition]).unwrap();
+            let counts = union_child_file_counts(&restricted);
+            let (serving, idle) = if partition < 3 { (0, 1) } else { (1, 0) };
+            assert_eq!(
+                counts[serving],
+                vec![1],
+                "partition {partition}: serving child must keep exactly one group"
+            );
+            assert!(
+                counts[idle].is_empty(),
+                "partition {partition}: idle child must be a 0-partition subplan, \
+                 got {:?}",
+                counts[idle]
+            );
+        }
+    }
+
+    /// Without a union a partition passes straight through, so the behaviour
+    /// is unchanged from restricting the scan directly.
+    #[test]
+    fn scan_without_union_is_pinned_to_its_own_partition() {
+        let plan = scan_with_file_groups(4);
+        let restricted = restrict_plan_to_partitions(plan, &[2]).unwrap();
+        assert_eq!(group_file_counts(&restricted), vec![1]);
     }
 }
