@@ -27,8 +27,10 @@ pub fn get_routes<
 >(
     scheduler_server: Arc<SchedulerServer<T, U>>,
 ) -> Router {
+    let web_tui_route = scheduler_server.state.config.web_tui_route.clone();
+
     let router = Router::new()
-        .route("/", get(handlers::get_root))
+        .route(&web_tui_route, get(handlers::get_root))
         .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
         .route("/api/version", get(handlers::get_scheduler_version))
         .route("/api/executors", get(handlers::get_executors::<T, U>))
