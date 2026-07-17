@@ -66,16 +66,8 @@ const SKIP: &[(usize, &str)] = &[
     // data (confirmed reproducible; DataFusion is correct under both join modes).
     // See https://github.com/apache/datafusion-ballista/issues/2046
     (
-        4,
-        "distributed result diverges from DataFusion (issue #2046)",
-    ),
-    (
         38,
         "distributed INTERSECT diverges from DataFusion (issue #2046)",
-    ),
-    (
-        78,
-        "distributed LIMIT drops rows vs DataFusion (issue #2046)",
     ),
     (
         87,
