@@ -255,7 +255,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           Applies to adaptive query planning (AQE). Set to 0 to disable \
                           promotion via the row-count path.".to_string(),
                          DataType::UInt64,
-                         Some((128 * 1024).to_string())),
+                         Some((1_000_000).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,

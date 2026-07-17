@@ -200,7 +200,7 @@ Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes onl
 | ------------------------------------------------ | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ballista.planner.adaptive.enabled                | Boolean | false    | Enables the adaptive planner. Experimental.                                                                                                                            |
 | ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 10485760 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Governs both the static planner and AQE. Set to 0 to disable broadcast joins. |
-| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 131072   | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                      |
+| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000  | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                      |
 
 ### What AQE does today
 
