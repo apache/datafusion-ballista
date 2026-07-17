@@ -18,7 +18,8 @@
 use ballista_core::config::BallistaConfig;
 use datafusion::{
     arrow::compute::SortOptions,
-    common::{JoinType, NullEquality, Result, exec_err, internal_err},
+    arrow::datatypes::{DataType, Schema},
+    common::{ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err},
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
     physical_expr_common::physical_expr::fmt_sql,
@@ -365,12 +366,29 @@ impl DynamicJoinSelectionExec {
         };
 
         if let Some(byte_size) = stats.total_byte_size.get_value() {
-            *byte_size != 0 && *byte_size < threshold_byte_size
-        } else if let Some(num_rows) = stats.num_rows.get_value() {
-            *num_rows != 0 && *num_rows < threshold_num_rows
-        } else {
-            false
+            return *byte_size != 0 && *byte_size < threshold_byte_size;
         }
+
+        // `total_byte_size` is unknown, which is the common case rather than the
+        // exception: DataFusion discards it on every join, and rebuilding it in
+        // `Statistics::calculate_total_byte_size` only works when every column has
+        // a fixed width, so one `Utf8` column loses it for good.
+        //
+        // A row count on its own says nothing about how much data a broadcast
+        // would replicate to every probe task, so estimate the size and hold it
+        // to the same byte threshold. The row threshold is kept as an additional
+        // ceiling, so this can only ever reject a broadcast the row rule would
+        // have allowed, never introduce a new one.
+        let Some(num_rows) = stats.num_rows.get_value().copied() else {
+            return false;
+        };
+
+        if num_rows == 0 || num_rows >= threshold_num_rows {
+            return false;
+        }
+
+        estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
+            .is_some_and(|estimated| estimated < threshold_byte_size)
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {
@@ -455,6 +473,65 @@ impl DynamicJoinSelectionExec {
     }
 }
 
+/// Assumed width of a variable-width value when statistics carry no size for it.
+/// Mirrors Spark's `StringType.defaultSize`, which serves the same purpose in
+/// `EstimationUtils.getSizePerRow`.
+const DEFAULT_VARIABLE_WIDTH_BYTES: usize = 20;
+
+/// Assumed width of a binary value with no size in statistics. Mirrors Spark's
+/// `BinaryType.defaultSize`.
+const DEFAULT_BINARY_WIDTH_BYTES: usize = 100;
+
+/// Estimates the size in bytes of `num_rows` rows of `schema`.
+///
+/// Used only when `Statistics::total_byte_size` is `Absent`. Each column
+/// contributes the best figure available: its own `byte_size` statistic (which
+/// is a total for the column's output, already scaled for filters and limits),
+/// otherwise its fixed width times the row count, otherwise a default width.
+///
+/// Returns `None` if the estimate overflows, so the caller declines to broadcast
+/// rather than wrapping around to a small number.
+fn estimate_output_byte_size(
+    schema: &Schema,
+    num_rows: usize,
+    column_statistics: &[ColumnStatistics],
+) -> Option<usize> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .try_fold(0usize, |total, (idx, field)| {
+            let column_bytes = match column_statistics
+                .get(idx)
+                .and_then(|c| c.byte_size.get_value().copied())
+            {
+                Some(byte_size) => byte_size,
+                None => num_rows.checked_mul(estimated_value_width(field.data_type()))?,
+            };
+            total.checked_add(column_bytes)
+        })
+}
+
+/// Estimated width of a single value of `data_type`.
+///
+/// `DataType::primitive_width` covers the fixed-width types. It returns `None`
+/// for `Boolean` and for the variable-width types, which are the cases handled
+/// here.
+fn estimated_value_width(data_type: &DataType) -> usize {
+    if let Some(width) = data_type.primitive_width() {
+        return width;
+    }
+
+    match data_type {
+        DataType::Boolean => 1,
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => DEFAULT_BINARY_WIDTH_BYTES,
+        _ => DEFAULT_VARIABLE_WIDTH_BYTES,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,8 +543,149 @@ mod tests {
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::test::exec::StatisticsExec;
 
+    const BYTE_THRESHOLD: usize = 10 * 1024 * 1024;
+    const ROW_THRESHOLD: usize = 1_000_000;
+
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+    }
+
+    /// A plan reporting `num_rows` with no `total_byte_size` and no per-column
+    /// size, which is what a join output looks like.
+    fn sizeless_stats_exec(
+        num_rows: usize,
+        fields: Vec<Field>,
+    ) -> Arc<dyn ExecutionPlan> {
+        let column_statistics = vec![ColumnStatistics::new_unknown(); fields.len()];
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Absent,
+                column_statistics,
+            },
+            Schema::new(fields),
+        ))
+    }
+
+    fn supports_collect(plan: &Arc<dyn ExecutionPlan>) -> bool {
+        DynamicJoinSelectionExec::supports_collect_by_thresholds(
+            plan.as_ref(),
+            BYTE_THRESHOLD,
+            ROW_THRESHOLD,
+        )
+    }
+
+    // A build side under the row threshold but far over the byte threshold must
+    // not be broadcast. 900k rows of a string column is roughly 18 MB by the
+    // default width, which every probe task would otherwise have to hold.
+    #[test]
+    fn does_not_collect_wide_rows_when_byte_size_is_unknown() {
+        let plan = sizeless_stats_exec(
+            900_000,
+            vec![
+                Field::new("name", DataType::Utf8, false),
+                Field::new("address", DataType::Utf8, false),
+            ],
+        );
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // The estimate must not reject a build side that really is small: the same
+    // row count over narrow fixed-width columns stays well inside the threshold.
+    #[test]
+    fn collects_narrow_rows_when_byte_size_is_unknown() {
+        let plan = sizeless_stats_exec(
+            100_000,
+            vec![
+                Field::new("a", DataType::Int32, false),
+                Field::new("b", DataType::Int32, false),
+            ],
+        );
+
+        assert!(supports_collect(&plan));
+    }
+
+    // A per-column `byte_size` is a measured total for that column, so it should
+    // be preferred over the default width. Here it proves the column is small
+    // even though the type is variable-width.
+    #[test]
+    fn prefers_column_byte_size_over_default_width() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(900_000),
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![ColumnStatistics {
+                    byte_size: Precision::Exact(1024),
+                    ..ColumnStatistics::new_unknown()
+                }],
+            },
+            Schema::new(vec![Field::new("name", DataType::Utf8, false)]),
+        ));
+
+        assert!(supports_collect(&plan));
+    }
+
+    // A known `total_byte_size` is authoritative and must still short-circuit the
+    // estimate, in both directions.
+    #[test]
+    fn known_total_byte_size_still_decides() {
+        let over: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(10),
+                total_byte_size: Precision::Exact(BYTE_THRESHOLD + 1),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
+        ));
+        assert!(!supports_collect(&over));
+
+        let under: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(10),
+                total_byte_size: Precision::Exact(64),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
+        ));
+        assert!(supports_collect(&under));
+    }
+
+    // The row threshold is retained as a ceiling, so a row count at or above it
+    // is rejected without regard to how narrow the rows are.
+    #[test]
+    fn row_threshold_remains_a_ceiling() {
+        let plan = sizeless_stats_exec(
+            ROW_THRESHOLD,
+            vec![Field::new("a", DataType::Int8, false)],
+        );
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // Statistics with neither a size nor a row count carry no evidence that the
+    // side is small.
+    #[test]
+    fn does_not_collect_without_any_statistics() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Absent,
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
+        ));
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // Zero rows is treated as absent rather than as a very small side, matching
+    // the existing distrust of a zero in statistics.
+    #[test]
+    fn does_not_collect_on_zero_rows() {
+        let plan = sizeless_stats_exec(0, vec![Field::new("x", DataType::Int32, false)]);
+
+        assert!(!supports_collect(&plan));
     }
 
     fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
