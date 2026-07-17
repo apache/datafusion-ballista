@@ -828,13 +828,16 @@ impl RunningStage {
     /// update and upsert the task metrics to the stage metrics
     pub fn update_task_metrics(
         &mut self,
-        partition: usize,
+        task_id: usize,
         metrics: Vec<OperatorMetricsSet>,
     ) -> Result<()> {
         // For some cases, task metrics not set, especially for testings.
         if metrics.is_empty() {
             return Ok(());
         }
+
+        let global_partitions =
+            self.task_infos[task_id].global_input_partition_ids.clone();
 
         let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
             if metrics.len() != combined_metrics.len() {
@@ -844,29 +847,29 @@ impl RunningStage {
                     self.stage_id,
                     metrics.len(),
                     combined_metrics.len(),
-                    partition
+                    task_id
                 )));
             }
             let metrics_values_array = metrics
                 .into_iter()
-                .map(|ms| Self::metrics_set_from_task_metrics(ms, partition))
+                .map(|ms| Self::metrics_set_from_task_metrics(ms, &global_partitions))
                 .collect::<Result<Vec<_>>>()?;
 
             combined_metrics
                 .iter_mut()
                 .zip(metrics_values_array)
-                .map(|(existing_metrics, new_partition_metrics)| {
-                    Self::upsert_metrics_set_for_partition(
+                .map(|(existing_metrics, new_task_metrics)| {
+                    Self::upsert_metrics_set_for_task(
                         existing_metrics,
-                        new_partition_metrics,
-                        partition,
+                        new_task_metrics,
+                        &global_partitions,
                     )
                 })
                 .collect()
         } else {
             metrics
                 .into_iter()
-                .map(|ms| Self::metrics_set_from_task_metrics(ms, partition))
+                .map(|ms| Self::metrics_set_from_task_metrics(ms, &global_partitions))
                 .collect::<Result<Vec<_>>>()?
         };
         self.stage_metrics = Some(new_metrics_set);
@@ -874,33 +877,64 @@ impl RunningStage {
         Ok(())
     }
 
-    /// Converts task metrics into a metrics set for a specific partition
+    /// Convert a task's operator-metrics snapshot into a `MetricsSet`, mapping
+    /// each metric's local partition index (0..global_partitions.len()) to its
+    /// global partition id via `global_partitions`.
     fn metrics_set_from_task_metrics(
         metrics: OperatorMetricsSet,
-        partition: usize,
+        global_partitions: &[usize],
     ) -> Result<MetricsSet> {
         let mut metrics_set = MetricsSet::new();
-        for metric in metrics.metrics {
-            let metric_value: MetricValue = metric.try_into()?;
-            metrics_set.push(Arc::new(Metric::new(metric_value, Some(partition))));
+        for proto_metric in metrics.metrics {
+            let local_partition = proto_metric.partition.map(|p| p as usize);
+            let inner = proto_metric.metric.ok_or_else(|| {
+                BallistaError::Internal(
+                    "OperatorMetric.metric is None while folding task metrics".into(),
+                )
+            })?;
+            let metric_value: MetricValue = inner.try_into()?;
+            // Collapse tasks: the plan has more partitions than the task's
+            // single output partition (it coalesces N upstream inputs into
+            // one), so `local` can exceed `global_partitions.len()`. All of
+            // that task's metrics belong to its single output partition.
+            let global_partition = match local_partition {
+                Some(local) if local < global_partitions.len() => {
+                    Some(global_partitions[local])
+                }
+                Some(_) if global_partitions.len() == 1 => Some(global_partitions[0]),
+                Some(local) => {
+                    return Err(BallistaError::Internal(format!(
+                        "task metric reports local partition {local} but task \
+                             slice has {} partitions",
+                        global_partitions.len()
+                    )));
+                }
+                None => None,
+            };
+            metrics_set.push(Arc::new(Metric::new(metric_value, global_partition)));
         }
         Ok(metrics_set)
     }
 
-    /// Upserts raw metrics from a completed task into the stage metrics
-    pub fn upsert_metrics_set_for_partition(
+    /// Upsert a task's raw metrics into the stage metrics. Task metrics are
+    /// snapshots, so any prior entry for one of the task's global partitions
+    /// is replaced by the new snapshot.
+    pub fn upsert_metrics_set_for_task(
         existing_metrics: &mut MetricsSet,
-        new_partition_metrics: MetricsSet,
-        partition: usize,
+        new_task_metrics: MetricsSet,
+        global_partitions: &[usize],
     ) -> MetricsSet {
         let mut updated_metrics = MetricsSet::new();
-        // Task metrics are snapshots, so replace any prior metrics for this partition.
         for metric in existing_metrics.iter() {
-            if metric.partition() != Some(partition) {
+            let owned_by_task = metric
+                .partition()
+                .map(|p| global_partitions.contains(&p))
+                .unwrap_or(false);
+            if !owned_by_task {
                 updated_metrics.push(metric.clone());
             }
         }
-        for metric in new_partition_metrics.iter() {
+        for metric in new_task_metrics.iter() {
             updated_metrics.push(metric.clone());
         }
         updated_metrics
@@ -1291,15 +1325,27 @@ mod tests {
         output_rows: u64,
         elapsed_compute_nanos: u64,
     ) -> OperatorMetricsSet {
+        make_operator_metrics_set_at(0, output_rows, elapsed_compute_nanos)
+    }
+
+    /// Builds an `OperatorMetricsSet` mimicking an executor-side snapshot
+    /// where each metric carries the local partition index (0..slice_len).
+    fn make_operator_metrics_set_at(
+        local_partition: u32,
+        output_rows: u64,
+        elapsed_compute_nanos: u64,
+    ) -> OperatorMetricsSet {
         OperatorMetricsSet {
             metrics: vec![
                 OperatorMetric {
                     metric: Some(operator_metric::Metric::OutputRows(output_rows)),
+                    partition: Some(local_partition),
                 },
                 OperatorMetric {
                     metric: Some(operator_metric::Metric::ElapseTime(
                         elapsed_compute_nanos,
                     )),
+                    partition: Some(local_partition),
                 },
             ],
         }
@@ -1379,6 +1425,10 @@ mod tests {
     #[test]
     fn test_update_task_metrics_keeps_raw_partition_snapshots() {
         let mut stage = make_running_stage(3);
+        // One task per partition — the classic Spark-style layout.
+        append_running_task(&mut stage, 0, "executor-1", vec![0]);
+        append_running_task(&mut stage, 1, "executor-1", vec![1]);
+        append_running_task(&mut stage, 2, "executor-1", vec![2]);
 
         stage
             .update_task_metrics(0, vec![make_operator_metrics_set(100, 10)])
@@ -1447,5 +1497,97 @@ mod tests {
         let aggregated = operator_metrics.aggregate_by_name();
         assert_eq!(aggregated.output_rows(), Some(650));
         assert_eq!(aggregated.elapsed_compute().unwrap(), 65);
+    }
+
+    /// A task that covers multiple global partitions must file each partition's
+    /// metric separately, using the task's `global_input_partition_ids` to map
+    /// the executor's local partition index onto the global partition id.
+    #[test]
+    fn test_update_task_metrics_multi_partition_task_preserves_per_partition_detail() {
+        let mut stage = make_running_stage(4);
+        // One task covering four global partitions [3, 7, 5, 1] (order matters:
+        // the plan sees them as local 0..3 in this order).
+        append_running_task(&mut stage, 0, "executor-1", vec![3, 7, 5, 1]);
+
+        stage
+            .update_task_metrics(
+                0,
+                vec![OperatorMetricsSet {
+                    metrics: vec![
+                        // Local 0 (global 3): 100 rows
+                        OperatorMetric {
+                            metric: Some(operator_metric::Metric::OutputRows(100)),
+                            partition: Some(0),
+                        },
+                        // Local 1 (global 7): 4000 rows — the skewed partition
+                        OperatorMetric {
+                            metric: Some(operator_metric::Metric::OutputRows(4000)),
+                            partition: Some(1),
+                        },
+                        // Local 2 (global 5): 200 rows
+                        OperatorMetric {
+                            metric: Some(operator_metric::Metric::OutputRows(200)),
+                            partition: Some(2),
+                        },
+                        // Local 3 (global 1): 150 rows
+                        OperatorMetric {
+                            metric: Some(operator_metric::Metric::OutputRows(150)),
+                            partition: Some(3),
+                        },
+                    ],
+                }],
+            )
+            .unwrap();
+
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        let operator_metrics = &metrics[0];
+
+        // Each global partition shows up under its own bucket — no collapsing.
+        let mut per_partition: Vec<(Option<usize>, usize)> = operator_metrics
+            .iter()
+            .filter_map(|metric| match metric.value() {
+                MetricValue::OutputRows(value) => {
+                    Some((metric.partition(), value.value()))
+                }
+                _ => None,
+            })
+            .collect();
+        per_partition.sort_by_key(|(partition, _)| *partition);
+        assert_eq!(
+            per_partition,
+            vec![
+                (Some(1), 150),
+                (Some(3), 100),
+                (Some(5), 200),
+                (Some(7), 4000),
+            ],
+        );
+
+        // Re-report from the same task — snapshots for its four partitions are
+        // replaced, not appended.
+        stage
+            .update_task_metrics(
+                0,
+                vec![OperatorMetricsSet {
+                    metrics: vec![OperatorMetric {
+                        metric: Some(operator_metric::Metric::OutputRows(4200)),
+                        partition: Some(1),
+                    }],
+                }],
+            )
+            .unwrap();
+
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        let operator_metrics = &metrics[0];
+        let output_rows: Vec<(Option<usize>, usize)> = operator_metrics
+            .iter()
+            .filter_map(|metric| match metric.value() {
+                MetricValue::OutputRows(value) => {
+                    Some((metric.partition(), value.value()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(output_rows, vec![(Some(7), 4200)]);
     }
 }

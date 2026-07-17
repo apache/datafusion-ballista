@@ -144,8 +144,11 @@ pub struct TaskSummary {
     pub id: usize,
     /// Task status
     pub status: TaskStatus,
-    /// partition id
-    pub partition_id: u32,
+    /// Global partition ids covered by this task. For a single-partition
+    /// task this is a one-element list — JSON-compatible with the old
+    /// scalar `partition_id` for callers that read `partition_id[0]`, and
+    /// honestly plural for multi-partition tasks.
+    pub partition_id: Vec<u32>,
     /// Scheduler schedule time
     pub scheduled_time: u64,
     /// Scheduler launch time (ms since epoch)
@@ -564,13 +567,15 @@ pub async fn get_query_stages<
                         summary.tasks = running_stage
                             .task_infos
                             .iter()
-                            .enumerate()
-                            .map(|(task_id, info)| {
+                            .map(|info| {
                                 let (input_rows, output_rows) = running_stage
                                     .stage_metrics
                                     .as_deref()
                                     .map(|metrics| {
-                                        get_partition_counts(metrics, task_id)
+                                        get_partition_counts(
+                                            metrics,
+                                            &info.global_input_partition_ids,
+                                        )
                                     })
                                     .unwrap_or((0, 0));
 
@@ -581,7 +586,11 @@ pub async fn get_query_stages<
 
                                 Some(TaskSummary {
                                     id: info.task_id,
-                                    partition_id: task_id as u32,
+                                    partition_id: info
+                                        .global_input_partition_ids
+                                        .iter()
+                                        .map(|&p| p as u32)
+                                        .collect(),
                                     scheduled_time: info.scheduled_time as u64,
                                     launch_time: info.launch_time as u64,
                                     start_exec_time,
@@ -615,11 +624,10 @@ pub async fn get_query_stages<
                         summary.tasks = completed_stage
                             .task_infos
                             .iter()
-                            .enumerate()
-                            .map(|(partition_id, task_info)| {
+                            .map(|task_info| {
                                 let (input_rows, output_rows) = get_partition_counts(
                                     &completed_stage.stage_metrics,
-                                    partition_id,
+                                    &task_info.global_input_partition_ids,
                                 );
 
                                 let start_exec_time = task_info.start_exec_time as u64;
@@ -627,7 +635,11 @@ pub async fn get_query_stages<
                                 let task_status = (&task_info.task_status).into();
                                 Some(TaskSummary {
                                     id: task_info.task_id,
-                                    partition_id: partition_id as u32,
+                                    partition_id: task_info
+                                        .global_input_partition_ids
+                                        .iter()
+                                        .map(|&p| p as u32)
+                                        .collect(),
                                     scheduled_time: task_info.scheduled_time as u64,
                                     launch_time: task_info.launch_time as u64,
                                     start_exec_time,
@@ -656,10 +668,11 @@ pub async fn get_query_stages<
                         summary.tasks = failed_stage
                             .task_infos
                             .iter()
-                            .enumerate()
-                            .map(|(partition_id, info)| {
-                                let (input_rows, output_rows) =
-                                    get_partition_counts(metrics, partition_id);
+                            .map(|info| {
+                                let (input_rows, output_rows) = get_partition_counts(
+                                    metrics,
+                                    &info.global_input_partition_ids,
+                                );
 
                                 let start_exec_time = info.start_exec_time as u64;
                                 let end_exec_time = info.end_exec_time as u64;
@@ -667,7 +680,11 @@ pub async fn get_query_stages<
 
                                 Some(TaskSummary {
                                     id: info.task_id,
-                                    partition_id: partition_id as u32,
+                                    partition_id: info
+                                        .global_input_partition_ids
+                                        .iter()
+                                        .map(|&p| p as u32)
+                                        .collect(),
                                     scheduled_time: info.scheduled_time as u64,
                                     launch_time: info.launch_time as u64,
                                     start_exec_time,
@@ -838,20 +855,31 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
     }
 }
 
-fn get_partition_counts(metrics: &[MetricsSet], partition_id: usize) -> (usize, usize) {
-    let input_rows = get_partition_count(metrics, partition_id, "input_rows");
-    let output_rows = get_partition_count(metrics, partition_id, "output_rows");
+/// Sum a task's `input_rows` / `output_rows` across the global partitions the
+/// task owns. Metrics are keyed by global partition id — for single-partition
+/// tasks `partitions` is a one-element slice; for multi-partition tasks it is
+/// the task's `global_input_partition_ids`.
+fn get_partition_counts(metrics: &[MetricsSet], partitions: &[usize]) -> (usize, usize) {
+    let input_rows = get_partition_count(metrics, partitions, "input_rows");
+    let output_rows = get_partition_count(metrics, partitions, "output_rows");
     (input_rows, output_rows)
 }
 
-fn get_partition_count(metrics: &[MetricsSet], partition_id: usize, name: &str) -> usize {
+fn get_partition_count(
+    metrics: &[MetricsSet],
+    partitions: &[usize],
+    name: &str,
+) -> usize {
     metrics
         .iter()
         .flat_map(|vec| {
             vec.iter().map(|metric| {
                 let metric_value = metric.value();
-                if metric.partition() == Some(partition_id) && metric_value.name() == name
-                {
+                let owned_by_task = metric
+                    .partition()
+                    .map(|p| partitions.contains(&p))
+                    .unwrap_or(false);
+                if owned_by_task && metric_value.name() == name {
                     metric_value.as_usize()
                 } else {
                     0

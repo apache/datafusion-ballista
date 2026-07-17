@@ -520,6 +520,11 @@ pub struct NamedRatio {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperatorMetric {
+    /// Local partition index within the reporting task's plan (0..slice_len-1).
+    /// The scheduler maps this to a global partition id via the task's
+    /// `global_input_partition_ids` when folding metrics into stage metrics.
+    #[prost(uint32, optional, tag = "16")]
+    pub partition: ::core::option::Option<u32>,
     #[prost(
         oneof = "operator_metric::Metric",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"

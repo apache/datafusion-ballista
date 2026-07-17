@@ -378,6 +378,10 @@ message OperatorMetric {
     NamedRatio ratio = 14;
     uint64 output_batches = 15;
   }
+  // Local partition index within the reporting task's plan (0..slice_len-1).
+  // The scheduler maps this to a global partition id via the task's
+  // `global_input_partition_ids` when folding metrics into stage metrics.
+  optional uint32 partition = 16;
 }
 
 // Used by scheduler
