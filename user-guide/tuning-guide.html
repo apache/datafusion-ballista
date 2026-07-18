@@ -585,6 +585,16 @@ clear that AQE was used:</p>
 <td><p>false</p></td>
 <td><p>Enables the adaptive planner. Experimental.</p></td>
 </tr>
+<tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>10485760</p></td>
+<td><p>Byte-size threshold below which a hash join’s smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>). Governs both the static planner and AQE. Set to 0 to disable broadcast joins.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
+<td><p>UInt64</p></td>
+<td><p>1000000</p></td>
+<td><p>Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -598,6 +608,9 @@ implemented:</p>
 <ul class="simple">
 <li><p><strong>Join reordering.</strong> Uses runtime row counts from completed stages so the
 smaller side drives the join.</p></li>
+<li><p><strong>Broadcast join selection.</strong> When a join input’s runtime size falls under
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> (or the row-count
+fallback), the smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) instead of shuffled.</p></li>
 <li><p><strong>Empty stage elimination.</strong> When a completed stage produces zero rows, its
 downstream exchange is replaced with an empty execution node, and emptiness
 is propagated up the plan so downstream stages are skipped entirely.</p></li>
