@@ -94,7 +94,8 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
     "ballista.shuffle.writer_channel_capacity";
 /// Configuration key for the per-task buffered-bytes budget at which the
-/// sort shuffle writer spills its in-memory batches to disk.
+/// sort shuffle writer spills its in-memory batches to disk. Set to 0 to
+/// disable the per-task budget and spill only under memory-pool pressure.
 pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
     "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
 /// Configuration key for the byte-size threshold below which a hash join's
@@ -237,7 +238,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
                          in-memory batches to disk. Counted independently of the runtime memory pool, so \
                          spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle \
-                         memory per executor is approximately vcores * this value.".to_string(),
+                         memory per executor is approximately vcores * this value. Set to 0 to disable the \
+                         per-task budget and rely solely on runtime memory-pool pressure to trigger spilling.".to_string(),
                          DataType::UInt64,
                          Some((256 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),

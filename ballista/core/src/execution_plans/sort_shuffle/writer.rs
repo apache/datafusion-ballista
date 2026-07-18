@@ -249,7 +249,10 @@ impl SortShuffleWriterExec {
             // `MemoryPool`. Drives spill decisions so the writer bounds its
             // RSS even when the pool is unbounded.
             let mut buffered_bytes: usize = 0;
+            // A limit of 0 disables the per-task budget, leaving the runtime
+            // `MemoryPool` as the sole spill trigger.
             let memory_limit = config.memory_limit_per_task_bytes;
+            let per_task_budget_enabled = memory_limit > 0;
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
@@ -282,7 +285,9 @@ impl SortShuffleWriterExec {
                 let pool_rejected_growth = reservation.try_grow(growth).is_err();
                 buffered_bytes = buffered_bytes.saturating_add(growth);
 
-                if pool_rejected_growth || buffered_bytes >= memory_limit {
+                if pool_rejected_growth
+                    || (per_task_budget_enabled && buffered_bytes >= memory_limit)
+                {
                     let spill_timer = metrics.spill_time.timer();
                     let (event_batches, event_bytes) = spill_all_partitions(
                         &mut buffered,
@@ -1076,6 +1081,39 @@ mod tests {
             /* sort_shuffle_memory_limit_bytes */ BUDGET_NEVER_REACHED,
             /* pool_bytes */ POOL_NEVER_REJECTS,
             /* expect_spills */ false,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn zero_budget_disables_per_task_spill_trigger() -> Result<()> {
+        // A per-task budget of 0 disables trigger 2 entirely. With a pool that
+        // never rejects, neither trigger can fire, so the whole payload stays in
+        // memory and round-trips without spilling — even though the same payload
+        // would spill under any small non-zero budget.
+        run_round_trip(
+            /* num_batches */ 10,
+            /* rows_per_batch */ 8192,
+            /* num_partitions */ 4,
+            /* sort_shuffle_memory_limit_bytes */ 0,
+            /* pool_bytes */ POOL_NEVER_REJECTS,
+            /* expect_spills */ false,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn zero_budget_still_spills_under_memory_pool_pressure() -> Result<()> {
+        // With the per-task budget disabled (0), the runtime memory pool is the
+        // sole spill trigger. A 64 KiB pool cannot admit a ~128 KiB batch, so
+        // pool rejection still forces spilling.
+        run_round_trip(
+            /* num_batches */ 8,
+            /* rows_per_batch */ 8192,
+            /* num_partitions */ 2,
+            /* sort_shuffle_memory_limit_bytes */ 0,
+            /* pool_bytes */ 64 * 1024,
+            /* expect_spills */ true,
         )
         .await
     }
