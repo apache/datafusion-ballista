@@ -96,6 +96,85 @@ impl Debug for WriterState {
 /// via [`Self::with_global_output_partition_ids`]) — position `i` of the
 /// local plan maps to global id `global_output_partition_ids[i]`, which is
 /// what gets embedded in the file path.
+///
+/// # Threading
+///
+/// One Ballista task holds one `SortShuffleWriterExec`. The first
+/// `execute(k)` call from the executor initializes K oneshot handoffs (one
+/// per output partition) and spawns `run_coordinator`, which spawns M
+/// concurrent tokio tasks — one per local input partition in the task's
+/// slice. Each input writer pulls `child.execute(i)`, hash-buckets rows
+/// into K sub-slices, sorts and spills, and produces one indexed data file.
+/// The coordinator collects M×K per-bucket summaries and re-buckets them
+/// by output partition so each of the K oneshots receives the M summaries
+/// for its output. Each `execute(k)` returns a stream that awaits its
+/// oneshot and emits a single metadata batch pointing into the M files.
+///
+/// M concurrent per-input producers is the same fan-out shape as
+/// DataFusion's `RepartitionExec` (see `pull_from_input` in
+/// `datafusion/physical-plan/src/repartition/mod.rs`): N producers, each
+/// running `plan.execute(i)`, fanning to K sinks. Here the K sinks are
+/// bucketed sub-slices in one indexed file per input instead of K mpsc
+/// senders per producer.
+///
+/// Data flows bottom → top (child produces, executor consumes), matching
+/// DataFusion's diagram convention for `RepartitionExec`. Arrows point up
+/// with the data. **M and K are independent**: M = the task's slice of the
+/// child's partitions, K = the hash-partition target from the planner.
+/// Example: M=2, K=3.
+///
+/// ```text
+///                     K=3 output partitions (pulled by executor)
+///
+///        writer.execute(0)  writer.execute(1)  writer.execute(2)
+///                ▲                 ▲                 ▲
+///                │                 │                 │
+///           ┌──────────┐      ┌──────────┐      ┌──────────┐
+///           │ oneshot  │      │ oneshot  │      │ oneshot  │
+///           │ (out=0)  │      │ (out=1)  │      │ (out=2)  │
+///           └──────────┘      └──────────┘      └──────────┘
+///                ▲                 ▲                 ▲
+///                │       each oneshot carries a summary
+///                │       pointing at bucket-k slices in
+///                │       ALL M data files
+///                └─────────────────┼─────────────────┘
+///                                  │  re-bucket M×K per-bucket
+///                                  │  summaries by output part.
+///                         ┌─────────────────┐
+///                         │ run_coordinator │
+///                         └─────────────────┘
+///                                  ▲
+///                    ┌─────────────┴─────────────┐
+///                    │ K per-bucket summaries    │ K per-bucket summaries
+///                    │                           │
+///           ┌────────────────┐           ┌────────────────┐
+///           │  input writer  │           │  input writer  │
+///           │      (0)       │           │      (1)       │
+///           │ sort by hash   │           │ sort by hash   │
+///           │ bucket, spill  │           │ bucket, spill  │
+///           │ if needed →    │           │ if needed →    │
+///           │ ONE data file  │           │ ONE data file  │
+///           │ + ONE index    │           │ + ONE index    │
+///           └────────────────┘           └────────────────┘
+///                    ▲                           ▲
+///                    │                           │
+///            child.execute(0)            child.execute(1)
+///
+///                     M=2 input partitions
+///                  (task's slice of child plan)
+/// ```
+///
+/// File layout — one pair per input writer, K buckets concatenated in one
+/// file:
+///
+/// ```text
+///           data.arrow:        [ bucket 0 ][ bucket 1 ][ bucket 2 ]
+///           data.arrow.index:  { 0 → off0, 1 → off1, 2 → off2 }
+/// ```
+///
+/// A reader for output partition k opens each of the M `data.arrow` files,
+/// seeks to `index[k]`, and reads bucket-k's slice — so K downstream
+/// readers × M files, driven by the summaries the oneshots hand back.
 #[derive(Debug)]
 pub struct SortShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of

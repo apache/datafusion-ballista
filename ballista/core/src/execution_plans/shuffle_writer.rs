@@ -239,6 +239,94 @@ impl Debug for WriterState {
 /// can be executed as one unit with each partition being executed in parallel. The output of each
 /// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 /// will use the ShuffleReaderExec to read these results.
+///
+/// # Threading (passthrough / `None` branch)
+///
+/// One Ballista task holds one `ShuffleWriterExec`. The first `execute(k)`
+/// call from the executor initializes K oneshot handoffs and spawns
+/// `run_coordinator`, which invokes `execute_shuffle_write`. In the
+/// passthrough branch (`shuffle_output_partitioning == None`, i.e. the
+/// child already has the target K partitions), `execute_shuffle_write`
+/// spawns K concurrent tokio tasks — one per output partition — each
+/// pulling `child.execute(k)` and streaming directly to
+/// `data-{task_id}.arrow` for partition k. Each drain emits one summary;
+/// the coordinator routes it to the oneshot whose slot matches the output
+/// partition. `execute(k)` returns a stream that awaits its oneshot and
+/// emits one metadata batch pointing at that single file.
+///
+/// K concurrent per-output drainers is the same fan-out shape as
+/// DataFusion's `RepartitionExec`, applied at the writer boundary: the
+/// writer never coordinates across output partitions in-process, and any
+/// upstream operator (e.g. `DynamicRangeRepartitionExec`) that pushes to
+/// all K senders must see all K drainers running concurrently — draining
+/// one to EOF before the next would fill the undrained channels and
+/// deadlock the scatter side.
+///
+/// Data flows bottom → top (child produces, executor consumes), matching
+/// DataFusion's convention. Under passthrough M = K (child preserves
+/// partition count). Example: K=3.
+///
+/// ```text
+///                     K=3 output partitions (pulled by executor)
+///
+///        writer.execute(0)  writer.execute(1)  writer.execute(2)
+///                ▲                 ▲                 ▲
+///                │                 │                 │
+///           ┌──────────┐      ┌──────────┐      ┌──────────┐
+///           │ oneshot  │      │ oneshot  │      │ oneshot  │
+///           │ (out=0)  │      │ (out=1)  │      │ (out=2)  │
+///           └──────────┘      └──────────┘      └──────────┘
+///                ▲                 ▲                 ▲
+///                │       each oneshot: 1 summary
+///                │       pointing at ONE data file
+///                └─────────────────┼─────────────────┘
+///                                  │  route each summary
+///                                  │  to its output slot
+///                         ┌─────────────────┐
+///                         │ run_coordinator │
+///                         └─────────────────┘
+///                                  ▲
+///              ┌───────────────────┼───────────────────┐
+///              │                   │                   │
+///     ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+///     │  drain task    │  │  drain task    │  │  drain task    │
+///     │   (out=0)      │  │   (out=1)      │  │   (out=2)      │
+///     │ stream → disk  │  │ stream → disk  │  │ stream → disk  │
+///     └────────────────┘  └────────────────┘  └────────────────┘
+///              ▲                   ▲                   ▲
+///              │                   │                   │
+///      child.execute(0)    child.execute(1)    child.execute(2)
+///
+///                     K=3 child partitions
+///          (passthrough: child preserves K, no repartitioning)
+/// ```
+///
+/// File layout — K files, one per output partition:
+///
+/// ```text
+///           .../{stage_id}/{partition_k}/data-{task_id}.arrow
+/// ```
+///
+/// Contrast with [`SortShuffleWriterExec`](super::sort_shuffle::SortShuffleWriterExec):
+/// its M concurrent per-input writers produce M files, each holding K
+/// buckets internally. Here K concurrent per-output drainers produce K
+/// files, each holding exactly one output partition. Both writers expose
+/// the same K-summary contract to the framework — the on-disk shape is
+/// what differs, and downstream `ShuffleReaderExec` uses the summaries to
+/// open whichever set of files is right.
+///
+/// The `Hash` branch (`shuffle_output_partitioning == Some(Hash)`) is a
+/// legacy shape kept for correctness while the planner transitions to
+/// `RepartitionExec(Hash) → ShuffleWriterExec(None)`; not diagrammed here.
+///
+/// The coordinator + oneshot plumbing is a shared idiom with
+/// [`SortShuffleWriterExec`](super::sort_shuffle::SortShuffleWriterExec) and
+/// with the `Hash` branch; passthrough alone doesn't structurally need it —
+/// only the K concurrent drains, which are the real deadlock guard. Once
+/// `Hash` is retired in favor of DataFusion's `RepartitionExec(Hash)`, this
+/// branch could collapse to per-`execute(k)` eager K-spawn with
+/// `JoinHandle` handoff, keeping the coordinator idiom only where it does
+/// real work (SortShuffle's M×K summary re-bucketing).
 #[derive(Debug)]
 pub struct ShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of
