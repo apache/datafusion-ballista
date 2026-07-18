@@ -282,16 +282,16 @@ update **both** Deployments' image tags in the same change and apply them
 together. Kubernetes will roll each Deployment independently under its own
 rollout policy, but the fleet stays serving throughout:
 
-| scheduler ↔ executor | outcome                                          |
-| -------------------- | ------------------------------------------------ |
-| old ↔ old            | works (old scheduler pre-dates the check)        |
-| old ↔ new            | works (old scheduler ignores the unknown field)  |
-| new ↔ new            | works                                            |
+| scheduler ↔ executor | outcome                                                                      |
+| -------------------- | ---------------------------------------------------------------------------- |
+| old ↔ old            | works (old scheduler pre-dates the check)                                    |
+| old ↔ new            | works (old scheduler ignores the unknown field)                              |
+| new ↔ new            | works                                                                        |
 | new ↔ old            | rejected — new scheduler fails `/readyz` until enough new executors register |
 
-Because the *old* scheduler is permissive (it never learned to check the
+Because the _old_ scheduler is permissive (it never learned to check the
 field), executors that reach it during the transition are always accepted.
-The rejection happens only when a *new* scheduler sees an *old* executor,
+The rejection happens only when a _new_ scheduler sees an _old_ executor,
 which is the case the version check is designed to protect against —
 mismatched pairs never exchange work, so they cannot corrupt state.
 
