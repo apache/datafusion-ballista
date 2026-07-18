@@ -65,7 +65,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, Statistics, displayable,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
-use log::debug;
+use log::{debug, info, warn};
 
 use crate::serde::scheduler::PartitionStats;
 
@@ -350,18 +350,35 @@ impl SortShuffleWriterExec {
             // Reservation drops naturally; nothing left to free.
             drop(reservation);
 
-            debug!(
-                "Sort shuffle write for partition {} completed in {} seconds. \
-                 Output: {:?}, Index: {:?}, Spill events: {}, Spill batches: {}, \
-                 Spill bytes: {}",
-                input_partition,
-                now.elapsed().as_secs(),
-                data_path,
-                index_path,
-                spill_events,
-                total_spilled_batches,
-                total_bytes_spilled
-            );
+            let elapsed_secs = now.elapsed().as_secs();
+            if total_bytes_spilled > 0 {
+                warn!(
+                    "Sort shuffle spill: job={} stage={} input_partition={} \
+                     spilled {} bytes in {} batches ({} events) under memory \
+                     pressure; write completed in {} seconds",
+                    job_id,
+                    stage_id,
+                    input_partition,
+                    total_bytes_spilled,
+                    total_spilled_batches,
+                    spill_events,
+                    elapsed_secs,
+                );
+            } else {
+                info!(
+                    "Sort shuffle write for partition {} completed in {} seconds. \
+                     Output: {:?}, Index: {:?}, Rows: {}, Spill events: {}, \
+                     Spill batches: {}, Spill bytes: {}",
+                    input_partition,
+                    elapsed_secs,
+                    data_path,
+                    index_path,
+                    total_rows,
+                    spill_events,
+                    total_spilled_batches,
+                    total_bytes_spilled
+                );
+            }
 
             let mut results = Vec::new();
             for (part_id, num_batches, num_rows, num_bytes) in partition_stats {

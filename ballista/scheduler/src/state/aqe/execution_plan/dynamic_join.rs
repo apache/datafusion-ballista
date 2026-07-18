@@ -31,7 +31,7 @@ use datafusion::{
         },
     },
 };
-use log::debug;
+use log::info;
 use std::sync::Arc;
 
 use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
@@ -271,17 +271,7 @@ impl DynamicJoinSelectionExec {
         let stats_left = self.left.partition_statistics(None)?;
         let stats_right = self.right.partition_statistics(None)?;
 
-        debug!(
-            "to_actual_join - plan_id: {}, decision: {:?} left: ({:?} | {:?}), right: ({:?} | {:?})",
-            self.plan_id,
-            partition_mode,
-            stats_left.num_rows,
-            stats_left.total_byte_size,
-            stats_right.num_rows,
-            stats_right.total_byte_size
-        );
-
-        match (&self.selection_state, partition_mode) {
+        let action = match (&self.selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
@@ -316,7 +306,33 @@ impl DynamicJoinSelectionExec {
             // this method calculates partition mode, and at the moment it
             // can't calculate it as PartitionMode::Auto
             (_, PartitionMode::Auto) => internal_err!("this case should not be possible"),
-        }
+        }?;
+
+        let action_label = match &action {
+            JoinSelectionAction::Repartition(_) => "Repartition",
+            JoinSelectionAction::CollectLeft(_) => "CollectLeft(broadcast)",
+            JoinSelectionAction::LateCollectLeft(_) => "LateCollectLeft(broadcast)",
+            JoinSelectionAction::Hash(_) => "Hash(Partitioned)",
+            JoinSelectionAction::Sort(_) => "SortMerge(Partitioned)",
+        };
+
+        info!(
+            "AQE join decision plan_id={} action={} partition_mode={:?} \
+             under_threshold={} left=(rows={:?}, bytes={:?}) \
+             right=(rows={:?}, bytes={:?}) byte_threshold={} row_threshold={}",
+            self.plan_id,
+            action_label,
+            partition_mode,
+            under_threshold,
+            stats_left.num_rows,
+            stats_left.total_byte_size,
+            stats_right.num_rows,
+            stats_right.total_byte_size,
+            threshold_collect_left_join_bytes,
+            threshold_collect_left_join_rows,
+        );
+
+        Ok(action)
     }
 
     pub(crate) fn to_hash_join(
