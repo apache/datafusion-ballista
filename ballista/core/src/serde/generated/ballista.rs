@@ -93,6 +93,10 @@ pub struct SortShuffleWriterExecNode {
     /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,
+    /// Per-task buffered-bytes budget at which the writer spills to disk. 0 means
+    /// no cap (spill is driven solely by memory-pool pressure).
+    #[prost(uint64, tag = "9")]
+    pub memory_limit_per_task_bytes: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnresolvedShuffleExecNode {

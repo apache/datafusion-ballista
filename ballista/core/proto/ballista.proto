@@ -77,6 +77,9 @@ message SortShuffleWriterExecNode {
   datafusion.PhysicalHashRepartition output_partitioning = 4;
   // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;
+  // Per-task buffered-bytes budget at which the writer spills to disk. 0 means
+  // no cap (spill is driven solely by memory-pool pressure).
+  uint64 memory_limit_per_task_bytes = 9;
 }
 
 message UnresolvedShuffleExecNode {

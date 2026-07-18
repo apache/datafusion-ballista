@@ -423,7 +423,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 } else {
                     8192
                 };
-                let config = SortShuffleConfig::new(true, batch_size);
+                let config = SortShuffleConfig::new(true, batch_size)
+                    .with_memory_limit_per_task_bytes(
+                        sort_shuffle_writer.memory_limit_per_task_bytes as usize,
+                    );
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
                     sort_shuffle_writer.job_id.clone().into(),
@@ -622,6 +625,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         input: None,
                         output_partitioning,
                         batch_size: config.batch_size as u64,
+                        memory_limit_per_task_bytes: config.memory_limit_per_task_bytes
+                            as u64,
                     },
                 )),
             };
@@ -1007,6 +1012,45 @@ mod test {
         assert_eq!(stored.upstream_partition_count, 4);
         assert_eq!(stored.groups.len(), 1);
         assert_eq!(stored.groups[0].upstream_indices, vec![0, 1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn sort_shuffle_writer_memory_limit_survives_roundtrip() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = create_test_schema();
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+        let config = SortShuffleConfig::new(true, 4096)
+            .with_memory_limit_per_task_bytes(1024 * 1024 * 1024);
+        let original = SortShuffleWriterExec::try_new(
+            "job-1".to_string().into(),
+            3,
+            input.clone(),
+            String::new(),
+            partitioning,
+            config,
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded = decoded
+            .downcast_ref::<SortShuffleWriterExec>()
+            .expect("Expected SortShuffleWriterExec");
+
+        assert_eq!(
+            decoded.config().memory_limit_per_task_bytes,
+            1024 * 1024 * 1024,
+            "memory limit override must survive serialization to the executor"
+        );
+        assert_eq!(decoded.config().batch_size, 4096);
     }
 
     #[tokio::test]

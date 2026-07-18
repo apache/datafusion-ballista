@@ -246,8 +246,9 @@ impl SortShuffleWriterExec {
             let mut hash_buffer: Vec<u64> = Vec::new();
             let mut spill_events: u64 = 0;
             // Absolute buffered-bytes counter, independent of the runtime
-            // `MemoryPool`. Drives spill decisions so the writer bounds its
-            // RSS even when the pool is unbounded.
+            // `MemoryPool`. When `memory_limit` is non-zero it caps this counter
+            // as a second spill trigger; a `memory_limit` of 0 disables the cap
+            // so spilling is driven solely by memory-pool pressure.
             let mut buffered_bytes: usize = 0;
             let memory_limit = config.memory_limit_per_task_bytes;
 
@@ -282,7 +283,9 @@ impl SortShuffleWriterExec {
                 let pool_rejected_growth = reservation.try_grow(growth).is_err();
                 buffered_bytes = buffered_bytes.saturating_add(growth);
 
-                if pool_rejected_growth || buffered_bytes >= memory_limit {
+                if pool_rejected_growth
+                    || (memory_limit > 0 && buffered_bytes >= memory_limit)
+                {
                     let spill_timer = metrics.spill_time.timer();
                     let (event_batches, event_bytes) = spill_all_partitions(
                         &mut buffered,
