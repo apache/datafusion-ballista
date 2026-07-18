@@ -34,7 +34,7 @@ required-features = ["build-binary"]
 
 [features]
 arrow-ipc-optimizations = []
-build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary", "mimalloc"]
+build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary", "mimalloc", "dep:axum"]
 default = ["arrow-ipc-optimizations", "build-binary"]
 spark-compat = ["ballista-core/spark-compat"]
 
@@ -42,7 +42,7 @@ spark-compat = ["ballista-core/spark-compat"]
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-axum = "0.8.9"
+axum = { version = "0.8.9", optional = true }
 ballista-core = { path = "../core", version = "54.0.0" }
 bytesize = "2"
 clap = { workspace = true, optional = true }

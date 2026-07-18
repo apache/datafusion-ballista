@@ -128,8 +128,6 @@ pub struct ExecutorProcessConfig {
     pub port: u16,
     /// Port for the executor's gRPC service.
     pub grpc_port: u16,
-    /// Port for the executor's HTTP health server (`/healthz` and `/readyz`).
-    pub health_port: u16,
     /// Hostname of the scheduler to connect to.
     pub scheduler_host: String,
     /// Port of the scheduler's gRPC service.
@@ -196,6 +194,11 @@ pub struct ExecutorProcessConfig {
     /// connection and a shuffle-heavy query can exhaust the host's ephemeral
     /// ports.
     pub client_ttl: u64,
+    /// Shared readiness state that the heartbeat loops flip on every RPC
+    /// outcome. Embedders leave this as `Default::default()` and never
+    /// observe it; the standalone binary passes a handle here and also spawns
+    /// an HTTP server on it (see `bin/main.rs`).
+    pub health: crate::health::ExecutorHealth,
 }
 
 impl ExecutorProcessConfig {
@@ -218,7 +221,6 @@ impl Default for ExecutorProcessConfig {
             external_host: None,
             port: 50051,
             grpc_port: 50052,
-            health_port: 50053,
             scheduler_host: "localhost".into(),
             scheduler_port: 50050,
             scheduler_connect_timeout_seconds: 0,
@@ -247,6 +249,7 @@ impl Default for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
             client_ttl: 30,
+            health: crate::health::ExecutorHealth::new(),
         }
     }
 }
@@ -524,9 +527,11 @@ pub async fn start_executor_process(
     // Channels used to receive stop requests from Executor grpc service.
     let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
 
-    // Shared health/readiness signal. Flipped by the heartbeat/poll_work loop
-    // and observed by the /readyz probe served on `health_port`.
-    let health = crate::health::ExecutorHealth::new();
+    // Shared readiness state, flipped by the heartbeat/poll_work loop. When
+    // the caller is the standalone binary, an HTTP probe server observes
+    // this same handle (see `bin/main.rs`); library embedders leave it
+    // unobserved.
+    let health = opt.health.clone();
 
     // Starting main executor process based on the TaskSchedulingPolicy
     //
@@ -543,7 +548,7 @@ pub async fn start_executor_process(
                     default_codec,
                     stop_send,
                     &shutdown_notification,
-                    health.clone(),
+                    health,
                 )
                 .await?,
             );
@@ -553,31 +558,10 @@ pub async fn start_executor_process(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
-                health.clone(),
+                health,
             )));
         }
     };
-
-    // Start the health probe HTTP server. It listens for the shutdown
-    // broadcast and stops gracefully, so the pod is not held up by /healthz.
-    {
-        let health_addr: SocketAddr = format!("{}:{}", opt.bind_host, opt.health_port)
-            .parse()
-            .map_err(|e| {
-                BallistaError::General(format!("invalid health_port address: {e}"))
-            })?;
-        let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::oneshot::channel();
-        let mut probe_shutdown = shutdown_notification.subscribe_for_shutdown();
-        tokio::spawn(async move {
-            probe_shutdown.recv().await;
-            let _ = health_shutdown_tx.send(());
-        });
-        service_handlers.push(crate::health::spawn_health_server(
-            health_addr,
-            health,
-            health_shutdown_rx,
-        ));
-    }
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
 

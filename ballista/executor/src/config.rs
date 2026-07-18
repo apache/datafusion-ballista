@@ -230,7 +230,6 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             bind_host: opt.bind_host,
             port: opt.bind_port,
             grpc_port: opt.bind_grpc_port,
-            health_port: opt.bind_health_port,
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
@@ -258,6 +257,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
             client_ttl: opt.client_ttl,
+            health: crate::health::ExecutorHealth::new(),
         })
     }
 }
