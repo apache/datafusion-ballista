@@ -50,7 +50,7 @@ processes.
 
 ## Multi-Partition Tasks
 
-Ballista dispatches at the *slice* level, not the partition level. Each executor advertises a fixed number of
+Ballista dispatches at the _slice_ level, not the partition level. Each executor advertises a fixed number of
 virtual cores (`vcores`), and the scheduler packs up to that many of a stage's output partitions into a single
 task. All partitions in the slice execute concurrently under one DataFusion plan invocation: scans and shuffle
 readers are rewritten to see only the assigned partition ids, and DataFusion's per-partition `execute(N)`
@@ -61,7 +61,7 @@ pre-multi-partition-tasks model).
 Compared to Apache Spark, whose unit of dispatch is one task per partition, Ballista's unit is one task per
 slice of partitions bound to a single executor. Spark achieves cluster-scale parallelism the same way — many
 tasks running concurrently across cores — but each task is single-threaded and doesn't share state with its
-neighbours. Ballista's slice model preserves cluster-scale parallelism *and* adds intra-task shared-memory
+neighbours. Ballista's slice model preserves cluster-scale parallelism _and_ adds intra-task shared-memory
 parallelism: partitions inside one slice share DataFusion's per-task memory pool budget, share the collect-left
 build side of a broadcast hash join (one hash table probed by every partition, instead of one materialization
 per task), share segment-tree indices needed for degenerate window aggregates (non-invertible aggregates like
