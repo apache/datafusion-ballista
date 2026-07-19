@@ -318,13 +318,16 @@ impl DynamicJoinSelectionExec {
         };
 
         info!(
-            "AQE join decision plan_id={} action={} partition_mode={:?} \
-             under_threshold={} left=(rows={:?}, bytes={:?}) \
-             right=(rows={:?}, bytes={:?}) byte_threshold={} row_threshold={}",
+            "AQE join decision plan_id={} action={} partition_mode={:?} under_threshold={} \
+             build_max_partition_bytes={:?} hash_join_max_build_partition_bytes={} \
+             left=(rows={:?}, bytes={:?}) right=(rows={:?}, bytes={:?}) \
+             byte_threshold={} row_threshold={}",
             self.plan_id,
             action_label,
             partition_mode,
             under_threshold,
+            max_per_partition_build_bytes(&self.left),
+            max_build_bytes,
             stats_left.num_rows,
             stats_left.total_byte_size,
             stats_right.num_rows,
