@@ -489,6 +489,43 @@ impl DynamicJoinSelectionExec {
     }
 }
 
+/// Skew-aware fit check for the build side of a `Partitioned` hash join: the
+/// MAX (not average) per-partition materialized byte size. A single
+/// oversized partition is enough to blow the per-slot memory pool even when
+/// every other partition — and thus the average — is small; this is exactly
+/// the shape of the Q18 OOM, so an average would have hidden the failure
+/// mode this check exists to catch.
+///
+/// Reachability: at the one call site this feeds — the
+/// `(JoinInputState::Repartitioned, PartitionMode::Partitioned)` arm of
+/// `to_actual_join` — `self.left` is always the `ExchangeExec` that
+/// `SelectJoinRule` inserted while resolving the prior `Repartition` action
+/// (see `JoinSelectionAction::Repartition` in `join_selection.rs`), and
+/// `upstream_resolved()` guarantees that exchange's shuffle has already
+/// finished. So the actual, materialized per-partition byte sizes that
+/// `CoalescePartitionsRule` reads (`ExchangeExec::shuffle_partitions()` ->
+/// `PartitionLocation::partition_stats::num_bytes()`) are reachable here too,
+/// and are used directly rather than falling back to an average.
+///
+/// Returns `None` (callers treat this as "fits", not as a forced fallback)
+/// when `build` isn't an `ExchangeExec`, its shuffle hasn't resolved yet, or
+/// no partition reports a byte size.
+#[allow(dead_code)] // not wired into `to_actual_join` yet; a follow-up consumes this
+fn max_per_partition_build_bytes(build: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    let exchange = build.downcast_ref::<ExchangeExec>()?;
+    let partitions = exchange.shuffle_partitions()?;
+    partitions
+        .iter()
+        .map(|locations| {
+            locations
+                .iter()
+                .filter_map(|location| location.partition_stats.num_bytes())
+                .sum::<u64>()
+        })
+        .max()
+        .map(|bytes| bytes as usize)
+}
+
 /// Assumed width of a variable-width value when statistics carry no size for it.
 /// Mirrors Spark's `StringType.defaultSize`, which serves the same purpose in
 /// `EstimationUtils.getSizePerRow`.
@@ -552,15 +589,21 @@ fn estimated_value_width(data_type: &DataType) -> usize {
 mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
+    use ballista_core::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId, PartitionLocation, PartitionStats,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::config::ExtensionOptions;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::test::exec::StatisticsExec;
 
     const BYTE_THRESHOLD: usize = 10 * 1024 * 1024;
     const ROW_THRESHOLD: usize = 1_000_000;
+    const MB: usize = 1024 * 1024;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
@@ -1060,5 +1103,64 @@ mod tests {
             !outer.upstream_resolved(),
             "a DynamicJoinSelectionExec nested in the right child must block resolution"
         );
+    }
+
+    /// Builds a resolved `ExchangeExec` with one shuffle partition per entry in
+    /// `per_partition_bytes`, each reporting that many bytes via a single
+    /// `PartitionLocation`. Mirrors `test/coalesce_rule.rs`'s
+    /// `partitions_with_byte_sizes` helper (same synthetic-stats pattern),
+    /// duplicated here since that helper lives in a sibling private test
+    /// module this file can't reach.
+    fn test_exchange_with_partition_bytes(
+        per_partition_bytes: &[usize],
+    ) -> Arc<dyn ExecutionPlan> {
+        let schema = test_schema();
+        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let n = per_partition_bytes.len();
+        let exchange =
+            ExchangeExec::new(input, Some(Partitioning::UnknownPartitioning(n)), 0);
+
+        let partitions = per_partition_bytes
+            .iter()
+            .enumerate()
+            .map(|(idx, &bytes)| {
+                vec![PartitionLocation {
+                    map_partition_id: 0,
+                    partition_id: PartitionId {
+                        job_id: "".into(),
+                        stage_id: 0,
+                        partition_id: idx,
+                    },
+                    executor_meta: ExecutorMetadata {
+                        id: "".to_string(),
+                        host: "".to_string(),
+                        port: 0,
+                        grpc_port: 0,
+                        specification: ExecutorSpecification::default().with_vcores(0),
+                        os_info: ExecutorOperatingSystemSpecification::default(),
+                    },
+                    partition_stats: PartitionStats::new(
+                        Some(1),
+                        None,
+                        Some(bytes as u64),
+                    ),
+                    file_id: None,
+                    is_sort_shuffle: false,
+                }]
+            })
+            .collect();
+        exchange.resolve_shuffle_partitions(partitions);
+
+        Arc::new(exchange) as Arc<dyn ExecutionPlan>
+    }
+
+    // Q18 OOMed on one fat partition while the average partition was small, so
+    // the fit check must key off the MAX per-partition build size, not the
+    // average — an average would have hidden exactly the skew that caused the
+    // OOM.
+    #[test]
+    fn max_per_partition_build_bytes_takes_the_max() {
+        let build = test_exchange_with_partition_bytes(&[100 * MB, 400 * MB]);
+        assert_eq!(max_per_partition_build_bytes(&build), Some(400 * MB));
     }
 }
