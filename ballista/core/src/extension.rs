@@ -204,6 +204,10 @@ pub trait SessionConfigExt {
     /// disables promotion via the row-count path.
     fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self;
 
+    /// Returns the maximum per-partition hash-join build-side bytes before
+    /// falling back to SortMergeJoin under AQE. `0` disables the check.
+    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize;
+
     /// retrieves grpc client max message size
     fn ballista_grpc_client_max_message_size(&self) -> usize;
 
@@ -511,6 +515,16 @@ impl SessionConfigExt for SessionConfig {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
         }
+    }
+
+    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.hash_join_max_build_partition_bytes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().hash_join_max_build_partition_bytes()
+            })
     }
 
     fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize {

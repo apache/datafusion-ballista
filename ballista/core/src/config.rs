@@ -110,6 +110,13 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
     "ballista.optimizer.broadcast_join_threshold_rows";
 
+/// Configuration key for the maximum per-partition hash-join build-side bytes
+/// permitted for a Partitioned hash join under AQE. When a build partition
+/// exceeds this, the join falls back to SortMergeJoin (spillable). `0` disables
+/// the check (hash join is used regardless of build size).
+pub const BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES: &str =
+    "ballista.optimizer.hash_join_max_build_partition_bytes";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -257,6 +264,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           promotion via the row-count path.".to_string(),
                          DataType::UInt64,
                          Some((1_000_000).to_string())),
+        ConfigEntry::new(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES.to_string(),
+                         "Maximum per-partition hash-join build-side bytes for a Partitioned \
+                         hash join under AQE. A build partition larger than this falls back to \
+                         SortMergeJoin (spillable). 0 (the default) disables the check.".to_string(),
+                         DataType::UInt64,
+                         Some("0".to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -595,6 +608,11 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS)
     }
 
+    /// Maximum per-partition hash-join build-side bytes before falling back to SMJ.
+    pub fn hash_join_max_build_partition_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES)
+    }
+
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
     pub fn coalesce_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_COALESCE_ENABLED)
@@ -858,5 +876,13 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn hash_join_max_build_partition_bytes_defaults_to_zero() {
+        assert_eq!(
+            BallistaConfig::default().hash_join_max_build_partition_bytes(),
+            0
+        );
     }
 }
