@@ -359,13 +359,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
-             task's `partition_slice`. `1` (default) is the pre-multi-partition-tasks \
-             execution model — one task per partition, matching the Spark user \
-             persona and preserving master's behaviour on merge. Raise to enable \
-             multi-partition tasks (fewer tasks, parallel-sort / parallel-join wins); \
-             `0` means unbounded — the scheduler fills each task up to the executor's \
-             free vcore count. Does not apply to collapse stages, which must pack \
-             their full pending queue into a single task for correctness."
+             task's `partition_slice`. `1` (default) means one task per input \
+             partition. Raise to enable multi-partition tasks (fewer tasks, \
+             parallel-sort / parallel-join wins); `0` means unbounded — the \
+             scheduler fills each task up to the executor's free vcore count. \
+             Does not apply to collapse stages, which must pack their full \
+             pending queue into a single task for correctness."
                 .to_string(),
             DataType::UInt64,
             Some(1.to_string()),
