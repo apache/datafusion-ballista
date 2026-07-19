@@ -307,7 +307,7 @@ impl Debug for WriterState {
 ///           .../{stage_id}/{partition_k}/data-{task_id}.arrow
 /// ```
 ///
-/// Contrast with [`SortShuffleWriterExec`](super::sort_shuffle::SortShuffleWriterExec):
+/// Contrast with [`SortShuffleWriterExec`]:
 /// its M concurrent per-input writers produce M files, each holding K
 /// buckets internally. Here K concurrent per-output drainers produce K
 /// files, each holding exactly one output partition. Both writers expose
@@ -320,7 +320,7 @@ impl Debug for WriterState {
 /// `RepartitionExec(Hash) → ShuffleWriterExec(None)`; not diagrammed here.
 ///
 /// The coordinator + oneshot plumbing is a shared idiom with
-/// [`SortShuffleWriterExec`](super::sort_shuffle::SortShuffleWriterExec) and
+/// [`SortShuffleWriterExec`] and
 /// with the `Hash` branch; passthrough alone doesn't structurally need it —
 /// only the K concurrent drains, which are the real deadlock guard. Once
 /// `Hash` is retired in favor of DataFusion's `RepartitionExec(Hash)`, this

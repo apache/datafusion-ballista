@@ -55,8 +55,9 @@ virtual cores (`vcores`), and the scheduler packs up to that many of a stage's o
 task. All partitions in the slice execute concurrently under one DataFusion plan invocation: scans and shuffle
 readers are rewritten to see only the assigned partition ids, and DataFusion's per-partition `execute(N)`
 contract fans the work across the executor's threads. Slice size is bounded by the executor's free vcore count
-and by `ballista.scheduler.max_partitions_per_task` (`0` = unbounded, `1` = one task per partition — the
-pre-multi-partition-tasks model).
+and by `ballista.scheduler.max_partitions_per_task` (`1` = one task per partition — the default and the
+pre-multi-partition-tasks model, preserved on merge for backwards compatibility; raise to opt into multi-partition
+tasks; `0` = unbounded — fills each task up to the executor's free vcore count).
 
 Compared to Apache Spark, whose unit of dispatch is one task per partition, Ballista's unit is one task per
 slice of partitions bound to a single executor. Spark achieves cluster-scale parallelism the same way — many
