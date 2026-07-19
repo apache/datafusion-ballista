@@ -229,6 +229,7 @@ impl DynamicJoinSelectionExec {
             .unwrap_or_default();
         let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
         let threshold_collect_left_join_rows = bc.broadcast_join_threshold_rows();
+        let max_build_bytes = bc.hash_join_max_build_partition_bytes();
 
         // The `!= 0` guard sits here rather than inside
         // `supports_collect_by_thresholds`: that helper falls back to the row
@@ -276,7 +277,7 @@ impl DynamicJoinSelectionExec {
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
             (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if prefer_hash_join =>
+                if prefer_hash_join && self.hash_build_fits(max_build_bytes) =>
             {
                 self.to_hash_join(PartitionMode::Partitioned)
                     .map(JoinSelectionAction::Hash)
@@ -333,6 +334,21 @@ impl DynamicJoinSelectionExec {
         );
 
         Ok(action)
+    }
+
+    /// Whether the build (left) side of a `Partitioned` hash join fits the
+    /// per-slot memory budget: `max_build_bytes == 0` means the check is
+    /// disabled (always fits, matching current behavior before this check
+    /// existed), and an unknown build size is treated as fitting too, since
+    /// there is no evidence to force a fallback.
+    fn hash_build_fits(&self, max_build_bytes: usize) -> bool {
+        if max_build_bytes == 0 {
+            return true;
+        }
+        match max_per_partition_build_bytes(&self.left) {
+            Some(bytes) => bytes <= max_build_bytes,
+            None => true, // unknown size → don't force a fallback
+        }
     }
 
     pub(crate) fn to_hash_join(
@@ -510,7 +526,6 @@ impl DynamicJoinSelectionExec {
 /// Returns `None` (callers treat this as "fits", not as a forced fallback)
 /// when `build` isn't an `ExchangeExec`, its shuffle hasn't resolved yet, or
 /// no partition reports a byte size.
-#[allow(dead_code)] // not wired into `to_actual_join` yet; a follow-up consumes this
 fn max_per_partition_build_bytes(build: &Arc<dyn ExecutionPlan>) -> Option<usize> {
     let exchange = build.downcast_ref::<ExchangeExec>()?;
     let partitions = exchange.shuffle_partitions()?;
@@ -597,6 +612,7 @@ mod tests {
     use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::config::ExtensionOptions;
     use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::test::exec::StatisticsExec;
@@ -1162,5 +1178,114 @@ mod tests {
     fn max_per_partition_build_bytes_takes_the_max() {
         let build = test_exchange_with_partition_bytes(&[100 * MB, 400 * MB]);
         assert_eq!(max_per_partition_build_bytes(&build), Some(400 * MB));
+    }
+
+    /// Builds a `ConfigOptions` with `prefer_hash_join = true` and a Ballista
+    /// `hash_join_max_build_partition_bytes` set to `max_build_bytes`, via the
+    /// string-keyed `BallistaConfig::set` path (the same path
+    /// `run_to_actual_join` above uses for other Ballista settings) since
+    /// there is no fluent setter for this key yet.
+    fn config_with_max_build(max_build_bytes: usize) -> ConfigOptions {
+        let mut config = ConfigOptions::new();
+        config.optimizer.prefer_hash_join = true;
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "optimizer.hash_join_max_build_partition_bytes",
+            &max_build_bytes.to_string(),
+        )
+        .unwrap();
+        config.extensions.insert(bc);
+        config
+    }
+
+    /// Builds a `DynamicJoinSelectionExec` already in `Repartitioned` state
+    /// whose build side (`left`) is a resolved `ExchangeExec` reporting the
+    /// given per-partition byte sizes, so `to_actual_join`'s
+    /// `(Repartitioned, Partitioned)` arm is reached and
+    /// `max_per_partition_build_bytes` sees known sizes.
+    fn repartitioned_join_with_build_partition_bytes(
+        per_partition_bytes: &[usize],
+    ) -> DynamicJoinSelectionExec {
+        // test_exchange_with_partition_bytes wraps test_schema(), whose sole
+        // field is named "x" (not "k" like stats_exec's schema), so the join
+        // key below must match that name.
+        let left = test_exchange_with_partition_bytes(per_partition_bytes);
+        let right = stats_exec(1_000_000); // large enough to never be broadcast
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("x", 0)), Arc::new(Column::new("k", 0)))];
+        DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type: JoinType::Inner,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Repartitioned,
+            null_aware: false,
+            plan_id: 0,
+        }
+    }
+
+    /// Renders the `ExecutionPlan` a `JoinSelectionAction` resolves to, so
+    /// tests can assert on `displayable(..).indent(false).to_string()` rather
+    /// than matching on the action's structure.
+    fn resolved_plan(action: &JoinSelectionAction) -> Arc<dyn ExecutionPlan> {
+        match action {
+            JoinSelectionAction::Repartition(exec) => {
+                Arc::clone(exec) as Arc<dyn ExecutionPlan>
+            }
+            JoinSelectionAction::CollectLeft(exec) => {
+                Arc::clone(exec) as Arc<dyn ExecutionPlan>
+            }
+            JoinSelectionAction::LateCollectLeft(exec) => {
+                Arc::clone(exec) as Arc<dyn ExecutionPlan>
+            }
+            JoinSelectionAction::Hash(exec) => Arc::clone(exec) as Arc<dyn ExecutionPlan>,
+            JoinSelectionAction::Sort(exec) => Arc::clone(exec) as Arc<dyn ExecutionPlan>,
+        }
+    }
+
+    // A build partition over the configured max falls back to SortMergeJoin,
+    // even though `prefer_hash_join` is true — the fit check overrides the
+    // preference rather than the other way around.
+    #[test]
+    fn build_over_threshold_falls_back_to_sort_merge_join() {
+        let exec = repartitioned_join_with_build_partition_bytes(&[500 * MB]); // > 200 MB
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("SortMergeJoinExec"), "{rendered}");
+    }
+
+    // A build partition within the configured max keeps the Partitioned hash
+    // join `prefer_hash_join` selected.
+    #[test]
+    fn build_within_threshold_uses_partitioned_hash_join() {
+        let exec = repartitioned_join_with_build_partition_bytes(&[50 * MB]); // < 200 MB
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("HashJoinExec"), "{rendered}");
+        assert!(rendered.contains("mode=Partitioned"), "{rendered}");
+    }
+
+    // `hash_join_max_build_partition_bytes = 0` disables the check entirely,
+    // matching the design contract: 0 always fits regardless of build size.
+    #[test]
+    fn zero_threshold_disables_the_check() {
+        let exec = repartitioned_join_with_build_partition_bytes(&[500 * MB]);
+        let action = exec.to_actual_join(&config_with_max_build(0)).unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("HashJoinExec"), "{rendered}");
     }
 }
