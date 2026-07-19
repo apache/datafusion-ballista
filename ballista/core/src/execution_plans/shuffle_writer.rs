@@ -418,14 +418,23 @@ struct ShuffleWriteMetrics {
 }
 
 impl ShuffleWriteMetrics {
-    fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
-        let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
+    /// `input_partition` is the operator-local input partition index this
+    /// bucket tracks (0..slice_len). Under multi-partition tasks, a single
+    /// task builds K such buckets — one per operator-local input partition
+    /// it drains — so the stage still sees K per-partition buckets total,
+    /// exactly as it did before K-drain (K tasks × 1 bucket = 1 task × K
+    /// buckets). The scheduler maps `input_partition` to a stage-global
+    /// input partition id via `TaskDescription.global_input_partition_ids`.
+    fn new(input_partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
+        let write_time =
+            MetricBuilder::new(metrics).subset_time("write_time", input_partition);
         let repart_time =
-            MetricBuilder::new(metrics).subset_time("repart_time", partition);
+            MetricBuilder::new(metrics).subset_time("repart_time", input_partition);
 
-        let input_rows = MetricBuilder::new(metrics).counter("input_rows", partition);
+        let input_rows =
+            MetricBuilder::new(metrics).counter("input_rows", input_partition);
 
-        let output_rows = MetricBuilder::new(metrics).output_rows(partition);
+        let output_rows = MetricBuilder::new(metrics).output_rows(input_partition);
 
         Self {
             write_time,
@@ -551,11 +560,11 @@ impl ShuffleWriterExec {
         context: Arc<TaskContext>,
     ) -> impl Future<Output = Result<Vec<(usize, ShuffleWritePartition)>>> {
         let task_id = self.task_id;
-        let write_metrics = ShuffleWriteMetrics::new(task_id, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
         let partition_map =
             walk_child_partition_mapping(&plan, &self.global_output_partition_ids);
+        let metrics = self.metrics.clone();
 
         async move {
             let now = Instant::now();
@@ -575,9 +584,14 @@ impl ShuffleWriterExec {
                     let num_partitions =
                         plan.properties().output_partitioning().partition_count();
                     let mut handles = Vec::with_capacity(num_partitions);
-                    for output_partition in 0..num_partitions {
+                    for local_input_partition in 0..num_partitions {
+                        // Each drain owns its own metric bucket, keyed by the
+                        // operator-local input partition it drains. Passthrough
+                        // is 1:1 so local input == local output here.
+                        let write_metrics =
+                            ShuffleWriteMetrics::new(local_input_partition, &metrics);
                         let global_partition =
-                            partition_map.resolve(output_partition) as usize;
+                            partition_map.resolve(local_input_partition) as usize;
                         let path = create_shuffle_path(
                             &self.work_dir,
                             &self.job_id,
@@ -594,39 +608,37 @@ impl ShuffleWriterExec {
                         debug!("Writing results to {path:?}");
 
                         let mut stream =
-                            plan.execute(output_partition, context.clone())?;
-                        let write_time = write_metrics.write_time.clone();
+                            plan.execute(local_input_partition, context.clone())?;
                         handles.push(tokio::spawn(async move {
                             let stats = utils::write_stream_to_disk(
                                 &mut stream,
                                 path.as_path(),
-                                &write_time,
+                                &write_metrics.write_time,
                                 channel_capacity,
                                 compression_type,
                             )
                             .await
                             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-                            Ok::<_, DataFusionError>((output_partition, stats))
+                            let rows = stats.num_rows.unwrap_or(0) as usize;
+                            write_metrics.input_rows.add(rows);
+                            write_metrics.output_rows.add(rows);
+                            Ok::<_, DataFusionError>((local_input_partition, stats))
                         }));
                     }
 
                     let mut results = Vec::with_capacity(num_partitions);
                     for handle in handles {
-                        let (output_partition, stats) = handle.await.map_err(|e| {
-                            DataFusionError::Execution(format!(
-                                "shuffle-write drain task panicked: {e}"
-                            ))
-                        })??;
-                        write_metrics
-                            .input_rows
-                            .add(stats.num_rows.unwrap_or(0) as usize);
-                        write_metrics
-                            .output_rows
-                            .add(stats.num_rows.unwrap_or(0) as usize);
+                        let (local_input_partition, stats) =
+                            handle.await.map_err(|e| {
+                                DataFusionError::Execution(format!(
+                                    "shuffle-write drain task panicked: {e}"
+                                ))
+                            })??;
                         results.push((
-                            output_partition,
+                            local_input_partition,
                             ShuffleWritePartition {
-                                partition_id: partition_map.resolve(output_partition),
+                                partition_id: partition_map
+                                    .resolve(local_input_partition),
                                 num_batches: stats.num_batches.unwrap_or(0),
                                 num_rows: stats.num_rows.unwrap_or(0),
                                 num_bytes: stats.num_bytes.unwrap_or(0),
@@ -650,14 +662,42 @@ impl ShuffleWriterExec {
                     // file_id = task_id so files from different tasks
                     // (including retries) don't collide. Hash buckets 0..K are
                     // a global K-space and aren't further sliced.
+                    //
+                    // One metric bucket per operator-local input partition,
+                    // matching the pre-K-drain model (before: N tasks × 1
+                    // bucket; now: 1 task × N buckets). One `BatchPartitioner`
+                    // per input partition so `repart_time` disaggregates the
+                    // same way — total partitioner count across the stage is
+                    // unchanged.
                     let num_input_partitions =
                         plan.properties().output_partitioning().partition_count();
+                    let write_metrics_per_input: Vec<ShuffleWriteMetrics> = (0
+                        ..num_input_partitions)
+                        .map(|i| ShuffleWriteMetrics::new(i, &metrics))
+                        .collect();
                     let schema = plan.schema();
-                    let (tx, mut rx) =
-                        tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
-                    let write_time = write_metrics.write_time.clone();
-                    let repart_time = write_metrics.repart_time.clone();
-                    let output_rows = write_metrics.output_rows.clone();
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, RecordBatch)>(
+                        channel_capacity,
+                    );
+                    let write_times: Vec<metrics::Time> = write_metrics_per_input
+                        .iter()
+                        .map(|m| m.write_time.clone())
+                        .collect();
+                    let output_rows_per_input: Vec<metrics::Count> =
+                        write_metrics_per_input
+                            .iter()
+                            .map(|m| m.output_rows.clone())
+                            .collect();
+                    let partitioners: Vec<BatchPartitioner> = write_metrics_per_input
+                        .iter()
+                        .map(|m| {
+                            BatchPartitioner::new_hash_partitioner(
+                                exprs.clone(),
+                                num_output_partitions,
+                                m.repart_time.clone(),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
                     let work_dir = self.work_dir.clone();
                     let job_id = self.job_id.clone();
                     let stage_id = self.stage_id;
@@ -665,14 +705,15 @@ impl ShuffleWriterExec {
                     let handle = tokio::task::spawn_blocking(move || {
                         let mut writers: Vec<Option<WriteTracker>> =
                             (0..num_output_partitions).map(|_| None).collect();
-                        let mut partitioner = BatchPartitioner::new_hash_partitioner(
-                            exprs,
-                            num_output_partitions,
-                            repart_time,
-                        )?;
+                        let mut partitioners = partitioners;
 
-                        while let Some(input_batch) = rx.blocking_recv() {
-                            partitioner.partition(
+                        while let Some((local_input_partition, input_batch)) =
+                            rx.blocking_recv()
+                        {
+                            let write_time = &write_times[local_input_partition];
+                            let output_rows =
+                                &output_rows_per_input[local_input_partition];
+                            partitioners[local_input_partition].partition(
                                 input_batch,
                                 |output_partition, output_batch| {
                                     let timer = write_time.timer();
@@ -752,14 +793,20 @@ impl ShuffleWriterExec {
                     });
 
                     let mut stream_err = None;
-                    'outer: for input_partition in 0..num_input_partitions {
+                    'outer: for (local_input_partition, per_input_metrics) in
+                        write_metrics_per_input.iter().enumerate()
+                    {
                         let mut stream =
-                            plan.execute(input_partition, context.clone())?;
+                            plan.execute(local_input_partition, context.clone())?;
                         loop {
                             match stream.next().await {
                                 Some(Ok(batch)) => {
-                                    write_metrics.input_rows.add(batch.num_rows());
-                                    if tx.send(batch).await.is_err() {
+                                    per_input_metrics.input_rows.add(batch.num_rows());
+                                    if tx
+                                        .send((local_input_partition, batch))
+                                        .await
+                                        .is_err()
+                                    {
                                         break 'outer;
                                     }
                                 }

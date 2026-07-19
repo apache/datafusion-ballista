@@ -775,9 +775,16 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successfu task
-                            running_stage
-                                .update_task_metrics(task_id, operator_metrics)?;
+                            // Metrics are observability, not correctness — if
+                            // folding fails, log and keep going so the task's
+                            // output locations still get registered.
+                            // Propagating with `?` here hangs the whole query
+                            // on a metric-only bug.
+                            if let Err(e) = running_stage
+                                .update_task_metrics(task_id, operator_metrics)
+                            {
+                                warn!("Dropping metrics for {task_identity}: {e}");
+                            }
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
