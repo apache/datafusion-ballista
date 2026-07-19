@@ -51,7 +51,29 @@ message BallistaPhysicalPlanNode {
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
     ChaosExecNode chaos_exec = 5;
+    RuntimeStatsExecNode runtime_stats = 6;
   }
+}
+
+// Runtime-stats tap. Passes batches through unmodified while accumulating:
+//   * per-partition row counts (always)
+//   * a quantile sketch over the first ORDER BY expression's Float64 values
+//     (only when order_by is non-empty)
+// Downstream operators inside the same Ballista task read the stats via a
+// child-tree walk. The child plan is plumbed by the framework as `inputs[0]`.
+message RuntimeStatsExecNode {
+  // Optional lexicographic ORDER BY. Empty means row-count-only mode
+  // (no sketch allocated). When non-empty, the first entry drives the
+  // sketch and the rest are preserved for downstream operators
+  // (SortExec, BoundedWindowAggExec) that need the full ordering.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+}
+
+// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
+// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
+// centroid_means..., centroid_weights....
+message QuantileSketchState {
+  repeated datafusion_common.ScalarValue state = 1;
 }
 
 message ChaosExecNode {
