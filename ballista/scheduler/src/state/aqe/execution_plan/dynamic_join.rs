@@ -230,6 +230,7 @@ impl DynamicJoinSelectionExec {
         let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
         let threshold_collect_left_join_rows = bc.broadcast_join_threshold_rows();
         let max_build_bytes = bc.hash_join_max_build_partition_bytes();
+        let build_max_partition_bytes = max_per_partition_build_bytes(&self.left);
 
         // The `!= 0` guard sits here rather than inside
         // `supports_collect_by_thresholds`: that helper falls back to the row
@@ -277,7 +278,8 @@ impl DynamicJoinSelectionExec {
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
             (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if prefer_hash_join && self.hash_build_fits(max_build_bytes) =>
+                if prefer_hash_join
+                    && hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
             {
                 self.to_hash_join(PartitionMode::Partitioned)
                     .map(JoinSelectionAction::Hash)
@@ -326,7 +328,7 @@ impl DynamicJoinSelectionExec {
             action_label,
             partition_mode,
             under_threshold,
-            max_per_partition_build_bytes(&self.left),
+            build_max_partition_bytes,
             max_build_bytes,
             stats_left.num_rows,
             stats_left.total_byte_size,
@@ -337,21 +339,6 @@ impl DynamicJoinSelectionExec {
         );
 
         Ok(action)
-    }
-
-    /// Whether the build (left) side of a `Partitioned` hash join fits the
-    /// per-slot memory budget: `max_build_bytes == 0` means the check is
-    /// disabled (always fits, matching current behavior before this check
-    /// existed), and an unknown build size is treated as fitting too, since
-    /// there is no evidence to force a fallback.
-    fn hash_build_fits(&self, max_build_bytes: usize) -> bool {
-        if max_build_bytes == 0 {
-            return true;
-        }
-        match max_per_partition_build_bytes(&self.left) {
-            Some(bytes) => bytes <= max_build_bytes,
-            None => true, // unknown size → don't force a fallback
-        }
     }
 
     pub(crate) fn to_hash_join(
@@ -508,6 +495,24 @@ impl DynamicJoinSelectionExec {
     }
 }
 
+/// Whether the build (left) side of a `Partitioned` hash join fits the
+/// per-slot memory budget. A `max_build_bytes` of 0 disables the check (the
+/// join always uses hash join); an unknown build size (`build_max_partition_bytes
+/// == None`) is treated as fitting too, since there is no evidence to force a
+/// fallback.
+fn hash_build_fits(
+    max_build_bytes: usize,
+    build_max_partition_bytes: Option<usize>,
+) -> bool {
+    if max_build_bytes == 0 {
+        return true;
+    }
+    match build_max_partition_bytes {
+        Some(bytes) => bytes <= max_build_bytes,
+        None => true, // unknown size → don't force a fallback
+    }
+}
+
 /// Skew-aware fit check for the build side of a `Partitioned` hash join: the
 /// MAX (not average) per-partition materialized byte size. A single
 /// oversized partition is enough to blow the per-slot memory pool even when
@@ -528,7 +533,10 @@ impl DynamicJoinSelectionExec {
 ///
 /// Returns `None` (callers treat this as "fits", not as a forced fallback)
 /// when `build` isn't an `ExchangeExec`, its shuffle hasn't resolved yet, or
-/// no partition reports a byte size.
+/// the resolved shuffle has no partitions at all. A resolved shuffle whose
+/// partitions are missing byte-size stats is not `None`: each such partition
+/// contributes 0 bytes, so the result is `Some(0)` (or higher, if other
+/// partitions do report sizes) — still small enough to be treated as fitting.
 fn max_per_partition_build_bytes(build: &Arc<dyn ExecutionPlan>) -> Option<usize> {
     let exchange = build.downcast_ref::<ExchangeExec>()?;
     let partitions = exchange.shuffle_partitions()?;
