@@ -670,8 +670,11 @@ mod test {
     use crate::state::task_manager::JobInfoCache;
     use crate::test_utils::{
         mock_completed_task, revive_graph_and_complete_next_stage,
-        test_aggregation_plan_with_job_id,
+        test_aggregation_plan_with_config,
     };
+    use ballista_core::config::BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK;
+    use ballista_core::extension::SessionConfigExt;
+    use datafusion::prelude::SessionConfig;
 
     #[tokio::test]
     async fn test_bind_task_bias() -> Result<()> {
@@ -834,8 +837,22 @@ mod test {
         num_target_partitions: usize,
         num_pending_task: usize,
     ) -> Result<StaticExecutionGraph> {
-        let mut graph =
-            test_aggregation_plan_with_job_id(num_target_partitions, job_id).await;
+        // These tests validate the *multi-partition* binding path: expected
+        // task distributions include slice sizes up to 7. That requires an
+        // unbounded `max_partitions_per_task`. Since `bc7a4eda` flipped the
+        // default to 1 (single-partition-per-task, matching master's
+        // pre-branch behaviour), we override it back here so the mock
+        // exercises the branch feature these tests are *for*.
+        let session_config = Arc::new(
+            SessionConfig::new_with_ballista()
+                .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "0"),
+        );
+        let mut graph = test_aggregation_plan_with_config(
+            num_target_partitions,
+            job_id,
+            session_config,
+        )
+        .await;
         let executor = ExecutorMetadata {
             id: "executor_0".to_string(),
             host: "localhost".to_string(),

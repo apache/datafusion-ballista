@@ -866,6 +866,23 @@ pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
     job_id: &JobId,
 ) -> StaticExecutionGraph {
+    test_aggregation_plan_with_config(
+        partition,
+        job_id,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .await
+}
+
+/// Same as `test_aggregation_plan_with_job_id`, but the caller supplies the
+/// Ballista `SessionConfig` used by the resulting graph. Use this when a test
+/// needs to override a scheduler-side knob (e.g. `max_partitions_per_task`)
+/// that changes how `bind_one` shapes tasks.
+pub async fn test_aggregation_plan_with_config(
+    partition: usize,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
+) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
@@ -902,7 +919,7 @@ pub async fn test_aggregation_plan_with_job_id(
         "session",
         plan,
         0,
-        Arc::new(SessionConfig::new_with_ballista()),
+        session_config,
         &mut planner,
         None,
     )
