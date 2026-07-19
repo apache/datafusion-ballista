@@ -26,7 +26,7 @@ use std::future::Future;
 use std::io::{BufWriter, Seek, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
 
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
@@ -213,7 +213,6 @@ impl SortShuffleWriterExec {
         let partitioning = self.shuffle_output_partitioning.clone();
 
         async move {
-            let now = Instant::now();
             let mut stream = plan.execute(input_partition, context.clone())?;
             let schema = stream.schema();
             let ballista_config = Arc::new(context.session_config().ballista_config());
@@ -350,30 +349,37 @@ impl SortShuffleWriterExec {
             // Reservation drops naturally; nothing left to free.
             drop(reservation);
 
-            let elapsed_secs = now.elapsed().as_secs();
+            let repart_time = Duration::from_nanos(metrics.repart_time.value() as u64);
+            let spill_time = Duration::from_nanos(metrics.spill_time.value() as u64);
+            let write_time = Duration::from_nanos(metrics.write_time.value() as u64);
             if total_bytes_spilled > 0 {
                 warn!(
                     "Sort shuffle spill: job={} stage={} input_partition={} \
                      spilled {} bytes in {} batches ({} events) under memory \
-                     pressure; write completed in {} seconds",
+                     pressure; repart_time={:?} spill_time={:?} write_time={:?}",
                     job_id,
                     stage_id,
                     input_partition,
                     total_bytes_spilled,
                     total_spilled_batches,
                     spill_events,
-                    elapsed_secs,
+                    repart_time,
+                    spill_time,
+                    write_time,
                 );
             } else {
                 debug!(
-                    "Sort shuffle write for partition {} completed in {} seconds. \
-                     Output: {:?}, Index: {:?}, Rows: {}, Spill events: {}, \
-                     Spill batches: {}, Spill bytes: {}",
+                    "Sort shuffle write for partition {} completed. \
+                     Output: {:?}, Index: {:?}, Rows: {}, \
+                     repart_time={:?} spill_time={:?} write_time={:?}, \
+                     Spill events: {}, Spill batches: {}, Spill bytes: {}",
                     input_partition,
-                    elapsed_secs,
                     data_path,
                     index_path,
                     total_rows,
+                    repart_time,
+                    spill_time,
+                    write_time,
                     spill_events,
                     total_spilled_batches,
                     total_bytes_spilled
