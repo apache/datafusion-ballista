@@ -276,34 +276,38 @@ it, and only the exact commit makes that visible.
 Every figure is from a **full 22-query suite run** — one query after another in a
 single session, on freshly started executors.
 
-|     Query |      Spark |      Comet | Ballista (AQE off) | Ballista (AQE on) |   Rows |
-| --------: | ---------: | ---------: | -----------------: | ----------------: | -----: |
-|         1 |      444.8 |       49.3 |               70.8 |              36.2 |      4 |
-|         2 |       74.3 |       37.3 |              155.5 |              63.6 |    100 |
-|         3 |      158.4 |       99.1 |              206.2 |             255.0 |     10 |
-|         4 |      104.1 |       42.3 |               76.8 |              53.9 |      5 |
-|         5 |      364.9 |      234.6 |              542.7 |             700.5 |      5 |
-|         6 |       22.0 |       15.3 |               18.3 |              12.7 |      1 |
-|         7 |      196.1 |      141.8 |              575.5 |             531.4 |      4 |
-|         8 |      412.7 |      291.6 |              657.1 |             801.2 |      2 |
-|         9 |      570.2 |      392.1 |              891.8 |            1025.2 |    175 |
-|        10 |      147.3 |      112.5 |              240.3 |             166.7 |     20 |
-|        11 |       58.3 |       48.7 |              105.1 |              76.2 |  0 [1] |
-|        12 |       75.9 |       52.9 |               79.4 |              85.2 |      2 |
-|        13 |      114.1 |       71.9 |               96.7 |              95.6 |     30 |
-|        14 |       44.6 |       29.0 |               38.0 |              34.3 |      1 |
-|        15 |      108.9 |       63.8 |               45.9 |              52.7 | \* [2] |
-|        16 |       33.9 |       18.7 |               21.9 |              23.0 |  27840 |
-|        17 |      519.5 |      308.2 |              697.8 |             400.4 |      1 |
-|        18 |      492.8 |      234.2 |              620.7 |             820.9 |    100 |
-|        19 |       53.7 |       39.4 |               39.6 |              42.1 |      1 |
-|        20 |      108.1 |       74.6 |               80.5 |              82.9 | 110759 |
-|        21 |      536.4 |      351.4 |             1083.0 |             926.6 |    100 |
-|        22 |       47.0 |       29.8 |               34.9 |              34.6 |      7 |
-| **Total** | **4687.9** | **2738.5** |         **6378.2** |        **6320.7** |        |
+|     Query |      Spark |      Comet | Ballista (AQE on) |   Rows |
+| --------: | ---------: | ---------: | ----------------: | -----: |
+|         1 |      444.8 |       49.3 |              36.2 |      4 |
+|         2 |       74.3 |       37.3 |              63.6 |    100 |
+|         3 |      158.4 |       99.1 |             255.0 |     10 |
+|         4 |      104.1 |       42.3 |              53.9 |      5 |
+|         5 |      364.9 |      234.6 |             700.5 |      5 |
+|         6 |       22.0 |       15.3 |              12.7 |      1 |
+|         7 |      196.1 |      141.8 |             531.4 |      4 |
+|         8 |      412.7 |      291.6 |             801.2 |      2 |
+|         9 |      570.2 |      392.1 |            1025.2 |    175 |
+|        10 |      147.3 |      112.5 |             166.7 |     20 |
+|        11 |       58.3 |       48.7 |              76.2 |  0 [1] |
+|        12 |       75.9 |       52.9 |              85.2 |      2 |
+|        13 |      114.1 |       71.9 |              95.6 |     30 |
+|        14 |       44.6 |       29.0 |              34.3 |      1 |
+|        15 |      108.9 |       63.8 |              52.7 | \* [2] |
+|        16 |       33.9 |       18.7 |              23.0 |  27840 |
+|        17 |      519.5 |      308.2 |             400.4 |      1 |
+|        18 |      492.8 |      234.2 |             820.9 |    100 |
+|        19 |       53.7 |       39.4 |              42.1 |      1 |
+|        20 |      108.1 |       74.6 |              82.9 | 110759 |
+|        21 |      536.4 |      351.4 |             926.6 |    100 |
+|        22 |       47.0 |       29.8 |              34.6 |      7 |
+| **Total** | **4687.9** | **2738.5** |        **6320.7** |        |
 
-**All 22 queries completed on all four configurations**; there are no failures to
+**All 22 queries completed on all three configurations**; there are no failures to
 report. Row counts agreed across every engine except Q15.
+
+The **AQE-off** Ballista column has been removed pending a re-run at a matched core
+count; the numbers above for AQE off were taken at a different executor size and are
+not comparable to a fresh AQE-off run, so they were dropped rather than left stale.
 
 [1] Q11 returns 0 rows for every engine at this scale factor: the query's threshold
 constant is tuned for SF1.
@@ -324,6 +328,63 @@ regression.
 `TBD` means not yet measured on this cluster at this commit; a query that ran but
 did not produce an answer is recorded as `FAIL`, or `OOM` where the failure is a
 known memory exhaustion.
+
+### Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)
+
+A second Ballista configuration exercises `prefer_hash_join=true` together with the
+AQE hash-join safety fallback
+([`ballista.optimizer.hash_join_max_build_partition_bytes`](https://github.com/apache/datafusion-ballista/pull/2084)).
+The fallback lowers a Partitioned hash join to `SortMergeJoin` per join when the
+build side's largest partition exceeds the configured budget, so a hash-join run does
+not abort on the queries whose non-spillable hash-join build exceeds one task slot's
+pool — notably Q18
+([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). That fallback
+is what makes `prefer_hash_join=true` usable across the whole suite instead of
+failing partway.
+
+This run uses a **larger cluster than the reference above** and a **different
+`target_partitions`**, so its numbers are not comparable to the table above: TPC-H
+**SF1000**, **2 executors × 16 cores** (one per node, ~2.8 GB per task slot),
+**`target_partitions=64`**, **AQE on**, `prefer_hash_join=true`,
+`hash_join_max_build_partition_bytes=67108864` (64 MiB),
+`enable_dynamic_filter_pushdown=false`, sort-shuffle spill uncapped. Each query ran
+on a **freshly restarted cluster**. Ballista @ `afef9afc`. Times in seconds.
+
+|     Query | Ballista (AQE on, hash join + 64 MiB fallback) |
+| --------: | ---------------------------------------------: |
+|         1 |                                           72.1 |
+|         2 |                                           52.9 |
+|         3 |                                          154.2 |
+|         4 |                                           72.9 |
+|         5 |                                          355.4 |
+|         6 |                                           65.9 |
+|         7 |                                          371.7 |
+|         8 |                                          452.4 |
+|         9 |                                          559.8 |
+|        10 |                                          152.3 |
+|        11 |                                           74.6 |
+|        12 |                                           88.7 |
+|        13 |                                           99.2 |
+|        14 |                                           38.6 |
+|        15 |                                           62.5 |
+|        16 |                                           29.0 |
+|        17 |                                          446.3 |
+|        18 |                                          744.6 |
+|        19 |                                           80.8 |
+|        20 |                                          117.0 |
+|        21 |                                          605.6 |
+|        22 |                                           20.5 |
+| **Total** |                                     **4716.9** |
+
+**All 22 queries completed — no OOMs, no failures.** At the 64 MiB threshold the
+large-build joins (Q5, Q7–Q9, Q17, Q18, Q21) fall back to `SortMergeJoin` while
+smaller-build joins stay hash, so the heavy queries run at roughly sort-merge speed
+but the suite runs end to end. Q18 completes at **744.6 s** where the same
+configuration with the fallback disabled (`hash_join_max_build_partition_bytes=0`)
+exhausts the per-slot pool and fails the job
+([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). The fallback is
+opt-in and off by default (a `0` budget); the 64 MiB value here is tuned to this
+cluster's ~2.8 GB task-slot pool.
 
 ### Recording a result
 
