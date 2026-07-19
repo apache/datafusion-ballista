@@ -1149,6 +1149,7 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-trait",
+ "axum",
  "ballista-core",
  "bytesize",
  "clap 4.6.2",

@@ -16,6 +16,7 @@
 // under the License.
 
 use axum::extract::ConnectInfo;
+use ballista_core::BALLISTA_PROTOCOL_VERSION;
 use ballista_core::config::BALLISTA_JOB_NAME;
 use ballista_core::error::{BallistaError, Result as BResult};
 use ballista_core::extension::SessionConfigHelperExt;
@@ -25,13 +26,13 @@ use ballista_core::serde::protobuf::{
     AvailableVcores, CancelJobParams, CancelJobResult, CleanJobDataParams,
     CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
-    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
-    ExecutorStoppedResult, GetJobMetricsParams, GetJobMetricsResult, GetJobStatusParams,
-    GetJobStatusResult, HeartBeatParams, HeartBeatResult, JobStatus, KeyValuePair,
-    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
-    RemoveSessionParams, RemoveSessionResult, UpdateTaskStatusParams,
-    UpdateTaskStatusResult, execute_query_failure_result, execute_query_result,
-    executor_metric::Metric,
+    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorRegistration,
+    ExecutorStoppedParams, ExecutorStoppedResult, GetJobMetricsParams,
+    GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+    HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
+    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    execute_query_failure_result, execute_query_result, executor_metric::Metric,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -60,7 +61,26 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
+use crate::metrics::record_protocol_mismatch;
 use crate::scheduler_server::SchedulerServer;
+
+/// Rejects an executor RPC whose `ballista_protocol_version` does not match
+/// the scheduler's compiled-in `BALLISTA_PROTOCOL_VERSION`. See the constant
+/// in `ballista_core` for the upgrade semantics.
+fn check_protocol_version(metadata: &ExecutorRegistration) -> Result<(), Status> {
+    if metadata.ballista_protocol_version == BALLISTA_PROTOCOL_VERSION {
+        return Ok(());
+    }
+    record_protocol_mismatch();
+    info!(
+        "Rejecting executor {}: protocol version mismatch (scheduler={}, executor={})",
+        metadata.id, BALLISTA_PROTOCOL_VERSION, metadata.ballista_protocol_version,
+    );
+    Err(Status::failed_precondition(format!(
+        "protocol version mismatch: scheduler={}, executor={}",
+        BALLISTA_PROTOCOL_VERSION, metadata.ballista_protocol_version,
+    )))
+}
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
@@ -87,6 +107,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = request.into_inner()
         {
             trace!("Received poll_work request for {metadata:?}");
+            check_protocol_version(&metadata)?;
             let executor_id = metadata.id.clone();
 
             // It's not necessary.
@@ -186,6 +207,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = request.into_inner()
         {
             info!("Received register executor request for {metadata:?}");
+            check_protocol_version(&metadata)?;
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
@@ -222,6 +244,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             metadata,
         } = request.into_inner();
         trace!("Received heart beat request for {:?}", executor_id);
+
+        let Some(metadata_ref) = metadata.as_ref() else {
+            info!(
+                "Rejecting heartbeat from {executor_id}: missing registration metadata"
+            );
+            record_protocol_mismatch();
+            return Err(Status::failed_precondition(
+                "heartbeat missing registration metadata; \
+                 executors must include ExecutorRegistration \
+                 (see BALLISTA_PROTOCOL_VERSION)",
+            ));
+        };
+        check_protocol_version(metadata_ref)?;
 
         // If not registered, do registration first before saving heart beat
         if let Err(e) = self
@@ -870,6 +905,7 @@ mod test {
 
     use crate::config::SchedulerConfig;
     use crate::metrics::default_metrics_collector;
+    use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::{
@@ -909,6 +945,7 @@ mod test {
             grpc_port: 0,
             specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -998,6 +1035,7 @@ mod test {
             grpc_port: 0,
             specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -1084,6 +1122,7 @@ mod test {
             grpc_port: 0,
             specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
         };
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -1115,6 +1154,126 @@ mod test {
         Ok(())
     }
 
+    async fn scheduler_for_protocol_test()
+    -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
+        let cluster = test_cluster_context();
+        let config = SchedulerConfig::default();
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                cluster,
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+        Ok(scheduler)
+    }
+
+    fn exec_meta_with_version(version: u32) -> ExecutorRegistration {
+        ExecutorRegistration {
+            id: "abc".to_owned(),
+            host: Some("http://localhost:8080".to_owned()),
+            port: 0,
+            grpc_port: 0,
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: version,
+        }
+    }
+
+    #[tokio::test]
+    async fn register_rejects_protocol_mismatch() -> Result<(), BallistaError> {
+        let scheduler = scheduler_for_protocol_test().await?;
+        // Version 0 is what an old executor without the field defaults to;
+        // the scheduler must reject it.
+        let request = Request::new(RegisterExecutorParams {
+            metadata: Some(exec_meta_with_version(0)),
+        });
+
+        let status = scheduler
+            .register_executor(request)
+            .await
+            .expect_err("register with mismatched version should be rejected");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            status.message().contains("protocol version mismatch"),
+            "unexpected message: {}",
+            status.message()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_protocol_mismatch() -> Result<(), BallistaError> {
+        let scheduler = scheduler_for_protocol_test().await?;
+        let meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION + 1);
+        let request = Request::new(HeartBeatParams {
+            executor_id: meta.id.clone(),
+            metrics: vec![],
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active("".to_string())),
+            }),
+            metadata: Some(meta),
+        });
+        let status = scheduler
+            .heart_beat_from_executor(request)
+            .await
+            .expect_err("heartbeat with mismatched version should be rejected");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("protocol version mismatch"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_missing_metadata() -> Result<(), BallistaError> {
+        let scheduler = scheduler_for_protocol_test().await?;
+        let request = Request::new(HeartBeatParams {
+            executor_id: "abc".to_owned(),
+            metrics: vec![],
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active("".to_string())),
+            }),
+            metadata: None,
+        });
+        let status = scheduler
+            .heart_beat_from_executor(request)
+            .await
+            .expect_err("heartbeat with no metadata should be rejected");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("missing registration metadata"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn poll_work_rejects_protocol_mismatch() -> Result<(), BallistaError> {
+        let config = SchedulerConfig {
+            scheduling_policy: ballista_core::config::TaskSchedulingPolicy::PullStaged,
+            ..Default::default()
+        };
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+
+        let request = Request::new(PollWorkParams {
+            metadata: Some(exec_meta_with_version(0)),
+            num_free_vcores: 0,
+            task_status: vec![],
+        });
+        let status = scheduler
+            .poll_work(request)
+            .await
+            .expect_err("poll_work with mismatched version should be rejected");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore]
     async fn test_expired_executor() -> Result<(), BallistaError> {
@@ -1138,6 +1297,7 @@ mod test {
             grpc_port: 0,
             specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -1225,6 +1385,7 @@ mod test {
             grpc_port: 0,
             specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
             os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
         };
 
         let request: Request<RegisterExecutorParams> =

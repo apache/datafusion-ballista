@@ -575,6 +575,12 @@ pub struct ExecutorRegistration {
     pub specification: ::core::option::Option<ExecutorSpecification>,
     #[prost(message, optional, tag = "6")]
     pub os_info: ::core::option::Option<ExecutorOperatingSystemSpecification>,
+    /// Wire-protocol version this executor was built against. The scheduler
+    /// rejects heartbeats/registrations whose version does not match its own
+    /// compiled-in BALLISTA_PROTOCOL_VERSION. Old executors that predate this
+    /// field default to 0, which is never a valid scheduler version.
+    #[prost(uint32, tag = "7")]
+    pub ballista_protocol_version: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorHeartbeat {

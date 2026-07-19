@@ -61,7 +61,9 @@ use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
     default_config_producer, get_time_before,
 };
-use ballista_core::{BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer};
+use ballista_core::{
+    BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
+};
 
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
@@ -192,6 +194,11 @@ pub struct ExecutorProcessConfig {
     /// connection and a shuffle-heavy query can exhaust the host's ephemeral
     /// ports.
     pub client_ttl: u64,
+    /// Shared readiness state that the heartbeat loops flip on every RPC
+    /// outcome. Embedders leave this as `Default::default()` and never
+    /// observe it; the standalone binary passes a handle here and also spawns
+    /// an HTTP server on it (see `bin/main.rs`).
+    pub health: crate::health::ExecutorHealth,
 }
 
 impl ExecutorProcessConfig {
@@ -242,6 +249,7 @@ impl Default for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
             client_ttl: 30,
+            health: crate::health::ExecutorHealth::new(),
         }
     }
 }
@@ -519,6 +527,12 @@ pub async fn start_executor_process(
     // Channels used to receive stop requests from Executor grpc service.
     let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
 
+    // Shared readiness state, flipped by the heartbeat/poll_work loop. When
+    // the caller is the standalone binary, an HTTP probe server observes
+    // this same handle (see `bin/main.rs`); library embedders leave it
+    // unobserved.
+    let health = opt.health.clone();
+
     // Starting main executor process based on the TaskSchedulingPolicy
     //
     // PushStaged => starting new executor_server that waits for tasks from the schedule
@@ -534,6 +548,7 @@ pub async fn start_executor_process(
                     default_codec,
                     stop_send,
                     &shutdown_notification,
+                    health,
                 )
                 .await?,
             );
@@ -543,6 +558,7 @@ pub async fn start_executor_process(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                health,
             )));
         }
     };
@@ -939,6 +955,7 @@ pub fn structure_executor_metadata(
             total_available_disk_space,
             open_files_limit,
         }),
+        ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     }
 }
 

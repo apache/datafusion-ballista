@@ -381,6 +381,11 @@ message ExecutorRegistration {
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
   ExecutorOperatingSystemSpecification os_info = 6;
+  // Wire-protocol version this executor was built against. The scheduler
+  // rejects heartbeats/registrations whose version does not match its own
+  // compiled-in BALLISTA_PROTOCOL_VERSION. Old executors that predate this
+  // field default to 0, which is never a valid scheduler version.
+  uint32 ballista_protocol_version = 7;
 }
 
 message ExecutorHeartbeat {

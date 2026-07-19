@@ -61,6 +61,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan,
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
 where
     C: tonic::client::GrpcService<tonic::body::Body>,
@@ -108,6 +109,7 @@ where
 
         match poll_work_result {
             Ok(result) => {
+                health.mark_heartbeat_ok();
                 let PollWorkResult {
                     tasks,
                     jobs_to_clean,
@@ -198,6 +200,7 @@ where
                 }
             }
             Err(error) => {
+                health.mark_heartbeat_failed();
                 warn!(
                     "Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {error}"
                 );
