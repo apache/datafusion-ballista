@@ -326,11 +326,13 @@ mod tests {
                         metrics: vec![
                             OperatorMetric {
                                 metric: Some(operator_metric::Metric::OutputRows(4)),
+                                partition: None,
                             },
                             OperatorMetric {
                                 metric: Some(operator_metric::Metric::ElapseTime(
                                     15_000_000,
                                 )),
+                                partition: None,
                             },
                         ],
                     }],
@@ -344,6 +346,7 @@ mod tests {
                         operator_desc: "FilterExec: a@0 > 1".to_string(),
                         metrics: vec![OperatorMetric {
                             metric: Some(operator_metric::Metric::OutputRows(2)),
+                            partition: None,
                         }],
                     }],
                 },

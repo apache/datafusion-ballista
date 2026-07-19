@@ -178,8 +178,6 @@ pub struct ExecutionGraph {
     pub output_locations: ::prost::alloc::vec::Vec<PartitionLocation>,
     #[prost(string, tag = "7")]
     pub scheduler_id: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "8")]
-    pub task_id_gen: u32,
     #[prost(message, repeated, tag = "9")]
     pub failed_attempts: ::prost::alloc::vec::Vec<StageAttempts>,
     #[prost(string, tag = "10")]
@@ -430,14 +428,35 @@ pub struct PartitionId {
     #[prost(uint32, tag = "4")]
     pub partition_id: u32,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+/// Within-stage task identity (paired with job_id + stage_id on the parent
+/// MultiTaskDefinition). One task processes a slice of partitions;
+/// `task_id` names the task within the stage (it's the task's append-order
+/// slot in `RunningStage.task_infos`, so (job_id, stage_id, task_id) is
+/// globally unique). `global_output_partition_ids` gives the concrete
+/// global partition ids the task's restricted plan is covering. Writers
+/// use these to name shuffle files with global identity (via
+/// `create_shuffle_path`) so downstream reads have a stable, canonical
+/// address regardless of how the scheduler split the work.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskId {
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
     #[prost(uint32, tag = "2")]
     pub task_attempt_num: u32,
-    #[prost(uint32, tag = "3")]
-    pub partition_id: u32,
+    /// Global partition ids covered by this task, in slice order. Position i in
+    /// the restricted plan corresponds to `global_output_partition_ids\[i\]` globally.
+    /// `\[packed=false\]` keeps the single-partition case wire-compatible with the
+    /// legacy `uint32 partition_id = 3` field: one element writes as a single
+    /// varint at tag 3, exactly matching the old scalar encoding.
+    #[prost(uint32, repeated, packed = "false", tag = "3")]
+    pub global_output_partition_ids: ::prost::alloc::vec::Vec<u32>,
+    /// Vcores this task consumed from the executor's budget at bind time.
+    /// The executor uses this to size the task's memory pool proportionally
+    /// (`pool = total_memory * vcores_consumed / total_vcores`), so a
+    /// multi-partition task claiming N vcores gets N/total of the executor's
+    /// memory budget rather than a single per-vcore share.
+    #[prost(uint32, tag = "5")]
+    pub vcores_consumed: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionStats {
@@ -507,6 +526,11 @@ pub struct NamedRatio {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperatorMetric {
+    /// Local partition index within the reporting task's plan (0..slice_len-1).
+    /// The scheduler maps this to a global partition id via the task's
+    /// `global_input_partition_ids` when folding metrics into stage metrics.
+    #[prost(uint32, optional, tag = "16")]
+    pub partition: ::core::option::Option<u32>,
     #[prost(
         oneof = "operator_metric::Metric",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
@@ -581,6 +605,12 @@ pub struct ExecutorRegistration {
     pub specification: ::core::option::Option<ExecutorSpecification>,
     #[prost(message, optional, tag = "6")]
     pub os_info: ::core::option::Option<ExecutorOperatingSystemSpecification>,
+    /// Wire-protocol version this executor was built against. The scheduler
+    /// rejects heartbeats/registrations whose version does not match its own
+    /// compiled-in BALLISTA_PROTOCOL_VERSION. Old executors that predate this
+    /// field default to 0, which is never a valid scheduler version.
+    #[prost(uint32, tag = "7")]
+    pub ballista_protocol_version: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorHeartbeat {
@@ -798,6 +828,10 @@ pub struct ShuffleWritePartition {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskStatus {
+    /// Task's append-order slot in `RunningStage.task_infos`; (job_id,
+    /// stage_id, task_id) is globally unique. Under the multi-partition-task
+    /// model one task processes a partition slice, so this names the task,
+    /// not a single partition.
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
     #[prost(string, tag = "2")]
@@ -806,8 +840,6 @@ pub struct TaskStatus {
     pub stage_id: u32,
     #[prost(uint32, tag = "4")]
     pub stage_attempt_num: u32,
-    #[prost(uint32, tag = "5")]
-    pub partition_id: u32,
     #[prost(uint64, tag = "6")]
     pub launch_time: u64,
     #[prost(uint64, tag = "7")]
@@ -841,6 +873,16 @@ pub struct PollWorkParams {
     #[prost(message, repeated, tag = "3")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,
 }
+/// Pull-based single-task dispatch. One task processes a slice of
+/// partitions; `task_id` names the task within the stage (its append-order
+/// slot in `RunningStage.task_infos`), `global_output_partition_ids` gives
+/// the concrete global partition ids it covers. The task's plan is
+/// scheduler-side shrink-restricted so its leaves report `slice.len()`
+/// partitions; the writer uses `global_output_partition_ids` to attach
+/// global identity to shuffle files (except in cases where the plan itself
+/// resets partitioning: the writer walks its child plan to detect
+/// SortPreservingMergeExec or RepartitionExec::Hash and picks the right
+/// global mapping).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskDefinition {
     #[prost(uint32, tag = "1")]
@@ -853,8 +895,6 @@ pub struct TaskDefinition {
     pub stage_id: u32,
     #[prost(uint32, tag = "5")]
     pub stage_attempt_num: u32,
-    #[prost(uint32, tag = "6")]
-    pub partition_id: u32,
     #[prost(bytes = "vec", tag = "7")]
     pub plan: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "9")]
@@ -863,6 +903,12 @@ pub struct TaskDefinition {
     pub launch_time: u64,
     #[prost(message, repeated, tag = "11")]
     pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
+    /// Global partition ids covered by this task, in slice order.
+    #[prost(uint32, repeated, tag = "12")]
+    pub global_output_partition_ids: ::prost::alloc::vec::Vec<u32>,
+    /// Vcores this task consumed at bind time — see TaskId.vcores_consumed.
+    #[prost(uint32, tag = "13")]
+    pub vcores_consumed: u32,
 }
 /// A set of tasks in the same stage
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1260,14 +1306,14 @@ pub struct RemoveJobDataParams {
 pub struct RemoveJobDataResult {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningTaskInfo {
+    /// Per-stage append-order slot; (job_id, stage_id, task_id) is globally
+    /// unique (see TaskStatus).
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
     #[prost(string, tag = "2")]
     pub job_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "3")]
     pub stage_id: u32,
-    #[prost(uint32, tag = "4")]
-    pub partition_id: u32,
 }
 /// Generated client implementations.
 pub mod scheduler_grpc_client {

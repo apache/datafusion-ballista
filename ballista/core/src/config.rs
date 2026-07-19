@@ -150,6 +150,10 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
 
+/// Configuration key for the scheduler's per-task partition-slice cap.
+pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
+    "ballista.scheduler.max_partitions_per_task";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -355,6 +359,20 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
             DataType::Utf8,
             Some("lz4".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
+            "Upper bound on the number of input partitions packed into a single \
+             task's `partition_slice`. `1` (default) is the pre-multi-partition-tasks \
+             execution model — one task per partition, matching the Spark user \
+             persona and preserving master's behaviour on merge. Raise to enable \
+             multi-partition tasks (fewer tasks, parallel-sort / parallel-join wins); \
+             `0` means unbounded — the scheduler fills each task up to the executor's \
+             free vcore count. Does not apply to collapse stages, which must pack \
+             their full pending queue into a single task for correctness."
+                .to_string(),
+            DataType::UInt64,
+            Some(1.to_string()),
         ),
     ];
     entries
@@ -646,6 +664,11 @@ impl BallistaConfig {
     /// Returns whether the AQE dynamic join-selection rule is enabled.
     pub fn adaptive_join_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_JOIN_ENABLED)
+    }
+
+    /// Returns the scheduler's per-task partition-slice cap. `0` means unbounded.
+    pub fn max_partitions_per_task(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK)
     }
 
     /// Returns whether chaos-monkey execution injection is enabled.

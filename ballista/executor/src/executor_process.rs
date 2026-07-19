@@ -61,7 +61,9 @@ use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
     default_config_producer, get_time_before,
 };
-use ballista_core::{BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer};
+use ballista_core::{
+    BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
+};
 
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
@@ -97,8 +99,14 @@ fn memory_pool_policy(
         )));
     }
     Ok(Arc::new(
-        move |base: Arc<RuntimeEnv>, _config: &SessionConfig| {
-            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(per_vcore));
+        move |base: Arc<RuntimeEnv>, _config: &SessionConfig, vcores_consumed: u32| {
+            // Multi-partition tasks that claim N vcores get N × per-vcore
+            // share of the executor's memory pool. A collapse task with
+            // vcores_consumed=1 (see scheduler `bind_one`) gets the
+            // single-vcore share it uses; a 4-partition task gets 4×,
+            // matching the parallelism DataFusion will actually drive.
+            let size = per_vcore.saturating_mul(vcores_consumed.max(1) as usize);
+            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(size));
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(pool)
                 .build_arc()
@@ -109,7 +117,7 @@ fn memory_pool_policy(
 /// A no-op policy: the task uses the shared base env unchanged (DataFusion's
 /// default unbounded pool). Used when `--memory-pool-size` is unset.
 fn identity_pool_policy() -> MemoryPoolPolicy {
-    Arc::new(|base, _config| Ok(base))
+    Arc::new(|base, _config, _vcores| Ok(base))
 }
 
 /// Configuration for the executor process.
@@ -192,6 +200,11 @@ pub struct ExecutorProcessConfig {
     /// connection and a shuffle-heavy query can exhaust the host's ephemeral
     /// ports.
     pub client_ttl: u64,
+    /// Shared readiness state that the heartbeat loops flip on every RPC
+    /// outcome. Embedders leave this as `Default::default()` and never
+    /// observe it; the standalone binary passes a handle here and also spawns
+    /// an HTTP server on it (see `bin/main.rs`).
+    pub health: crate::health::ExecutorHealth,
 }
 
 impl ExecutorProcessConfig {
@@ -242,6 +255,7 @@ impl Default for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
             client_ttl: 30,
+            health: crate::health::ExecutorHealth::new(),
         }
     }
 }
@@ -330,10 +344,13 @@ pub async fn start_executor_process(
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`
     // and as the fallback when session caching is disabled.
+    // Session-level fallback (used only when no session cache is attached);
+    // per-task vcores aren't threaded here, so size the pool for the smallest
+    // task shape (1 vcore).
     let runtime_producer: RuntimeProducer = {
         let base = base_runtime_producer.clone();
         let policy = pool_policy.clone();
-        Arc::new(move |config: &SessionConfig| policy(base(config)?, config))
+        Arc::new(move |config: &SessionConfig| policy(base(config)?, config, 1))
     };
 
     let logical = opt
@@ -351,19 +368,16 @@ pub async fn start_executor_process(
         datafusion_proto::protobuf::PhysicalPlanNode,
     > = BallistaCodec::new(logical, physical);
 
-    // Session caching applies only to the default runtime producer. With an
-    // override producer we cannot split base + pool, so we serve per-task as
-    // before by leaving the cache unset.
-    let session_runtime_cache: Option<Arc<dyn SessionRuntimeCache>> =
-        if opt.override_runtime_producer.is_none() {
-            Some(Arc::new(DefaultSessionRuntimeCache::new(
-                base_runtime_producer.clone(),
-                pool_policy.clone(),
-                opt.session_runtime_cache_capacity,
-            )))
-        } else {
-            None
-        };
+    // Always attach the session cache: `pool_policy` wraps whatever base env
+    // the producer returns with a fresh per-task memory pool sized to the
+    // task's vcores, so an override producer (e.g. S3-aware) composes with
+    // the pool the same way the default one does.
+    let session_runtime_cache: Arc<dyn SessionRuntimeCache> =
+        Arc::new(DefaultSessionRuntimeCache::new(
+            base_runtime_producer.clone(),
+            pool_policy.clone(),
+            opt.session_runtime_cache_capacity,
+        ));
 
     let executor = Arc::new(
         Executor::new(
@@ -386,7 +400,7 @@ pub async fn start_executor_process(
                 }
             }),
         )
-        .with_session_runtime_cache(session_runtime_cache),
+        .with_session_runtime_cache(Some(session_runtime_cache)),
     );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
@@ -519,6 +533,12 @@ pub async fn start_executor_process(
     // Channels used to receive stop requests from Executor grpc service.
     let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
 
+    // Shared readiness state, flipped by the heartbeat/poll_work loop. When
+    // the caller is the standalone binary, an HTTP probe server observes
+    // this same handle (see `bin/main.rs`); library embedders leave it
+    // unobserved.
+    let health = opt.health.clone();
+
     // Starting main executor process based on the TaskSchedulingPolicy
     //
     // PushStaged => starting new executor_server that waits for tasks from the schedule
@@ -534,6 +554,7 @@ pub async fn start_executor_process(
                     default_codec,
                     stop_send,
                     &shutdown_notification,
+                    health,
                 )
                 .await?,
             );
@@ -543,6 +564,7 @@ pub async fn start_executor_process(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                health,
             )));
         }
     };
@@ -939,6 +961,7 @@ pub fn structure_executor_metadata(
             total_available_disk_space,
             open_files_limit,
         }),
+        ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     }
 }
 
@@ -1112,19 +1135,27 @@ mod memory_pool_tests {
     }
 
     #[test]
-    fn produces_runtime_with_fair_spill_pool_of_per_vcore_size() {
+    fn produces_runtime_with_fair_spill_pool_scaled_by_vcores() {
         let total = 8u64 * 1024 * 1024 * 1024;
         let vcores = 8usize;
-        let expected_per_vcore = (total / vcores as u64) as usize;
+        let per_vcore = (total / vcores as u64) as usize;
 
         let policy = memory_pool_policy(total, vcores).unwrap();
         let base = Arc::new(RuntimeEnv::default());
-        let env = policy(base, &SessionConfig::new()).unwrap();
 
-        match env.memory_pool.memory_limit() {
-            MemoryLimit::Finite(n) => assert_eq!(n, expected_per_vcore),
-            MemoryLimit::Infinite => panic!("expected Finite limit, got Infinite"),
-            MemoryLimit::Unknown => panic!("expected Finite limit, got Unknown"),
+        // A 1-vcore task gets the per-vcore share; a 4-vcore task gets 4×.
+        let env_1 = policy(base.clone(), &SessionConfig::new(), 1).unwrap();
+        let env_4 = policy(base, &SessionConfig::new(), 4).unwrap();
+
+        match env_1.memory_pool.memory_limit() {
+            MemoryLimit::Finite(n) => assert_eq!(n, per_vcore),
+            MemoryLimit::Infinite => panic!("expected Finite, got Infinite"),
+            MemoryLimit::Unknown => panic!("expected Finite, got Unknown"),
+        }
+        match env_4.memory_pool.memory_limit() {
+            MemoryLimit::Finite(n) => assert_eq!(n, per_vcore * 4),
+            MemoryLimit::Infinite => panic!("expected Finite, got Infinite"),
+            MemoryLimit::Unknown => panic!("expected Finite, got Unknown"),
         }
     }
 
@@ -1140,7 +1171,7 @@ mod memory_pool_tests {
         );
 
         let policy = memory_pool_policy(1024, 1).unwrap();
-        let env = policy(base, &SessionConfig::new()).unwrap();
+        let env = policy(base, &SessionConfig::new(), 1).unwrap();
 
         assert!(Arc::ptr_eq(&env.object_store_registry, &registry));
     }
@@ -1148,7 +1179,7 @@ mod memory_pool_tests {
     #[test]
     fn identity_policy_returns_base_unchanged() {
         let base = Arc::new(RuntimeEnv::default());
-        let env = identity_pool_policy()(base.clone(), &SessionConfig::new()).unwrap();
+        let env = identity_pool_policy()(base.clone(), &SessionConfig::new(), 1).unwrap();
         assert!(Arc::ptr_eq(&env, &base));
     }
 }

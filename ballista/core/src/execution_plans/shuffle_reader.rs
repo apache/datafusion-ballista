@@ -1772,7 +1772,10 @@ mod tests {
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
-        assert_eq!(result.len(), 2);
+        // Writer's K=1 hash routes every row to partition 0. Its coordinator
+        // reads its full input slice (2 partitions × 2 batches = 4 batches),
+        // all routed to the single output file.
+        assert_eq!(result.len(), 4);
         for b in result {
             assert_eq!(b, create_test_batch())
         }

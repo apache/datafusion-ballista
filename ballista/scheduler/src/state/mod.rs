@@ -49,6 +49,8 @@ pub mod execution_stage;
 pub mod executor_manager;
 /// Session state management.
 pub mod session_manager;
+/// Per-task plan rewriter (restrict scan/shuffle-reader to task's slice).
+pub mod task_builder;
 /// Task scheduling and lifecycle management.
 pub mod task_manager;
 
@@ -266,7 +268,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             HashMap<(JobId, usize), Vec<TaskDescription>>,
         > = HashMap::new();
         for (executor_id, task) in bound_tasks.into_iter() {
-            let stage_key = (task.partition.job_id.clone(), task.partition.stage_id);
+            let stage_key = (task.key.job_id.clone(), task.key.stage_id);
             if let Some(tasks) = executor_stage_assignments.get_mut(&executor_id) {
                 if let Some(executor_stage_tasks) = tasks.get_mut(&stage_key) {
                     executor_stage_tasks.push(task);
