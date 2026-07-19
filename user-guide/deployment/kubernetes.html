@@ -508,6 +508,18 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
+<span class="w">          </span><span class="nt">livenessProbe</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/healthz</span>
+<span class="w">              </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
+<span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="w">          </span><span class="nt">readinessProbe</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/readyz</span>
+<span class="w">              </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
+<span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
 <span class="w">          </span><span class="nt">volumeMounts</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">mountPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/mnt</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">data</span>
@@ -541,6 +553,20 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50051</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50053</span>
+<span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">health</span>
+<span class="w">          </span><span class="nt">livenessProbe</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/healthz</span>
+<span class="w">              </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50053</span>
+<span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="w">          </span><span class="nt">readinessProbe</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/readyz</span>
+<span class="w">              </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50053</span>
+<span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
 <span class="w">          </span><span class="nt">volumeMounts</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">mountPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/mnt</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">data</span>
@@ -574,6 +600,88 @@ INFO ballista_scheduler::scheduler_server::grpc: Received register_executor requ
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: &quot;816e4502-a876-4ed8-b33f-86d243dcf63f&quot;, host: &quot;10.1.23.150&quot;, port: 50051 }
 </pre></div>
 </div>
+</section>
+<section id="health-probes-and-rolling-upgrades">
+<h2>Health Probes and Rolling Upgrades<a class="headerlink" href="#health-probes-and-rolling-upgrades" title="Link to this heading">#</a></h2>
+<p>Both the scheduler and executor expose two Kubernetes-style HTTP probe endpoints:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">/healthz</span></code></strong> — liveness. Always returns <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> while the process is
+running. Failing this signals only “the process is dead,” which is the sole
+case where a restart can actually recover. Do <strong>not</strong> make liveness reflect
+scheduler connectivity — a flapping scheduler would then take the whole
+executor fleet down with it in a restart cascade.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">/readyz</span></code></strong> — readiness. Returns <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> when the pod is prepared to
+accept traffic (scheduler: at least <code class="docutils literal notranslate"><span class="pre">--min-ready-executors</span></code> executors
+registered; executor: last heartbeat to the scheduler succeeded).
+A failing <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> removes the pod from <code class="docutils literal notranslate"><span class="pre">Service</span></code> endpoints but does
+<strong>not</strong> trigger a restart, so it is safe to gate on cluster state.</p></li>
+</ul>
+<p>The scheduler serves both probes on the same port as its gRPC/REST API
+(default <code class="docutils literal notranslate"><span class="pre">50050</span></code>). The executor serves them on a dedicated HTTP port
+(<code class="docutils literal notranslate"><span class="pre">--bind-health-port</span></code>, default <code class="docutils literal notranslate"><span class="pre">50053</span></code>) since the Arrow Flight port is not
+HTTP.</p>
+<section id="protocol-version-and-forced-upgrades">
+<h3>Protocol version and forced upgrades<a class="headerlink" href="#protocol-version-and-forced-upgrades" title="Link to this heading">#</a></h3>
+<p>Every executor sends a compile-time <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code> on
+registration and heartbeat. The scheduler compares against its own compiled
+value and rejects mismatches with <code class="docutils literal notranslate"><span class="pre">FailedPrecondition</span></code>; the executor then
+flips <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> off and, after several consecutive failures, self-terminates
+so the operator (or Deployment controller) can bring a matching version up.</p>
+<p>Bump <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code> only on releases that change the
+executor↔scheduler wire format. Most releases will not bump it.</p>
+</section>
+<section id="rolling-both-deployments-together">
+<h3>Rolling both Deployments together<a class="headerlink" href="#rolling-both-deployments-together" title="Link to this heading">#</a></h3>
+<p>The scheduler and executor live in separate Deployments; there is no single
+“app roll.” When you cut a release that bumps <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code>,
+update <strong>both</strong> Deployments’ image tags in the same change and apply them
+together. Kubernetes will roll each Deployment independently under its own
+rollout policy, but the fleet stays serving throughout:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>scheduler ↔ executor</p></th>
+<th class="head"><p>outcome</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>old ↔ old</p></td>
+<td><p>works (old scheduler pre-dates the check)</p></td>
+</tr>
+<tr class="row-odd"><td><p>old ↔ new</p></td>
+<td><p>works (old scheduler ignores the unknown field)</p></td>
+</tr>
+<tr class="row-even"><td><p>new ↔ new</p></td>
+<td><p>works</p></td>
+</tr>
+<tr class="row-odd"><td><p>new ↔ old</p></td>
+<td><p>rejected — new scheduler fails <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> until enough new executors register</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Because the <em>old</em> scheduler is permissive (it never learned to check the
+field), executors that reach it during the transition are always accepted.
+The rejection happens only when a <em>new</em> scheduler sees an <em>old</em> executor,
+which is the case the version check is designed to protect against —
+mismatched pairs never exchange work, so they cannot corrupt state.</p>
+<p>Give each Deployment a <code class="docutils literal notranslate"><span class="pre">maxSurge</span></code> so Kubernetes brings new pods up before
+tearing old ones down; this keeps executor capacity at roughly 100% during
+the roll:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">strategy</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RollingUpdate</span>
+<span class="w">    </span><span class="nt">rollingUpdate</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">maxSurge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">25%</span>
+<span class="w">      </span><span class="nt">maxUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+</pre></div>
+</div>
+<p>The scheduler’s <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> gate (<code class="docutils literal notranslate"><span class="pre">--min-ready-executors</span></code>, default <code class="docutils literal notranslate"><span class="pre">1</span></code>) means
+a fresh scheduler pod does not receive <code class="docutils literal notranslate"><span class="pre">Service</span></code> traffic until at least one
+matching-version executor has registered with it, so clients keep hitting
+the old scheduler until the new one has real capacity behind it. Set
+<code class="docutils literal notranslate"><span class="pre">--min-ready-executors=0</span></code> if you want the scheduler to advertise readiness
+immediately (e.g. single-node development clusters).</p>
+</section>
 </section>
 <section id="port-forwarding">
 <h2>Port Forwarding<a class="headerlink" href="#port-forwarding" title="Link to this heading">#</a></h2>
@@ -689,6 +797,11 @@ scale the executors.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#publishing-docker-images">Publishing Docker Images</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#create-persistent-volume-and-persistent-volume-claim">Create Persistent Volume and Persistent Volume Claim</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploying-a-ballista-cluster">Deploying a Ballista Cluster</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#health-probes-and-rolling-upgrades">Health Probes and Rolling Upgrades</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#protocol-version-and-forced-upgrades">Protocol version and forced upgrades</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rolling-both-deployments-together">Rolling both Deployments together</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#port-forwarding">Port Forwarding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deleting-the-ballista-cluster">Deleting the Ballista Cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#autoscaling-executors">Autoscaling Executors</a></li>
