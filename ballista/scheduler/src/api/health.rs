@@ -67,7 +67,7 @@ async fn readyz<
 ) -> Response {
     let alive = scheduler.state.executor_manager.get_alive_executors().len();
     let required = scheduler.state.config.min_ready_executors;
-    if alive >= required {
+    if scheduler.is_ready() {
         (
             StatusCode::OK,
             format!("ready: {alive} executors registered\n"),

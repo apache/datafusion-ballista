@@ -182,6 +182,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub fn running_job_number(&self) -> usize {
         self.state.task_manager.running_job_number()
     }
+
+    /// True when at least `min_ready_executors` executors currently have
+    /// live heartbeats. Embedders can call this from their own health/readiness
+    /// handler and AND it with whatever app-specific state they track. The
+    /// built-in `/readyz` endpoint (see `api::health`) reports the same value.
+    pub fn is_ready(&self) -> bool {
+        let alive = self.state.executor_manager.get_alive_executors().len();
+        alive >= self.state.config.min_ready_executors
+    }
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.query_stage_scheduler.metrics_collector()
