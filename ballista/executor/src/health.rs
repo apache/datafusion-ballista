@@ -65,8 +65,11 @@ impl ExecutorHealth {
         self.heartbeat_ok.store(false, Ordering::Release);
     }
 
-    #[cfg(feature = "build-binary")]
-    fn is_ready(&self) -> bool {
+    /// True once the executor's most recent heartbeat to the scheduler
+    /// succeeded. Embedders that host `ExecutorHealth` in their own process
+    /// can fold this into their app-wide readiness check the same way the
+    /// scheduler exposes `SchedulerServer::is_ready`.
+    pub fn is_ready(&self) -> bool {
         self.heartbeat_ok.load(Ordering::Acquire)
     }
 }
