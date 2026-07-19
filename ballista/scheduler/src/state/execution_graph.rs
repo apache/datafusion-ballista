@@ -946,18 +946,9 @@ impl ExecutionGraph for StaticExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // Metrics are observability, not correctness — if
-                            // folding fails (e.g. an operator stamps a metric
-                            // with a partition index the scheduler can't map
-                            // back to the task's slice), log and keep going
-                            // so the task's output locations still get
-                            // registered. Propagating with `?` here hangs the
-                            // whole query on a metric-only bug.
-                            if let Err(e) = running_stage
-                                .update_task_metrics(task_id, operator_metrics)
-                            {
-                                warn!("Dropping metrics for {task_identity}: {e}");
-                            }
+                            // update task metrics for successful task
+                            running_stage
+                                .update_task_metrics(task_id, operator_metrics)?;
 
                             locations.append(&mut partition_to_location(
                                 &job_id,

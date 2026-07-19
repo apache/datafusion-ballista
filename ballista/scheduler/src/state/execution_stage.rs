@@ -878,8 +878,49 @@ impl RunningStage {
     }
 
     /// Convert a task's operator-metrics snapshot into a `MetricsSet`, mapping
-    /// each metric's local partition index (0..global_partitions.len()) to its
-    /// global partition id via `global_partitions`.
+    /// each metric's local partition index to a stage-global partition id via
+    /// `global_partitions` (the task's slice of stage-global partition ids).
+    ///
+    /// Three cases, keyed on the local partition value the executor put on
+    /// the wire:
+    ///
+    /// 1. `local < global_partitions.len()` — restricted-arm metric (see
+    ///    [`crate::state::task_builder`]). Local index maps 1:1 to
+    ///    `global_partitions[local]`. Honest per-input-partition detail.
+    /// 2. `global_partitions.len() == 1` — collapse task; all metrics
+    ///    belong to the single output partition.
+    /// 3. `local >= global_partitions.len()` — under-collect arm. The
+    ///    plan's subtree below a `CoalescePartitionsExec` /
+    ///    `SortPreservingMergeExec` / SinglePartition join-build side
+    ///    keeps the full upstream partition count, so operators there
+    ///    stamp metrics with local indices unrelated to the task's slice
+    ///    (0..upstream_full_count). Cross-product the metric against every
+    ///    slice member so the aggregate mirrors what master reported
+    ///    (`N tasks × 1 task-partition each = N buckets, 1 bucket per
+    ///    stage-global partition`).
+    ///
+    /// TODO(#2038 metrics story): neither master nor this design is
+    /// actually *correct*. Master's per-partition attribution was a lie in
+    /// two ways:
+    ///   (a) it discarded DataFusion's real per-input-partition tag and
+    ///       re-labelled every metric with the task's own partition id,
+    ///       and
+    ///   (b) it counted under-collect work in each task's bucket, so the
+    ///       cross-stage aggregate over-reported the physical cost by a
+    ///       factor of the stage's task count.
+    /// This design preserves (a)'s per-partition-tag behaviour for wire
+    /// compatibility with the REST API and TUI, and cross-products
+    /// under-collect metrics to keep the same UI shape master had — but it
+    /// *hides* multi-partition-tasks' real efficiency win (fewer tasks =
+    /// fewer redundant under-collect executions) behind the same inflated
+    /// aggregate. The honest representation is probably: one bucket per
+    /// arm per task, with the arm identity (which shuffle input? which
+    /// side of a join? which scope?) attached as labels — but the REST
+    /// API / TUI don't yet have a way to display arm-scoped metrics, and
+    /// that redesign is out of scope for this PR. Open question: what does
+    /// the per-partition/per-arm view actually *mean* under
+    /// multi-partition tasks, and how should the API surface it?
+    /// [[project-prs-2038-2088]]
     fn metrics_set_from_task_metrics(
         metrics: OperatorMetricsSet,
         global_partitions: &[usize],
@@ -893,25 +934,19 @@ impl RunningStage {
                 )
             })?;
             let metric_value: MetricValue = inner.try_into()?;
-            // Collapse tasks: the plan has more partitions than the task's
-            // single output partition (it coalesces N upstream inputs into
-            // one), so `local` can exceed `global_partitions.len()`. All of
-            // that task's metrics belong to its single output partition.
-            let global_partition = match local_partition {
+            let tags: Vec<Option<usize>> = match local_partition {
                 Some(local) if local < global_partitions.len() => {
-                    Some(global_partitions[local])
+                    vec![Some(global_partitions[local])]
                 }
-                Some(_) if global_partitions.len() == 1 => Some(global_partitions[0]),
-                Some(local) => {
-                    return Err(BallistaError::Internal(format!(
-                        "task metric reports local partition {local} but task \
-                             slice has {} partitions",
-                        global_partitions.len()
-                    )));
+                Some(_) if global_partitions.len() == 1 => {
+                    vec![Some(global_partitions[0])]
                 }
-                None => None,
+                Some(_) => global_partitions.iter().map(|&p| Some(p)).collect(),
+                None => vec![None],
             };
-            metrics_set.push(Arc::new(Metric::new(metric_value, global_partition)));
+            for tag in tags {
+                metrics_set.push(Arc::new(Metric::new(metric_value.clone(), tag)));
+            }
         }
         Ok(metrics_set)
     }
@@ -1589,5 +1624,67 @@ mod tests {
             })
             .collect();
         assert_eq!(output_rows, vec![(Some(7), 4200)]);
+    }
+
+    /// A metric whose local partition index doesn't fit the task's slice
+    /// comes from an under-collect subtree (below a `CoalescePartitionsExec`,
+    /// `SortPreservingMergeExec`, or a SinglePartition-requiring join build
+    /// side, per `task_builder::child_scopes`). Those operators keep the
+    /// full upstream partition count and stamp metrics with indices unrelated
+    /// to the task's slice. We cross-product each such metric against every
+    /// slice member, matching the pre-branch model where every task's under-
+    /// collect metric was re-labelled with the task's single partition id
+    /// (see the TODO on `metrics_set_from_task_metrics`).
+    #[test]
+    fn test_update_task_metrics_under_collect_cross_products_across_slice() {
+        let mut stage = make_running_stage(4);
+        // Task covers slice [3, 7, 5, 1] (four global partitions).
+        append_running_task(&mut stage, 0, "executor-1", vec![3, 7, 5, 1]);
+
+        // Single metric with local partition=8 — cannot fit slice of len 4.
+        // Represents e.g. a build-side ShuffleReader below a CoalescePartitions
+        // reading upstream partition 8 of 16.
+        stage
+            .update_task_metrics(
+                0,
+                vec![OperatorMetricsSet {
+                    metrics: vec![OperatorMetric {
+                        metric: Some(operator_metric::Metric::OutputRows(500)),
+                        partition: Some(8),
+                    }],
+                }],
+            )
+            .unwrap();
+
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        let operator_metrics = &metrics[0];
+
+        // The single incoming metric gets one entry per slice member.
+        let mut per_partition: Vec<(Option<usize>, usize)> = operator_metrics
+            .iter()
+            .filter_map(|metric| match metric.value() {
+                MetricValue::OutputRows(value) => {
+                    Some((metric.partition(), value.value()))
+                }
+                _ => None,
+            })
+            .collect();
+        per_partition.sort_by_key(|(p, _)| *p);
+        assert_eq!(
+            per_partition,
+            vec![
+                (Some(1), 500),
+                (Some(3), 500),
+                (Some(5), 500),
+                (Some(7), 500),
+            ],
+        );
+
+        // Aggregate: 500 × slice_len = 2000. Matches the pre-branch shape
+        // where each of the task's owned partitions would each report the
+        // full under-collect cost. Physical work was 1× 500 — the 4× is the
+        // per-partition lie called out in the TODO.
+        let aggregated = operator_metrics.aggregate_by_name();
+        assert_eq!(aggregated.output_rows(), Some(2000));
     }
 }
