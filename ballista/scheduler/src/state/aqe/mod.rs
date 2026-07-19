@@ -113,8 +113,6 @@ pub(crate) struct AdaptiveExecutionGraph {
 
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
-    /// Task ID generator, generate unique TID in the execution graph
-    task_id_gen: usize,
     /// Failed stage attempts, record the failed stage attempts to limit the retry times.
     /// Map from Stage ID -> Set<Stage_ATTPMPT_NUM>
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
@@ -191,7 +189,6 @@ impl AdaptiveExecutionGraph {
             end_time: 0,
             stages,
             output_locations: vec![],
-            task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
@@ -216,13 +213,6 @@ impl AdaptiveExecutionGraph {
         ));
 
         Ok((stage_id, stage))
-    }
-
-    #[cfg(test)]
-    fn next_task_id(&mut self) -> usize {
-        let new_tid = self.task_id_gen;
-        self.task_id_gen += 1;
-        new_tid
     }
 
     /// Processing stage status update after task status changing
@@ -656,17 +646,13 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.partition_id as usize;
+                        let task_id = task_status.task_id as usize;
                         let task_identity = format!(
-                            "TID {} {}/{}.{}/{}",
-                            task_status.task_id,
-                            job_id,
-                            stage_id,
-                            task_stage_attempt_num,
-                            partition_id
+                            "TID {}/{}.{}/{}",
+                            job_id, stage_id, task_stage_attempt_num, task_id
                         );
 
-                        if !running_stage.update_task_info(partition_id, &task_status) {
+                        if !running_stage.update_task_info(task_id, task_status.clone()) {
                             continue;
                         }
 
@@ -750,16 +736,16 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                     if failed_task.retryable
                                         && failed_task.count_to_failures
                                     {
-                                        if running_stage.task_failure_number(partition_id)
+                                        if running_stage.task_failure_number(task_id)
                                             < max_task_failures
                                         {
                                             // TODO add new struct to track all the failed task infos
                                             // The failure TaskInfo is ignored and set to None here
-                                            running_stage.reset_task_info(partition_id);
+                                            running_stage.reset_task_info(task_id);
                                         } else {
                                             let error_msg = format!(
                                                 "Task {} in Stage {} failed {} times, fail the stage, most recent failure reason: {:?}",
-                                                partition_id,
+                                                task_id,
                                                 stage_id,
                                                 max_task_failures,
                                                 failed_task.error
@@ -770,12 +756,12 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                     } else if failed_task.retryable {
                                         // TODO add new struct to track all the failed task infos
                                         // The failure TaskInfo is ignored and set to None here
-                                        running_stage.reset_task_info(partition_id);
+                                        running_stage.reset_task_info(task_id);
                                     }
                                 }
                                 None => {
                                     let error_msg = format!(
-                                        "Task {partition_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage"
+                                        "Task {task_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage"
                                     );
                                     error!("{error_msg}");
                                     failed_stages.insert(stage_id, error_msg);
@@ -789,14 +775,14 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successfu task
+                            // update task metrics for successful task
                             running_stage
-                                .update_task_metrics(partition_id, operator_metrics)?;
+                                .update_task_metrics(task_id, operator_metrics)?;
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
                                     &job_id,
-                                    partition_id,
+                                    task_id,
                                     stage_id,
                                     executor,
                                     successful_task.partitions,
@@ -849,7 +835,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                         stage_id,
                         stage_task_statuses
                             .into_iter()
-                            .map(|task_status| task_status.partition_id)
+                            .map(|task_status| task_status.task_id)
                             .collect::<Vec<_>>(),
                     );
                 }
@@ -866,17 +852,22 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 .insert(*stage_id, HashSet::from_iter(attempts.iter().copied()));
         }
 
-        for (stage_id, missing_parts) in &resubmit_successful_stages {
+        // Values coming out of `remove_input_partitions` are task_ids
+        // (append slots) under the multi-partition-task model (see the mirror
+        // site in `execution_graph.rs` for the TODO on partition-id semantics).
+        for (stage_id, missing_task_ids) in &resubmit_successful_stages {
             if let Some(stage) = self.stages.get_mut(stage_id) {
                 if let ExecutionStage::Successful(success_stage) = stage {
-                    for partition in missing_parts {
-                        if *partition > success_stage.partitions {
+                    for task_id in missing_task_ids {
+                        if *task_id >= success_stage.task_infos.len() {
                             return Err(BallistaError::Internal(format!(
-                                "Invalid partition ID {} in map stage {}",
-                                *partition, stage_id
+                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
+                                *task_id,
+                                stage_id,
+                                success_stage.task_infos.len()
                             )));
                         }
-                        let task_info = &mut success_stage.task_infos[*partition];
+                        let task_info = &mut success_stage.task_infos[*task_id];
                         // Update the task info to failed
                         task_info.task_status = task_status::Status::Failed(FailedTask {
                             error: "FetchPartitionError in parent stage".to_owned(),
@@ -897,17 +888,19 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             }
         }
 
-        for (stage_id, missing_parts) in &reset_running_stages {
+        for (stage_id, missing_task_ids) in &reset_running_stages {
             if let Some(stage) = self.stages.get_mut(stage_id) {
                 if let ExecutionStage::Running(running_stage) = stage {
-                    for partition in missing_parts {
-                        if *partition > running_stage.partitions {
+                    for task_id in missing_task_ids {
+                        if *task_id >= running_stage.task_infos.len() {
                             return Err(BallistaError::Internal(format!(
-                                "Invalid partition ID {} in map stage {}",
-                                *partition, stage_id
+                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
+                                *task_id,
+                                stage_id,
+                                running_stage.task_infos.len()
                             )));
                         }
-                        running_stage.reset_task_info(*partition);
+                        running_stage.reset_task_info(*task_id);
                     }
                 } else {
                     warn!(
@@ -956,14 +949,11 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     stage
                         .running_tasks()
                         .into_iter()
-                        .map(|(task_id, stage_id, partition_id, executor_id)| {
-                            RunningTaskInfo {
-                                task_id,
-                                job_id: self.job_id.clone(),
-                                stage_id,
-                                partition_id,
-                                executor_id,
-                            }
+                        .map(|(task_id, stage_id, executor_id)| RunningTaskInfo {
+                            task_id,
+                            job_id: self.job_id.clone(),
+                            stage_id,
+                            executor_id,
                         })
                         .collect::<Vec<RunningTaskInfo>>()
                 } else {
@@ -987,10 +977,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             .sum()
     }
 
-    fn fetch_running_stage(
-        &mut self,
-        black_list: &[usize],
-    ) -> Option<(&mut RunningStage, &mut usize)> {
+    fn fetch_running_stage(&mut self, black_list: &[usize]) -> Option<&mut RunningStage> {
         if matches!(
             self.status,
             JobStatus {
@@ -1007,7 +994,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             if let Some(ExecutionStage::Running(running_stage)) =
                 self.stages.get_mut(&running_stage_id)
             {
-                Some((running_stage, &mut self.task_id_gen))
+                Some(running_stage)
             } else {
                 warn!("Fail to find running stage with id {running_stage_id}");
                 None
@@ -1112,15 +1099,12 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             let running_tasks = stage
                 .running_tasks()
                 .into_iter()
-                .map(
-                    |(task_id, stage_id, partition_id, executor_id)| RunningTaskInfo {
-                        task_id,
-                        job_id: self.job_id.clone(),
-                        stage_id,
-                        partition_id,
-                        executor_id,
-                    },
-                )
+                .map(|(task_id, stage_id, executor_id)| RunningTaskInfo {
+                    task_id,
+                    job_id: self.job_id.clone(),
+                    stage_id,
+                    executor_id,
+                })
                 .collect();
             self.stages.insert(
                 stage_id,
@@ -1254,19 +1238,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         let job_id = self.job_id.clone();
         let session_id = self.session_id.clone();
 
-        let find_candidate = self.stages.iter().any(|(_stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                stage.available_tasks() > 0
-            } else {
-                false
-            }
-        });
-        let next_task_id = if find_candidate {
-            Some(self.next_task_id())
-        } else {
-            None
-        };
-
         let mut next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
                 stage.available_tasks() > 0
@@ -1275,25 +1246,25 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             }
         }).map(|(stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
-                use ballista_core::serde::scheduler::PartitionId;
+                use ballista_core::serde::scheduler::TaskKey;
 
-                let (partition_id, _) = stage
-                    .task_infos
+                // pop_next_task hands out a single-partition task — the
+                // bind path sized to `exec.vcores` lives in cluster/mod.rs.
+                let input_partition_ids = stage.pending.next_slice(1);
+                if input_partition_ids.is_empty() {
+                    return Err(BallistaError::Internal(format!(
+                        "Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks"
+                    )));
+                }
+                // task_id is the append slot in `task_infos` — assigned as
+                // `task_infos.len()` at bind time. `(job_id, stage_id, task_id)`
+                // is globally unique.
+                let task_id = stage.task_infos.len();
+                let task_attempt = input_partition_ids
                     .iter()
-                    .enumerate()
-                    .find(|(_partition, info)| info.is_none())
-                    .ok_or_else(|| {
-                        BallistaError::Internal(format!("Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks"))
-                    })?;
-
-                let partition = PartitionId {
-                    job_id,
-                    stage_id: *stage_id,
-                    partition_id,
-                };
-
-                let task_id = next_task_id.unwrap();
-                let task_attempt = stage.task_failure_numbers[partition_id];
+                    .map(|pid| stage.task_failure_numbers[*pid])
+                    .max()
+                    .unwrap_or(0);
                 let task_info = crate::state::execution_graph::TaskInfo {
                     task_id,
                     scheduled_time: timestamp_millis() as u128,
@@ -1305,17 +1276,25 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     task_status: task_status::Status::Running(ballista_core::serde::protobuf::RunningTask {
                         executor_id: executor_id.to_owned()
                     }),
+                    global_input_partition_ids: input_partition_ids.clone(),
+                    vcores_consumed: input_partition_ids.len() as u32,
+                };
+                stage.task_infos.push(task_info);
+
+                let key = TaskKey {
+                    job_id,
+                    stage_id: *stage_id,
+                    task_id,
                 };
 
-                // Set the task info to Running for new task
-                stage.task_infos[partition_id] = Some(task_info);
-
+                let vcores_consumed = input_partition_ids.len() as u32;
                 Ok(crate::state::execution_graph::TaskDescription {
                     session_id,
-                    partition,
+                    key,
                     stage_attempt_num: stage.stage_attempt_num,
-                    task_id,
                     task_attempt,
+                    global_input_partition_ids: input_partition_ids,
+                    vcores_consumed,
                     plan: stage.plan.clone(),
                     session_config: self.session_config.clone()
                 })

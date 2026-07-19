@@ -278,9 +278,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 let num_status = tasks_status.len();
                 if self.state.config.is_push_staged_scheduling() {
+                    // Refund the vcores each completing task consumed at bind
+                    // time (see `bind_one` in `cluster/mod.rs`). Refunding
+                    // one vcore per task would leak leftovers under the
+                    // multi-partition-task model, draining executor budgets
+                    // to 1 vcore over the course of a query.
+                    let vcores_freed = self
+                        .state
+                        .task_manager
+                        .sum_vcores_for_statuses(&tasks_status)
+                        .await;
                     self.state
                         .executor_manager
-                        .unbind_tasks(vec![(executor_id.clone(), num_status as u32)])
+                        .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
                         .await?;
                 }
                 match self

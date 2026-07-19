@@ -25,6 +25,9 @@
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 
+/// Return type of [`BufferedBatches::take`]: `(batches, per-partition indices)`.
+pub type BufferedTake = (Vec<RecordBatch>, Vec<Vec<(u32, u32)>>);
+
 /// Holds whole input `RecordBatch`es and per-partition `(batch_idx, row_idx)`
 /// index lists. Rows are not copied at insertion time — only the indices are
 /// recorded. Materialization happens through `PartitionedBatchIterator` at
@@ -109,7 +112,7 @@ impl BufferedBatches {
 
     /// Drains all state, returning the buffered batches and per-partition
     /// index lists. After this call the buffer is empty.
-    pub fn take(&mut self) -> (Vec<RecordBatch>, Vec<Vec<(u32, u32)>>) {
+    pub fn take(&mut self) -> BufferedTake {
         self.num_buffered_rows = 0;
         let batches = std::mem::take(&mut self.batches);
         // Preserve the partition count by replacing each inner vec with empty

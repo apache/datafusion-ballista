@@ -558,11 +558,10 @@ mod test {
 
                 // Complete the task
                 let task_status = TaskStatus {
-                    task_id: task.task_id as u32,
-                    job_id: task.partition.job_id.clone().into(),
-                    stage_id: task.partition.stage_id as u32,
+                    task_id: task.key.task_id as u32,
+                    job_id: task.key.job_id.clone().into(),
+                    stage_id: task.key.stage_id as u32,
                     stage_attempt_num: task.stage_attempt_num as u32,
-                    partition_id: task.partition.partition_id as u32,
                     launch_time: 0,
                     start_exec_time: 0,
                     end_exec_time: 0,
@@ -757,19 +756,13 @@ mod test {
             |_executor_id: String, task: MultiTaskDefinition| {
                 let mut statuses = vec![];
 
-                for TaskId {
-                    task_id,
-                    partition_id,
-                    ..
-                } in task.task_ids
-                {
+                for TaskId { task_id, .. } in task.task_ids {
                     let timestamp = timestamp_millis();
                     statuses.push(TaskStatus {
                         task_id,
                         job_id: task.job_id.clone(),
                         stage_id: task.stage_id,
                         stage_attempt_num: task.stage_attempt_num,
-                        partition_id,
                         launch_time: timestamp,
                         start_exec_time: timestamp,
                         end_exec_time: timestamp,
@@ -833,19 +826,13 @@ mod test {
             |_executor_id: String, task: MultiTaskDefinition| {
                 let mut statuses = vec![];
 
-                for TaskId {
-                    task_id,
-                    partition_id,
-                    ..
-                } in task.task_ids
-                {
+                for TaskId { task_id, .. } in task.task_ids {
                     let timestamp = timestamp_millis();
                     statuses.push(TaskStatus {
                         task_id,
                         job_id: task.job_id.clone(),
                         stage_id: task.stage_id,
                         stage_attempt_num: task.stage_attempt_num,
-                        partition_id,
                         launch_time: timestamp,
                         start_exec_time: timestamp,
                         end_exec_time: timestamp,
