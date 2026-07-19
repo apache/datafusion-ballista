@@ -145,6 +145,14 @@ two independent triggers fires:
   memory even when the pool is unbounded (the default). Setting it to `0`
   disables this trigger, leaving memory-pool pressure as the sole spill signal.
 
+**Warning:** setting `memory_limit_per_task_bytes` to `0` while the executor
+uses the default unbounded memory pool disables both spill triggers. The writer
+then buffers the entire task's shuffle output in memory and never spills, which
+can exhaust the executor and cause an out-of-memory failure on large inputs.
+Only use `0` together with a bounded memory pool (see
+[Configuring Executor Memory Pool](#configuring-executor-memory-pool)), so
+pool pressure still forces spilling.
+
 After the input stream finishes, the remaining in-memory data and any spilled
 batches are written into a single consolidated Arrow IPC file per input
 partition, alongside an index file that lets readers seek directly to a given
@@ -157,8 +165,9 @@ spilling — at the cost of higher write latency than the hash writer.
 Worst-case sort-shuffle memory per executor is approximately
 `vcores × memory_limit_per_task_bytes`, since one writer task can run per
 core. Lower the per-task budget on memory-constrained executors to spill
-sooner, or raise it (or run with a bounded memory pool and set it to `0`) to
-keep more data in memory and reduce spill I/O.
+sooner, or raise it to keep more data in memory and reduce spill I/O. Setting it
+to `0` removes the budget entirely and is safe only with a bounded memory pool
+(see the warning above).
 
 ### Hash-based shuffle (opt-in)
 
@@ -184,7 +193,7 @@ The following session-level keys tune its behavior:
 | ------------------------------------------------------- | ------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ballista.shuffle.sort_based.enabled                     | Boolean | true      | Enables the sort-based shuffle writer.                                                                                                                                                 |
 | ballista.shuffle.sort_based.batch_size                  | UInt64  | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                                                  |
-| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64  | 268435456 | Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to `0` to spill only under memory pressure. |
+| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64  | 268435456 | Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to `0` to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
 
 ## Adaptive Query Execution (Experimental)
 

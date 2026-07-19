@@ -101,7 +101,7 @@ explanation of the sort-based (default) and hash-based shuffle writers.
 | ballista.shuffle.remote_read_prefer_flight    | Boolean | false     | For remote reads, prefer the Arrow Flight reader over the block reader. The block reader is generally faster.                                                       |
 | ballista.shuffle.sort_based.enabled           | Boolean | true      | Enables the sort-based shuffle writer (consolidated data file per input partition with an index, instead of one file per (input partition, output partition) pair). |
 | ballista.shuffle.sort_based.batch_size        | UInt64  | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                               |
-| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort-based writer spills to disk (256 MiB default), counted independently of the runtime memory pool. Set to `0` to disable the per-task budget and spill only under memory-pool pressure. |
+| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort-based writer spills to disk (256 MiB default), counted independently of the runtime memory pool. Set to `0` to disable the per-task budget and spill only under memory-pool pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
 
 ## Ballista Scheduler Configuration Settings
 
