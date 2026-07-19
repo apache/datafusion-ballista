@@ -44,12 +44,14 @@ use datafusion::datasource::physical_plan::{
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result;
 use datafusion::physical_expr::Distribution;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec};
+use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::with_new_children_if_necessary;
+use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use log::warn;
 use std::any::Any;
 use std::sync::Arc;
@@ -74,11 +76,11 @@ fn restrict(
     partitions: &[usize],
     under_collect: bool,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    // Leaves apply (or skip) restriction based on the current scope.
-    if let Some(rewritten) = rewrite_shuffle_reader(&plan, partitions, under_collect) {
-        return Ok(rewritten);
-    }
-    if let Some(rewritten) = rewrite_scan(&plan, partitions, under_collect) {
+    // Leaves: apply the algebraic partition-projection when we're not
+    // under a collapse. Under collapse, leaves keep their full upstream —
+    // the generic recursion below leaves them unchanged.
+    if !under_collect && let Some(rewritten) = select_output_partitions(&plan, partitions)
+    {
         return Ok(rewritten);
     }
 
@@ -173,96 +175,136 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
     vec![false; children.len()]
 }
 
-/// Restrict a `ShuffleReaderExec` so only the assigned `partitions` remain
-/// in its `partition` vec — unless `under_collect` is true, in which case
-/// every upstream partition is preserved. Output_partitioning shrinks to
-/// `kept.len()` but **preserves the partitioning kind** — a `Hash([col], N)`
-/// reader becomes `Hash([col], kept.len())`, not `UnknownPartitioning`. This
-/// matters for operators like `InterleaveExec` above the reader that assert
-/// children share a hash partitioning to fuse safely.
-fn rewrite_shuffle_reader(
+/// Restrict a plan node to a subset of its output partitions, re-indexed
+/// so position `i` of the result corresponds to input `indices[i]`.
+///
+/// Contract when `Some(new)` is returned:
+///
+/// - `new.output_partitioning().partition_count() == indices.len()`
+/// - `new.execute(j)` ≡ `plan.execute(indices[j])`
+/// - `Partitioning` kind is preserved (`Hash(exprs, N) → Hash(exprs, |S|)`,
+///   `RoundRobinBatch(N) → RoundRobinBatch(|S|)`, `Unknown(N) → Unknown(|S|)`).
+/// - `new.schema() == plan.schema()`
+///
+/// `None` means "unrecognised plan type — no idea how." The caller decides
+/// whether to fall through to a generic children walk, bail, or panic.
+/// `None` is NOT "no restriction needed."
+///
+/// # Why a helper and not a trait method
+///
+/// The operation is algebraically a projection on the partition-index
+/// axis and belongs on `ExecutionPlan` as `select_partitions(&[usize])`
+/// with default impls for partition-preserving operators. DataFusion's
+/// trait doesn't provide it — the closest is `repartitioned(N)`, which
+/// reshapes count but doesn't preserve partition identity, and isn't
+/// implemented on the self-generating leaves anyway. So we downcast here.
+///
+/// **When a new leaf type surfaces, add a branch below.** Currently
+/// covered: `ShuffleReaderExec`, `DataSourceExec` (files, in-memory),
+/// `PlaceholderRowExec`, `EmptyExec`. `ValuesExec` and other future
+/// self-generating leaves will silently fall through as `None`; if one
+/// sits under a partition-splitting fan-in, the walker leaves it at its
+/// full partition count and the executor duplicates output (see the
+/// PlaceholderRow-under-UnionExec bug for the failure mode).
+///
+/// # Scope
+///
+/// This helper is scope-agnostic. The `under_collect` decision (whether
+/// a leaf below a `CoalescePartitionsExec` / `SortPreservingMergeExec` /
+/// join build side must read its full upstream) lives in the walker —
+/// the walker simply doesn't call this function under collapse.
+fn select_output_partitions(
     plan: &Arc<dyn ExecutionPlan>,
-    partitions: &[usize],
-    under_collect: bool,
+    indices: &[usize],
 ) -> Option<Arc<dyn ExecutionPlan>> {
-    let reader = plan.downcast_ref::<ShuffleReaderExec>()?;
-    // Broadcast readers serve everything from partition[0] regardless of
-    // task; leave them intact regardless of scope.
-    if reader.broadcast {
-        return None;
-    }
-    let kept: Vec<Vec<_>> = if under_collect {
-        reader.partition.clone()
-    } else {
-        partitions
+    // ShuffleReaderExec: cross-stage inputs.
+    if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
+        // Broadcast readers serve everything from partition[0] for every
+        // consumer — slicing would drop the payload. Leave intact.
+        if reader.broadcast {
+            return Some(plan.clone());
+        }
+        let kept: Vec<Vec<_>> = indices
             .iter()
             .filter_map(|&p| reader.partition.get(p).cloned())
-            .collect()
-    };
-    let partitioning = match reader.properties().output_partitioning() {
-        datafusion::physical_plan::Partitioning::Hash(exprs, _) => {
-            datafusion::physical_plan::Partitioning::Hash(exprs.clone(), kept.len())
-        }
-        datafusion::physical_plan::Partitioning::RoundRobinBatch(_) => {
-            datafusion::physical_plan::Partitioning::RoundRobinBatch(kept.len())
-        }
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(_) => {
-            datafusion::physical_plan::Partitioning::UnknownPartitioning(kept.len())
-        }
-    };
-    let restricted =
-        ShuffleReaderExec::try_new(reader.stage_id, kept, reader.schema(), partitioning)
-            .ok()?;
-    Some(Arc::new(restricted))
-}
-
-/// Restrict a `DataSourceExec` (file-backed or in-memory) so only the
-/// assigned `partitions` remain, or take all groups if `under_collect` is
-/// true. `output_partitioning().partition_count()` shrinks to
-/// `partitions.len()` — matching what `rewrite_shuffle_reader` does — so
-/// position `i` in the restricted plan corresponds to the task's
-/// `global_input_partition_ids[i]` globally.
-fn rewrite_scan(
-    plan: &Arc<dyn ExecutionPlan>,
-    partitions: &[usize],
-    under_collect: bool,
-) -> Option<Arc<dyn ExecutionPlan>> {
-    let exec = plan.downcast_ref::<DataSourceExec>()?;
-    let source: &dyn Any = exec.data_source().as_ref();
-    if let Some(config) = source.downcast_ref::<FileScanConfig>() {
-        if under_collect {
-            return None;
-        }
-        let file_groups: Vec<FileGroup> = partitions
-            .iter()
-            .filter_map(|&i| config.file_groups.get(i).cloned())
             .collect();
-        let restricted = FileScanConfigBuilder::from(config.clone())
-            .with_file_groups(file_groups)
-            .build();
-        return Some(DataSourceExec::from_data_source(restricted));
-    }
-    if let Some(config) = source.downcast_ref::<MemorySourceConfig>() {
-        if under_collect {
-            return None;
-        }
-        let kept: Vec<Vec<_>> = partitions
-            .iter()
-            .filter_map(|&i| config.partitions().get(i).cloned())
-            .collect();
-        let restricted = MemorySourceConfig::try_new(
-            &kept,
-            config.original_schema(),
-            config.projection().clone(),
+        let partitioning = match reader.properties().output_partitioning() {
+            Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
+            Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(kept.len()),
+            Partitioning::UnknownPartitioning(_) => {
+                Partitioning::UnknownPartitioning(kept.len())
+            }
+        };
+        let restricted = ShuffleReaderExec::try_new(
+            reader.stage_id,
+            kept,
+            reader.schema(),
+            partitioning,
         )
         .ok()?;
-        return Some(DataSourceExec::from_data_source(restricted));
+        return Some(Arc::new(restricted));
     }
-    warn!(
-        "restrict_plan_to_partitions: unrecognised DataSourceExec source \
-         left unrestricted; if it distributes work from a shared queue, \
-         tasks would over-read"
-    );
+
+    // DataSourceExec: file-backed or in-memory scans.
+    if let Some(exec) = plan.downcast_ref::<DataSourceExec>() {
+        let source: &dyn Any = exec.data_source().as_ref();
+        if let Some(config) = source.downcast_ref::<FileScanConfig>() {
+            let file_groups: Vec<FileGroup> = indices
+                .iter()
+                .filter_map(|&i| config.file_groups.get(i).cloned())
+                .collect();
+            let restricted = FileScanConfigBuilder::from(config.clone())
+                .with_file_groups(file_groups)
+                .build();
+            return Some(DataSourceExec::from_data_source(restricted));
+        }
+        if let Some(config) = source.downcast_ref::<MemorySourceConfig>() {
+            let kept: Vec<Vec<_>> = indices
+                .iter()
+                .filter_map(|&i| config.partitions().get(i).cloned())
+                .collect();
+            let restricted = MemorySourceConfig::try_new(
+                &kept,
+                config.original_schema(),
+                config.projection().clone(),
+            )
+            .ok()?;
+            return Some(DataSourceExec::from_data_source(restricted));
+        }
+        warn!(
+            "select_output_partitions: unrecognised DataSourceExec source \
+             left unrestricted; if it distributes work from a shared queue, \
+             tasks would over-read"
+        );
+        return None;
+    }
+
+    // Self-generating leaves: PlaceholderRow (1 all-null row per partition)
+    // and EmptyExec (0 rows per partition). Every partition of one of these
+    // is semantically identical, so `with_partitions(indices.len())` is the
+    // algebraically correct restriction.
+    //
+    // Caveat: DataFusion's proto codec for these two doesn't roundtrip the
+    // `partitions` field — encode preserves only schema; decode always
+    // reconstructs with `::new(schema)` (partitions = 1). So a plan we
+    // restrict to `with_partitions(0)` here would arrive at the executor as
+    // a 1-partition leaf, undoing the restriction and reproducing the
+    // duplicated-output bug this whole function is meant to prevent.
+    //
+    // Workaround for the empty-slice case: swap in a 0-partition
+    // `MemorySourceConfig` (which DOES roundtrip its partition list).
+    // For non-empty slices we return `None` and let the generic recursion
+    // leave the leaf as-is — currently safe because the only shape emitted
+    // is `partitions == 1` and UnionExec routing gives sub-slices of `[0]`
+    // (identity, no restriction needed) or `[]` (handled by this branch).
+    if plan.is::<PlaceholderRowExec>() || plan.is::<EmptyExec>() {
+        if indices.is_empty() {
+            let stub = MemorySourceConfig::try_new(&[], plan.schema(), None).ok()?;
+            return Some(DataSourceExec::from_data_source(stub));
+        }
+        return None;
+    }
+
     None
 }
 
