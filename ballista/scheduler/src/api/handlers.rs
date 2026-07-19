@@ -23,7 +23,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason::{
-    ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
+    ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResourcesExhausted,
+    ResultLost, TaskKilled,
 };
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
@@ -823,6 +824,7 @@ fn failed_reason(failed: &FailedTask) -> String {
         Some(ExecutorLost(_)) => "ExecutorLost",
         Some(ResultLost(_)) => "ResultLost",
         Some(TaskKilled(_)) => "TaskKilled",
+        Some(ResourcesExhausted(_)) => "ResourcesExhausted",
         None => "Failed",
     }
     .to_string()

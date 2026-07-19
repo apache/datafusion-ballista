@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::JobId;
+use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::extension::SessionConfigExt;
 use crate::utils;
@@ -240,7 +241,15 @@ impl ShuffleWriterExec {
                         compression_type,
                     )
                     .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                    .map_err(|e| match e {
+                        // Preserve the DataFusion error type: `find_root()` in the
+                        // FailedTask mapping relies on it to classify a
+                        // ResourcesExhausted as a retriable failure. A `format!` here
+                        // would flatten it to an Execution error and silently make an
+                        // OOM'd task non-retryable.
+                        BallistaError::DataFusionError(e) => *e,
+                        other => DataFusionError::Execution(format!("{other:?}")),
+                    })?;
 
                     write_metrics
                         .input_rows
@@ -597,10 +606,15 @@ fn result_schema() -> SchemaRef {
 #[allow(dead_code, unused_imports)] // clippy false positive with local imports
 mod tests {
     use super::*;
+    use crate::error::BallistaError;
+    use crate::serde::protobuf::FailedTask;
+    use crate::serde::protobuf::failed_task::FailedReason;
     use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_expr::EquivalenceProperties;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
@@ -797,6 +811,138 @@ mod tests {
             result.is_err(),
             "expected create_dir_all failure in hash writer to propagate"
         );
+        Ok(())
+    }
+
+    /// Test-only plan whose single stream immediately yields a
+    /// `DataFusionError::ResourcesExhausted`, standing in for an OOM'd input
+    /// (e.g. a hash-join build side or a sort spilling past its budget) that
+    /// feeds a `None`-partitioned (unpartitioned) shuffle write stage.
+    #[derive(Debug)]
+    struct AlwaysResourcesExhaustedExec {
+        properties: Arc<PlanProperties>,
+        schema: SchemaRef,
+    }
+
+    impl AlwaysResourcesExhaustedExec {
+        fn new(schema: SchemaRef) -> Self {
+            let properties = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(Arc::clone(&schema)),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self { properties, schema }
+        }
+    }
+
+    impl DisplayAs for AlwaysResourcesExhaustedExec {
+        fn fmt_as(
+            &self,
+            t: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            match t {
+                DisplayFormatType::Default
+                | DisplayFormatType::Verbose
+                | DisplayFormatType::TreeRender => {
+                    write!(f, "AlwaysResourcesExhaustedExec")
+                }
+            }
+        }
+    }
+
+    impl ExecutionPlan for AlwaysResourcesExhaustedExec {
+        fn name(&self) -> &str {
+            "AlwaysResourcesExhaustedExec"
+        }
+
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(self)
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _context: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            let schema = self.schema();
+            let stream = futures::stream::once(async {
+                Err(DataFusionError::ResourcesExhausted(
+                    "over budget".to_string(),
+                ))
+            });
+            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        }
+
+        fn partition_statistics(
+            &self,
+            _partition: Option<usize>,
+        ) -> Result<Arc<Statistics>> {
+            Ok(Arc::new(Statistics::new_unknown(&self.schema)))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_repart_resources_exhausted_is_retryable() -> Result<()> {
+        // This pins the writer boundary, not just the FailedTask mapping in
+        // error.rs: a `ShuffleWriterExec` with `shuffle_output_partitioning:
+        // None` (the final stage, a broadcast-join build side, or a
+        // CoalescePartitionsExec/SortPreservingMergeExec input) must let a
+        // `ResourcesExhausted` from its input stream survive the disk-write
+        // path with its error type intact, so the scheduler retries the task
+        // instead of failing the whole job.
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, true)]));
+        let input_plan: Arc<dyn ExecutionPlan> =
+            Arc::new(AlwaysResourcesExhaustedExec::new(schema));
+        let work_dir = TempDir::new()?;
+        let query_stage = ShuffleWriterExec::try_new(
+            JobId::new("jobOne"),
+            1,
+            input_plan,
+            work_dir.path().to_str().unwrap().to_owned(),
+            None,
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        let result = utils::collect_stream(&mut stream).await;
+
+        let err: BallistaError = result.expect_err(
+            "AlwaysResourcesExhaustedExec's stream error must propagate as an error",
+        );
+        let failed: FailedTask = err.into();
+
+        assert!(
+            failed.retryable,
+            "a ResourcesExhausted task on a None-partitioned shuffle write stage \
+             must be retryable, got: {failed:?}"
+        );
+        assert!(
+            matches!(
+                failed.failed_reason,
+                Some(FailedReason::ResourcesExhausted(_))
+            ),
+            "expected ResourcesExhausted, got {:?}",
+            failed.failed_reason
+        );
+
         Ok(())
     }
 

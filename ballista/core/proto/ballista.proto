@@ -486,6 +486,9 @@ message FailedTask {
     // A successful task's result is lost due to executor lost
     ResultLost result_lost = 8;
     TaskKilled task_killed = 9;
+    // The task ran out of memory. Retriable: the retry may land on a less-loaded
+    // executor, or run once its peers have drained.
+    ResourcesExhausted resources_exhausted = 10;
   }
 }
 
@@ -515,6 +518,9 @@ message ResultLost {
 }
 
 message TaskKilled {
+}
+
+message ResourcesExhausted {
 }
 
 message ShuffleWritePartition {
