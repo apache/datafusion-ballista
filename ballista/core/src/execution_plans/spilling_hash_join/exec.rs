@@ -27,11 +27,15 @@
 //   - join_type is always JoinType::Inner
 //   - filter is always None
 //   - projection is always None
+//   - partition_mode must be PartitionMode::Partitioned (execute() always
+//     runs Partitioned semantics; CollectLeft is rejected)
+//   - num_sub_partitions must be >= 1 (0 would divide by zero when bucketing
+//     the build side)
 
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{JoinType, NullEquality, Result, internal_err};
+use datafusion::common::{JoinType, NullEquality, Result, internal_err, not_impl_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
@@ -70,6 +74,12 @@ impl SpillingHashJoinExec {
     /// is constructed purely to borrow its output `schema()` and
     /// `properties()` (partitioning/equivalence info) — it is never
     /// executed.
+    ///
+    /// Returns an error if `partition_mode` is not `PartitionMode::Partitioned`
+    /// (v1 `execute()` always runs Partitioned semantics — `CollectLeft` is
+    /// accepted by the proto codec but not yet implemented here) or if
+    /// `num_sub_partitions` is `0` (the build-side hash bucketing divides by
+    /// this count and would panic).
     pub fn try_new(
         left: Arc<dyn ExecutionPlan>,
         right: Arc<dyn ExecutionPlan>,
@@ -77,6 +87,17 @@ impl SpillingHashJoinExec {
         partition_mode: PartitionMode,
         num_sub_partitions: usize,
     ) -> Result<Self> {
+        if partition_mode != PartitionMode::Partitioned {
+            return not_impl_err!(
+                "SpillingHashJoinExec only supports PartitionMode::Partitioned in v1, got {partition_mode:?}"
+            );
+        }
+        if num_sub_partitions == 0 {
+            return internal_err!(
+                "SpillingHashJoinExec requires num_sub_partitions >= 1, got 0"
+            );
+        }
+
         let hj = HashJoinExec::try_new(
             Arc::clone(&left),
             Arc::clone(&right),
@@ -272,6 +293,37 @@ mod tests {
             vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
 
         (left, right, on)
+    }
+
+    #[test]
+    fn rejects_collect_left_partition_mode() {
+        let (left, right, on) = two_col_inputs();
+        let err = SpillingHashJoinExec::try_new(
+            left,
+            right,
+            on,
+            PartitionMode::CollectLeft,
+            16,
+        )
+        .expect_err("CollectLeft is not implemented in v1 and must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Partitioned"),
+            "error should name the unsupported mode, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_sub_partitions() {
+        let (left, right, on) = two_col_inputs();
+        let err =
+            SpillingHashJoinExec::try_new(left, right, on, PartitionMode::Partitioned, 0)
+                .expect_err("num_sub_partitions == 0 must be rejected, not panic later");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("num_sub_partitions"),
+            "error should name the bad argument, got: {msg}"
+        );
     }
 
     #[test]

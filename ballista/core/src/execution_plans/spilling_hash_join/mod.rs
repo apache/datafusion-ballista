@@ -21,6 +21,12 @@ mod partitioner;
 mod spill;
 mod stream;
 
+// `SpillingHashJoinExec` is the only public surface of this module; it is
+// re-exported further up in `execution_plans::mod`.
 pub use exec::SpillingHashJoinExec;
-pub use hash_table::{ProbeTable, assemble_output};
-pub use partitioner::{PartitionedBatch, RowPartitioner};
+
+// `hash_table` and `partitioner` are private submodules. Their `pub` items
+// (`ProbeTable`, `assemble_output`, `RowPartitioner`, `PartitionedBatch`) are
+// internal helpers consumed only by `stream.rs` via `super::hash_table::` /
+// `super::partitioner::` — they are not re-exported here, so they are not
+// part of `ballista_core`'s public API.

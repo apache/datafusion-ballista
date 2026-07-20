@@ -27,6 +27,10 @@
 //!   - `*partition_mode() == PartitionMode::Partitioned`
 //!   - `projection` is `None` (no output projection folded into the join)
 //!   - `filter()` is `None` (no residual `JoinFilter`)
+//!   - `null_equality() == NullEquality::NullEqualsNothing` (the replacement
+//!     operator hard-implements "null keys never match"; substituting a join
+//!     with `NullEquality::NullEqualsNull` — e.g. `IS NOT DISTINCT FROM` —
+//!     would silently drop null-key matches)
 //!
 //! `SpillingHashJoinExec` itself only supports this exact shape (see its
 //! constructor), so the predicate here is not just a performance heuristic —
@@ -48,6 +52,7 @@ use std::sync::Arc;
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::SpillingHashJoinExec;
 use datafusion::common::JoinType;
+use datafusion::common::NullEquality;
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
@@ -144,12 +149,14 @@ pub(crate) fn maybe_substitute_spilling_hash_join(
 }
 
 /// Whether `hj` matches the strict v1 shape `SpillingHashJoinExec` can
-/// represent: inner, partitioned, no projection, no residual filter.
+/// represent: inner, partitioned, no projection, no residual filter, and
+/// `NullEqualsNothing` null semantics.
 fn is_eligible(hj: &HashJoinExec) -> bool {
     *hj.join_type() == JoinType::Inner
         && *hj.partition_mode() == PartitionMode::Partitioned
         && hj.projection.is_none()
         && hj.filter().is_none()
+        && hj.null_equality() == NullEquality::NullEqualsNothing
 }
 
 #[cfg(test)]
@@ -202,6 +209,20 @@ mod tests {
         partition_mode: PartitionMode,
         filter: Option<JoinFilter>,
     ) -> Arc<dyn ExecutionPlan> {
+        hash_join_with_null_equality(
+            join_type,
+            partition_mode,
+            filter,
+            NullEquality::NullEqualsNothing,
+        )
+    }
+
+    fn hash_join_with_null_equality(
+        join_type: JoinType,
+        partition_mode: PartitionMode,
+        filter: Option<JoinFilter>,
+        null_equality: NullEquality,
+    ) -> Arc<dyn ExecutionPlan> {
         let (left, right, on) = two_inputs();
         Arc::new(
             HashJoinExec::try_new(
@@ -212,7 +233,7 @@ mod tests {
                 &join_type,
                 None,
                 partition_mode,
-                NullEquality::NullEqualsNothing,
+                null_equality,
                 false,
             )
             .unwrap(),
@@ -329,6 +350,30 @@ mod tests {
     #[test]
     fn leaves_collect_left_untouched() {
         let plan = hash_join(JoinType::Inner, PartitionMode::CollectLeft, None);
+        let cfg = config_with_spilling(true);
+
+        let out = SpillingHashJoinRule::default()
+            .optimize(plan, &cfg)
+            .unwrap();
+        let s = plan_string(&out);
+
+        assert!(has_bare_hash_join(&s), "{s}");
+        assert!(!s.contains("SpillingHashJoinExec"), "{s}");
+    }
+
+    #[test]
+    fn leaves_null_equals_null_untouched() {
+        // Otherwise-eligible (Inner, Partitioned, no projection, no filter),
+        // but `NullEquality::NullEqualsNull` (e.g. `IS NOT DISTINCT FROM`).
+        // `SpillingHashJoinExec` hard-implements `NullEqualsNothing`
+        // semantics, so substituting here would silently drop null-key
+        // matches — the join must be left untouched.
+        let plan = hash_join_with_null_equality(
+            JoinType::Inner,
+            PartitionMode::Partitioned,
+            None,
+            NullEquality::NullEqualsNull,
+        );
         let cfg = config_with_spilling(true);
 
         let out = SpillingHashJoinRule::default()
