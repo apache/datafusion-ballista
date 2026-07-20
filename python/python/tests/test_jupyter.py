@@ -221,32 +221,10 @@ class TestBallistaMagicsConnected:
         result = connected_magics.sql("SELECT 1 as value")
         assert result is not None
 
-    def test_sql_magic_cell_returns_dataframe_without_ipython(self, connected_magics):
-        """Outside IPython, %%sql returns the DataFrame instead of swallowing it.
-
-        The ``return None`` path exists only to suppress IPython's second,
-        un-capped auto-render; with no IPython there is nothing to display or
-        suppress, so the result must be returned so it is not lost.
-        """
-        with patch("ballista.jupyter.IPYTHON_AVAILABLE", False):
-            result = connected_magics.sql("", cell="SELECT 1 as value")
+    def test_sql_magic_cell_returns_dataframe(self, connected_magics):
+        """%%sql cell magic returns the DataFrame for IPython to render."""
+        result = connected_magics.sql("", cell="SELECT 1 as value")
         assert result is not None
-        assert connected_magics._last_result is not None
-
-    def test_sql_magic_cell_renders_and_returns_none_in_ipython(self, connected_magics):
-        """Inside IPython, %%sql renders (capped, cell-locally) and returns None.
-
-        It displays the result itself and returns None to avoid a second
-        un-capped auto-render; the DataFrame remains available via
-        ``_last_result``.
-        """
-        with (
-            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
-            patch("ballista.jupyter.display", create=True) as mock_display,
-        ):
-            result = connected_magics.sql("", cell="SELECT 1 as value")
-        assert result is None
-        mock_display.assert_called_once()
         assert connected_magics._last_result is not None
 
     def test_sql_magic_cell_stores_in_shell_namespace(self, connected_magics):
@@ -264,70 +242,53 @@ class TestBallistaMagicsConnected:
         result = connected_magics.sql("")
         assert result is None
 
-    def test_sql_cell_magic_limit_and_no_display(self, connected_magics):
-        """%%sql honors --limit (display-only) and --no-display."""
-        from datafusion.dataframe_formatter import get_formatter
-        from ballista.jupyter import DEFAULT_DISPLAY_LIMIT
-
+    def test_sql_cell_magic_limit_bounds_the_query(self, connected_magics):
+        """--limit N pushes LIMIT N into the query, bounding the stored result."""
         mock_shell = MagicMock()
         mock_shell.user_ns = {}
         connected_magics.shell = mock_shell
 
-        # The row cap is applied only while the cell renders and is reverted
-        # afterwards, so it never leaks into the rest of the session.
-        formatter_max_rows_before = get_formatter().max_rows
+        five_rows = "SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(x)"
 
-        def _capture_max_rows_at_display(_obj):
-            captured.append(get_formatter().max_rows)
-
-        # --limit caps the rows rendered for this cell (checked at display
-        # time) but never truncates the stored data, and is scoped to the cell.
-        captured = []
-        with (
-            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
-            patch(
-                "ballista.jupyter.display", _capture_max_rows_at_display, create=True
-            ),
-        ):
-            result = connected_magics.sql(
-                "--limit 2 my_var",
-                cell="SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(x)",
-            )
+        # --limit 2 on a 5-row source: only 2 rows are computed and stored.
+        connected_magics.sql("--limit 2 my_var", cell=five_rows)
         stored = mock_shell.user_ns["my_var"]
-        assert sum(batch.num_rows for batch in stored.collect()) == 5
-        assert captured == [2]  # cap active while rendering
-        assert result is None  # no second, un-capped auto-render
-        assert get_formatter().max_rows == formatter_max_rows_before  # restored
+        assert sum(batch.num_rows for batch in stored.collect()) == 2
 
-        # Without --limit the default cap is used at render time, then restored.
-        captured = []
-        with (
-            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
-            patch(
-                "ballista.jupyter.display", _capture_max_rows_at_display, create=True
-            ),
-        ):
-            connected_magics.sql("", cell="SELECT 1 as value")
-        assert captured == [DEFAULT_DISPLAY_LIMIT]
-        assert get_formatter().max_rows == formatter_max_rows_before  # restored
+        # Without --limit the full result is stored (all 5 rows).
+        connected_magics.sql("full_var", cell=five_rows)
+        full = mock_shell.user_ns["full_var"]
+        assert sum(batch.num_rows for batch in full.collect()) == 5
 
-        # --no-display stores the result but renders nothing.
-        captured = []
-        with (
-            patch("ballista.jupyter.IPYTHON_AVAILABLE", True),
-            patch(
-                "ballista.jupyter.display", _capture_max_rows_at_display, create=True
-            ),
-        ):
-            result = connected_magics.sql(
-                "--no-display other_var", cell="SELECT 1 as value"
-            )
+    def test_sql_cell_magic_bare_limit_uses_default(self):
+        """A bare --limit uses DEFAULT_LIMIT; a non-integer next token is the var."""
+        from ballista.jupyter import DEFAULT_LIMIT
+
+        parse = BallistaMagics._parse_cell_magic_args
+        # bare --limit, next token is the variable name
+        assert parse("--limit my_var") == ("my_var", False, DEFAULT_LIMIT)
+        # bare --limit, no variable
+        assert parse("--limit") == (None, False, DEFAULT_LIMIT)
+        # explicit number overrides the default
+        assert parse("--limit 3 v") == ("v", False, 3)
+        # no --limit at all -> no limit (all rows)
+        assert parse("v") == ("v", False, None)
+
+    def test_sql_cell_magic_no_display(self, connected_magics):
+        """--no-display stores the result but returns None (renders nothing)."""
+        mock_shell = MagicMock()
+        mock_shell.user_ns = {}
+        connected_magics.shell = mock_shell
+
+        result = connected_magics.sql(
+            "--no-display other_var", cell="SELECT 1 as value"
+        )
         assert result is None
-        assert captured == []  # display was never called
         assert mock_shell.user_ns["other_var"] is not None
 
-        # An invalid --limit returns the error string instead of raising.
-        result = connected_magics.sql("--limit abc", cell="SELECT 1")
+    def test_sql_cell_magic_rejects_non_positive_limit(self, connected_magics):
+        """An explicit non-positive --limit returns the error string."""
+        result = connected_magics.sql("--limit 0", cell="SELECT 1")
         assert isinstance(result, str)
         assert "--limit" in result
 
@@ -369,6 +330,8 @@ class TestSqlCellMagicArgParsing:
     """Cluster-free tests for %%sql argument parsing."""
 
     def test_parse_cell_magic_args(self, magics):
+        from ballista.jupyter import DEFAULT_LIMIT
+
         # (line, expected (var_name, no_display, limit))
         valid_cases = [
             ("", (None, False, None)),
@@ -376,12 +339,17 @@ class TestSqlCellMagicArgParsing:
             ("--no-display", (None, True, None)),
             ("--limit 10 my_var", ("my_var", False, 10)),
             ("my_var --no-display --limit 3", ("my_var", True, 3)),
+            # bare --limit uses the default...
+            ("--limit", (None, False, DEFAULT_LIMIT)),
+            # ...and a non-integer next token is the variable name, not the count
+            ("--limit my_var", ("my_var", False, DEFAULT_LIMIT)),
+            ("--limit abc", ("abc", False, DEFAULT_LIMIT)),
         ]
         for line, expected in valid_cases:
             assert magics._parse_cell_magic_args(line) == expected, line
 
-        # Missing, non-integer, and non-positive --limit values are rejected.
-        for line in ("--limit", "--limit abc", "--limit 0", "--limit -1"):
+        # Only an explicit non-positive --limit value is rejected.
+        for line in ("--limit 0", "--limit -1"):
             with pytest.raises(ValueError):
                 magics._parse_cell_magic_args(line)
 

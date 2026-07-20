@@ -108,12 +108,6 @@ except ImportError:
             return decorator
 
 
-from datafusion.dataframe_formatter import (
-    configure_formatter,
-    get_formatter,
-    set_formatter,
-)
-
 from .extension import BallistaSessionContext, DistributedDataFrame
 
 # Flags accepted by the ``%%sql`` cell magic, kept as constants so the parser
@@ -121,10 +115,10 @@ from .extension import BallistaSessionContext, DistributedDataFrame
 LIMIT_FLAG = "--limit"
 NO_DISPLAY_FLAG = "--no-display"
 
-# Default number of rows rendered for a ``%%sql`` cell when ``--limit`` is not
-# given. This caps only the display (via datafusion's HTML formatter); the
-# underlying result keeps all of its rows.
-DEFAULT_DISPLAY_LIMIT = 50
+# LIMIT applied when ``--limit`` is given without an explicit number
+# (e.g. ``%%sql --limit my_var``). ``--limit N`` overrides it; omitting
+# ``--limit`` entirely returns every row.
+DEFAULT_LIMIT = 50
 
 
 class BallistaConnectionError(Exception):
@@ -241,14 +235,14 @@ class BallistaMagics(Magics):
     def _parse_cell_magic_args(line: str):
         """Parse the argument line of a ``%%sql`` cell magic.
 
-        Recognises the ``--no-display`` and ``--limit N`` flags (space form,
-        e.g. ``--limit 5``, consistent with the other magics in this module).
-        The first non-flag token, if any, is treated as the variable name to
-        store the result in.
+        Recognises the ``--no-display`` and ``--limit`` flags. ``--limit`` may
+        be given bare (uses ``DEFAULT_LIMIT``) or with an explicit count
+        (``--limit 5``). The first non-flag token, if any, is the variable name
+        to store the result in.
 
         Returns a ``(var_name, no_display, limit)`` tuple where ``limit`` is
         ``None`` when ``--limit`` was not supplied. Raises ``ValueError`` for a
-        missing or invalid ``--limit`` value.
+        non-positive explicit ``--limit`` value.
         """
         tokens = line.strip().split()
         var_name = None
@@ -261,19 +255,21 @@ class BallistaMagics(Magics):
             if token == NO_DISPLAY_FLAG:
                 no_display = True
             elif token == LIMIT_FLAG:
-                i += 1
-                if i >= len(tokens):
-                    raise ValueError(
-                        f"{LIMIT_FLAG} requires a number, e.g. {LIMIT_FLAG} 5"
-                    )
-                try:
-                    limit = int(tokens[i])
-                except ValueError:
-                    raise ValueError(
-                        f"{LIMIT_FLAG} expects an integer, got '{tokens[i]}'"
-                    )
-                if limit < 1:
-                    raise ValueError(f"{LIMIT_FLAG} must be a positive integer")
+                # Bare --limit uses the default. A following integer overrides
+                # it; a following non-integer (e.g. the variable name) is left
+                # for the var-name branch, so `--limit my_var` is a default
+                # LIMIT stored in `my_var`.
+                limit = DEFAULT_LIMIT
+                if i + 1 < len(tokens):
+                    try:
+                        explicit = int(tokens[i + 1])
+                    except ValueError:
+                        explicit = None
+                    if explicit is not None:
+                        if explicit < 1:
+                            raise ValueError(f"{LIMIT_FLAG} must be a positive integer")
+                        limit = explicit
+                        i += 1  # consume the number token
             elif not token.startswith("--") and var_name is None:
                 var_name = token
             i += 1
@@ -304,9 +300,11 @@ class BallistaMagics(Magics):
         `my_result` will store the result of the SQL-query
 
         The cell magic accepts two optional flags before the variable name:
-            --limit N      Render at most N rows in the cell output (default
-                           50). This caps the display only; the stored result
-                           keeps every row.
+            --limit [N]    Add ``LIMIT`` to the query, bounding the rows that
+                           are computed and stored. ``--limit N`` uses N;
+                           a bare ``--limit`` uses the default (50). Omit it
+                           entirely to return every row (or whatever ``LIMIT``
+                           the query itself specifies).
             --no-display   Run the query and store the result without
                            displaying it.
         """
@@ -323,37 +321,23 @@ class BallistaMagics(Magics):
                 return str(e)
 
             result = self._execute_sql(query)
+            if result is None:
+                return None
 
-            # The stored variable always holds the full, untruncated result.
+            # --limit pushes a LIMIT into the query plan (not a display cap), so
+            # only N rows are computed, collected, and stored.
+            if limit is not None:
+                result = result.limit(limit)
+                self._last_result = result
+                if self.shell is not None and hasattr(self.shell, "user_ns"):
+                    self.shell.user_ns["_last_result"] = result
+
             if var_name and self.shell is not None:
                 self.shell.user_ns[var_name] = result
 
-            if no_display:
-                return None
-
-            # Outside IPython there is no auto-render to cap or suppress, so
-            # just return the result rather than swallowing it.
-            if not IPYTHON_AVAILABLE:
-                return result
-
-            # Display-only cap: limits the rows rendered for THIS cell, never
-            # the underlying data, so an in-query LIMIT always takes effect.
-            # datafusion's formatter is a process-global singleton, so we
-            # render eagerly with the cap applied and then restore the previous
-            # formatter, keeping the effect scoped to this cell instead of
-            # leaking into the rest of the session. Both min_rows and max_rows
-            # are set because the formatter requires min_rows <= max_rows.
-            rows = limit if limit is not None else DEFAULT_DISPLAY_LIMIT
-            previous_formatter = get_formatter()
-            try:
-                configure_formatter(max_rows=rows, min_rows=rows)
-                display(result)
-            finally:
-                set_formatter(previous_formatter)
-
-            # Returning None avoids a second, un-capped auto-render by IPython;
-            # the result is still available via the variable and _last_result.
-            return None
+            # Returning the DataFrame lets IPython render it (datafusion's normal
+            # preview); --no-display stores it but suppresses that render.
+            return None if no_display else result
 
     def _connect(self, address: str) -> Optional[str]:
         """Connect to a Ballista cluster."""
@@ -577,7 +561,7 @@ Query:
     %%sql [options] [var]     - Execute multi-line SQL query
         Options:
             --no-display      - Run the query and store the result without displaying it
-            --limit N         - Limit displayed rows (default: 50)
+            --limit [N]       - Add LIMIT to the query (N, or default 50 if bare)
         var                   - Store result in variable
 
 History:

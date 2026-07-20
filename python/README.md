@@ -149,8 +149,9 @@ SELECT * FROM orders WHERE status = 'pending'
 The cell magic accepts two optional flags before the variable name:
 
 ```python
-# Render at most 10 rows in the cell (display only; the stored result keeps
-# every row). Without --limit the display defaults to 50 rows.
+# Add LIMIT 10 to the query: only 10 rows are computed, collected, and stored
+# in my_result. A bare `--limit` uses the default (50); omit --limit entirely
+# to return every row (or the query's own LIMIT).
 %%sql --limit 10 my_result
 SELECT * FROM orders
 
