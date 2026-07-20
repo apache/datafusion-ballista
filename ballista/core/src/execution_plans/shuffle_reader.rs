@@ -1145,7 +1145,7 @@ fn fetch_partition_local(
         });
     }
     debug!("fetch local partition file: {data_path:?} ");
-    // Standard hash-based shuffle - read the file directly
+    // Standard single-file shuffle output - read the file directly
     let reader = fetch_partition_local_inner(path).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
         BallistaError::FetchFailed(
