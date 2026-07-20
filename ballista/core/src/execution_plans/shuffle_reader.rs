@@ -772,7 +772,6 @@ fn send_fetch_partitions(
     let max_blocks_per_addr =
         ballista_config.shuffle_reader_max_blocks_in_flight_per_address();
     let default_block_size = ballista_config.shuffle_reader_default_block_size_bytes();
-    let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
 
     let (response_sender, response_receiver) = mpsc::channel(max_reqs.max(1));
 
@@ -816,7 +815,7 @@ fn send_fetch_partitions(
             for p in local_locations {
                 let r = {
                     let _timer = local_read_time.timer();
-                    fetch_partition_local(&work_dir, &p, sort_shuffle_enabled)
+                    fetch_partition_local(&work_dir, &p)
                 };
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
@@ -1112,7 +1111,6 @@ async fn fetch_partition_remote(
 fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
-    sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
@@ -1123,7 +1121,7 @@ fn fetch_partition_local(
     //       replace this check with open, and check for error
     //
     // Check if this is a sort-based shuffle output (has index file)
-    if sort_shuffle_enabled && is_sort_shuffle_output(data_path) {
+    if is_sort_shuffle_output(data_path) {
         // note: in some cases sort shuffle is not going to be used
         //       even its enabled. thus we need to check if there is
         //       sort shuffle file index
