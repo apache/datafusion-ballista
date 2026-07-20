@@ -25,3 +25,6 @@ pub mod filter_pushdown;
 // specific cases. it has been used in static
 // execution graph only.
 pub mod join_selection;
+// substitutes eligible `HashJoinExec` nodes with `SpillingHashJoinExec`,
+// gated by `ballista.execution.spilling_hash_join.enabled`.
+pub mod spilling_hash_join;
