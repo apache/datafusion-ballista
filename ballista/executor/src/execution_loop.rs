@@ -46,8 +46,15 @@ use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
+
+/// Idle sleep between polls when polling is the only way to learn of new work.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Idle sleep when a `poll_now_notify` wake-up is wired and the timer is only
+/// a fallback.
+const NOTIFIED_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Main execution loop that polls the scheduler for available tasks.
 ///
@@ -57,10 +64,17 @@ use tonic::codegen::{Body, Bytes, StdError};
 ///
 /// The loop respects the executor's concurrent task limit via a semaphore,
 /// ensuring no more than the configured number of tasks run simultaneously.
+///
+/// `poll_now_notify`, when provided, wakes an idle poll loop immediately
+/// (typically wired to the scheduler's `on_work_available` callback) instead
+/// of waiting out the idle interval. A notification sent mid-poll is not
+/// lost: `Notify` stores the permit and the next `notified().await` returns
+/// immediately.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    poll_now_notify: Option<Arc<Notify>>,
     health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
 where
@@ -207,7 +221,19 @@ where
         }
 
         if !active_job {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            match &poll_now_notify {
+                Some(notify) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(NOTIFIED_IDLE_POLL_INTERVAL) => {}
+                        () = notify.notified() => {
+                            debug!("Received poll_now notification, polling immediately");
+                        }
+                    }
+                }
+                None => {
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                }
+            }
         }
     }
 }
