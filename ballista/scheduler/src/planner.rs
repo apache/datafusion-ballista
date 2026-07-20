@@ -51,6 +51,7 @@ use log::debug;
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
+use crate::physical_optimizer::spilling_hash_join::SpillingHashJoinRule;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -112,6 +113,13 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
         debug!("Planning query stages for job: [{job_id}]");
+        // Substitute eligible `HashJoinExec` nodes with `SpillingHashJoinExec`
+        // (no-op unless `ballista.execution.spilling_hash_join.enabled` is set
+        // on the `BallistaConfig` extension carried by `config`). Applied once,
+        // over the whole plan, before any stage splitting so the substituted
+        // node is what gets serialized to executors.
+        let execution_plan =
+            SpillingHashJoinRule::default().optimize(execution_plan, config)?;
         let (new_plan, mut stages) =
             self.plan_query_stages_internal(job_id, execution_plan, config)?;
         stages.push(create_shuffle_writer_with_config(
@@ -744,10 +752,13 @@ mod test {
     use crate::assert_plan;
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
+    use ballista_core::config::BallistaConfig;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
+    use datafusion::config::ConfigOptions;
+    use datafusion::physical_plan::joins::PartitionMode;
 
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
@@ -1205,6 +1216,124 @@ order by
                 walker.extend(node.children().iter().map(|c| (*c).clone()));
             }
         }
+
+        Ok(())
+    }
+
+    /// An `Inner`/`Partitioned` `HashJoinExec` over two 2-partition inputs,
+    /// eligible for `SpillingHashJoinRule` substitution. Built directly
+    /// (bypassing SQL/`JoinSelection`) so the partition mode is deterministic.
+    fn inner_partitioned_hash_join_plan() -> Arc<dyn ExecutionPlan> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::common::{JoinType, NullEquality};
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion::physical_expr::PhysicalExprRef;
+        use datafusion::physical_plan::expressions::Column;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let partitions: Vec<Vec<_>> = (0..2).map(|_| vec![]).collect();
+
+        let left_source =
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&schema), None)
+                .expect("left MemorySourceConfig");
+        let right_source =
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&schema), None)
+                .expect("right MemorySourceConfig");
+        let left: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(left_source)));
+        let right: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(right_source)));
+
+        let on: Vec<(PhysicalExprRef, PhysicalExprRef)> =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+
+        Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                on,
+                None,
+                &JoinType::Inner,
+                None,
+                PartitionMode::Partitioned,
+                NullEquality::NullEqualsNothing,
+                false,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// A bare `ConfigOptions` carrying a `BallistaConfig` extension with
+    /// `ballista.execution.spilling_hash_join.enabled` set as requested,
+    /// mirroring how a real per-job `SessionConfig::options()` looks once
+    /// `BallistaConfig` has been upgraded onto it (see
+    /// `ballista_core::extension::SessionConfigExt`).
+    fn config_with_spilling_hash_join(enabled: bool) -> ConfigOptions {
+        use datafusion::config::ExtensionOptions;
+
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "execution.spilling_hash_join.enabled",
+            if enabled { "true" } else { "false" },
+        )
+        .unwrap();
+        let mut config = ConfigOptions::default();
+        config.extensions.insert(bc);
+        config
+    }
+
+    /// Drives the actual `DefaultDistributedPlanner::plan_query_stages` entry
+    /// point (the real, production code path used for every job when AQE is
+    /// off) with an eligible join and the flag on: the resulting stage plan
+    /// must contain `SpillingHashJoinExec`.
+    #[tokio::test]
+    async fn planner_substitutes_spilling_hash_join_when_enabled()
+    -> Result<(), BallistaError> {
+        let plan = inner_partitioned_hash_join_plan();
+        let config = config_with_spilling_hash_join(true);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &config)?;
+
+        let rendered: String = stages
+            .iter()
+            .map(|s| format!("{}", displayable(s.as_ref()).indent(false)))
+            .collect();
+        assert!(rendered.contains("SpillingHashJoinExec"), "{rendered}");
+
+        Ok(())
+    }
+
+    /// Same plan through the same entry point with the flag off: the plan
+    /// must be left as a plain `HashJoinExec`, with no substitution.
+    #[tokio::test]
+    async fn planner_leaves_hash_join_untouched_when_disabled()
+    -> Result<(), BallistaError> {
+        let plan = inner_partitioned_hash_join_plan();
+        let config = config_with_spilling_hash_join(false);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &config)?;
+
+        let rendered: String = stages
+            .iter()
+            .map(|s| format!("{}", displayable(s.as_ref()).indent(false)))
+            .collect();
+        assert!(!rendered.contains("SpillingHashJoinExec"), "{rendered}");
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.trim_start().starts_with("HashJoinExec")),
+            "{rendered}"
+        );
 
         Ok(())
     }
