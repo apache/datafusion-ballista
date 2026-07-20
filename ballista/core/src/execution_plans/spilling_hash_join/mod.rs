@@ -18,6 +18,7 @@
 mod exec;
 mod hash_table;
 mod partitioner;
+mod stream;
 
 pub use exec::SpillingHashJoinExec;
 pub use hash_table::{ProbeTable, assemble_output};
