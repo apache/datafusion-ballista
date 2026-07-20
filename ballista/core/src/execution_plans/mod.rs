@@ -25,6 +25,8 @@ mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+/// Hash join operator whose build side can spill sub-partitions to disk.
+pub mod spilling_hash_join;
 mod unresolved_shuffle;
 
 use std::path::{Path, PathBuf};
@@ -40,6 +42,7 @@ pub use shuffle_writer::ShuffleWriterExec;
 pub use shuffle_writer::compute_global_output_partition_ids;
 pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
+pub use spilling_hash_join::SpillingHashJoinExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
 
 use crate::JobId;
