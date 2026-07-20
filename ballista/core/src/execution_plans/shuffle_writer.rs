@@ -20,14 +20,9 @@
 //! partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 //! will use the ShuffleReaderExec to read these results.
 
-use datafusion::arrow::ipc::writer::StreamWriter;
 use std::fmt::Debug;
-use std::fs;
-use std::fs::File;
 use std::future::Future;
-use std::io::BufWriter;
 use std::iter::Iterator;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -39,7 +34,6 @@ use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
 use crate::serde::scheduler::PartitionStats;
-use crate::utils::create_write_options;
 use datafusion::arrow::array::{
     ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
 };
@@ -57,14 +51,14 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::repartition::{BatchPartitioner, RepartitionExec};
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, error};
+use log::debug;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 
@@ -315,18 +309,16 @@ impl Debug for WriterState {
 /// what differs, and downstream `ShuffleReaderExec` uses the summaries to
 /// open whichever set of files is right.
 ///
-/// The `Hash` branch (`shuffle_output_partitioning == Some(Hash)`) is a
-/// legacy shape kept for correctness while the planner transitions to
-/// `RepartitionExec(Hash) → ShuffleWriterExec(None)`; not diagrammed here.
+/// `shuffle_output_partitioning` is always `None` in practice: hash-repartition
+/// stages use [`SortShuffleWriterExec`] instead, and `try_new` rejects
+/// `Some(Partitioning::Hash(..))` outright.
 ///
 /// The coordinator + oneshot plumbing is a shared idiom with
-/// [`SortShuffleWriterExec`] and
-/// with the `Hash` branch; passthrough alone doesn't structurally need it —
-/// only the K concurrent drains, which are the real deadlock guard. Once
-/// `Hash` is retired in favor of DataFusion's `RepartitionExec(Hash)`, this
-/// branch could collapse to per-`execute(k)` eager K-spawn with
-/// `JoinHandle` handoff, keeping the coordinator idiom only where it does
-/// real work (SortShuffle's M×K summary re-bucketing).
+/// [`SortShuffleWriterExec`]; passthrough alone doesn't structurally need
+/// it — only the K concurrent drains, which are the real deadlock guard.
+/// This could collapse to per-`execute(k)` eager K-spawn with `JoinHandle`
+/// handoff, keeping the coordinator idiom only where it does real work
+/// (SortShuffle's M×K summary re-bucketing).
 #[derive(Debug)]
 pub struct ShuffleWriterExec {
     /// Unique ID for the job (query) that this stage is a part of
@@ -351,11 +343,10 @@ pub struct ShuffleWriterExec {
     /// `global_output_partition_ids[i]` globally.
     ///
     /// Consumed by the passthrough (`None`) branch when the plan is a straight
-    /// pass-through of the slice. The `Hash` branch ignores it — the hash
-    /// K-space is its own global identity — and even for `None`, if the child
-    /// plan contains a partitioning-resetting operator (SPM → 1 output,
-    /// RepartitionExec::Hash → 0..K) the writer detects that at path-build
-    /// time and uses `local` directly instead of `global_output_partition_ids[local]`.
+    /// pass-through of the slice. If the child plan contains a
+    /// partitioning-resetting operator (SPM → 1 output, RepartitionExec::Hash
+    /// → 0..K) the writer detects that at path-build time and uses `local`
+    /// directly instead of `global_output_partition_ids[local]`.
     global_output_partition_ids: Vec<usize>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
@@ -401,18 +392,10 @@ impl std::fmt::Display for ShuffleWriterExec {
     }
 }
 
-pub struct WriteTracker {
-    pub num_batches: usize,
-    pub num_rows: usize,
-    pub writer: StreamWriter<BufWriter<File>>,
-    pub path: PathBuf,
-}
-
 #[derive(Debug, Clone)]
 struct ShuffleWriteMetrics {
     /// Time spend writing batches to shuffle files
     write_time: metrics::Time,
-    repart_time: metrics::Time,
     input_rows: metrics::Count,
     output_rows: metrics::Count,
 }
@@ -428,8 +411,6 @@ impl ShuffleWriteMetrics {
     fn new(input_partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         let write_time =
             MetricBuilder::new(metrics).subset_time("write_time", input_partition);
-        let repart_time =
-            MetricBuilder::new(metrics).subset_time("repart_time", input_partition);
 
         let input_rows =
             MetricBuilder::new(metrics).counter("input_rows", input_partition);
@@ -438,7 +419,6 @@ impl ShuffleWriteMetrics {
 
         Self {
             write_time,
-            repart_time,
             input_rows,
             output_rows,
         }
@@ -456,6 +436,14 @@ impl ShuffleWriterExec {
         work_dir: String,
         shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Self> {
+        if matches!(shuffle_output_partitioning, Some(Partitioning::Hash(..))) {
+            return Err(DataFusionError::Plan(
+                "hash-partitioned shuffle is no longer supported; \
+                 hash-repartition stages use SortShuffleWriterExec"
+                    .to_owned(),
+            ));
+        }
+
         // If [`shuffle_output_partitioning`] is none, then there's no need to do repartitioning.
         // Therefore, the partition is the same as its input plan's.
         let partitioning = shuffle_output_partitioning
@@ -551,10 +539,10 @@ impl ShuffleWriterExec {
     /// operator's output_partitioning). `summary.partition_id` is the
     /// **global** output partition id downstream will address:
     ///
-    /// - Passthrough (`None`): computed via `walk_child_partition_mapping`
-    ///   over the child plan — either `global_output_partition_ids[local]`, `local` (hash
-    ///   K-space), or `0` (collapsed / SPM).
-    /// - Hash: hash bucket space is global; global = local.
+    /// - Passthrough (`None`, the only supported scheme): computed via
+    ///   `walk_child_partition_mapping` over the child plan — either
+    ///   `global_output_partition_ids[local]`, `local` (hash K-space), or `0`
+    ///   (collapsed / SPM).
     pub fn execute_shuffle_write(
         self,
         context: Arc<TaskContext>,
@@ -654,184 +642,6 @@ impl ShuffleWriterExec {
                         now.elapsed().as_secs()
                     );
                     Ok(results)
-                }
-                // TODO: just use Datafusion's hash partition operator and remove this branch
-                Some(Partitioning::Hash(exprs, num_output_partitions)) => {
-                    // Task drains ALL of the child's (already slice-restricted)
-                    // input partitions and routes rows into K writers by hash.
-                    // file_id = task_id so files from different tasks
-                    // (including retries) don't collide. Hash buckets 0..K are
-                    // a global K-space and aren't further sliced.
-                    //
-                    // One metric bucket per operator-local input partition,
-                    // matching the pre-K-drain model (before: N tasks × 1
-                    // bucket; now: 1 task × N buckets). One `BatchPartitioner`
-                    // per input partition so `repart_time` disaggregates the
-                    // same way — total partitioner count across the stage is
-                    // unchanged.
-                    let num_input_partitions =
-                        plan.properties().output_partitioning().partition_count();
-                    let write_metrics_per_input: Vec<ShuffleWriteMetrics> = (0
-                        ..num_input_partitions)
-                        .map(|i| ShuffleWriteMetrics::new(i, &metrics))
-                        .collect();
-                    let schema = plan.schema();
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, RecordBatch)>(
-                        channel_capacity,
-                    );
-                    let write_times: Vec<metrics::Time> = write_metrics_per_input
-                        .iter()
-                        .map(|m| m.write_time.clone())
-                        .collect();
-                    let output_rows_per_input: Vec<metrics::Count> =
-                        write_metrics_per_input
-                            .iter()
-                            .map(|m| m.output_rows.clone())
-                            .collect();
-                    let partitioners: Vec<BatchPartitioner> = write_metrics_per_input
-                        .iter()
-                        .map(|m| {
-                            BatchPartitioner::new_hash_partitioner(
-                                exprs.clone(),
-                                num_output_partitions,
-                                m.repart_time.clone(),
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let work_dir = self.work_dir.clone();
-                    let job_id = self.job_id.clone();
-                    let stage_id = self.stage_id;
-
-                    let handle = tokio::task::spawn_blocking(move || {
-                        let mut writers: Vec<Option<WriteTracker>> =
-                            (0..num_output_partitions).map(|_| None).collect();
-                        let mut partitioners = partitioners;
-
-                        while let Some((local_input_partition, input_batch)) =
-                            rx.blocking_recv()
-                        {
-                            let write_time = &write_times[local_input_partition];
-                            let output_rows =
-                                &output_rows_per_input[local_input_partition];
-                            partitioners[local_input_partition].partition(
-                                input_batch,
-                                |output_partition, output_batch| {
-                                    let timer = write_time.timer();
-                                    match &mut writers[output_partition] {
-                                        Some(w) => {
-                                            w.num_batches += 1;
-                                            w.num_rows += output_batch.num_rows();
-                                            w.writer.write(&output_batch)?;
-                                        }
-                                        None => {
-                                            let p = create_shuffle_path(
-                                                &work_dir,
-                                                &job_id,
-                                                stage_id,
-                                                output_partition,
-                                                Some(task_id as u64),
-                                                false,
-                                            )?;
-
-                                            if let Some(parent) = p.parent() {
-                                                std::fs::create_dir_all(parent)?;
-                                            }
-
-                                            debug!("Writing results to {p:?}");
-
-                                            let options =
-                                                create_write_options(compression_type)?;
-
-                                            let file =
-                                                BufWriter::new(File::create(p.clone())?);
-                                            let mut writer =
-                                                StreamWriter::try_new_with_options(
-                                                    file,
-                                                    schema.as_ref(),
-                                                    options,
-                                                )?;
-                                            writer.write(&output_batch)?;
-                                            writers[output_partition] =
-                                                Some(WriteTracker {
-                                                    num_batches: 1,
-                                                    num_rows: output_batch.num_rows(),
-                                                    writer,
-                                                    path: p,
-                                                });
-                                        }
-                                    }
-                                    output_rows.add(output_batch.num_rows());
-                                    timer.done();
-                                    Ok(())
-                                },
-                            )?;
-                        }
-
-                        let mut part_locs = vec![];
-                        for (i, w) in writers.iter_mut().enumerate() {
-                            if let Some(w) = w {
-                                w.writer.finish()?;
-                                let num_bytes = fs::metadata(&w.path)?.len();
-                                debug!(
-                                    "Finished writing shuffle partition {} at {:?}. Batches: {}. Rows: {}. Bytes: {}.",
-                                    i, w.path, w.num_batches, w.num_rows, num_bytes
-                                );
-                                part_locs.push((
-                                    i,
-                                    ShuffleWritePartition {
-                                        partition_id: i as u64,
-                                        num_batches: w.num_batches as u64,
-                                        num_rows: w.num_rows as u64,
-                                        num_bytes,
-                                        file_id: Some(task_id as u64),
-                                        is_sort_shuffle: false,
-                                    },
-                                ));
-                            }
-                        }
-                        Ok(part_locs)
-                    });
-
-                    let mut stream_err = None;
-                    'outer: for (local_input_partition, per_input_metrics) in
-                        write_metrics_per_input.iter().enumerate()
-                    {
-                        let mut stream =
-                            plan.execute(local_input_partition, context.clone())?;
-                        loop {
-                            match stream.next().await {
-                                Some(Ok(batch)) => {
-                                    per_input_metrics.input_rows.add(batch.num_rows());
-                                    if tx
-                                        .send((local_input_partition, batch))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break 'outer;
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    stream_err = Some(e);
-                                    break 'outer;
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                    drop(tx);
-
-                    let write_result = handle.await.map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Shuffle writer task failed: {e}"
-                        ))
-                    })?;
-                    if let Some(e) = stream_err {
-                        if let Err(write_err) = &write_result {
-                            error!("Shuffle writer also failed: {write_err}");
-                        }
-                        return Err(e);
-                    }
-                    write_result
                 }
 
                 _ => Err(DataFusionError::Execution(
@@ -1217,25 +1027,24 @@ mod tests {
     }
 
     #[tokio::test]
-    // number of rows in each partition is a function of the hash output, so don't test here
-    #[cfg(not(feature = "force_hash_collisions"))]
     async fn test() -> Result<()> {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 
-        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        // No output partitioning: passthrough writer, one file per one of
+        // the input plan's 2 partitions.
+        let input_plan = create_input_plan()?;
         let work_dir = TempDir::new()?;
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             JobId::new("jobOne"),
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            None,
         )?);
         let batches = drive_all_partitions(query_stage, task_ctx).await?;
         // K=2 output partitions -> one metadata batch per execute(N) call
-        // (drive_all_partitions collects one per K). Empty output slots
-        // now emit 0-row batches (no summary), non-empty ones emit 1-row.
+        // (drive_all_partitions collects one per K).
         assert_eq!(2, batches.len());
         for batch in &batches {
             assert_eq!(4, batch.num_columns());
@@ -1275,7 +1084,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(not(feature = "force_hash_collisions"))]
     async fn display_renders_child_operator_metrics() -> Result<()> {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
@@ -1287,7 +1095,7 @@ mod tests {
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            None,
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let _ = utils::collect_stream(&mut stream)
@@ -1303,45 +1111,6 @@ mod tests {
             rendered.contains("elapsed_compute"),
             "expected populated elapsed_compute metric in rendered plan:\n{rendered}"
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    // number of rows in each partition is a function of the hash output, so don't test here
-    #[cfg(not(feature = "force_hash_collisions"))]
-    async fn test_partitioned() -> Result<()> {
-        let session_ctx = SessionContext::new();
-        let task_ctx = session_ctx.task_ctx();
-
-        let input_plan = create_input_plan()?;
-        let work_dir = TempDir::new()?;
-        let query_stage = Arc::new(ShuffleWriterExec::try_new(
-            JobId::new("jobOne"),
-            1,
-            input_plan,
-            work_dir.path().to_str().unwrap().to_owned(),
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
-        )?);
-        let batches = drive_all_partitions(query_stage, task_ctx).await?;
-        assert_eq!(2, batches.len());
-        let total: u64 = batches
-            .iter()
-            .flat_map(|b| {
-                let stats = b.column(3).as_any().downcast_ref::<StructArray>().unwrap();
-                let num_rows = stats
-                    .column_by_name("num_rows")
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .unwrap()
-                    .clone();
-                (0..b.num_rows()).map(move |i| num_rows.value(i))
-            })
-            .sum();
-        // Row conservation across the K output partitions: writer reads its
-        // full input slice (2 partitions × 2 batches × 2 rows = 8).
-        assert_eq!(8, total);
-
         Ok(())
     }
 
@@ -1381,13 +1150,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hash_repart_write_failure_propagates() -> Result<()> {
+    async fn test_create_dir_failure_propagates() -> Result<()> {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 
         // Place a regular file at the stage_id path component so
-        // create_dir_all fails when the writer tries to create
-        // output partition subdirectories underneath it.
+        // create_dir_all fails when the writer tries to create the
+        // output partition subdirectory underneath it.
         // Path structure: work_dir / job_id / stage_id / ...
         let tmp = tempfile::TempDir::new().unwrap();
         let job_dir = tmp.path().join("jobOne");
@@ -1402,12 +1171,33 @@ mod tests {
             1,
             input_plan,
             work_dir,
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            None,
         )?);
         let result = drive_all_partitions(query_stage, task_ctx).await;
         assert!(
             result.is_err(),
-            "expected create_dir_all failure in hash writer to propagate"
+            "expected create_dir_all failure in writer to propagate"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn try_new_rejects_hash_partitioning() -> Result<()> {
+        use datafusion::physical_plan::expressions::Column;
+        let input_plan = create_input_plan()?;
+        let hash = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
+        let err = ShuffleWriterExec::try_new(
+            JobId::new("jobHash"),
+            1,
+            input_plan,
+            "/tmp/does-not-matter".to_owned(),
+            Some(hash),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("hash-partitioned shuffle is no longer supported"),
+            "unexpected error: {err}"
         );
         Ok(())
     }
