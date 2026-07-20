@@ -404,16 +404,14 @@ executor tasks</strong>. A distributed query is only as fast as its slowest stag
 stage is only as fast as its slowest task, so a query whose work concentrates onto
 a few partitions will underperform no matter how fast the underlying operators are.
 Benchmarks are therefore run at a scale where that imbalance actually shows up.</p>
-<p>Two configurations are always measured, because they select <strong>different planners</strong>
-with materially different join behaviour:</p>
-<ul class="simple">
-<li><p><strong>AQE off</strong> (<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=false</span></code>, the default) — the static
-<code class="docutils literal notranslate"><span class="pre">DefaultDistributedPlanner</span></code>.</p></li>
-<li><p><strong>AQE on</strong> (<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code>, experimental) — the adaptive
-planner, which can re-plan stages using runtime statistics.</p></li>
-</ul>
-<p>A change that helps one planner can be a no-op or a regression under the other, so
-results are reported for both rather than for whichever looks better.</p>
+<p>These benchmarks are run with <strong>adaptive query execution (AQE) enabled</strong>
+(<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code>). This is the configuration Ballista is
+being actively developed against, so it is the one measured here.</p>
+<p>AQE selects the adaptive planner, which can re-plan stages using runtime statistics —
+coalescing partitions, re-optimising joins, and promoting a small join side to a
+broadcast at runtime. The alternative, AQE off, selects the static
+<code class="docutils literal notranslate"><span class="pre">DefaultDistributedPlanner</span></code>; it is a different planner with materially different join
+behaviour, and it is no longer benchmarked on this page.</p>
 </section>
 <section id="environment">
 <h2>Environment<a class="headerlink" href="#environment" title="Link to this heading">#</a></h2>
@@ -450,10 +448,10 @@ comparable when the shape matches.</p>
 <td><p>2, one per physical node</p></td>
 </tr>
 <tr class="row-odd"><td><p>Per executor</p></td>
-<td><p>8 cores, 56 GiB, <code class="docutils literal notranslate"><span class="pre">--memory-pool-size=48GB</span></code></p></td>
+<td><p>16 cores, 56 GiB, <code class="docutils literal notranslate"><span class="pre">--memory-pool-size=48GB</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>Per task slot</p></td>
-<td><p>8 concurrent tasks → 6 GB pool each</p></td>
+<td><p>16 concurrent tasks → 3 GB pool each</p></td>
 </tr>
 <tr class="row-odd"><td><p>Scheduler</p></td>
 <td><p>1</p></td>
@@ -462,7 +460,7 @@ comparable when the shape matches.</p>
 <td><p>TPC-H SF1000 Parquet, node-local disk</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">target_partitions</span></code></p></td>
-<td><p>32</p></td>
+<td><p>64</p></td>
 </tr>
 </tbody>
 </table>
@@ -522,14 +520,16 @@ ephemeral ports.</p>
 <span class="w">  </span>--host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--query<span class="w"> </span><span class="m">18</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--path<span class="w"> </span>/mnt/bigdata/tpch/sf1000<span class="w"> </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--partitions<span class="w"> </span><span class="m">32</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--partitions<span class="w"> </span><span class="m">64</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>datafusion.optimizer.prefer_hash_join<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>datafusion.optimizer.enable_dynamic_filter_pushdown<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>ballista.planner.adaptive.enabled<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
-<p>Omit <code class="docutils literal notranslate"><span class="pre">--query</span></code> to run all 22. Flip <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code>
-for the AQE-off number.</p>
+<p>Omit <code class="docutils literal notranslate"><span class="pre">--query</span></code> to run all 22. <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code> is the AQE-on
+configuration these results use.</p>
+<p><code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code> makes DataFusion plan joins as <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>, which is the
+join strategy this page compares across engines (Comet is configured to match, below).</p>
 <p>Note <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.enable_dynamic_filter_pushdown=false</span></code>: DataFusion’s
 dynamic filter pushdown assumes single-process execution and can deadlock
 distributed execution, so it is pinned off for benchmark runs.</p>
@@ -541,7 +541,7 @@ distributed execution, so it is pinned off for benchmark runs.</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--master<span class="w"> </span>&lt;master&gt;<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>8G<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
@@ -570,11 +570,11 @@ the Comet shuffle manager, and the jar on the classpath:</p>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.replaceSortMergeJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.replaceSortMergeJoin<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool<span class="o">=</span>fair_unified<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool.fraction<span class="o">=</span><span class="m">0</span>.8<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>8G<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
@@ -587,6 +587,10 @@ the Comet shuffle manager, and the jar on the classpath:</p>
 <span class="w">    </span>--query<span class="w"> </span><span class="m">18</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin=false</span></code> keeps Comet on Spark’s <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>
+instead of converting it to a shuffled hash join. This matches Ballista, which plans
+<code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> (<code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>), so the two engines are compared on the
+same join strategy rather than one being handed a different one.</p>
 </section>
 </section>
 <section id="why-compare-against-comet">
@@ -623,9 +627,10 @@ planner.</p>
 </section>
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
-<p>TPC-H <strong>SF1000</strong>, reference cluster above, 1 iteration, <code class="docutils literal notranslate"><span class="pre">target_partitions=32</span></code>,
-<code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>, <code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>. Times in seconds;
-lower is better.</p>
+<p>TPC-H <strong>SF1000</strong>, reference cluster above, <strong>AQE on</strong>, 1 iteration,
+<code class="docutils literal notranslate"><span class="pre">target_partitions=64</span></code>, <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>,
+<code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>. All three engines plan <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>. Times
+in seconds; lower is better.</p>
 <p>Versions under test:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -635,206 +640,191 @@ lower is better.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">main</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">26b29391</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">main</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">49d1fec8</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
 <td><p>3.5.3 (vanilla, Comet disabled)</p></td>
 </tr>
 <tr class="row-even"><td><p>Comet</p></td>
-<td><p>0.17.0</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">main</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">b0165552</span></code> (1.0.0-SNAPSHOT, Spark 3.5)</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Pinning the Ballista commit rather than “main” matters: <code class="docutils literal notranslate"><span class="pre">26b29391</span></code> removed the
-static planner’s sort-merge-join broadcast conversion, which changes the AQE-off
-path specifically. A number from before that commit is not comparable to one after
-it, and only the exact commit makes that visible.</p>
-<p>Every figure is from a <strong>full 22-query suite run</strong> — one query after another in a
-single session, on freshly started executors.</p>
+<p>Pin the <strong>exact commit</strong> the numbers came from, not “main”: <code class="docutils literal notranslate"><span class="pre">main</span></code> moves, and a row
+that mixes numbers from different commits silently misattributes a regression.</p>
+<p>Ballista Q1–Q17 come from a <strong>full 22-query suite run</strong> (one query after another on
+freshly started executors); Q18 exhausts the memory pool and OOM-kills the executors
+(see below), which currently wedges the rest of the suite, so <strong>Q19–Q22 were run as
+individual single-query jobs</strong> against a fresh cluster of the same shape. Comet and
+Spark each completed the full suite in one run.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
 <th class="head text-right"><p>Spark</p></th>
 <th class="head text-right"><p>Comet</p></th>
-<th class="head text-right"><p>Ballista (AQE off)</p></th>
 <th class="head text-right"><p>Ballista (AQE on)</p></th>
 <th class="head text-right"><p>Rows</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>444.8</p></td>
-<td class="text-right"><p>49.3</p></td>
-<td class="text-right"><p>70.8</p></td>
-<td class="text-right"><p>36.2</p></td>
+<td class="text-right"><p>427.1</p></td>
+<td class="text-right"><p>46.6</p></td>
+<td class="text-right"><p>21.4</p></td>
 <td class="text-right"><p>4</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>74.3</p></td>
-<td class="text-right"><p>37.3</p></td>
-<td class="text-right"><p>155.5</p></td>
-<td class="text-right"><p>63.6</p></td>
+<td class="text-right"><p>75.9</p></td>
+<td class="text-right"><p>39.2</p></td>
+<td class="text-right"><p>64.1</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>158.4</p></td>
-<td class="text-right"><p>99.1</p></td>
-<td class="text-right"><p>206.2</p></td>
-<td class="text-right"><p>255.0</p></td>
+<td class="text-right"><p>154.1</p></td>
+<td class="text-right"><p>195.4</p></td>
+<td class="text-right"><p>202.5</p></td>
 <td class="text-right"><p>10</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>104.1</p></td>
-<td class="text-right"><p>42.3</p></td>
-<td class="text-right"><p>76.8</p></td>
-<td class="text-right"><p>53.9</p></td>
+<td class="text-right"><p>82.0</p></td>
+<td class="text-right"><p>42.6</p></td>
+<td class="text-right"><p>54.6</p></td>
 <td class="text-right"><p>5</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>364.9</p></td>
-<td class="text-right"><p>234.6</p></td>
-<td class="text-right"><p>542.7</p></td>
-<td class="text-right"><p>700.5</p></td>
+<td class="text-right"><p>336.4</p></td>
+<td class="text-right"><p>493.4</p></td>
+<td class="text-right"><p>474.7</p></td>
 <td class="text-right"><p>5</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>22.0</p></td>
-<td class="text-right"><p>15.3</p></td>
-<td class="text-right"><p>18.3</p></td>
-<td class="text-right"><p>12.7</p></td>
+<td class="text-right"><p>28.9</p></td>
+<td class="text-right"><p>14.6</p></td>
+<td class="text-right"><p>27.7</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>196.1</p></td>
-<td class="text-right"><p>141.8</p></td>
-<td class="text-right"><p>575.5</p></td>
-<td class="text-right"><p>531.4</p></td>
+<td class="text-right"><p>180.6</p></td>
+<td class="text-right"><p>149.5</p></td>
+<td class="text-right"><p>457.0</p></td>
 <td class="text-right"><p>4</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>412.7</p></td>
-<td class="text-right"><p>291.6</p></td>
-<td class="text-right"><p>657.1</p></td>
-<td class="text-right"><p>801.2</p></td>
+<td class="text-right"><p>391.8</p></td>
+<td class="text-right"><p>642.1</p></td>
+<td class="text-right"><p>731.0</p></td>
 <td class="text-right"><p>2</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>570.2</p></td>
-<td class="text-right"><p>392.1</p></td>
-<td class="text-right"><p>891.8</p></td>
-<td class="text-right"><p>1025.2</p></td>
+<td class="text-right"><p>509.8</p></td>
+<td class="text-right"><p>843.5</p></td>
+<td class="text-right"><p>934.3</p></td>
 <td class="text-right"><p>175</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>147.3</p></td>
-<td class="text-right"><p>112.5</p></td>
-<td class="text-right"><p>240.3</p></td>
-<td class="text-right"><p>166.7</p></td>
+<td class="text-right"><p>151.1</p></td>
+<td class="text-right"><p>104.8</p></td>
+<td class="text-right"><p>136.8</p></td>
 <td class="text-right"><p>20</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p>58.3</p></td>
-<td class="text-right"><p>48.7</p></td>
-<td class="text-right"><p>105.1</p></td>
-<td class="text-right"><p>76.2</p></td>
+<td class="text-right"><p>44.7</p></td>
+<td class="text-right"><p>44.1</p></td>
+<td class="text-right"><p>85.4</p></td>
 <td class="text-right"><p>0 [1]</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>75.9</p></td>
-<td class="text-right"><p>52.9</p></td>
-<td class="text-right"><p>79.4</p></td>
-<td class="text-right"><p>85.2</p></td>
+<td class="text-right"><p>74.1</p></td>
+<td class="text-right"><p>49.9</p></td>
+<td class="text-right"><p>70.9</p></td>
 <td class="text-right"><p>2</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>114.1</p></td>
-<td class="text-right"><p>71.9</p></td>
-<td class="text-right"><p>96.7</p></td>
-<td class="text-right"><p>95.6</p></td>
+<td class="text-right"><p>98.7</p></td>
+<td class="text-right"><p>58.3</p></td>
+<td class="text-right"><p>92.5</p></td>
 <td class="text-right"><p>30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>44.6</p></td>
-<td class="text-right"><p>29.0</p></td>
-<td class="text-right"><p>38.0</p></td>
-<td class="text-right"><p>34.3</p></td>
+<td class="text-right"><p>43.0</p></td>
+<td class="text-right"><p>27.4</p></td>
+<td class="text-right"><p>38.9</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>108.9</p></td>
-<td class="text-right"><p>63.8</p></td>
-<td class="text-right"><p>45.9</p></td>
-<td class="text-right"><p>52.7</p></td>
-<td class="text-right"><p>* [2]</p></td>
+<td class="text-right"><p>121.5</p></td>
+<td class="text-right"><p>65.6</p></td>
+<td class="text-right"><p>84.5</p></td>
+<td class="text-right"><p>1 [2]</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>33.9</p></td>
-<td class="text-right"><p>18.7</p></td>
-<td class="text-right"><p>21.9</p></td>
-<td class="text-right"><p>23.0</p></td>
+<td class="text-right"><p>24.5</p></td>
+<td class="text-right"><p>17.5</p></td>
+<td class="text-right"><p>24.3</p></td>
 <td class="text-right"><p>27840</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>519.5</p></td>
-<td class="text-right"><p>308.2</p></td>
-<td class="text-right"><p>697.8</p></td>
-<td class="text-right"><p>400.4</p></td>
+<td class="text-right"><p>406.7</p></td>
+<td class="text-right"><p>285.8</p></td>
+<td class="text-right"><p>355.3</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>492.8</p></td>
-<td class="text-right"><p>234.2</p></td>
-<td class="text-right"><p>620.7</p></td>
-<td class="text-right"><p>820.9</p></td>
+<td class="text-right"><p>428.8</p></td>
+<td class="text-right"><p>370.5</p></td>
+<td class="text-right"><p>OOM</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>53.7</p></td>
-<td class="text-right"><p>39.4</p></td>
-<td class="text-right"><p>39.6</p></td>
-<td class="text-right"><p>42.1</p></td>
+<td class="text-right"><p>58.9</p></td>
+<td class="text-right"><p>35.5</p></td>
+<td class="text-right"><p>120.4</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>108.1</p></td>
-<td class="text-right"><p>74.6</p></td>
-<td class="text-right"><p>80.5</p></td>
-<td class="text-right"><p>82.9</p></td>
+<td class="text-right"><p>105.9</p></td>
+<td class="text-right"><p>67.6</p></td>
+<td class="text-right"><p>111.2</p></td>
 <td class="text-right"><p>110759</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p>536.4</p></td>
-<td class="text-right"><p>351.4</p></td>
-<td class="text-right"><p>1083.0</p></td>
-<td class="text-right"><p>926.6</p></td>
+<td class="text-right"><p>562.2</p></td>
+<td class="text-right"><p>460.1</p></td>
+<td class="text-right"><p>694.7</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p>47.0</p></td>
-<td class="text-right"><p>29.8</p></td>
-<td class="text-right"><p>34.9</p></td>
-<td class="text-right"><p>34.6</p></td>
+<td class="text-right"><p>36.8</p></td>
+<td class="text-right"><p>21.5</p></td>
+<td class="text-right"><p>35.6</p></td>
 <td class="text-right"><p>7</p></td>
 </tr>
-<tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
-<td class="text-right"><p><strong>4687.9</strong></p></td>
-<td class="text-right"><p><strong>2738.5</strong></p></td>
-<td class="text-right"><p><strong>6378.2</strong></p></td>
-<td class="text-right"><p><strong>6320.7</strong></p></td>
+<tr class="row-even"><td class="text-right"><p><strong>Total (excl. Q18)</strong></p></td>
+<td class="text-right"><p><strong>3914.7</strong></p></td>
+<td class="text-right"><p><strong>3705.0</strong></p></td>
+<td class="text-right"><p><strong>4817.8</strong></p></td>
 <td class="text-right"><p></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p><strong>All 22 queries completed on all four configurations</strong>; there are no failures to
-report. Row counts agreed across every engine except Q15.</p>
+<p>The <strong>Total</strong> row sums the 21 queries <strong>excluding Q18</strong>, because Q18 does not complete
+on Ballista at this sizing (below), so a 22-query total would not be comparable across
+engines. Q18’s own times are in its row.</p>
+<p>Row counts agree across all three engines on every query, including Q18 (Spark and
+Comet return 100; Ballista OOMs before producing a result).</p>
 <p>[1] Q11 returns 0 rows for every engine at this scale factor: the query’s threshold
 constant is tuned for SF1.</p>
-<p>[2] <strong>Row counts disagree on Q15: Spark returns 0, Comet and Ballista both return 1.</strong> Q15 is a multi-statement query (<code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">VIEW</span></code> / <code class="docutils literal notranslate"><span class="pre">SELECT</span></code> / <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">VIEW</span></code>), and
-how many rows a harness reports depends on which statement it takes as the result.
-Recorded rather than resolved: it is not established which count is correct, or
-whether the engines computed different answers at all.</p>
+<p>[2] Q15 is a multi-statement query (<code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">VIEW</span></code> / <code class="docutils literal notranslate"><span class="pre">SELECT</span></code> / <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">VIEW</span></code>); all three
+engines report 1 row here. (A previous result set saw Spark report 0 for Q15 depending
+on which statement the harness took as the result; it does not recur in this run.)</p>
+<p><strong>Q18 OOMs on Ballista at this sizing.</strong> Q18’s hash-join build side is <code class="docutils literal notranslate"><span class="pre">Partitioned</span></code>
+and does not spill; with 16 task slots sharing the 48 GB pool (3 GB per slot), the
+per-task build side exceeds the container limit and the executor is OOM-killed
+(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a>). At the previous
+8-slot sizing (6 GB per slot) Q18 completed, so this is a direct consequence of the
+denser packing. The OOM is recorded as <code class="docutils literal notranslate"><span class="pre">OOM</span></code> rather than a time.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">Rows</span></code> column is the row count the query returned, recorded so a time is never
 read without the answer it produced.</p>
 <p>This table records <strong>one current result set</strong>. When results are refreshed, the
@@ -848,12 +838,13 @@ known memory exhaustion.</p>
 <h3>Recording a result<a class="headerlink" href="#recording-a-result" title="Link to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Pin the <strong>exact commit</strong> the numbers came from, not a branch name.</p></li>
-<li><p>Report <strong>AQE on and AQE off</strong> from the <strong>same</strong> commit and cluster. Comparing an
-AQE-on number against an AQE-off number from an older build attributes the build
-difference to the planner.</p></li>
-<li><p>Take the figure from a <strong>full suite run</strong>, not a standalone single-query run. The
-two differ measurably: a long-lived executor deep into a suite is not in the same
-state as a freshly started one.</p></li>
+<li><p>Report the <strong>AQE-on</strong> number (<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code>) — the
+configuration this page measures — from the same commit and cluster.</p></li>
+<li><p>Prefer the figure from a <strong>full suite run</strong>, not a standalone single-query run: a
+long-lived executor deep into a suite is not in the same state as a freshly started
+one. When a query cannot complete in-suite (e.g. Q18’s OOM currently wedges the
+run), note that the remaining queries were run individually, as done here for
+Q19–Q22.</p></li>
 <li><p>Note the <strong>row count</strong> each query returned. A fast wrong answer is not a result,
 and distributed execution has produced silently wrong row counts before.</p></li>
 <li><p>Flag any stage whose runtime is dominated by a few partitions — that is the
