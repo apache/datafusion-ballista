@@ -57,7 +57,7 @@ use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalSortExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -284,16 +284,36 @@ impl ExecutionPlan for RuntimeStatsExec {
         vec![&self.input]
     }
 
+    /// Passthrough: no distribution requirement on the child.
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        vec![Distribution::UnspecifiedDistribution]
+    }
+
+    /// Passthrough: no ordering requirement on the child.
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
+        vec![None]
+    }
+
+    /// Batches pass through unchanged, so input order is preserved.
+    /// Overrides default `false`.
     fn maintains_input_order(&self) -> Vec<bool> {
         vec![true]
     }
 
-    fn cardinality_effect(&self) -> CardinalityEffect {
-        CardinalityEffect::Equal
+    /// Wrapping this operator doesn't change how the child benefits from
+    /// its own input partitioning.
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
     }
 
+    /// Row count and per-column stats pass through unchanged.
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.input.partition_statistics(partition)
+    }
+
+    /// Every input row is emitted exactly once. Overrides default `Unknown`.
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
     }
 
     fn with_new_children(
