@@ -312,7 +312,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 let job_ids: Vec<JobId> = tasks
                     .iter()
                     .flatten()
-                    .map(|t| t.partition.job_id.clone())
+                    .map(|t| t.key.job_id.clone())
                     .collect();
                 let success = match state
                     .executor_manager
