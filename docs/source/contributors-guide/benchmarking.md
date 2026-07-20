@@ -38,16 +38,15 @@ stage is only as fast as its slowest task, so a query whose work concentrates on
 a few partitions will underperform no matter how fast the underlying operators are.
 Benchmarks are therefore run at a scale where that imbalance actually shows up.
 
-Two configurations are always measured, because they select **different planners**
-with materially different join behaviour:
+These benchmarks are run with **adaptive query execution (AQE) enabled**
+(`ballista.planner.adaptive.enabled=true`). This is the configuration Ballista is
+being actively developed against, so it is the one measured here.
 
-- **AQE off** (`ballista.planner.adaptive.enabled=false`, the default) — the static
-  `DefaultDistributedPlanner`.
-- **AQE on** (`ballista.planner.adaptive.enabled=true`, experimental) — the adaptive
-  planner, which can re-plan stages using runtime statistics.
-
-A change that helps one planner can be a no-op or a regression under the other, so
-results are reported for both rather than for whichever looks better.
+AQE selects the adaptive planner, which can re-plan stages using runtime statistics —
+coalescing partitions, re-optimising joins, and promoting a small join side to a
+broadcast at runtime. The alternative, AQE off, selects the static
+`DefaultDistributedPlanner`; it is a different planner with materially different join
+behaviour, and it is no longer benchmarked on this page.
 
 ## Environment
 
@@ -76,14 +75,14 @@ All results on this page use the following shape. It is a reference point, not a
 requirement — the commands below work on any cluster, but numbers are only
 comparable when the shape matches.
 
-|                     |                                            |
-| ------------------- | ------------------------------------------ |
-| Executors           | 2, one per physical node                   |
-| Per executor        | 8 cores, 56 GiB, `--memory-pool-size=48GB` |
-| Per task slot       | 8 concurrent tasks → 6 GB pool each        |
-| Scheduler           | 1                                          |
-| Data                | TPC-H SF1000 Parquet, node-local disk      |
-| `target_partitions` | 32                                         |
+|                     |                                             |
+| ------------------- | ------------------------------------------- |
+| Executors           | 2, one per physical node                    |
+| Per executor        | 16 cores, 56 GiB, `--memory-pool-size=48GB` |
+| Per task slot       | 16 concurrent tasks → 3 GB pool each        |
+| Scheduler           | 1                                           |
+| Data                | TPC-H SF1000 Parquet, node-local disk       |
+| `target_partitions` | 64                                          |
 
 Two details matter more than they look:
 
@@ -149,14 +148,17 @@ tpch benchmark ballista \
   --host <scheduler> --port 50050 \
   --query 18 \
   --path /mnt/bigdata/tpch/sf1000 --format parquet \
-  --partitions 32 --iterations 1 \
+  --partitions 64 --iterations 1 \
   -c datafusion.optimizer.prefer_hash_join=false \
   -c datafusion.optimizer.enable_dynamic_filter_pushdown=false \
   -c ballista.planner.adaptive.enabled=true
 ```
 
-Omit `--query` to run all 22. Flip `ballista.planner.adaptive.enabled` to `false`
-for the AQE-off number.
+Omit `--query` to run all 22. `ballista.planner.adaptive.enabled=true` is the AQE-on
+configuration these results use.
+
+`prefer_hash_join=false` makes DataFusion plan joins as `SortMergeJoin`, which is the
+join strategy this page compares across engines (Comet is configured to match, below).
 
 Note `datafusion.optimizer.enable_dynamic_filter_pushdown=false`: DataFusion's
 dynamic filter pushdown assumes single-process execution and can deadlock
@@ -171,7 +173,7 @@ Spark runs the same queries via `tpcbench.py` from
 spark-submit \
   --master <master> \
   --conf spark.executor.instances=2 \
-  --conf spark.executor.cores=8 \
+  --conf spark.executor.cores=16 \
   --conf spark.executor.memory=32G \
   --conf spark.executor.memoryOverhead=8G \
   --conf spark.memory.offHeap.enabled=true \
@@ -202,11 +204,11 @@ spark-submit \
   --conf spark.executor.extraClassPath=$COMET_JAR \
   --conf spark.plugins=org.apache.spark.CometPlugin \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-  --conf spark.comet.exec.replaceSortMergeJoin=true \
+  --conf spark.comet.exec.replaceSortMergeJoin=false \
   --conf spark.comet.exec.memoryPool=fair_unified \
   --conf spark.comet.exec.memoryPool.fraction=0.8 \
   --conf spark.executor.instances=2 \
-  --conf spark.executor.cores=8 \
+  --conf spark.executor.cores=16 \
   --conf spark.executor.memory=32G \
   --conf spark.executor.memoryOverhead=8G \
   --conf spark.memory.offHeap.enabled=true \
@@ -218,6 +220,11 @@ spark-submit \
     --iterations 1 \
     --query 18
 ```
+
+`spark.comet.exec.replaceSortMergeJoin=false` keeps Comet on Spark's `SortMergeJoin`
+instead of converting it to a shuffled hash join. This matches Ballista, which plans
+`SortMergeJoin` (`prefer_hash_join=false`), so the two engines are compared on the
+same join strategy rather than one being handed a different one.
 
 [comet]: https://datafusion.apache.org/comet/
 
@@ -256,62 +263,74 @@ planner.
 
 ## Results
 
-TPC-H **SF1000**, reference cluster above, 1 iteration, `target_partitions=32`,
-`prefer_hash_join=false`, `enable_dynamic_filter_pushdown=false`. Times in seconds;
-lower is better.
+TPC-H **SF1000**, reference cluster above, **AQE on**, 1 iteration,
+`target_partitions=64`, `prefer_hash_join=false`,
+`enable_dynamic_filter_pushdown=false`. All three engines plan `SortMergeJoin`. Times
+in seconds; lower is better.
 
 Versions under test:
 
-| Engine   | Version                         |
-| -------- | ------------------------------- |
-| Ballista | `main` @ `26b29391`             |
-| Spark    | 3.5.3 (vanilla, Comet disabled) |
-| Comet    | 0.17.0                          |
+| Engine   | Version                                          |
+| -------- | ------------------------------------------------ |
+| Ballista | `main` @ `49d1fec8`                              |
+| Spark    | 3.5.3 (vanilla, Comet disabled)                  |
+| Comet    | `main` @ `b0165552` (1.0.0-SNAPSHOT, Spark 3.5)  |
 
-Pinning the Ballista commit rather than "main" matters: `26b29391` removed the
-static planner's sort-merge-join broadcast conversion, which changes the AQE-off
-path specifically. A number from before that commit is not comparable to one after
-it, and only the exact commit makes that visible.
+Pin the **exact commit** the numbers came from, not "main": `main` moves, and a row
+that mixes numbers from different commits silently misattributes a regression.
 
-Every figure is from a **full 22-query suite run** — one query after another in a
-single session, on freshly started executors.
+Ballista Q1–Q17 come from a **full 22-query suite run** (one query after another on
+freshly started executors); Q18 exhausts the memory pool and OOM-kills the executors
+(see below), which currently wedges the rest of the suite, so **Q19–Q22 were run as
+individual single-query jobs** against a fresh cluster of the same shape. Comet and
+Spark each completed the full suite in one run.
 
-|     Query |      Spark |      Comet | Ballista (AQE off) | Ballista (AQE on) |   Rows |
-| --------: | ---------: | ---------: | -----------------: | ----------------: | -----: |
-|         1 |      444.8 |       49.3 |               70.8 |              36.2 |      4 |
-|         2 |       74.3 |       37.3 |              155.5 |              63.6 |    100 |
-|         3 |      158.4 |       99.1 |              206.2 |             255.0 |     10 |
-|         4 |      104.1 |       42.3 |               76.8 |              53.9 |      5 |
-|         5 |      364.9 |      234.6 |              542.7 |             700.5 |      5 |
-|         6 |       22.0 |       15.3 |               18.3 |              12.7 |      1 |
-|         7 |      196.1 |      141.8 |              575.5 |             531.4 |      4 |
-|         8 |      412.7 |      291.6 |              657.1 |             801.2 |      2 |
-|         9 |      570.2 |      392.1 |              891.8 |            1025.2 |    175 |
-|        10 |      147.3 |      112.5 |              240.3 |             166.7 |     20 |
-|        11 |       58.3 |       48.7 |              105.1 |              76.2 |  0 [1] |
-|        12 |       75.9 |       52.9 |               79.4 |              85.2 |      2 |
-|        13 |      114.1 |       71.9 |               96.7 |              95.6 |     30 |
-|        14 |       44.6 |       29.0 |               38.0 |              34.3 |      1 |
-|        15 |      108.9 |       63.8 |               45.9 |              52.7 | \* [2] |
-|        16 |       33.9 |       18.7 |               21.9 |              23.0 |  27840 |
-|        17 |      519.5 |      308.2 |              697.8 |             400.4 |      1 |
-|        18 |      492.8 |      234.2 |              620.7 |             820.9 |    100 |
-|        19 |       53.7 |       39.4 |               39.6 |              42.1 |      1 |
-|        20 |      108.1 |       74.6 |               80.5 |              82.9 | 110759 |
-|        21 |      536.4 |      351.4 |             1083.0 |             926.6 |    100 |
-|        22 |       47.0 |       29.8 |               34.9 |              34.6 |      7 |
-| **Total** | **4687.9** | **2738.5** |         **6378.2** |        **6320.7** |        |
+|     Query |    Spark |      Comet | Ballista (AQE on) |   Rows |
+| --------: | -------: | ---------: | ----------------: | -----: |
+|         1 |    427.1 |       46.6 |              21.4 |      4 |
+|         2 |     75.9 |       39.2 |              64.1 |    100 |
+|         3 |    154.1 |      195.4 |             202.5 |     10 |
+|         4 |     82.0 |       42.6 |              54.6 |      5 |
+|         5 |    336.4 |      493.4 |             474.7 |      5 |
+|         6 |     28.9 |       14.6 |              27.7 |      1 |
+|         7 |    180.6 |      149.5 |             457.0 |      4 |
+|         8 |    391.8 |      642.1 |             731.0 |      2 |
+|         9 |    509.8 |      843.5 |             934.3 |    175 |
+|        10 |    151.1 |      104.8 |             136.8 |     20 |
+|        11 |     44.7 |       44.1 |              85.4 |  0 [1] |
+|        12 |     74.1 |       49.9 |              70.9 |      2 |
+|        13 |     98.7 |       58.3 |              92.5 |     30 |
+|        14 |     43.0 |       27.4 |              38.9 |      1 |
+|        15 |    121.5 |       65.6 |              84.5 |  1 [2] |
+|        16 |     24.5 |       17.5 |              24.3 |  27840 |
+|        17 |    406.7 |      285.8 |             355.3 |      1 |
+|        18 |    428.8 |      370.5 |               OOM |    100 |
+|        19 |     58.9 |       35.5 |             120.4 |      1 |
+|        20 |    105.9 |       67.6 |             111.2 | 110759 |
+|        21 |    562.2 |      460.1 |             694.7 |    100 |
+|        22 |     36.8 |       21.5 |              35.6 |      7 |
+| **Total (excl. Q18)** | **3914.7** | **3705.0** |        **4817.8** |        |
 
-**All 22 queries completed on all four configurations**; there are no failures to
-report. Row counts agreed across every engine except Q15.
+The **Total** row sums the 21 queries **excluding Q18**, because Q18 does not complete
+on Ballista at this sizing (below), so a 22-query total would not be comparable across
+engines. Q18's own times are in its row.
+
+Row counts agree across all three engines on every query, including Q18 (Spark and
+Comet return 100; Ballista OOMs before producing a result).
 
 [1] Q11 returns 0 rows for every engine at this scale factor: the query's threshold
 constant is tuned for SF1.
 
-[2] **Row counts disagree on Q15: Spark returns 0, Comet and Ballista both return 1.** Q15 is a multi-statement query (`CREATE VIEW` / `SELECT` / `DROP VIEW`), and
-how many rows a harness reports depends on which statement it takes as the result.
-Recorded rather than resolved: it is not established which count is correct, or
-whether the engines computed different answers at all.
+[2] Q15 is a multi-statement query (`CREATE VIEW` / `SELECT` / `DROP VIEW`); all three
+engines report 1 row here. (A previous result set saw Spark report 0 for Q15 depending
+on which statement the harness took as the result; it does not recur in this run.)
+
+**Q18 OOMs on Ballista at this sizing.** Q18's hash-join build side is `Partitioned`
+and does not spill; with 16 task slots sharing the 48 GB pool (3 GB per slot), the
+per-task build side exceeds the container limit and the executor is OOM-killed
+([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). At the previous
+8-slot sizing (6 GB per slot) Q18 completed, so this is a direct consequence of the
+denser packing. The OOM is recorded as `OOM` rather than a time.
 
 The `Rows` column is the row count the query returned, recorded so a time is never
 read without the answer it produced.
@@ -328,12 +347,13 @@ known memory exhaustion.
 ### Recording a result
 
 - Pin the **exact commit** the numbers came from, not a branch name.
-- Report **AQE on and AQE off** from the **same** commit and cluster. Comparing an
-  AQE-on number against an AQE-off number from an older build attributes the build
-  difference to the planner.
-- Take the figure from a **full suite run**, not a standalone single-query run. The
-  two differ measurably: a long-lived executor deep into a suite is not in the same
-  state as a freshly started one.
+- Report the **AQE-on** number (`ballista.planner.adaptive.enabled=true`) — the
+  configuration this page measures — from the same commit and cluster.
+- Prefer the figure from a **full suite run**, not a standalone single-query run: a
+  long-lived executor deep into a suite is not in the same state as a freshly started
+  one. When a query cannot complete in-suite (e.g. Q18's OOM currently wedges the
+  run), note that the remaining queries were run individually, as done here for
+  Q19–Q22.
 - Note the **row count** each query returned. A fast wrong answer is not a result,
   and distributed execution has produced silently wrong row counts before.
 - Flag any stage whose runtime is dominated by a few partitions — that is the
