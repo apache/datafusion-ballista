@@ -670,6 +670,7 @@ pub async fn start_executor_process(
 
     // When `notify_shutdown` is dropped, all components which have `subscribe`d will
     // receive the shutdown signal and can exit
+    let _ = notify_shutdown.send(());
     drop(notify_shutdown);
     // Drop final `Sender` so the `Receiver` below can complete
     drop(shutdown_complete_tx);
