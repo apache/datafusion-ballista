@@ -26,10 +26,10 @@ pub struct SortShuffleConfig {
     /// `interleave_record_batch` (default: 8192).
     pub batch_size: usize,
     /// Per-task buffered-bytes budget at which the writer spills its in-memory
-    /// batches to disk, counted independently of the runtime `MemoryPool`. A
-    /// value of 0 (the default) disables this cap so spilling is driven solely
-    /// by memory-pool pressure; a non-zero value adds a second spill trigger
-    /// that bounds buffered memory even when the pool is unbounded.
+    /// batches to disk. Counted independently of the runtime `MemoryPool`, so
+    /// spilling kicks in even when the pool is unbounded. A value of 0 (the
+    /// default) disables the per-task budget, leaving the runtime `MemoryPool`
+    /// as the sole spill trigger.
     pub memory_limit_per_task_bytes: usize,
 }
 

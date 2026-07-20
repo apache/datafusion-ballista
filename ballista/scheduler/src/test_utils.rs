@@ -294,19 +294,13 @@ pub fn default_task_runner() -> impl TaskRunner {
             })
             .collect();
 
-        for TaskId {
-            task_id,
-            partition_id,
-            ..
-        } in task.task_ids
-        {
+        for TaskId { task_id, .. } in task.task_ids {
             let timestamp = timestamp_millis();
             statuses.push(TaskStatus {
                 task_id,
                 job_id: task.job_id.clone(),
                 stage_id: task.stage_id,
                 stage_attempt_num: task.stage_attempt_num,
-                partition_id,
                 launch_time: timestamp,
                 start_exec_time: timestamp,
                 end_exec_time: timestamp,
@@ -842,11 +836,7 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
         .values()
         .map(|stage| {
             if let ExecutionStage::Running(stage) = stage {
-                stage
-                    .task_infos
-                    .iter()
-                    .filter(|info| info.is_none())
-                    .count()
+                stage.available_tasks()
             } else {
                 0
             }
@@ -875,6 +865,23 @@ pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
 pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
     job_id: &JobId,
+) -> StaticExecutionGraph {
+    test_aggregation_plan_with_config(
+        partition,
+        job_id,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .await
+}
+
+/// Same as `test_aggregation_plan_with_job_id`, but the caller supplies the
+/// Ballista `SessionConfig` used by the resulting graph. Use this when a test
+/// needs to override a scheduler-side knob (e.g. `max_partitions_per_task`)
+/// that changes how `bind_one` shapes tasks.
+pub async fn test_aggregation_plan_with_config(
+    partition: usize,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
 ) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -912,7 +919,7 @@ pub async fn test_aggregation_plan_with_job_id(
         "session",
         plan,
         0,
-        Arc::new(SessionConfig::new_with_ballista()),
+        session_config,
         &mut planner,
         None,
     )
@@ -1191,11 +1198,10 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
 
     // Complete the task
     protobuf::TaskStatus {
-        task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone().into(),
-        stage_id: task.partition.stage_id as u32,
+        task_id: task.key.task_id as u32,
+        job_id: task.key.job_id.clone().into(),
+        stage_id: task.key.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
-        partition_id: task.partition.partition_id as u32,
         launch_time: 0,
         start_exec_time: 0,
         end_exec_time: 0,
@@ -1226,11 +1232,10 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
 
     // Fail the task
     protobuf::TaskStatus {
-        task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone().into(),
-        stage_id: task.partition.stage_id as u32,
+        task_id: task.key.task_id as u32,
+        job_id: task.key.job_id.clone().into(),
+        stage_id: task.key.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
-        partition_id: task.partition.partition_id as u32,
         launch_time: 0,
         start_exec_time: 0,
         end_exec_time: 0,

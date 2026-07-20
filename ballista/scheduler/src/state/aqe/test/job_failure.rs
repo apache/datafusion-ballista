@@ -117,17 +117,15 @@ async fn test_abort_running_cancels_stages_and_returns_inflight_tasks() -> Resul
 
     // In-flight tasks of the cancelled stage are recorded as Failed(TaskKilled)
     let has_killed_task = graph.stages.values().any(|stage| match stage {
-        ExecutionStage::Failed(failed) => {
-            failed.task_infos.iter().flatten().any(|info| {
-                matches!(
-                    &info.task_status,
-                    task_status::Status::Failed(FailedTask {
-                        failed_reason: Some(failed_task::FailedReason::TaskKilled(_)),
-                        ..
-                    })
-                )
-            })
-        }
+        ExecutionStage::Failed(failed) => failed.task_infos.iter().any(|info| {
+            matches!(
+                &info.task_status,
+                task_status::Status::Failed(FailedTask {
+                    failed_reason: Some(failed_task::FailedReason::TaskKilled(_)),
+                    ..
+                })
+            )
+        }),
         _ => false,
     });
     assert!(

@@ -146,7 +146,6 @@ impl ExecutorManager {
                 task_id: task_info.task_id as u32,
                 job_id: task_info.job_id.into(),
                 stage_id: task_info.stage_id as u32,
-                partition_id: task_info.partition_id as u32,
             });
         }
 
