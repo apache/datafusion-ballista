@@ -423,7 +423,14 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 } else {
                     8192
                 };
-                let config = SortShuffleConfig::new(true, batch_size);
+                let mut config = SortShuffleConfig::new(true, batch_size);
+                // Absent (legacy plan) keeps the built-in default; a present
+                // value — including 0, which disables the per-task budget —
+                // is applied verbatim so the session override reaches the
+                // executor where the writer actually runs.
+                if let Some(bytes) = sort_shuffle_writer.memory_limit_per_task_bytes {
+                    config = config.with_memory_limit_per_task_bytes(bytes as usize);
+                }
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
                     sort_shuffle_writer.job_id.clone().into(),
@@ -622,6 +629,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         input: None,
                         output_partitioning,
                         batch_size: config.batch_size as u64,
+                        memory_limit_per_task_bytes: Some(
+                            config.memory_limit_per_task_bytes as u64,
+                        ),
                     },
                 )),
             };
@@ -855,6 +865,45 @@ mod test {
         );
     }
 
+    // `datafusion-proto` encodes an `EmptyExec` as its schema alone, so a
+    // multi-partition `EmptyExec` decodes with a single partition (apache/datafusion
+    // #23642). `make_empty_exec_serde_safe` in the scheduler works around this by
+    // rewriting such nodes into a round-robin `RepartitionExec` before a stage plan
+    // goes on the wire.
+    //
+    // This test pins the upstream behaviour that makes the workaround necessary: when
+    // it starts failing, DataFusion preserves the partition count and the workaround
+    // can be deleted.
+    #[tokio::test]
+    async fn empty_exec_partition_count_is_lost_by_datafusion_proto() {
+        use datafusion::physical_plan::ExecutionPlanProperties;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion_proto::physical_plan::{
+            AsExecutionPlan, DefaultPhysicalExtensionCodec,
+        };
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema).with_partitions(4));
+        assert_eq!(
+            plan.output_partitioning().partition_count(),
+            4,
+            "precondition: EmptyExec reports 4 partitions"
+        );
+
+        let codec = DefaultPhysicalExtensionCodec {};
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = proto.try_into_physical_plan(&ctx, &codec).unwrap();
+
+        assert_eq!(
+            decoded.output_partitioning().partition_count(),
+            1,
+            "EmptyExec partition count is dropped on the wire; if this now decodes as \
+             4, apache/datafusion#23642 is fixed and make_empty_exec_serde_safe can go"
+        );
+    }
+
     #[tokio::test]
     async fn test_unresolved_shuffle_exec_roundtrip() {
         let schema = create_test_schema();
@@ -923,6 +972,50 @@ mod test {
             decoded_exec.coalesce.is_none(),
             "absent coalesce field must decode to None (codec inertness)"
         );
+    }
+
+    /// The sort shuffle writer's per-task memory budget must survive the
+    /// protobuf round trip so a session override reaches the executor where the
+    /// writer actually runs (issue #2089). A non-default value and the special
+    /// `0` (per-task budget disabled) are both checked.
+    #[tokio::test]
+    async fn test_sort_shuffle_writer_exec_roundtrip_preserves_memory_limit() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        for memory_limit in [7 * 1024 * 1024_usize, 0] {
+            let schema = create_test_schema();
+            let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+            let partitioning =
+                Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+            let original_exec = SortShuffleWriterExec::try_new(
+                "job1".into(),
+                1,
+                input.clone(),
+                String::new(),
+                partitioning.clone(),
+                SortShuffleConfig::new(true, 4096)
+                    .with_memory_limit_per_task_bytes(memory_limit),
+            )
+            .unwrap();
+
+            let codec = BallistaPhysicalExtensionCodec::default();
+            let mut buf: Vec<u8> = vec![];
+            codec.try_encode(Arc::new(original_exec), &mut buf).unwrap();
+
+            let ctx = SessionContext::new().task_ctx();
+            let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+            let decoded_exec = decoded_plan
+                .downcast_ref::<SortShuffleWriterExec>()
+                .expect("Expected SortShuffleWriterExec");
+
+            assert_eq!(
+                decoded_exec.config().memory_limit_per_task_bytes,
+                memory_limit,
+                "memory_limit_per_task_bytes must survive the wire, including 0"
+            );
+            assert_eq!(decoded_exec.config().batch_size, 4096);
+        }
     }
 
     #[tokio::test]

@@ -141,7 +141,7 @@ pub struct PyExecutor {
 //        which forked it. This will be investigated further
 #[pymethods]
 impl PyExecutor {
-    #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None, concurrent_tasks = None))]
+    #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None, vcores = None))]
     #[new]
     pub fn new(
         _py: Python,
@@ -149,7 +149,7 @@ impl PyExecutor {
         bind_host: Option<String>,
         scheduler_host: Option<String>,
         scheduler_port: Option<u16>,
-        concurrent_tasks: Option<u16>,
+        vcores: Option<u16>,
     ) -> PyResult<Self> {
         let mut config = ExecutorProcessConfig::default();
         if let Some(port) = bind_port {
@@ -168,8 +168,8 @@ impl PyExecutor {
             config.scheduler_host = host;
         }
 
-        if let Some(concurrent_tasks) = concurrent_tasks {
-            config.concurrent_tasks = concurrent_tasks as usize
+        if let Some(vcores) = vcores {
+            config.vcores = vcores as usize
         }
 
         let config = Arc::new(config);
@@ -248,12 +248,12 @@ impl PyExecutor {
 
     pub fn __repr__(&self) -> String {
         format!(
-            "BallistaExecutor(address={}:{}, scheduler={}:{}, concurrent_tasks={} listening={})",
+            "BallistaExecutor(address={}:{}, scheduler={}:{}, vcores={} listening={})",
             self.config.bind_host,
             self.config.port,
             self.config.scheduler_host,
             self.config.scheduler_port,
-            self.config.concurrent_tasks,
+            self.config.vcores,
             self.handle.is_some()
         )
     }

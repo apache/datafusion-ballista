@@ -960,14 +960,6 @@ mod supported {
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
-        // Exercise the plain sort-merge-join execution path: disable the
-        // default SortMergeJoinExec broadcast conversion so the join stays a
-        // SortMergeJoinExec in the distributed plan.
-        ctx.sql("SET ballista.optimizer.broadcast_sort_merge_join_enabled = false")
-            .await?
-            .collect()
-            .await?;
-
         ctx.register_parquet(
             "t0",
             &format!("{test_data}/alltypes_plain.parquet"),

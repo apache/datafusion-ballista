@@ -33,16 +33,15 @@ use ballista_core::{
     serde::scheduler::PartitionLocation,
 };
 use datafusion::arrow::datatypes::DataType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{
-    HashJoinExec, HashJoinExecBuilder, PartitionMode, SortMergeJoinExec,
-};
+use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
@@ -267,37 +266,27 @@ impl DefaultDistributedPlanner {
         self.next_stage_id
     }
 
-    /// If `plan` is a `HashJoinExec(Partitioned)` whose smaller side fits
-    /// under the broadcast threshold, returns a rewritten
-    /// `HashJoinExec(CollectLeft)` (with a swap if the small side was on
-    /// the right) wrapped so the build subtree is a single-partition input.
+    /// Reconciles a join's partition mode with the Ballista broadcast
+    /// threshold (`ballista.optimizer.broadcast_join_threshold_bytes`).
+    ///
+    /// - A `HashJoinExec(Partitioned)` whose smaller side fits under the
+    ///   threshold is rewritten as a `HashJoinExec(CollectLeft)` (with a swap
+    ///   if the small side was on the right) wrapped so the build subtree is a
+    ///   single-partition input.
+    /// - A `HashJoinExec(CollectLeft)` that DataFusion's `JoinSelection` chose
+    ///   using its own session threshold is demoted back to `Partitioned` when
+    ///   its join type is not broadcast-safe, or when the build side is not
+    ///   under the Ballista threshold (including a threshold of `0`, which
+    ///   disables broadcast joins). This makes the Ballista key authoritative
+    ///   even when it is overridden at runtime below the DataFusion session
+    ///   value. Null-aware anti joins are never demoted (they require
+    ///   `CollectLeft`).
+    ///
     /// Otherwise returns the input unchanged.
     fn maybe_promote_to_broadcast(
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // DataFusion's own `JoinSelection` may have already stamped
-        // `CollectLeft` on this join (it does so for any build side under
-        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
-        // restricting by join type). A `CollectLeft` join replicates the build
-        // side to every probe task, which is only correct for probe-driven join
-        // types. If the join type is not broadcast-safe, demote it back to a
-        // partitioned (shuffle) join. This is a correctness guard, so it runs
-        // regardless of the Ballista broadcast threshold below. A
-        // `SortMergeJoinExec` falls through to the SMJ-broadcast path below.
-        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
-            && *hash_join.partition_mode() == PartitionMode::CollectLeft
-        {
-            if collect_left_broadcast_safe(*hash_join.join_type()) {
-                return Ok(plan);
-            }
-            debug!(
-                "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
-                hash_join.join_type(),
-            );
-            return Self::demote_collect_left_to_partitioned(hash_join, config);
-        }
-
         let threshold_bytes = config
             .extensions
             .get::<BallistaConfig>()
@@ -305,35 +294,56 @@ impl DefaultDistributedPlanner {
             .unwrap_or_else(|| {
                 BallistaConfig::default().broadcast_join_threshold_bytes()
             });
+
+        // DataFusion's own `JoinSelection` may have already stamped
+        // `CollectLeft` on this join (it does so for any build side under
+        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
+        // restricting by join type). A `CollectLeft` join replicates the build
+        // side to every probe task.
+        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
+            && *hash_join.partition_mode() == PartitionMode::CollectLeft
+        {
+            // Broadcasting is only correct for probe-driven join types. If the
+            // join type is not broadcast-safe, demote it back to a partitioned
+            // (shuffle) join. Correctness guard, independent of the threshold.
+            if !collect_left_broadcast_safe(*hash_join.join_type()) {
+                debug!(
+                    "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
+                    hash_join.join_type(),
+                );
+                return Self::demote_collect_left_to_partitioned(hash_join, config);
+            }
+            // Null-aware anti joins must stay `CollectLeft`: they track
+            // probe-side state that a partitioned join cannot reconstruct, so
+            // never demote them regardless of the threshold.
+            if hash_join.null_aware {
+                return Ok(plan);
+            }
+            // Safe join type: honor the Ballista broadcast threshold. DataFusion
+            // decided `CollectLeft` using its own session threshold, which can
+            // exceed a user's runtime `broadcast_join_threshold_bytes` override.
+            // If broadcasts are disabled (0) or the build (left) side is not
+            // under the Ballista threshold, demote so the Ballista key is
+            // authoritative in the static planner path too.
+            if threshold_bytes == 0 || !under(&**hash_join.left(), threshold_bytes) {
+                debug!(
+                    "broadcast check: demoting CollectLeft join to Partitioned; build side not under Ballista threshold={threshold_bytes} (or broadcasts disabled)",
+                );
+                return Self::demote_collect_left_to_partitioned(hash_join, config);
+            }
+            return Ok(plan);
+        }
+
         if threshold_bytes == 0 {
             debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
 
-        // The candidate is a `HashJoinExec(Partitioned)`: either the plan itself,
-        // or a `SortMergeJoinExec` converted to one when SMJ broadcast is enabled.
-        // `converted` owns the converted join so `hash_join` can borrow from it,
-        // and the original `plan` is returned unchanged when no promotion happens.
-        let smj_broadcast_enabled = config
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.broadcast_sort_merge_join_enabled())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().broadcast_sort_merge_join_enabled()
-            });
-        let converted: Option<Arc<HashJoinExec>> =
-            match plan.downcast_ref::<SortMergeJoinExec>() {
-                Some(smj) if smj_broadcast_enabled => {
-                    Some(convert_sort_merge_to_hash_join(smj)?)
-                }
-                _ => None,
-            };
-        let hash_join: &HashJoinExec =
-            match (plan.downcast_ref::<HashJoinExec>(), &converted) {
-                (Some(hj), _) => hj,
-                (None, Some(hj)) => hj.as_ref(),
-                (None, None) => return Ok(plan),
-            };
+        // The candidate must already be a `HashJoinExec(Partitioned)`. A
+        // `SortMergeJoinExec` is never a broadcast candidate.
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
+            return Ok(plan);
+        };
         debug!(
             "broadcast check: evaluating HashJoinExec mode={:?} join_type={:?} threshold={threshold_bytes}",
             hash_join.partition_mode(),
@@ -522,33 +532,6 @@ impl DefaultDistributedPlanner {
     }
 }
 
-/// Strips a top-level `SortExec`, returning its input. A `SortMergeJoinExec`
-/// requires sorted inputs, but the broadcast `CollectLeft` hash join converted
-/// from it does not, so the sort is dropped during conversion.
-fn strip_sort(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    if let Some(sort) = plan.downcast_ref::<SortExec>() {
-        sort.input().clone()
-    } else {
-        plan
-    }
-}
-
-/// Converts a `SortMergeJoinExec` into an equivalent `HashJoinExec(Partitioned)`,
-/// dropping the now-redundant input sorts. The result is then evaluated by the
-/// normal hash-join broadcast path, which promotes it to `CollectLeft` when a
-/// side fits under the threshold.
-fn convert_sort_merge_to_hash_join(smj: &SortMergeJoinExec) -> Result<Arc<HashJoinExec>> {
-    let left = strip_sort(smj.left().clone());
-    let right = strip_sort(smj.right().clone());
-    let hash_join =
-        HashJoinExecBuilder::new(left, right, smj.on().to_vec(), smj.join_type())
-            .with_filter(smj.filter().clone())
-            .with_partition_mode(PartitionMode::Partitioned)
-            .with_null_equality(smj.null_equality)
-            .build()?;
-    Ok(Arc::new(hash_join))
-}
-
 fn create_unresolved_shuffle(
     shuffle_writer: &dyn ShuffleWriter,
 ) -> Arc<UnresolvedShuffleExec> {
@@ -672,6 +655,42 @@ pub fn rollback_resolved_shuffles(
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
+/// Rewrites every multi-partition [`EmptyExec`] into a round-robin [`RepartitionExec`]
+/// over a single-partition [`EmptyExec`], which is an equivalent plan whose partition
+/// count survives serialization.
+///
+/// `datafusion-proto` encodes an `EmptyExec` as its schema alone, so a multi-partition
+/// `EmptyExec` decodes on the executor with a single partition
+/// (<https://github.com/apache/datafusion/issues/23642>). A stage is sized from the
+/// scheduler-side partition count, so every task above partition 0 would then fail with
+/// `EmptyExec invalid partition N (expected less than 1)`. A `RepartitionExec` carries
+/// its partitioning on the wire, so the count arrives intact.
+///
+/// This runs at the point the stage plan is built for the wire, after all physical
+/// optimizer rules, so no later rule can collapse the rewrite. It can be removed once
+/// the partition count survives `EmptyExec` serialization upstream.
+fn make_empty_exec_serde_safe(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|node| {
+            let Some(empty) = node.downcast_ref::<EmptyExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let partition_count =
+                empty.properties().output_partitioning().partition_count();
+            if partition_count <= 1 {
+                return Ok(Transformed::no(node));
+            }
+            let single: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(empty.schema()));
+            Ok(Transformed::yes(Arc::new(RepartitionExec::try_new(
+                single,
+                Partitioning::RoundRobinBatch(partition_count),
+            )?)))
+        })?
+        .data)
+}
+
 pub(crate) fn create_shuffle_writer_with_config(
     job_id: &JobId,
     stage_id: usize,
@@ -679,6 +698,8 @@ pub(crate) fn create_shuffle_writer_with_config(
     partitioning: Option<Partitioning>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ShuffleWriter>> {
+    let plan = make_empty_exec_serde_safe(plan)?;
+
     // Check if sort-based shuffle is enabled
     let ballista_config = config
         .extensions
@@ -746,6 +767,41 @@ mod test {
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
+
+    #[test]
+    fn multi_partition_empty_exec_is_rewritten_for_the_wire() {
+        use super::make_empty_exec_serde_safe;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema).with_partitions(4));
+
+        let rewritten = make_empty_exec_serde_safe(plan).unwrap();
+
+        assert_eq!(
+            displayable(rewritten.as_ref()).indent(false).to_string(),
+            "RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1\n  EmptyExec\n"
+        );
+    }
+
+    #[test]
+    fn single_partition_empty_exec_is_left_alone() {
+        use super::make_empty_exec_serde_safe;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+
+        let rewritten = make_empty_exec_serde_safe(plan).unwrap();
+
+        assert_eq!(
+            displayable(rewritten.as_ref()).indent(false).to_string(),
+            "EmptyExec\n"
+        );
+    }
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
@@ -1032,7 +1088,7 @@ order by
     async fn distributed_broadcast_join_plan() -> Result<(), BallistaError> {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1076,81 +1132,12 @@ order by
     }
 
     #[tokio::test]
-    async fn distributed_broadcast_sort_merge_join_plan() -> Result<(), BallistaError> {
-        // prefer_hash_join=false -> DataFusion plans a SortMergeJoinExec.
-        // broadcast_sort_merge_join_enabled=true -> the small build side is
-        // converted to a broadcast CollectLeft hash join: the SortMergeJoinExec
-        // and its input SortExecs are gone, and the build input is an
-        // UnresolvedShuffleExec with broadcast=true.
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, true)?;
-
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
-
-        // Stage 1 holds the join: a broadcast CollectLeft hash join, no
-        // SortMergeJoinExec and no SortExec.
-        assert_plan!(stages[1].as_ref(), @"
-        ShuffleWriterExec: partitioning: None
-          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            ProjectionExec: expr=[]
-              ProjectionExec: expr=[k@1 as k, k@0 as k]
-                HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(k@0, k@0)]
-                  UnresolvedShuffleExec: stage=1, broadcast=true, upstream_partitions: 1
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-        ");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn distributed_sort_merge_join_unchanged_when_flag_disabled()
-    -> Result<(), BallistaError> {
-        // SMJ planned (prefer_hash_join=false), flag OFF -> no conversion: the
-        // join stays a SortMergeJoinExec over sorted inputs.
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, false)?;
-
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
-
-        // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
-        // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
-        assert_plan!(stages[0].as_ref(), @r"
-        ShuffleWriterExec: partitioning: None
-          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            ProjectionExec: expr=[]
-              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-        ");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn distributed_sort_merge_join_unchanged_when_sides_too_large()
-    -> Result<(), BallistaError> {
-        // Flag ON but threshold tiny (1 byte) -> neither side qualifies, so the
-        // join stays a SortMergeJoinExec over sorted inputs.
-        let (ctx, options) = make_broadcast_test_ctx(1, 1, false, true)?;
+    async fn distributed_sort_merge_join_is_never_broadcast() -> Result<(), BallistaError>
+    {
+        // SMJ planned (prefer_hash_join=false). A SortMergeJoinExec is never a
+        // broadcast candidate, so it stays a SortMergeJoinExec over sorted
+        // inputs even though the small side is well under the threshold.
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1184,7 +1171,7 @@ order by
     -> Result<(), BallistaError> {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(0, 1, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(0, 1, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1245,8 +1232,7 @@ order by
         ];
 
         for sql in sqls {
-            let (ctx, options) =
-                make_broadcast_test_ctx(10 * 1024 * 1024, 1, true, false)?;
+            let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
             let plan = ctx.sql(sql).await?.into_optimized_plan()?;
             let plan = ctx.state().create_physical_plan(&plan).await?;
 
@@ -1369,6 +1355,109 @@ order by
         Ok(())
     }
 
+    // Plans `big join small` with DataFusion's own hash-join threshold high
+    // enough for its `JoinSelection` to promote to `CollectLeft`, and the
+    // Ballista broadcast threshold set to `ballista_threshold_bytes`. Returns
+    // the partition modes of every `HashJoinExec` across the resulting stages.
+    async fn collect_left_modes_for_ballista_threshold(
+        ballista_threshold_bytes: usize,
+    ) -> Result<Vec<datafusion::physical_plan::joins::PartitionMode>, BallistaError> {
+        use ballista_core::extension::SessionConfigExt;
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("w", DataType::Int32, false),
+        ]));
+        let big_batch = RecordBatch::try_new(
+            big_schema,
+            vec![
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+        let small_batch = RecordBatch::try_new(
+            small_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![10, 20])),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        // DF threshold high so DataFusion's JoinSelection promotes to
+        // CollectLeft on its own; the Ballista threshold is what we vary.
+        let session_config = SessionConfig::new()
+            .with_target_partitions(2)
+            .set_bool("datafusion.optimizer.prefer_hash_join", true)
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                10 * 1024 * 1024,
+            )
+            .with_ballista_broadcast_join_threshold_bytes(ballista_threshold_bytes);
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+        ctx.register_batch("small", small_batch)?;
+        let options = ctx.state().config().options().clone();
+
+        let plan = ctx
+            .sql("select * from big join small on big.k = small.k")
+            .await?
+            .into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        let mut modes = vec![];
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    modes.push(*hj.partition_mode());
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+        Ok(modes)
+    }
+
+    // DataFusion's `JoinSelection` promotes a small build side to `CollectLeft`
+    // using its own session threshold. When the Ballista broadcast threshold is
+    // lowered below that build size at runtime, the distributed planner must
+    // demote the `CollectLeft` join back to `Partitioned` so the Ballista key is
+    // authoritative; a high Ballista threshold leaves the broadcast in place.
+    #[tokio::test]
+    async fn df_collect_left_demoted_when_over_ballista_threshold()
+    -> Result<(), BallistaError> {
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let kept = collect_left_modes_for_ballista_threshold(10 * 1024 * 1024).await?;
+        assert!(
+            kept.contains(&PartitionMode::CollectLeft),
+            "a high Ballista threshold must keep the DataFusion-promoted CollectLeft join, got {kept:?}"
+        );
+
+        let demoted = collect_left_modes_for_ballista_threshold(8).await?;
+        assert!(
+            !demoted.contains(&PartitionMode::CollectLeft),
+            "a Ballista threshold below the build side must demote the CollectLeft join to Partitioned, got {demoted:?}"
+        );
+
+        Ok(())
+    }
+
     // A LEFT join with the small side on the left builds (broadcasts) the left
     // side and emits a null-padded row for every unmatched left row; each probe
     // task would emit those independently. The guard must keep it repartitioned
@@ -1378,7 +1467,7 @@ order by
     {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
         let df = ctx
             .sql("select * from small left join big on small.k = big.k")
@@ -1423,7 +1512,7 @@ order by
     {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1467,8 +1556,7 @@ order by
         // broadcast build stage has 3 input partitions and writes 3 shuffle
         // files. The broadcast UnresolvedShuffleExec must report
         // upstream_partition_count = 3.
-        let (ctx, options) =
-            make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1533,7 +1621,7 @@ order by
                 host: "localhost".to_string(),
                 port: 50050,
                 grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_task_slots(1),
+                specification: ExecutorSpecification::default().with_vcores(1),
                 os_info: ExecutorOperatingSystemSpecification::default(),
             },
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
@@ -1761,7 +1849,6 @@ order by
         threshold_bytes: usize,
         small_partitions: usize,
         prefer_hash_join: bool,
-        smj_broadcast_enabled: bool,
     ) -> Result<
         (
             datafusion::prelude::SessionContext,
@@ -1814,11 +1901,7 @@ order by
                 "datafusion.optimizer.hash_join_single_partition_threshold",
                 0,
             )
-            .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join)
-            .set_bool(
-                "ballista.optimizer.broadcast_sort_merge_join_enabled",
-                smj_broadcast_enabled,
-            );
+            .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join);
         let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
         ctx.register_batch("big", big_batch)?;
 

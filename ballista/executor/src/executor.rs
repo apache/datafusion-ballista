@@ -31,7 +31,7 @@ use ballista_core::error::BallistaError;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
-use ballista_core::serde::scheduler::PartitionId;
+use ballista_core::serde::scheduler::TaskKey;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -66,7 +66,7 @@ impl Future for TasksDrainedFuture {
     }
 }
 
-type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
+type AbortHandles = Arc<DashMap<TaskKey, AbortHandle>>;
 
 /// Ballista executor
 #[derive(Clone)]
@@ -89,8 +89,8 @@ pub struct Executor {
     /// Collector for runtime execution metrics
     pub metrics_collector: Arc<dyn ExecutorMetricsCollector>,
 
-    /// Concurrent tasks can run in executor
-    pub concurrent_tasks: usize,
+    /// Virtual cores assigned to this executor. See CLI docs on `--vcores`.
+    pub vcores: usize,
 
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
@@ -113,7 +113,7 @@ impl Executor {
         work_dir: &str,
         runtime_producer: RuntimeProducer,
         config_producer: ConfigProducer,
-        concurrent_tasks: usize,
+        vcores: usize,
     ) -> Self {
         Self::new(
             metadata,
@@ -122,7 +122,7 @@ impl Executor {
             config_producer,
             Arc::new(BallistaFunctionRegistry::default()),
             Arc::new(LoggingMetricsCollector::default()),
-            concurrent_tasks,
+            vcores,
             Arc::new(DefaultExecutionEngine::new()),
         )
     }
@@ -137,7 +137,7 @@ impl Executor {
         config_producer: ConfigProducer,
         function_registry: Arc<BallistaFunctionRegistry>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
-        concurrent_tasks: usize,
+        vcores: usize,
         execution_engine: Arc<dyn ExecutionEngine>,
     ) -> Self {
         Self {
@@ -147,7 +147,7 @@ impl Executor {
             runtime_producer,
             config_producer,
             metrics_collector,
-            concurrent_tasks,
+            vcores,
             abort_handles: Default::default(),
             execution_engine,
             session_runtime_cache: None,
@@ -162,7 +162,7 @@ impl Executor {
         config_producer: ConfigProducer,
         function_registry: Arc<BallistaFunctionRegistry>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
-        concurrent_tasks: usize,
+        vcores: usize,
     ) -> Self {
         Self {
             metadata,
@@ -171,7 +171,7 @@ impl Executor {
             runtime_producer,
             config_producer,
             metrics_collector,
-            concurrent_tasks,
+            vcores,
             abort_handles: Default::default(),
             execution_engine: Arc::new(DefaultExecutionEngine::new()),
             session_runtime_cache: None,
@@ -200,14 +200,17 @@ impl Executor {
 
     /// Produces the runtime for a task, reusing the session's shared read-side
     /// state when a session cache is attached; otherwise builds a runtime per
-    /// task via the `runtime_producer`.
+    /// task via the `runtime_producer`. `vcores_consumed` is the number of
+    /// vcores this task claimed at bind time; the memory pool policy uses it
+    /// to size the per-task pool proportionally.
     pub fn produce_runtime_for_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
+        vcores_consumed: u32,
     ) -> datafusion::error::Result<Arc<RuntimeEnv>> {
         match &self.session_runtime_cache {
-            Some(cache) => cache.produce_runtime(session_id, config),
+            Some(cache) => cache.produce_runtime(session_id, config, vcores_consumed),
             None => (self.runtime_producer)(config),
         }
     }
@@ -222,17 +225,15 @@ impl Executor {
     /// and statistics.
     pub async fn execute_query_stage(
         &self,
-        task_id: usize,
-        partition: PartitionId,
+        key: TaskKey,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
-            query_stage_exec.execute_query_stage(partition.partition_id, task_ctx),
+            query_stage_exec.execute_query_stage(key.task_id, task_ctx),
         );
 
-        self.abort_handles
-            .insert((task_id, partition.clone()), abort_handle);
+        self.abort_handles.insert(key.clone(), abort_handle);
 
         let partitions = match std::panic::AssertUnwindSafe(task).catch_unwind().await {
             Ok(Ok(result)) => {
@@ -249,12 +250,12 @@ impl Executor {
             }
         };
 
-        self.abort_handles.remove(&(task_id, partition.clone()));
+        self.abort_handles.remove(&key);
 
         self.metrics_collector.record_stage(
-            &partition.job_id,
-            partition.stage_id,
-            partition.partition_id,
+            &key.job_id,
+            key.stage_id,
+            key.task_id,
             query_stage_exec,
         );
 
@@ -266,19 +267,15 @@ impl Executor {
     /// Returns `Ok(true)` if the task was found and cancelled, `Ok(false)` if not found.
     pub async fn cancel_task(
         &self,
-        task_id: usize,
         job_id: JobId,
         stage_id: usize,
-        partition_id: usize,
+        task_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some((_, handle)) = self.abort_handles.remove(&(
+        if let Some((_, handle)) = self.abort_handles.remove(&TaskKey {
+            job_id,
+            stage_id,
             task_id,
-            PartitionId {
-                job_id,
-                stage_id,
-                partition_id,
-            },
-        )) {
+        }) {
             handle.abort();
             Ok(true)
         } else {
@@ -307,7 +304,7 @@ mod test {
     use ballista_core::RuntimeProducer;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
-    use ballista_core::serde::scheduler::PartitionId;
+    use ballista_core::serde::scheduler::TaskKey;
     use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -436,11 +433,7 @@ mod test {
 
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: None,
-            host: None,
-            os_info: None,
+            ..Default::default()
         };
         let config_producer = Arc::new(default_config_producer);
         let ctx = SessionContext::new();
@@ -461,13 +454,13 @@ mod test {
         // Spawn our non-terminating task on a separate fiber.
         let executor_clone = executor.clone();
         tokio::task::spawn(async move {
-            let part = PartitionId {
+            let key = TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
-                partition_id: 0,
+                task_id: 0,
             };
             let task_result = executor_clone
-                .execute_query_stage(1, part, Arc::new(query_stage_exec), ctx.task_ctx())
+                .execute_query_stage(key, Arc::new(query_stage_exec), ctx.task_ctx())
                 .await;
             sender.send(task_result).expect("sending result");
         });
@@ -476,7 +469,7 @@ mod test {
         // poll until that happens.
         for _ in 0..20 {
             if executor
-                .cancel_task(1, "job-id".into(), 1, 0)
+                .cancel_task("job-id".into(), 1, 0)
                 .await
                 .expect("cancelling task")
             {
@@ -501,11 +494,7 @@ mod test {
     fn produce_runtime_for_session_shares_read_side_state() {
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: None,
-            host: None,
-            os_info: None,
+            ..Default::default()
         };
         let config_producer = Arc::new(default_config_producer);
 
@@ -513,7 +502,7 @@ mod test {
         // pool policy, so shared read-side state is observable via ptr equality.
         let base_producer: RuntimeProducer =
             Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
-        let identity: MemoryPoolPolicy = Arc::new(|base, _| Ok(base));
+        let identity: MemoryPoolPolicy = Arc::new(|base, _, _| Ok(base));
         let cache: Arc<dyn SessionRuntimeCache> = Arc::new(
             DefaultSessionRuntimeCache::new(base_producer.clone(), identity, 4),
         );
@@ -528,9 +517,9 @@ mod test {
         .with_session_runtime_cache(Some(cache));
 
         let cfg = SessionConfig::new();
-        let e1 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
-        let e2 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
-        let e3 = executor.produce_runtime_for_session("s2", &cfg).unwrap();
+        let e1 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
+        let e2 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
+        let e3 = executor.produce_runtime_for_session("s2", &cfg, 1).unwrap();
 
         assert!(Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
         assert!(!Arc::ptr_eq(&e1.cache_manager, &e3.cache_manager));
@@ -540,11 +529,7 @@ mod test {
     fn produce_runtime_for_session_falls_back_without_cache() {
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: None,
-            host: None,
-            os_info: None,
+            ..Default::default()
         };
         let config_producer = Arc::new(default_config_producer);
         let base_producer: RuntimeProducer =
@@ -560,8 +545,8 @@ mod test {
         );
 
         let cfg = SessionConfig::new();
-        let e1 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
-        let e2 = executor.produce_runtime_for_session("s1", &cfg).unwrap();
+        let e1 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
+        let e2 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
         assert!(!Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
     }
 }

@@ -62,7 +62,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
     let host_suffix = sort_suffix!(SortColumn::Host, sort_column, sort_order);
     let id_suffix = sort_suffix!(SortColumn::Id, sort_column, sort_order);
     let cpu_cores_suffix = sort_suffix!(SortColumn::CpuCores, sort_column, sort_order);
-    let task_slots_suffix = sort_suffix!(SortColumn::TaskSlots, sort_column, sort_order);
+    let vcores_suffix = sort_suffix!(SortColumn::Vcores, sort_column, sort_order);
     let proc_physical_memory_suffix =
         sort_suffix!(SortColumn::ProcPhysicalMemoryUsage, sort_column, sort_order);
     let peak_physical_memory_suffix =
@@ -73,7 +73,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
         Cell::from(Text::from(format!("Host{host_suffix}")).centered()),
         Cell::from(Text::from(format!("Id{id_suffix}")).centered()),
         Cell::from(Text::from(format!("CPU cores{cpu_cores_suffix}")).right_aligned()),
-        Cell::from(Text::from(format!("Task Slots{task_slots_suffix}")).right_aligned()),
+        Cell::from(Text::from(format!("vCores{vcores_suffix}")).right_aligned()),
         Cell::from(
             Text::from(format!("Physical Memory{proc_physical_memory_suffix}"))
                 .right_aligned(),
@@ -107,8 +107,8 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
                 Text::from(app.format_count(executor.cpu_cores() as usize))
                     .right_aligned(),
             );
-            let task_slots_cell = Cell::from(
-                Text::from(app.format_count(executor.specification.task_slots as usize))
+            let vcores_cell = Cell::from(
+                Text::from(app.format_count(executor.specification.vcores as usize))
                     .right_aligned(),
             );
             let proc_physical_memory_cell = Cell::from(
@@ -129,7 +129,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
                 host_cell,
                 id_cell,
                 cpu_cores_cell,
-                task_slots_cell,
+                vcores_cell,
                 proc_physical_memory_cell,
                 peak_physical_memory_cell,
                 last_seen_cell,
@@ -143,7 +143,7 @@ fn render_executors_table(frame: &mut Frame, area: Rect, app: &App) {
             Constraint::Percentage(10), // Host
             Constraint::Percentage(20), // Id
             Constraint::Percentage(8),  // CPU cores
-            Constraint::Percentage(8),  // Task slots
+            Constraint::Percentage(8),  // vCores
             Constraint::Percentage(18), // Proc physical memory
             Constraint::Percentage(18), // Peak physical memory
             Constraint::Percentage(18), // Last seen

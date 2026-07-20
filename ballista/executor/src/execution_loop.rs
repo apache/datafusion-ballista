@@ -33,7 +33,7 @@ use ballista_core::serde::protobuf::{
     PollWorkParams, PollWorkResult, TaskDefinition, TaskStatus,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
+use ballista_core::serde::scheduler::{ExecutorSpecification, TaskKey};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -61,6 +61,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan,
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
 where
     C: tonic::client::GrpcService<tonic::body::Body>,
@@ -75,20 +76,19 @@ where
         .unwrap()
         .clone()
         .into();
-    let available_task_slots =
-        Arc::new(Semaphore::new(executor_specification.task_slots as usize));
+    let free_vcores = Arc::new(Semaphore::new(executor_specification.vcores as usize));
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
     info!("Starting poll work loop with scheduler");
 
     let dedicated_executor =
-        DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
+        DedicatedExecutor::new("task_runner", executor_specification.vcores as usize);
 
     loop {
-        // Wait for task slots to be available before asking for new work
-        let permit = available_task_slots.acquire().await.unwrap();
-        // Make the slot available again
+        // Wait for a vcore permit before asking for new work.
+        let permit = free_vcores.acquire().await.unwrap();
+        // Make the vcore available again for the actual bind below.
         drop(permit);
 
         // Keeps track of whether we received task in last iteration
@@ -102,13 +102,14 @@ where
             scheduler
                 .poll_work(PollWorkParams {
                     metadata: Some(executor.metadata.clone()),
-                    num_free_slots: available_task_slots.available_permits() as u32,
+                    num_free_vcores: free_vcores.available_permits() as u32,
                     task_status,
                 })
                 .await;
 
         match poll_work_result {
             Ok(result) => {
+                health.mark_heartbeat_ok();
                 let PollWorkResult {
                     tasks,
                     jobs_to_clean,
@@ -135,9 +136,8 @@ where
                 for task in tasks {
                     let task_status_sender = task_status_sender.clone();
 
-                    // Acquire a permit/slot for the task
-                    let permit =
-                        available_task_slots.clone().acquire_owned().await.unwrap();
+                    // Acquire a vcore permit for the task.
+                    let permit = free_vcores.clone().acquire_owned().await.unwrap();
 
                     let start_exec_time = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -161,14 +161,14 @@ where
                             // as scheduler expects notification.
                             //
 
-                            let partition_id = PartitionId {
+                            let task_key = TaskKey {
                                 job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
-                                partition_id: task.partition_id as usize,
+                                task_id: task.task_id as usize,
                             };
 
                             warn!(
-                                "Executor failed to run task: {partition_id:?}, error: {e:?}"
+                                "Executor failed to run task: {task_key:?}, error: {e:?}"
                             );
 
                             let end_exec_time = SystemTime::now()
@@ -187,9 +187,8 @@ where
                             if let Err(error) = task_status_sender.send(as_task_status(
                                 Err(e),
                                 executor.metadata.id.clone(),
-                                task.task_id as usize,
                                 task.task_attempt_num as usize,
-                                partition_id,
+                                task_key,
                                 None,
                                 task_execution_times,
                             )) {
@@ -200,6 +199,7 @@ where
                 }
             }
             Err(error) => {
+                health.mark_heartbeat_failed();
                 warn!(
                     "Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {error}"
                 );
@@ -239,13 +239,12 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
-    let partition_id = task.partition_id;
     let start_exec_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
     let task_identity = format!(
-        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
+        "TID {job_id}/{stage_id}.{stage_attempt_num}/{task_id}.{task_attempt_num}"
     );
     info!("Received task: [{task_identity}]");
 
@@ -262,8 +261,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_higher_order_functions =
         executor.function_registry.higher_order_functions.clone();
 
-    let runtime =
-        executor.produce_runtime_for_session(&task.session_id, &session_config)?;
+    let runtime = executor.produce_runtime_for_session(
+        &task.session_id,
+        &session_config,
+        task.vcores_consumed,
+    )?;
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
@@ -282,26 +284,32 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             proto.try_into_physical_plan(&task_context, codec.physical_extension_codec())
         })?;
 
+    let global_output_partition_ids: Vec<usize> = task
+        .global_output_partition_ids
+        .iter()
+        .map(|p| *p as usize)
+        .collect();
+
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
         job_id.clone(),
         stage_id as usize,
-        partition_id as usize,
+        task_id as usize,
+        global_output_partition_ids,
         plan,
         &executor.work_dir,
         task_context.session_config(),
     )?;
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
-        let part = PartitionId {
+        let key = TaskKey {
             job_id: job_id.clone(),
             stage_id: stage_id as usize,
-            partition_id: partition_id as usize,
+            task_id: task_id as usize,
         };
 
         let task_start = Instant::now();
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
-            task_id as usize,
-            part.clone(),
+            key.clone(),
             query_stage_exec.clone(),
             task_context,
         ))
@@ -343,9 +351,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
-            task_id as usize,
             stage_attempt_num as usize,
-            part,
+            key,
             operator_metrics,
             task_execution_times,
         ));

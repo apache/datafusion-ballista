@@ -66,7 +66,6 @@ pub(super) struct ThemeOverride {
     pub cancel_success: Option<Style>,
     pub cancel_not_done: Option<Style>,
     pub cancel_failure: Option<Style>,
-    pub banner: Option<Style>,
     pub feature_enabled: Option<Style>,
     pub feature_disabled: Option<Style>,
     pub text_error: Option<Style>,
@@ -142,7 +141,6 @@ pub struct Theme {
     pub footer: Style,
 
     // ── Misc ──────────────────────────────────────────────────────────────
-    pub banner: Style,
     pub text_error: Style,
     pub text_info: Style,
     pub app_background: Style,
@@ -196,8 +194,6 @@ impl Theme {
             cancel_success: Style::default().fg(Color::LightGreen),
             cancel_not_done: Style::default().fg(Color::LightYellow),
             cancel_failure: Style::default().fg(Color::LightRed),
-
-            banner: Style::default().fg(Color::Yellow),
 
             feature_enabled: Style::default().fg(Color::LightGreen),
             feature_disabled: Style::default().fg(Color::LightRed),
@@ -266,8 +262,6 @@ impl Theme {
             cancel_not_done: Style::default().fg(Color::Indexed(130)),
             cancel_failure: Style::default().fg(Color::Indexed(124)),
 
-            banner: Style::default().fg(Color::Indexed(136)), // dark gold
-
             feature_enabled: Style::default().fg(Color::Indexed(28)),
             feature_disabled: Style::default().fg(Color::Indexed(124)),
 
@@ -331,7 +325,6 @@ impl Theme {
         patch!(cancel_success);
         patch!(cancel_not_done);
         patch!(cancel_failure);
-        patch!(banner);
         patch!(feature_enabled);
         patch!(feature_disabled);
         patch!(text_error);
@@ -364,11 +357,11 @@ mod tests {
         }
     }
 
-    fn settings_with_banner_override(style: Style) -> ThemeSettings {
+    fn settings_with_app_background_override(style: Style) -> ThemeSettings {
         ThemeSettings {
             name: ThemeName::Dark,
             overrides: ThemeOverride {
-                banner: Some(style),
+                app_background: Some(style),
                 ..Default::default()
             },
         }
@@ -417,11 +410,6 @@ mod tests {
     #[test]
     fn dark_row_selected_background_is_indexed_29() {
         assert_eq!(Theme::dark().row_selected.bg, Some(Color::Indexed(29)));
-    }
-
-    #[test]
-    fn dark_banner_is_yellow() {
-        assert_eq!(Theme::dark().banner.fg, Some(Color::Yellow));
     }
 
     // ── Theme::light() ─────────────────────────────────────────────────────
@@ -474,10 +462,10 @@ mod tests {
 
     #[test]
     fn override_named_color_changes_fg() {
-        let theme = Theme::from_settings(&settings_with_banner_override(
+        let theme = Theme::from_settings(&settings_with_app_background_override(
             Style::default().fg(Color::Red),
         ));
-        assert_eq!(theme.banner.fg, Some(Color::Red));
+        assert_eq!(theme.app_background.fg, Some(Color::Red));
     }
 
     #[test]
@@ -495,10 +483,10 @@ mod tests {
 
     #[test]
     fn override_rgb_color_changes_fg() {
-        let theme = Theme::from_settings(&settings_with_banner_override(
+        let theme = Theme::from_settings(&settings_with_app_background_override(
             Style::default().fg(Color::Rgb(180, 100, 0)),
         ));
-        assert_eq!(theme.banner.fg, Some(Color::Rgb(180, 100, 0)));
+        assert_eq!(theme.app_background.fg, Some(Color::Rgb(180, 100, 0)));
     }
 
     #[test]
@@ -506,12 +494,12 @@ mod tests {
         let settings = ThemeSettings {
             name: ThemeName::Dark,
             overrides: ThemeOverride {
-                banner: Some(Style::default().fg(Color::Cyan)),
+                app_background: Some(Style::default().fg(Color::Cyan)),
                 ..Default::default()
             },
         };
         let theme = Theme::from_settings(&settings);
-        assert_eq!(theme.banner.fg, Some(Color::Cyan));
+        assert_eq!(theme.app_background.fg, Some(Color::Cyan));
         // Unspecified field keeps dark-theme default
         assert_eq!(theme.status_running.fg, Some(Color::LightBlue));
     }
@@ -537,11 +525,11 @@ mod tests {
     #[test]
     fn named_color_is_case_insensitive() {
         for name in &["LIGHTBLUE", "LightBlue", "lightblue"] {
-            let theme = Theme::from_settings(&settings_with_banner_override(
+            let theme = Theme::from_settings(&settings_with_app_background_override(
                 Style::default().fg(Color::from_str(name).unwrap()),
             ));
             assert_eq!(
-                theme.banner.fg,
+                theme.app_background.fg,
                 Some(Color::LightBlue),
                 "case variant '{}' should resolve",
                 name
@@ -551,18 +539,18 @@ mod tests {
 
     #[test]
     fn named_color_grey_aliases_gray() {
-        let theme = Theme::from_settings(&settings_with_banner_override(
+        let theme = Theme::from_settings(&settings_with_app_background_override(
             Style::default().fg(Color::from_str("grey").unwrap()),
         ));
-        assert_eq!(theme.banner.fg, Some(Color::Gray));
+        assert_eq!(theme.app_background.fg, Some(Color::Gray));
     }
 
     #[test]
     fn named_color_darkgrey_aliases_darkgray() {
-        let theme = Theme::from_settings(&settings_with_banner_override(
+        let theme = Theme::from_settings(&settings_with_app_background_override(
             Style::default().fg(Color::from_str("darkgrey").unwrap()),
         ));
-        assert_eq!(theme.banner.fg, Some(Color::DarkGray));
+        assert_eq!(theme.app_background.fg, Some(Color::DarkGray));
     }
 
     #[test]
@@ -588,11 +576,11 @@ mod tests {
             ("white", Color::White),
         ];
         for (name, expected) in cases {
-            let theme = Theme::from_settings(&settings_with_banner_override(
+            let theme = Theme::from_settings(&settings_with_app_background_override(
                 Style::default().fg(Color::from_str(name).unwrap()),
             ));
             assert_eq!(
-                theme.banner.fg,
+                theme.app_background.fg,
                 Some(*expected),
                 "named color '{name}' did not resolve to {expected:?}",
             );
@@ -606,16 +594,15 @@ mod tests {
         let o = ThemeOverride::default();
         assert!(o.status_running.is_none());
         assert!(o.table_header.is_none());
-        assert!(o.banner.is_none());
         assert!(o.text_error.is_none());
     }
 
     #[test]
     fn color_spec_named_deserializes() {
         let o: ThemeOverride =
-            serde_json::from_str(r#"{"banner": {"fg": "Cyan"}}"#).unwrap();
+            serde_json::from_str(r#"{"app_background": {"fg": "Cyan"}}"#).unwrap();
         assert_eq!(
-            o.banner,
+            o.app_background,
             Some(Style::default().fg(Color::Cyan)),
             "expected Named(\"Cyan\")"
         );
@@ -635,9 +622,9 @@ mod tests {
     #[test]
     fn color_spec_rgb_deserializes() {
         let o: ThemeOverride =
-            serde_json::from_str(r##"{"banner": {"fg": "#1005FF"}}"##).unwrap();
+            serde_json::from_str(r##"{"app_background": {"fg": "#1005FF"}}"##).unwrap();
         assert_eq!(
-            o.banner,
+            o.app_background,
             Some(Style::default().fg(Color::Rgb(16, 5, 255))),
             "expected Rgb(16, 5, 255)"
         );
@@ -658,8 +645,8 @@ mod tests {
     #[test]
     fn theme_override_unspecified_fields_remain_none() {
         let o: ThemeOverride =
-            serde_json::from_str(r#"{"banner": {"fg": "Red"}}"#).unwrap();
-        assert!(o.banner.is_some());
+            serde_json::from_str(r#"{"app_background": {"fg": "Red"}}"#).unwrap();
+        assert!(o.app_background.is_some());
         assert!(o.status_running.is_none());
         assert!(o.table_header.is_none());
         assert!(o.row_selected.is_none());

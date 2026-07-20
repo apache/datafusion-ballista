@@ -1325,8 +1325,7 @@ mod tests {
                         host: "executor_1".to_string(),
                         port: 7070,
                         grpc_port: 8080,
-                        specification: ExecutorSpecification::default()
-                            .with_task_slots(1),
+                        specification: ExecutorSpecification::default().with_vcores(1),
                         os_info: ExecutorOperatingSystemSpecification::default(),
                     },
                     partition_stats: PartitionStats {
@@ -1444,7 +1443,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
@@ -1495,7 +1494,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
@@ -1547,7 +1546,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
@@ -1599,7 +1598,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
@@ -1673,7 +1672,7 @@ mod tests {
                 host: "executor_1".to_string(),
                 port: 7070,
                 grpc_port: 8080,
-                specification: ExecutorSpecification::default().with_task_slots(1),
+                specification: ExecutorSpecification::default().with_vcores(1),
                 os_info: ExecutorOperatingSystemSpecification::default(),
             },
             partition_stats: Default::default(),
@@ -1773,7 +1772,10 @@ mod tests {
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
-        assert_eq!(result.len(), 2);
+        // Writer's K=1 hash routes every row to partition 0. Its coordinator
+        // reads its full input slice (2 partitions × 2 batches = 4 batches),
+        // all routed to the single output file.
+        assert_eq!(result.len(), 4);
         for b in result {
             assert_eq!(b, create_test_batch())
         }
@@ -1969,7 +1971,7 @@ mod tests {
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification::default().with_task_slots(12),
+                    specification: ExecutorSpecification::default().with_vcores(12),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),

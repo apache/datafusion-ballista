@@ -94,7 +94,8 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
     "ballista.shuffle.writer_channel_capacity";
 /// Configuration key for the per-task buffered-bytes budget at which the
-/// sort shuffle writer spills its in-memory batches to disk.
+/// sort shuffle writer spills its in-memory batches to disk. Set to 0 to
+/// disable the per-task budget and spill only under memory-pool pressure.
 pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
     "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
 /// Configuration key for the byte-size threshold below which a hash join's
@@ -103,11 +104,12 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
-/// Configuration key to enable broadcasting a small build side of a
-/// `SortMergeJoinExec` by converting it to a `CollectLeft` hash join in the
-/// static distributed planner. Enabled by default.
-pub const BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED: &str =
-    "ballista.optimizer.broadcast_sort_merge_join_enabled";
+/// Configuration key for the row-count threshold below which a hash join's
+/// smaller side is promoted to `CollectLeft` and lowered via the broadcast
+/// pattern. Used as a fallback when byte-size statistics are unavailable.
+/// Set to `0` to disable promotion via the row-count path.
+pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
+    "ballista.optimizer.broadcast_join_threshold_rows";
 
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
@@ -147,6 +149,10 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Configuration key for the compression codec used in the shuffle write process
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
+
+/// Configuration key for the scheduler's per-task partition-slice cap.
+pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
+    "ballista.scheduler.max_partitions_per_task";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -236,21 +242,28 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
                          in-memory batches to disk. Counted independently of the runtime memory pool, so \
                          spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle \
-                         memory per executor is approximately concurrent_tasks * this value.".to_string(),
+                         memory per executor is approximately vcores * this value. Set to 0 to disable the \
+                         per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; \
+                         this is safe only with a bounded memory pool, otherwise the writer never spills and \
+                         may run out of memory.".to_string(),
                          DataType::UInt64,
                          Some((256 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
                          "Byte-size threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern. \
-                          Set to 0 to disable promotion.".to_string(),
+                          Governs broadcast selection under both the static distributed \
+                          planner and adaptive query planning (AQE). Set to 0 to disable \
+                          promotion.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED.to_string(),
-                         "Broadcast a small build side of a SortMergeJoinExec by converting it \
-                          to a CollectLeft hash join in the static distributed planner. \
-                          The build side must also fit under broadcast_join_threshold_bytes.".to_string(),
-                         DataType::Boolean,
-                         Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
+                         "Row-count threshold below which a hash join's smaller side is \
+                          promoted to CollectLeft and lowered via the broadcast pattern, \
+                          used as a fallback when byte-size statistics are unavailable. \
+                          Applies to adaptive query planning (AQE). Set to 0 to disable \
+                          promotion via the row-count path.".to_string(),
+                         DataType::UInt64,
+                         Some((1_000_000).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -346,6 +359,19 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
             DataType::Utf8,
             Some("lz4".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
+            "Upper bound on the number of input partitions packed into a single \
+             task's `partition_slice`. `1` (default) means one task per input \
+             partition. Raise to enable multi-partition tasks (fewer tasks, \
+             parallel-sort / parallel-join wins); `0` means unbounded — the \
+             scheduler fills each task up to the executor's free vcore count. \
+             Does not apply to collapse stages, which must pack their full \
+             pending queue into a single task for correctness."
+                .to_string(),
+            DataType::UInt64,
+            Some(1.to_string()),
         ),
     ];
     entries
@@ -581,11 +607,12 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES)
     }
 
-    /// Returns whether broadcasting a small build side of a `SortMergeJoinExec`
-    /// (by converting it to a `CollectLeft` hash join) is enabled in the static
-    /// distributed planner.
-    pub fn broadcast_sort_merge_join_enabled(&self) -> bool {
-        self.get_bool_setting(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED)
+    /// Returns the row-count threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern.
+    /// Used as a fallback when byte-size statistics are unavailable. `0`
+    /// disables promotion via the row-count path.
+    pub fn broadcast_join_threshold_rows(&self) -> usize {
+        self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
@@ -636,6 +663,11 @@ impl BallistaConfig {
     /// Returns whether the AQE dynamic join-selection rule is enabled.
     pub fn adaptive_join_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_JOIN_ENABLED)
+    }
+
+    /// Returns the scheduler's per-task partition-slice cap. `0` means unbounded.
+    pub fn max_partitions_per_task(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK)
     }
 
     /// Returns whether chaos-monkey execution injection is enabled.
@@ -851,11 +883,5 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
-    }
-
-    #[test]
-    fn broadcast_sort_merge_join_enabled_by_default() {
-        let config = BallistaConfig::default();
-        assert!(config.broadcast_sort_merge_join_enabled());
     }
 }

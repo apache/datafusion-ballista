@@ -51,7 +51,7 @@ ctx = BallistaSessionContext(f"df://{host}:{port}")
 ### Target Partitions
 
 Set `datafusion.execution.target_partitions` to match your cluster capacity
-(`executors × concurrent_tasks_per_executor`) by passing `cluster_config` to the
+(`executors × vcores_per_executor`) by passing `cluster_config` to the
 constructor. The default inherits from DataFusion and is based on the client's CPU
 count, which is far too low for distributed execution:
 
@@ -59,8 +59,8 @@ count, which is far too low for distributed execution:
 from ballista import BallistaSessionContext
 
 executors = 4
-concurrent_tasks = 8
-target_partitions = executors * concurrent_tasks
+vcores = 8
+target_partitions = executors * vcores
 
 ctx = BallistaSessionContext(
     "df://localhost:50050",

@@ -59,7 +59,6 @@ tui-shimmer = { version = "0.1", optional = true }
 # Native-only TUI deps
 crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
 tracing-appender = { version = "0.2", optional = true }
-tui-big-text = { version = "0.8.4", optional = true }
 
 # Web-only deps (WASM)
 critical-section = { version = "1.2.0", features = ["std"], optional = true }
@@ -89,7 +88,7 @@ cli = [
 tui = [
     "dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures",
     "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
-    "dep:serde", "dep:serde_json", "dep:tracing-appender", "dep:tui-big-text",
+    "dep:serde", "dep:serde_json", "dep:tracing-appender",
     "dep:tui-shimmer", "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
     "ratatui/layout-cache", "ratatui/underline-color", "ratatui/serde"
 ]
