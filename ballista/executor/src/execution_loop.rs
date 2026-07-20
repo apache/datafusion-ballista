@@ -51,16 +51,38 @@ use tonic::codegen::{Body, Bytes, StdError};
 
 /// Main execution loop that polls the scheduler for available tasks.
 ///
-/// This function runs indefinitely, periodically asking the scheduler for
-/// work. When tasks are received, they are executed on a dedicated thread
-/// pool and results are reported back to the scheduler.
+/// Runs indefinitely, periodically asking the scheduler for work. When tasks
+/// are received they are executed concurrently and results are reported back
+/// to the scheduler.
 ///
-/// The loop respects the executor's concurrent task limit via a semaphore,
-/// ensuring no more than the configured number of tasks run simultaneously.
+/// Concurrency is bounded by a semaphore. Pass `free_vcores` to supply your
+/// own semaphore — useful for sharing a single concurrency limit across
+/// multiple poll loops or for observing executor load from outside.
+/// Pass `None` to have the loop create a semaphore sized to the executor's
+/// configured vcore count.
+///
+/// **Shared semaphores**: when one semaphore is shared across loops that
+/// connect to different schedulers, each scheduler independently sees the
+/// current free capacity and may dispatch up to that many tasks. The semaphore
+/// still caps total concurrent execution — tasks that cannot run immediately
+/// wait for capacity — but both schedulers may over-commit relative to what
+/// the semaphore can actually admit at once. This is intentional: the
+/// semaphore acts as an execution throttle, not a reservation system.
+///
+/// **Semaphore sizing**: if the provided semaphore allows more concurrent
+/// tasks than the executor's thread pool has threads, excess admitted tasks
+/// will queue behind running ones. The caller is responsible for sizing the
+/// semaphore appropriately for their thread pool.
+///
+/// # Panics
+///
+/// Panics on startup if `free_vcores` is a semaphore with zero permits,
+/// which would cause the loop to deadlock immediately.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    free_vcores: Option<Arc<Semaphore>>,
     health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
 where
@@ -76,7 +98,13 @@ where
         .unwrap()
         .clone()
         .into();
-    let free_vcores = Arc::new(Semaphore::new(executor_specification.vcores as usize));
+    let free_vcores = free_vcores.unwrap_or_else(|| {
+        Arc::new(Semaphore::new(executor_specification.vcores as usize))
+    });
+    assert!(
+        free_vcores.available_permits() > 0,
+        "free_vcores semaphore must have at least one permit; passing a closed or zero-permit semaphore would deadlock the poll loop"
+    );
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
@@ -87,7 +115,10 @@ where
 
     loop {
         // Wait for a vcore permit before asking for new work.
-        let permit = free_vcores.acquire().await.unwrap();
+        let permit = free_vcores
+            .acquire()
+            .await
+            .map_err(|_| BallistaError::Internal("vcore semaphore closed".to_string()))?;
         // Make the vcore available again for the actual bind below.
         drop(permit);
 
@@ -137,7 +168,10 @@ where
                     let task_status_sender = task_status_sender.clone();
 
                     // Acquire a vcore permit for the task.
-                    let permit = free_vcores.clone().acquire_owned().await.unwrap();
+                    let permit =
+                        free_vcores.clone().acquire_owned().await.map_err(|_| {
+                            BallistaError::Internal("vcore semaphore closed".to_string())
+                        })?;
 
                     let start_exec_time = SystemTime::now()
                         .duration_since(UNIX_EPOCH)

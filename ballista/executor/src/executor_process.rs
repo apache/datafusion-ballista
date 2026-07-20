@@ -564,6 +564,7 @@ pub async fn start_executor_process(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                None, // free_vcores: use internal semaphore
                 health,
             )));
         }
