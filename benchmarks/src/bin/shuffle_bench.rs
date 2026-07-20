@@ -17,14 +17,13 @@
 
 //! Standalone shuffle benchmark for profiling Ballista shuffle write
 //! performance outside of a cluster. Streams input from Parquet files and
-//! drives either the hash-based or sort-based shuffle writer end-to-end.
+//! drives the sort-based shuffle writer end-to-end.
 //!
 //! # Usage
 //!
 //! ```sh
 //! cargo run --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
-//!   --writer sort \
 //!   --partitions 200 \
 //!   --hash-columns 0,3
 //! ```
@@ -33,10 +32,9 @@
 //! ```sh
 //! cargo flamegraph --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
-//!   --writer sort --partitions 200
+//!   --partitions 200
 //! ```
 
-use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::execution_plans::sort_shuffle::{
     SortShuffleConfig, SortShuffleWriterExec,
 };
@@ -70,12 +68,8 @@ struct Args {
     #[arg(long)]
     input: PathBuf,
 
-    /// Shuffle writer to drive: `hash` (default) or `sort`.
-    #[arg(long, default_value = "hash")]
-    writer: String,
-
     /// Partitioning scheme: `hash`, `single`, or `round-robin`. Currently
-    /// both writers only support `hash`; other values are rejected.
+    /// the writer only supports `hash`; other values are rejected.
     #[arg(long, default_value = "hash")]
     partitioning: String,
 
@@ -118,24 +112,8 @@ struct Args {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum WriterKind {
-    Hash,
-    Sort,
-}
-
-#[derive(Clone, Copy, Debug)]
 enum PartitioningKind {
     Hash,
-}
-
-fn parse_writer(s: &str) -> Result<WriterKind, String> {
-    match s.to_lowercase().as_str() {
-        "hash" => Ok(WriterKind::Hash),
-        "sort" => Ok(WriterKind::Sort),
-        other => Err(format!(
-            "unknown writer: {other} (expected 'hash' or 'sort')"
-        )),
-    }
 }
 
 fn parse_partitioning(s: &str) -> Result<PartitioningKind, String> {
@@ -227,7 +205,6 @@ fn build_partitioning(
 
 async fn execute_shuffle_write(
     args: &Args,
-    writer_kind: WriterKind,
     partitioning_kind: PartitioningKind,
     hash_col_indices: &[usize],
     work_dir: PathBuf,
@@ -270,43 +247,25 @@ async fn execute_shuffle_write(
     let work_dir_str = work_dir.to_str().unwrap().to_string();
     fs::create_dir_all(&work_dir).expect("create work dir");
 
-    let metrics: MetricsSet = match writer_kind {
-        WriterKind::Hash => {
-            let exec = ShuffleWriterExec::try_new(
-                format!("bench_job_{task_id}").into(),
-                1,
-                input,
-                work_dir_str,
-                Some(partitioning),
-            )?;
-            let task_ctx = ctx.task_ctx();
-            let mut stream = exec.execute(0, task_ctx)?;
-            let _ = utils::collect_stream(&mut stream).await;
-            exec.metrics().unwrap_or_default()
-        }
-        WriterKind::Sort => {
-            let cfg = SortShuffleConfig::new(true, args.batch_size);
-            let exec = SortShuffleWriterExec::try_new(
-                format!("bench_job_{task_id}").into(),
-                1,
-                input,
-                work_dir_str,
-                partitioning,
-                cfg,
-            )?;
-            let task_ctx = ctx.task_ctx();
-            let mut stream = exec.execute(0, task_ctx)?;
-            let _ = utils::collect_stream(&mut stream).await;
-            exec.metrics().unwrap_or_default()
-        }
-    };
+    let cfg = SortShuffleConfig::new(true, args.batch_size);
+    let exec = SortShuffleWriterExec::try_new(
+        format!("bench_job_{task_id}").into(),
+        1,
+        input,
+        work_dir_str,
+        partitioning,
+        cfg,
+    )?;
+    let task_ctx = ctx.task_ctx();
+    let mut stream = exec.execute(0, task_ctx)?;
+    let _ = utils::collect_stream(&mut stream).await;
+    let metrics: MetricsSet = exec.metrics().unwrap_or_default();
 
     Ok(metrics)
 }
 
 fn run_iteration(
     args: &Args,
-    writer_kind: WriterKind,
     partitioning_kind: PartitioningKind,
     hash_col_indices: &[usize],
 ) -> (f64, Option<MetricsSet>) {
@@ -317,7 +276,6 @@ fn run_iteration(
             let work_dir = args.output_dir.join("task_0");
             let metrics = execute_shuffle_write(
                 args,
-                writer_kind,
                 partitioning_kind,
                 hash_col_indices,
                 work_dir.clone(),
@@ -337,7 +295,6 @@ fn run_iteration(
                 handles.push(tokio::spawn(async move {
                     let m = execute_shuffle_write(
                         &args,
-                        writer_kind,
                         partitioning_kind,
                         &hash_col_indices,
                         work_dir.clone(),
@@ -433,10 +390,6 @@ fn main() {
         .init();
 
     let args = Args::parse();
-    let writer_kind = parse_writer(&args.writer).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(2);
-    });
     let partitioning_kind = parse_partitioning(&args.partitioning).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(2);
@@ -448,7 +401,6 @@ fn main() {
     let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
     println!("=== Ballista Shuffle Benchmark ===");
-    println!("Writer:         {writer_kind:?}");
     println!("Partitioning:   {partitioning_kind:?}");
     println!("Input:          {}", args.input.display());
     println!(
@@ -482,8 +434,7 @@ fn main() {
         } else {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
-        let (elapsed, metrics) =
-            run_iteration(&args, writer_kind, partitioning_kind, &hash_col_indices);
+        let (elapsed, metrics) = run_iteration(&args, partitioning_kind, &hash_col_indices);
         if !is_warmup {
             times.push(elapsed);
             if metrics.is_some() {
