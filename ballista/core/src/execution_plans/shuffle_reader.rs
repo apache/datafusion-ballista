@@ -1122,9 +1122,9 @@ fn fetch_partition_local(
     //
     // Check if this is a sort-based shuffle output (has index file)
     if is_sort_shuffle_output(data_path) {
-        // note: in some cases sort shuffle is not going to be used
-        //       even its enabled. thus we need to check if there is
-        //       sort shuffle file index
+        // A stage's on-disk layout is authoritative: sort-shuffle outputs have a
+        // companion index file. Standard single-partition outputs do not, so a
+        // missing index means this is a plain Arrow IPC file.
         debug!(
             "Reading sort-based shuffle for partition {} from {:?}",
             partition_id.partition_id, data_path
