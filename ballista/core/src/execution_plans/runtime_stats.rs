@@ -37,10 +37,12 @@
 //! first key drives the sketch today).
 //!
 //! TODO: swap `TDigest` for a generic-over-`Ord` KLL sketch. TDigest is
-//! `Float64`-only and single-column; a KLL implementation would sketch
-//! the full `Vec<PhysicalSortExpr>` (composite keys, non-numeric types)
-//! and let the operator drop the "first expression, `Float64` only"
-//! restriction on the routing key.
+//! `Float64`-only, single-column, and has no representation for NULLs;
+//! a KLL implementation would sketch the full `Vec<PhysicalSortExpr>`
+//! (composite keys, non-numeric types) and position NULLs per each
+//! sort key's `SortOptions::nulls_first`, letting the operator drop
+//! both the "first expression, `Float64` only" restriction and the
+//! not-null-routing-column requirement enforced at construction today.
 //!
 //! This PR lands the tap in isolation: nothing wires it into a plan yet,
 //! and the executor doesn't yet ship the accumulated state back to the
@@ -95,8 +97,9 @@ impl RuntimeStatsExec {
     /// and for downstream operators (`SortExec`, `BoundedWindowAggExec`)
     /// that need it. When `Some`, at least one expression is required —
     /// nothing to sketch on with an empty slice — and the first
-    /// expression must evaluate to `Float64` (T-Digest's only supported
-    /// input type until the KLL swap lands).
+    /// expression must evaluate to a non-nullable `Float64` (T-Digest is
+    /// `Float64`-only and has no NULL slot; the KLL swap will lift both
+    /// restrictions).
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         order_by: Option<Vec<PhysicalSortExpr>>,
@@ -107,10 +110,17 @@ impl RuntimeStatsExec {
                     "RuntimeStatsExec: order_by is Some but empty; pass None to skip sketching"
                 );
             };
-            let routing_type = first.expr.data_type(&input.schema())?;
+            let schema = input.schema();
+            let routing_type = first.expr.data_type(&schema)?;
             if routing_type != DataType::Float64 {
                 return internal_err!(
                     "RuntimeStatsExec: routing expression must be Float64, got {routing_type:?}"
+                );
+            }
+            if first.expr.nullable(&schema)? {
+                return internal_err!(
+                    "RuntimeStatsExec: routing expression must be non-nullable; \
+                     T-Digest has no NULL slot (lifts with the KLL swap)"
                 );
             }
         }
@@ -400,9 +410,12 @@ impl StreamState {
                             array.data_type()
                         )
                     })?;
-            // NULL routing keys aren't sortable so they can't
-            // participate in range partitioning; drop them from the
-            // sample set rather than erroring.
+            // Construction rejects nullable routing exprs, so nulls
+            // shouldn't reach us; keep the flatten as cheap defense
+            // against a Field/data mismatch. NULLs are still forwarded
+            // downstream and counted — they just can't enter the
+            // sketch until the KLL swap gives us a `nulls_first`-aware
+            // slot.
             let values: Vec<f64> = f64_arr.iter().flatten().collect();
             if !values.is_empty() {
                 let slot = sketches.get(self.partition).ok_or_else(|| {
@@ -603,7 +616,7 @@ mod stream_tests {
 
     fn schema_v_id() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
-            Field::new("v", DataType::Float64, true),
+            Field::new("v", DataType::Float64, false),
             Field::new("id", DataType::Int64, false),
         ]))
     }
@@ -669,40 +682,6 @@ mod stream_tests {
             stats.merged_quantile_sketch().unwrap().unwrap().count(),
             5.0
         );
-    }
-
-    /// NULL routing values count toward `row_count` but must not
-    /// enter the sketch — asserted by feeding a batch where every
-    /// routing value is NULL and observing `sketch.count() == 0`.
-    #[tokio::test]
-    async fn execute_skips_null_routing_keys_from_sketch() {
-        let schema = schema_v_id();
-        let b1 = batch(&schema, vec![None, None, Some(7.0)], vec![30, 31, 32]);
-
-        let memory = Arc::new(
-            MemorySourceConfig::try_new(&[vec![b1]], schema.clone(), None).unwrap(),
-        );
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
-
-        let sort_expr = PhysicalSortExpr {
-            expr: col("v", schema.as_ref()).unwrap(),
-            options: SortOptions {
-                descending: false,
-                nulls_first: true,
-            },
-        };
-        let stats =
-            Arc::new(RuntimeStatsExec::try_new(input, Some(vec![sort_expr])).unwrap());
-
-        let ctx = SessionContext::new().task_ctx();
-        let stream = stats.execute(0, ctx).unwrap();
-        let _ = common::collect(stream).await.unwrap();
-
-        assert_eq!(stats.row_count(0).unwrap(), 3);
-        let sketch = stats.quantile_sketch(0).unwrap().unwrap();
-        assert_eq!(sketch.count(), 1.0);
-        assert_eq!(sketch.min(), 7.0);
-        assert_eq!(sketch.max(), 7.0);
     }
 
     /// Row-count-only mode (`order_by = None`): the operator still

@@ -1473,4 +1473,35 @@ mod test {
             "got: {err}"
         );
     }
+
+    /// `try_new` refuses a nullable routing expression — TDigest has no
+    /// NULL slot, so allowing nulls would silently exclude them from
+    /// the sketch while `row_count` still saw them. The KLL swap lifts
+    /// this by positioning nulls per `SortOptions::nulls_first`.
+    #[test]
+    fn test_runtime_stats_exec_rejects_nullable_routing_expr() {
+        use crate::execution_plans::RuntimeStatsExec;
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::expressions::col;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let sort_expr = PhysicalSortExpr {
+            expr: col("v", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
+            .expect_err("nullable routing expr must be rejected");
+        assert!(
+            err.to_string()
+                .contains("routing expression must be non-nullable"),
+            "got: {err}"
+        );
+    }
 }
