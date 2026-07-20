@@ -154,6 +154,15 @@ pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compressi
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
     "ballista.scheduler.max_partitions_per_task";
 
+/// Enables substituting eligible Partitioned inner `HashJoinExec` nodes with the
+/// spilling hash join operator. Disabled by default.
+pub const BALLISTA_SPILLING_HASH_JOIN_ENABLED: &str =
+    "ballista.execution.spilling_hash_join.enabled";
+/// Number of in-memory sub-partitions the spilling hash join splits each build
+/// side into.
+pub const BALLISTA_SPILLING_HASH_JOIN_PARTITIONS: &str =
+    "ballista.execution.spilling_hash_join.partitions";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -372,6 +381,18 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                 .to_string(),
             DataType::UInt64,
             Some(1.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SPILLING_HASH_JOIN_ENABLED.to_string(),
+            "Enable the spilling hash join operator".to_string(),
+            DataType::Boolean,
+            Some(false.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SPILLING_HASH_JOIN_PARTITIONS.to_string(),
+            "Sub-partitions per build side in the spilling hash join".to_string(),
+            DataType::UInt64,
+            Some(16.to_string()),
         ),
     ];
     entries
@@ -613,6 +634,18 @@ impl BallistaConfig {
     /// disables promotion via the row-count path.
     pub fn broadcast_join_threshold_rows(&self) -> usize {
         self.get_usize_setting(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS)
+    }
+
+    /// Returns whether eligible Partitioned inner `HashJoinExec` nodes are
+    /// substituted with the spilling hash join operator.
+    pub fn spilling_hash_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SPILLING_HASH_JOIN_ENABLED)
+    }
+
+    /// Returns the number of in-memory sub-partitions the spilling hash join
+    /// splits each build side into.
+    pub fn spilling_hash_join_partitions(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SPILLING_HASH_JOIN_PARTITIONS)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
@@ -883,5 +916,12 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn spilling_hash_join_defaults() {
+        let config = BallistaConfig::default();
+        assert!(!config.spilling_hash_join_enabled());
+        assert_eq!(16, config.spilling_hash_join_partitions());
     }
 }
