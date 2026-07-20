@@ -434,7 +434,8 @@ fn main() {
         } else {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
-        let (elapsed, metrics) = run_iteration(&args, partitioning_kind, &hash_col_indices);
+        let (elapsed, metrics) =
+            run_iteration(&args, partitioning_kind, &hash_col_indices);
         if !is_warmup {
             times.push(elapsed);
             if metrics.is_some() {
