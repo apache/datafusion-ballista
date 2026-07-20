@@ -20,6 +20,7 @@ use crate::flight_proxy_service::BallistaFlightProxyService;
 
 #[cfg(feature = "rest-api")]
 use crate::api::get_routes;
+use crate::api::health_routes;
 use crate::api::route_disabled;
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
@@ -92,7 +93,7 @@ pub async fn start_grpc_service<
     address: SocketAddr,
     scheduler: SchedulerServer<T, U>,
 ) -> ballista_core::error::Result<()> {
-    let config = &scheduler.state.config;
+    let config = scheduler.state.config.clone();
     let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler.clone())
         .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize)
         .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize);
@@ -135,16 +136,21 @@ pub async fn start_grpc_service<
     let tonic =
         tonic.fallback(|| async { SchedulerErrorResponse::new(StatusCode::NOT_FOUND) });
 
+    let scheduler = Arc::new(scheduler);
+    let health = health_routes(scheduler.clone());
+
     #[cfg(feature = "rest-api")]
     let final_route = if config.disable_rest_api {
         tonic
             .merge(route_disabled(
                 "REST API has been disabled at startup".to_string(),
             ))
+            .merge(health)
             .into_make_service_with_connect_info::<SocketAddr>()
     } else {
-        let axum = get_routes(Arc::new(scheduler));
+        let axum = get_routes(scheduler);
         axum.merge(tonic)
+            .merge(health)
             .into_make_service_with_connect_info::<SocketAddr>()
     };
 
@@ -153,6 +159,7 @@ pub async fn start_grpc_service<
         .merge(route_disabled(
             "REST API has been disabled at compile time".to_string(),
         ))
+        .merge(health)
         .into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(&address)

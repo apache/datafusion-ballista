@@ -28,8 +28,10 @@ on:
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
       - ".github/workflows/docker.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "ballista/**"
       - "ballista-cli/**"
@@ -40,6 +42,8 @@ on:
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
       - ".github/workflows/docker.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -64,7 +68,7 @@ jobs:
           rustup update stable
           rustup toolchain install stable
           rustup default stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run script
         run: |
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista

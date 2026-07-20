@@ -56,12 +56,12 @@ let ctx: SessionContext = SessionContext::remote_with_state(&url,state).await?;
 
 ## Configuring Executor Concurrency Levels
 
-Each executor instance has a fixed number of tasks that it can process concurrently. This is specified by passing a
-`concurrent_tasks` command-line parameter. The default setting is to use all available CPU cores.
+Each executor instance advertises a fixed number of virtual cores (vcores) to the scheduler. This is specified by
+passing a `--vcores` command-line parameter. The default setting is to use all available CPU cores.
 
 Increasing this configuration setting will increase the number of tasks that each executor can run concurrently but
 this will also mean that the executor will use more memory. If executors are failing due to out-of-memory errors then
-decreasing the number of concurrent tasks may help.
+decreasing the vcore count may help.
 
 ## Configuring Executor Memory Pool
 
@@ -71,22 +71,22 @@ memory. To bound executor memory and let those operators spill to disk under
 pressure, pass `--memory-pool-size` when starting the executor:
 
 ```sh
-ballista-executor --memory-pool-size 8GB --concurrent-tasks 8
+ballista-executor --memory-pool-size 8GB --vcores 8
 ```
 
 The argument accepts human-readable sizes (`8GB`, `512MiB`) or a plain byte
 count. SI suffixes (`KB`/`MB`/`GB`) are powers of 10; IEC suffixes
 (`KiB`/`MiB`/`GiB`) are powers of 2.
 
-The total budget is divided equally across concurrent task slots: each task
-receives its own `FairSpillPool` of size `memory_pool_size / concurrent_tasks`.
-With `--memory-pool-size 8GB --concurrent-tasks 8`, every task sees a 1 GB
+The total budget is divided equally across the executor's vcores: each task
+receives its own `FairSpillPool` of size `memory_pool_size / vcores`.
+With `--memory-pool-size 8GB --vcores 8`, every task sees a 1 GB
 pool, fully isolated from other tasks. Idle slots do not lend their share to
 busy ones, which keeps task memory predictable at the cost of some unused
 capacity when the executor is under-utilized.
 
 The executor refuses to start if the per-task share would round to zero (i.e.
-`memory_pool_size < concurrent_tasks`).
+`memory_pool_size < vcores`).
 
 When `--memory-pool-size` is not set, the executor behaves as before with no
 memory pool installed.
@@ -196,9 +196,11 @@ Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes onl
 
 ### Configuration
 
-| key                               | type    | default | description                                 |
-| --------------------------------- | ------- | ------- | ------------------------------------------- |
-| ballista.planner.adaptive.enabled | Boolean | false   | Enables the adaptive planner. Experimental. |
+| key                                               | type    | default  | description                                                                                                                                                            |
+| ------------------------------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.planner.adaptive.enabled                 | Boolean | false    | Enables the adaptive planner. Experimental.                                                                                                                            |
+| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 10485760 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Governs both the static planner and AQE. Set to 0 to disable broadcast joins. |
+| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000  | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                     |
 
 ### What AQE does today
 
@@ -209,6 +211,9 @@ implemented:
 
 - **Join reordering.** Uses runtime row counts from completed stages so the
   smaller side drives the join.
+- **Broadcast join selection.** When a join input's runtime size falls under
+  `ballista.optimizer.broadcast_join_threshold_bytes` (or the row-count
+  fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
 - **Empty stage elimination.** When a completed stage produces zero rows, its
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
@@ -218,14 +223,14 @@ implemented:
 The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
-- Executor failure handling on the AQE path
-- Dynamic coalescing of shuffle partitions
-- Switching from hash join to sort-merge join based on runtime statistics
-- Switching from streaming aggregation to hash aggregation based on runtime statistics
+- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
+- Dynamic coalescing of shuffle partitions ([#1987](https://github.com/apache/datafusion-ballista/issues/1987))
+- Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
+- Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
 Until these gaps are closed, AQE should be used for testing and experimentation
-rather than production workloads. See [issue #387](https://github.com/apache/datafusion-ballista/issues/387)
-for the tracking issue and ongoing work.
+rather than production workloads. See [issue #1359](https://github.com/apache/datafusion-ballista/issues/1359)
+for the tracking epic and ongoing work.
 
 ## Push-based vs Pull-based Task Scheduling
 

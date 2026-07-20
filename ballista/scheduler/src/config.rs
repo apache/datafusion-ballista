@@ -183,6 +183,13 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Minimum number of registered executors before /readyz returns 200
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to always report ready."
+    )]
+    pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     #[arg(
         long,
@@ -275,6 +282,8 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
+    /// Minimum number of registered executors before /readyz returns 200
+    pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
@@ -319,6 +328,7 @@ impl Default for SchedulerConfig {
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
             #[cfg(feature = "rest-api")]
@@ -470,7 +480,7 @@ impl SchedulerConfig {
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskDistribution {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -500,7 +510,7 @@ impl std::str::FromStr for TaskDistribution {
 /// Policy for distributing tasks to available executor slots.
 #[derive(Debug, Clone, Default)]
 pub enum TaskDistributionPolicy {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -552,6 +562,7 @@ impl TryFrom<Config> for SchedulerConfig {
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
             #[cfg(feature = "rest-api")]

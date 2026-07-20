@@ -29,6 +29,18 @@ pub use crate::ids::JobId;
 /// The current version of Ballista, derived from the Cargo package version.
 pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Wire-protocol version negotiated between scheduler and executor.
+///
+/// The scheduler compares this against `ExecutorRegistration.ballista_protocol_version`
+/// on every registration and heartbeat; mismatched executors are rejected with
+/// `Status::failed_precondition` and never receive work. Bump this on any release
+/// that changes the executor↔scheduler wire format (proto shape, task/plan
+/// encoding, launch/heartbeat semantics). Most releases will not bump it.
+///
+/// Zero is reserved as the proto-default "unset" value, produced by executors
+/// that predate this field — it never matches a real scheduler version.
+pub const BALLISTA_PROTOCOL_VERSION: u32 = 1;
+
 /// Prints the current Ballista version to stdout.
 pub fn print_version() {
     println!("Ballista version: {BALLISTA_VERSION}")

@@ -29,7 +29,6 @@ use datafusion::{
 };
 use log::trace;
 use parking_lot::Mutex;
-use std::any::Any;
 use std::ops::Deref;
 use std::sync::{Arc, atomic::AtomicI64};
 
@@ -326,10 +325,6 @@ impl ExecutionPlan for ExchangeExec {
         "ExchangeExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
@@ -381,7 +376,7 @@ impl ExecutionPlan for ExchangeExec {
         ))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         let schema = self.input.schema();
         match self.shuffle_partitions.lock().deref() {
             //
@@ -406,7 +401,7 @@ impl ExecutionPlan for ExchangeExec {
                         "shuffle reader at stage: {:?} and partition {} returned statistics: {:?}",
                         self.stage_id, idx, stat_for_partition
                     );
-                    stat_for_partition
+                    stat_for_partition.map(Arc::new)
                 } else {
                     let stats_for_partitions = stats_for_partitions(
                         schema.fields().len(),
@@ -419,10 +414,10 @@ impl ExecutionPlan for ExchangeExec {
                         "shuffle reader at stage: {:?} returned statistics for all partitions: {:?}",
                         self.stage_id, stats_for_partitions
                     );
-                    Ok(stats_for_partitions)
+                    Ok(Arc::new(stats_for_partitions))
                 }
             }
-            None => Ok(Statistics::new_unknown(&schema)),
+            None => Ok(Arc::new(Statistics::new_unknown(&schema))),
         }
     }
 }

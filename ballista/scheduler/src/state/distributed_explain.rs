@@ -195,7 +195,7 @@ pub(crate) async fn handle_explain_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> ballista_core::error::Result<Arc<dyn ExecutionPlan>> {
     if let LogicalPlan::Explain(explain_plan) = &logical_plan
-        && let Some(explain) = plan.as_any().downcast_ref::<ExplainExec>()
+        && let Some(explain) = plan.downcast_ref::<ExplainExec>()
     {
         let inner_plan = explain_plan.plan.clone();
         let plans = explain.stringified_plans();

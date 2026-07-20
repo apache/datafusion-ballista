@@ -92,3 +92,25 @@ pub fn default_metrics_collector() -> Result<Arc<dyn SchedulerMetricsCollector>>
 pub fn default_metrics_collector() -> Result<Arc<dyn SchedulerMetricsCollector>> {
     Ok(Arc::new(NoopMetricsCollector::default()))
 }
+
+/// Increments the counter of executor RPCs (register/heartbeat/poll_work)
+/// rejected because their `ballista_protocol_version` did not match the
+/// scheduler's `BALLISTA_PROTOCOL_VERSION`. No-op when the `prometheus`
+/// feature is disabled.
+#[cfg(feature = "prometheus")]
+pub fn record_protocol_mismatch() {
+    use ::prometheus::{IntCounter, register_int_counter};
+    use once_cell::sync::Lazy;
+    static COUNTER: Lazy<IntCounter> = Lazy::new(|| {
+        register_int_counter!(
+            "ballista_scheduler_rejected_by_protocol_version_total",
+            "Executor RPCs rejected because of BALLISTA_PROTOCOL_VERSION mismatch",
+        )
+        .expect("register ballista_scheduler_rejected_by_protocol_version_total")
+    });
+    COUNTER.inc();
+}
+
+/// See prometheus-featured variant.
+#[cfg(not(feature = "prometheus"))]
+pub fn record_protocol_mismatch() {}
