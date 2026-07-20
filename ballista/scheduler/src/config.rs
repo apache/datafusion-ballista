@@ -28,21 +28,42 @@
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
+use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;
 use std::sync::Arc;
 
-/// Callback invoked when new work becomes available for executors.
+/// Why the scheduler believes new work has become available for executors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkAvailableReason {
+    /// A job was submitted and its initial tasks are ready to be scheduled.
+    JobSubmitted {
+        /// Identifier of the submitted job.
+        job_id: JobId,
+    },
+    /// Completed tasks resolved downstream stages of a job, and the tasks of
+    /// those stages are now schedulable.
+    NewStagesRunnable {
+        /// Identifier of the job that gained schedulable tasks.
+        job_id: JobId,
+    },
+}
+
+/// Callback invoked when new work becomes available for executors, e.g. to
+/// wake idle pull-based executors via the poll loop's `poll_now_notify`.
 ///
-/// This is called after:
-/// - A job is submitted and tasks are ready to be scheduled
-/// - Tasks complete and new stages become runnable
+/// It fires only after the work is visible to a polling executor, so waking
+/// one cannot race the scheduler's internal event processing.
 ///
-/// This allows external systems to notify executors to poll immediately
-/// rather than waiting for their next poll interval.
-pub type OnWorkAvailableFn = Arc<dyn Fn(&str) + Send + Sync>;
+/// # Warning
+///
+/// The callback runs synchronously inside the scheduler's main event loop.
+/// Implementations **must be non-blocking**; offload blocking or long-running
+/// work (such as network I/O) to a separate task or thread.
+///
+/// `Arc` rather than `Box` so [`SchedulerConfig`] remains [`Clone`].
+pub type OnWorkAvailableFn = Arc<dyn Fn(WorkAvailableReason) + Send + Sync>;
 
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
@@ -298,7 +319,7 @@ pub struct SchedulerConfig {
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
     /// Callback invoked when new work becomes available for executors.
-    /// The string argument is a reason/description for debugging purposes.
+    /// See [`OnWorkAvailableFn`].
     pub on_work_available: Option<OnWorkAvailableFn>,
 }
 
@@ -471,6 +492,16 @@ impl SchedulerConfig {
     /// Sets whether TLS should be used when connecting to executors (for flight proxy).
     pub fn with_use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
+        self
+    }
+
+    /// Sets the callback invoked when new work becomes available for
+    /// executors. See [`OnWorkAvailableFn`].
+    pub fn with_on_work_available(
+        mut self,
+        on_work_available: OnWorkAvailableFn,
+    ) -> Self {
+        self.on_work_available = Some(on_work_available);
         self
     }
 }

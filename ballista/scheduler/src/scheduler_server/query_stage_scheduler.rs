@@ -26,7 +26,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::config::SchedulerConfig;
+use crate::config::{SchedulerConfig, WorkAvailableReason};
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -198,9 +198,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .await?;
                 }
 
-                // Notify external systems that new work is available
-                if let Some(ref callback) = self.config.on_work_available {
-                    callback(&format!("job_submitted:{job_id}"));
+                // The graph was revived before caching, so the job's tasks
+                // are already visible to polling executors.
+                if let Some(callback) = &self.config.on_work_available {
+                    callback(WorkAvailableReason::JobSubmitted { job_id });
                 }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
@@ -263,8 +264,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 debug!("Job updated, job_id: [{job_id}]");
-                if let Err(e) = self.state.task_manager.update_job(&job_id).await {
-                    error!("Fail to invoke update_job for job {job_id} due to {e:?}");
+                match self.state.task_manager.update_job(&job_id).await {
+                    Ok(new_tasks) => {
+                        // update_job revived the graph: the new tasks are
+                        // already visible to polling executors.
+                        if new_tasks > 0
+                            && let Some(callback) = &self.config.on_work_available
+                        {
+                            callback(WorkAvailableReason::NewStagesRunnable { job_id });
+                        }
+                    }
+                    Err(e) => {
+                        error!("Fail to invoke update_job for job {job_id} due to {e:?}");
+                    }
                 }
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
@@ -308,13 +320,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             event_sender
                                 .post_event(QueryStageSchedulerEvent::ReviveOffers)
                                 .await?;
-                        }
-
-                        // Notify external systems when new stages become runnable
-                        if !stage_events.is_empty()
-                            && let Some(ref callback) = self.config.on_work_available
-                        {
-                            callback("tasks_completed:new_stages_runnable");
                         }
 
                         for stage_event in stage_events {
@@ -388,16 +393,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
 #[cfg(test)]
 mod tests {
-    use crate::config::SchedulerConfig;
-    use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
+    use crate::config::{SchedulerConfig, WorkAvailableReason};
+    use crate::scheduler_server::SchedulerServer;
+    use crate::test_utils::{
+        SchedulerTest, TestMetricsCollector, await_condition, test_cluster_context,
+    };
+    use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
+    use ballista_core::extension::SessionConfigExt;
+    use ballista_core::serde::BallistaCodec;
+    use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
+    use ballista_core::serde::protobuf::{
+        ExecutorRegistration, PollWorkParams, ShuffleWritePartition, SuccessfulTask,
+        TaskStatus, task_status,
+    };
+    use ballista_core::serde::scheduler::{
+        ExecutorOperatingSystemSpecification, ExecutorSpecification,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{LogicalPlan, col};
+    use datafusion::prelude::SessionConfig;
     use datafusion::test_util::scan_empty_with_partitions;
-    use std::sync::Arc;
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tonic::Request;
 
     #[tokio::test]
     async fn test_pending_job_metric() -> Result<()> {
@@ -448,6 +470,135 @@ mod tests {
             "Expected {} running jobs but found {}",
             expected,
             test.running_job_number()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_on_work_available_callback() -> Result<()> {
+        let reasons: Arc<Mutex<Vec<WorkAvailableReason>>> = Arc::default();
+        let captured = reasons.clone();
+
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(
+                    SchedulerConfig {
+                        scheduling_policy: TaskSchedulingPolicy::PullStaged,
+                        ..Default::default()
+                    }
+                    .with_on_work_available(Arc::new(
+                        move |reason| {
+                            captured.lock().unwrap().push(reason);
+                        },
+                    )),
+                ),
+                Arc::new(TestMetricsCollector::default()),
+            );
+        scheduler.init().await?;
+
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_or_update_session(
+                "session",
+                &SessionConfig::new_with_ballista().with_target_partitions(2),
+            )
+            .await?;
+        let job_id = scheduler.submit_job("", ctx, &test_plan(2), None).await?;
+
+        // Job submission runs asynchronously through the event loop.
+        let submitted = await_condition(Duration::from_millis(10), 100, || {
+            futures::future::ready(Ok(!reasons.lock().unwrap().is_empty()))
+        })
+        .await?;
+        assert!(submitted, "JobSubmitted callback never fired");
+        assert_eq!(
+            reasons.lock().unwrap().first(),
+            Some(&WorkAvailableReason::JobSubmitted {
+                job_id: job_id.clone()
+            })
+        );
+
+        // Pull the shuffle stage's tasks; the callback promised they are
+        // visible by the time it fired.
+        let exec_meta = ExecutorRegistration {
+            id: "executor-1".to_owned(),
+            host: Some("localhost".to_owned()),
+            port: 50051,
+            grpc_port: 50052,
+            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
+            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
+        };
+        let polled = scheduler
+            .poll_work(Request::new(PollWorkParams {
+                metadata: Some(exec_meta.clone()),
+                num_free_vcores: 2,
+                task_status: vec![],
+            }))
+            .await
+            .expect("poll_work failed")
+            .into_inner();
+        assert!(
+            !polled.tasks.is_empty(),
+            "expected tasks after JobSubmitted"
+        );
+
+        // Report the pulled tasks as successful; each writes the plan's two
+        // shuffle output partitions.
+        let task_status = polled
+            .tasks
+            .iter()
+            .map(|task| TaskStatus {
+                task_id: task.task_id,
+                job_id: task.job_id.clone(),
+                stage_id: task.stage_id,
+                stage_attempt_num: task.stage_attempt_num,
+                launch_time: 0,
+                start_exec_time: 0,
+                end_exec_time: 0,
+                metrics: vec![],
+                status: Some(task_status::Status::Successful(SuccessfulTask {
+                    executor_id: exec_meta.id.clone(),
+                    partitions: (0..2)
+                        .map(|partition_id| ShuffleWritePartition {
+                            partition_id,
+                            num_batches: 1,
+                            num_rows: 1,
+                            num_bytes: 1,
+                            file_id: None,
+                            is_sort_shuffle: false,
+                        })
+                        .collect(),
+                })),
+            })
+            .collect();
+        scheduler
+            .poll_work(Request::new(PollWorkParams {
+                metadata: Some(exec_meta),
+                num_free_vcores: 2,
+                task_status,
+            }))
+            .await
+            .expect("poll_work with task status failed");
+
+        // Completing the shuffle stage resolves the final stage.
+        let resolved = await_condition(Duration::from_millis(10), 100, || {
+            futures::future::ready(Ok(reasons.lock().unwrap().contains(
+                &WorkAvailableReason::NewStagesRunnable {
+                    job_id: job_id.clone(),
+                },
+            )))
+        })
+        .await?;
+        assert!(
+            resolved,
+            "expected NewStagesRunnable, got {:?}",
+            reasons.lock().unwrap()
         );
 
         Ok(())
