@@ -25,7 +25,8 @@
 //!
 //! Ballista has two mechanisms for observing job progress:
 //!
-//! - **[`JobStateEvent`] / [`crate::scheduler_server::SchedulerServer::subscribe_job_updates`]**:
+//! - **[`JobStateEvent`](crate::scheduler_server::job_state_event::JobStateEvent) /
+//!   [`crate::scheduler_server::SchedulerServer::subscribe_job_updates`]**:
 //!   a `tokio::sync::broadcast` channel that delivers lifecycle events for *all* jobs
 //!   on this scheduler. Suited for cluster-wide observers such as metrics collectors,
 //!   audit logs, or HA state replication. Subscribers receive a lightweight event
