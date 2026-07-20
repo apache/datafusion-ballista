@@ -38,7 +38,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::prelude::SessionConfig;
 use futures::stream::TryStreamExt;
-use log::info;
+use log::debug;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
@@ -260,7 +260,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 ShuffleWriterVariant::Hash(writer) => (Arc::new(writer.clone()), false),
                 ShuffleWriterVariant::Sort(writer) => (Arc::new(writer.clone()), true),
             };
-        info!(
+        debug!(
             "executor plan pre-run (task_id={task_id}):\n{}",
             DisplayableExecutionPlan::new(plan_arc.as_ref()).indent(true)
         );
@@ -272,7 +272,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         let result =
             drive_shuffle_writer_stage(plan_arc.clone(), context, is_sort_shuffle).await;
 
-        info!(
+        debug!(
             "executor plan post-run (task_id={task_id}, ok={}):\n{}",
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)

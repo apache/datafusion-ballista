@@ -34,7 +34,7 @@ use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
-use log::{debug, info};
+use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -392,8 +392,8 @@ fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
         [child] => walk(child),
         _ => false,
     };
-    info!(
-        "DIAG stage_has_input_collapse: root={} root_partitions={} → {result}",
+    debug!(
+        "stage_has_input_collapse: root={} root_partitions={} → {result}",
         plan_root.name(),
         plan_root
             .properties()
@@ -461,8 +461,8 @@ fn bind_one(
     } else {
         input_partition_ids.len() as u32
     };
-    info!(
-        "DIAG bind_one: job={} stage={} exec={} vcores={} max={} slice_len={} consumed={} partitions={:?} collapse={}",
+    debug!(
+        "bind_one: job={} stage={} exec={} vcores={} max={} slice_len={} consumed={} partitions={:?} collapse={}",
         job_id,
         running_stage.stage_id,
         budget.executor_id,
