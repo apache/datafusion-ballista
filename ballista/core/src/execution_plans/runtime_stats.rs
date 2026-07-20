@@ -52,10 +52,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::array::Float64Array;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, internal_datafusion_err, internal_err};
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -63,7 +64,7 @@ use datafusion::physical_plan::{
 };
 use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
-use log::info;
+use log::debug;
 
 /// T-Digest centroid budget. 100 is DataFusion's default and gives ~1%
 /// quantile error, plenty of margin over the sub-partition counts we
@@ -93,17 +94,25 @@ impl RuntimeStatsExec {
     /// the per-partition T-Digest; the full slice is preserved for serde
     /// and for downstream operators (`SortExec`, `BoundedWindowAggExec`)
     /// that need it. When `Some`, at least one expression is required —
-    /// nothing to sketch on with an empty slice.
+    /// nothing to sketch on with an empty slice — and the first
+    /// expression must evaluate to `Float64` (T-Digest's only supported
+    /// input type until the KLL swap lands).
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         order_by: Option<Vec<PhysicalSortExpr>>,
     ) -> Result<Self> {
         if let Some(exprs) = &order_by {
-            let [_first, ..] = exprs.as_slice() else {
+            let [first, ..] = exprs.as_slice() else {
                 return internal_err!(
                     "RuntimeStatsExec: order_by is Some but empty; pass None to skip sketching"
                 );
             };
+            let routing_type = first.expr.data_type(&input.schema())?;
+            if routing_type != DataType::Float64 {
+                return internal_err!(
+                    "RuntimeStatsExec: routing expression must be Float64, got {routing_type:?}"
+                );
+            }
         }
         let partition_count = input.output_partitioning().partition_count();
         let row_counts: Arc<[AtomicUsize]> = (0..partition_count)
@@ -187,26 +196,35 @@ impl RuntimeStatsExec {
                 sketches.len()
             )
         })?;
-        Ok(Some(
-            slot.lock()
-                .expect("RuntimeStats sketch mutex poisoned")
-                .clone(),
-        ))
+        let guard = slot.lock().map_err(|e| {
+            internal_datafusion_err!(
+                "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
+                partition
+            )
+        })?;
+        Ok(Some(guard.clone()))
     }
 
-    /// All partitions merged into one sketch. `None` in row-count-only
-    /// mode.
-    pub fn merged_quantile_sketch(&self) -> Option<TDigest> {
-        let sketches = self.sketches.as_ref()?;
+    /// All partitions merged into one sketch. `Ok(None)` in
+    /// row-count-only mode.
+    pub fn merged_quantile_sketch(&self) -> Result<Option<TDigest>> {
+        let Some(sketches) = self.sketches.as_ref() else {
+            return Ok(None);
+        };
         let snapshots: Vec<TDigest> = sketches
             .iter()
-            .map(|m| {
-                m.lock()
-                    .expect("RuntimeStats sketch mutex poisoned")
-                    .clone()
+            .enumerate()
+            .map(|(partition, m)| {
+                let guard = m.lock().map_err(|e| {
+                    internal_datafusion_err!(
+                        "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
+                        partition
+                    )
+                })?;
+                Ok(guard.clone())
             })
-            .collect();
-        Some(TDigest::merge_digests(snapshots.iter()))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(TDigest::merge_digests(snapshots.iter())))
     }
 }
 
@@ -254,6 +272,18 @@ impl ExecutionPlan for RuntimeStatsExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true]
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+        self.input.partition_statistics(partition)
     }
 
     fn with_new_children(
@@ -341,7 +371,6 @@ impl StreamState {
         &mut self,
         batch: &datafusion::arrow::record_batch::RecordBatch,
     ) -> Result<()> {
-        // Row count is unconditional and cheap.
         let counter = self.row_counts.get(self.partition).ok_or_else(|| {
             internal_datafusion_err!(
                 "RuntimeStatsExec: partition {} out of range (have {}) — \
@@ -350,41 +379,49 @@ impl StreamState {
                 self.row_counts.len()
             )
         })?;
-        counter.fetch_add(batch.num_rows(), Ordering::Relaxed);
 
-        // Sketch only when configured.
-        let (Some(sketches), Some(routing_expr)) = (&self.sketches, &self.routing_expr)
-        else {
-            return Ok(());
-        };
-        let evaluated = routing_expr.evaluate(batch)?;
-        let array = evaluated.into_array(batch.num_rows())?;
-        let f64_arr = array
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .ok_or_else(|| {
-                internal_datafusion_err!(
-                    "RuntimeStatsExec partition {}: routing expr produced {:?}, \
-                     expected Float64",
-                    self.partition,
-                    array.data_type()
-                )
-            })?;
-        // NULL routing keys aren't sortable so they can't participate
-        // in range partitioning; drop them from the sample set rather
-        // than erroring.
-        let values: Vec<f64> = f64_arr.iter().flatten().collect();
-        if values.is_empty() {
-            return Ok(());
+        // Sketch first: any failure returns before we count rows that
+        // never made it downstream. With Float64 validated at
+        // construction, the downcast is belt-and-braces — evaluate()
+        // itself can still fail for expr-internal reasons.
+        if let (Some(sketches), Some(routing_expr)) = (&self.sketches, &self.routing_expr)
+        {
+            let evaluated = routing_expr.evaluate(batch)?;
+            let array = evaluated.into_array(batch.num_rows())?;
+            let f64_arr =
+                array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(|| {
+                        internal_datafusion_err!(
+                            "RuntimeStatsExec partition {}: routing expr produced {:?}, \
+                         expected Float64",
+                            self.partition,
+                            array.data_type()
+                        )
+                    })?;
+            // NULL routing keys aren't sortable so they can't
+            // participate in range partitioning; drop them from the
+            // sample set rather than erroring.
+            let values: Vec<f64> = f64_arr.iter().flatten().collect();
+            if !values.is_empty() {
+                let slot = sketches.get(self.partition).ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "RuntimeStatsExec: partition {} out of range on sketch slot",
+                        self.partition
+                    )
+                })?;
+                let mut sketch = slot.lock().map_err(|e| {
+                    internal_datafusion_err!(
+                        "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
+                        self.partition
+                    )
+                })?;
+                *sketch = sketch.merge_unsorted_f64(values);
+            }
         }
-        let slot = sketches.get(self.partition).ok_or_else(|| {
-            internal_datafusion_err!(
-                "RuntimeStatsExec: partition {} out of range on sketch slot",
-                self.partition
-            )
-        })?;
-        let mut sketch = slot.lock().expect("RuntimeStats sketch mutex poisoned");
-        *sketch = sketch.merge_unsorted_f64(values);
+
+        counter.fetch_add(batch.num_rows(), Ordering::Relaxed);
         Ok(())
     }
 }
@@ -407,19 +444,27 @@ impl Drop for StreamState {
             return;
         }
         match self.sketches.as_ref().and_then(|s| s.get(self.partition)) {
-            Some(slot) => {
-                let sketch = slot.lock().expect("RuntimeStats sketch mutex poisoned");
-                info!(
-                    "RuntimeStatsExec partition {}: rows={} T-Digest count={} min={} max={}",
-                    self.partition,
-                    rows,
-                    sketch.count(),
-                    sketch.min(),
-                    sketch.max(),
-                );
-            }
+            Some(slot) => match slot.lock() {
+                Ok(sketch) => {
+                    debug!(
+                        "RuntimeStatsExec partition {}: rows={} T-Digest count={} min={} max={}",
+                        self.partition,
+                        rows,
+                        sketch.count(),
+                        sketch.min(),
+                        sketch.max(),
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "RuntimeStatsExec partition {}: sketch mutex poisoned on Drop; \
+                         skipping end-of-stream log: {e}",
+                        self.partition,
+                    );
+                }
+            },
             None => {
-                info!(
+                debug!(
                     "RuntimeStatsExec partition {}: rows={}",
                     self.partition, rows
                 );
@@ -620,7 +665,10 @@ mod stream_tests {
         assert_eq!(sketch.min(), 1.0);
         assert_eq!(sketch.max(), 5.0);
         // Merged over the (single) partition matches the per-partition view.
-        assert_eq!(stats.merged_quantile_sketch().unwrap().count(), 5.0);
+        assert_eq!(
+            stats.merged_quantile_sketch().unwrap().unwrap().count(),
+            5.0
+        );
     }
 
     /// NULL routing values count toward `row_count` but must not
@@ -682,6 +730,6 @@ mod stream_tests {
             stats.quantile_sketch(0).unwrap().is_none(),
             "row-count-only mode must not allocate a sketch"
         );
-        assert!(stats.merged_quantile_sketch().is_none());
+        assert!(stats.merged_quantile_sketch().unwrap().is_none());
     }
 }

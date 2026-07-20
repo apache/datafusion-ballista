@@ -1353,7 +1353,10 @@ mod test {
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert_eq!(original.total_row_count(), 0);
         assert_eq!(original.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
-        assert_eq!(original.merged_quantile_sketch().unwrap().count(), 0.0);
+        assert_eq!(
+            original.merged_quantile_sketch().unwrap().unwrap().count(),
+            0.0
+        );
         // Out-of-range partition surfaces as an internal error, not a panic.
         assert!(original.row_count(1).is_err());
         assert!(original.quantile_sketch(1).is_err());
@@ -1376,7 +1379,10 @@ mod test {
         assert!(!order_by[0].options.descending);
         assert_eq!(decoded.row_count(0).unwrap(), 0);
         assert_eq!(decoded.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
-        assert_eq!(decoded.merged_quantile_sketch().unwrap().count(), 0.0);
+        assert_eq!(
+            decoded.merged_quantile_sketch().unwrap().unwrap().count(),
+            0.0
+        );
     }
 
     /// `RuntimeStatsExec` in row-count-only mode — `order_by = None`.
@@ -1399,7 +1405,7 @@ mod test {
             original.quantile_sketch(0).unwrap().is_none(),
             "no sketch was requested at construction"
         );
-        assert!(original.merged_quantile_sketch().is_none());
+        assert!(original.merged_quantile_sketch().unwrap().is_none());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -1412,7 +1418,7 @@ mod test {
             .expect("Expected RuntimeStatsExec");
         assert!(decoded.order_by().is_none());
         assert!(decoded.quantile_sketch(0).unwrap().is_none());
-        assert!(decoded.merged_quantile_sketch().is_none());
+        assert!(decoded.merged_quantile_sketch().unwrap().is_none());
     }
 
     /// `try_new` refuses an empty ORDER BY — no routing key means the
@@ -1432,6 +1438,38 @@ mod test {
             .expect_err("empty order_by must be rejected");
         assert!(
             err.to_string().contains("order_by is Some but empty"),
+            "got: {err}"
+        );
+    }
+
+    /// `try_new` refuses a routing expression whose evaluated type is
+    /// not `Float64` — TDigest can't ingest anything else, so failing
+    /// at construction beats a downcast error mid-stream.
+    #[test]
+    fn test_runtime_stats_exec_rejects_non_float64_routing_expr() {
+        use crate::execution_plans::RuntimeStatsExec;
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::expressions::col;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Float64, true),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let sort_expr = PhysicalSortExpr {
+            expr: col("id", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
+            .expect_err("non-Float64 routing expr must be rejected");
+        assert!(
+            err.to_string()
+                .contains("routing expression must be Float64"),
             "got: {err}"
         );
     }
