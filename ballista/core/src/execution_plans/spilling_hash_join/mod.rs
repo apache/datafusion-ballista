@@ -16,5 +16,7 @@
 // under the License.
 
 mod exec;
+mod partitioner;
 
 pub use exec::SpillingHashJoinExec;
+pub use partitioner::{PartitionedBatch, RowPartitioner};
