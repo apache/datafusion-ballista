@@ -51,6 +51,7 @@ message BallistaPhysicalPlanNode {
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
     ChaosExecNode chaos_exec = 5;
+    SpillingHashJoinExecNode spilling_hash_join = 6;
   }
 }
 
@@ -58,6 +59,19 @@ message ChaosExecNode {
   double failure_probability = 1;
   string fault_type = 2;
   uint64 seed = 3;
+}
+
+// Left/right children are not carried here: `datafusion-proto`'s
+// `PhysicalPlanNode` decodes them itself and passes the results to
+// `PhysicalExtensionCodec::try_decode` via its `inputs` parameter, matching
+// the ChaosExecNode convention. This message serializes only the join's own
+// state.
+message SpillingHashJoinExecNode {
+  repeated datafusion.PhysicalExprNode left_keys = 1;
+  repeated datafusion.PhysicalExprNode right_keys = 2;
+  // 0 = Partitioned, 1 = CollectLeft (v1 only emits 0)
+  uint32 partition_mode = 3;
+  uint64 num_sub_partitions = 4;
 }
 
 message ShuffleWriterExecNode {

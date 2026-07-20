@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5"
+        tags = "1, 2, 3, 4, 5, 6"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -51,6 +51,8 @@ pub mod ballista_physical_plan_node {
         SortShuffleWriter(super::SortShuffleWriterExecNode),
         #[prost(message, tag = "5")]
         ChaosExec(super::ChaosExecNode),
+        #[prost(message, tag = "6")]
+        SpillingHashJoin(super::SpillingHashJoinExecNode),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -61,6 +63,27 @@ pub struct ChaosExecNode {
     pub fault_type: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub seed: u64,
+}
+/// Left/right children are not carried here: `datafusion-proto`'s
+/// `PhysicalPlanNode` decodes them itself and passes the results to
+/// `PhysicalExtensionCodec::try_decode` via its `inputs` parameter, matching
+/// the ChaosExecNode convention. This message serializes only the join's own
+/// state.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SpillingHashJoinExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub left_keys: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
+    #[prost(message, repeated, tag = "2")]
+    pub right_keys: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
+    /// 0 = Partitioned, 1 = CollectLeft (v1 only emits 0)
+    #[prost(uint32, tag = "3")]
+    pub partition_mode: u32,
+    #[prost(uint64, tag = "4")]
+    pub num_sub_partitions: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWriterExecNode {
