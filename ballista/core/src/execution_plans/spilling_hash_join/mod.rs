@@ -18,6 +18,7 @@
 mod exec;
 mod hash_table;
 mod partitioner;
+mod spill;
 mod stream;
 
 pub use exec::SpillingHashJoinExec;

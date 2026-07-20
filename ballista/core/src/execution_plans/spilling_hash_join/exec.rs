@@ -16,10 +16,11 @@
 // under the License.
 
 // SpillingHashJoinExec is a physical execution plan node for a hash join
-// whose build side is designed to spill to disk instead of requiring the
-// entire hash table to fit in memory. `execute` currently keeps all build
-// sub-partitions ("buckets") resident in memory — spilling any of them to
-// disk under memory pressure is not yet implemented (see `stream.rs`).
+// whose build side spills to disk instead of requiring the entire hash table
+// to fit in memory. `execute` runs in bounded memory: build sub-partitions
+// ("buckets") are kept resident while the runtime `MemoryPool` grants space
+// and spilled to disk under pressure, and spilled buckets are drained one at a
+// time after the probe side ends (see `stream.rs`).
 //
 // v1 invariants (enforced by the constructor, which always builds an
 // inner join with no residual filter and no output projection):
@@ -42,12 +43,12 @@ use datafusion::physical_plan::{
 
 use super::stream::execute_join;
 
-/// Physical execution plan node for a hash join whose build side is designed
-/// to spill sub-partitions to disk rather than requiring the whole build
-/// side to fit in memory at once.
+/// Physical execution plan node for a hash join whose build side spills
+/// sub-partitions to disk rather than requiring the whole build side to fit in
+/// memory at once.
 ///
-/// `execute` currently keeps every build-side sub-partition resident (no
-/// spilling yet — see `stream.rs`).
+/// `execute` runs in bounded memory, spilling buckets under `MemoryPool`
+/// pressure and draining them one at a time (see `stream.rs`).
 #[derive(Debug)]
 pub struct SpillingHashJoinExec {
     left: Arc<dyn ExecutionPlan>,
@@ -170,17 +171,17 @@ impl ExecutionPlan for SpillingHashJoinExec {
     /// Executes partition `partition` of both children (the Ballista shuffle
     /// contract guarantees rows with equal join keys are co-located in the
     /// same partition number on both sides — see `PartitionMode::Partitioned`
-    /// semantics) and returns a stream that drains the left (build) side
-    /// fully into resident per-sub-partition hash tables before probing the
-    /// right (probe) side against them. No spilling yet: all build buckets
-    /// stay in memory for the lifetime of the stream.
+    /// semantics) and returns a stream that drains the left (build) side fully
+    /// into per-sub-partition hash tables before probing the right (probe)
+    /// side, spilling buckets to disk under memory pressure and draining any
+    /// spilled buckets one at a time after the probe side ends.
     fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let left = self.left.execute(partition, Arc::clone(&context))?;
-        let right = self.right.execute(partition, context)?;
+        let right = self.right.execute(partition, Arc::clone(&context))?;
 
         let (left_keys, right_keys): (Vec<PhysicalExprRef>, Vec<PhysicalExprRef>) =
             self.on.iter().cloned().unzip();
@@ -192,6 +193,9 @@ impl ExecutionPlan for SpillingHashJoinExec {
             left_keys,
             right_keys,
             self.num_sub_partitions,
+            context,
+            &self.metrics,
+            partition,
         ))
     }
 
@@ -467,5 +471,100 @@ mod tests {
             "test data should produce matching rows"
         );
         assert_eq!(actual_rows, expected_rows);
+    }
+
+    // --- spill oracle tests ---
+    //
+    // These reuse the same "match DataFusion's own Partitioned HashJoinExec"
+    // harness, but run `SpillingHashJoinExec` under a tiny `MemoryPool` so the
+    // build side cannot stay fully resident. Correctness under a tiny pool
+    // requires BOTH build-side spilling and probe-side routing plus a
+    // one-at-a-time drain of spilled buckets, so the two tests below gate the
+    // whole spilling path, not just a slice of it.
+    use datafusion::execution::TaskContext;
+    use datafusion::execution::memory_pool::FairSpillPool;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+    /// Builds a `TaskContext` whose `RuntimeEnv` has a `FairSpillPool` of
+    /// `pool_bytes` and a real (OS-temp) `DiskManager`, so `try_grow` fails
+    /// once the pool is exhausted and spilled batches have somewhere to go.
+    fn small_pool_ctx(pool_bytes: usize) -> Arc<TaskContext> {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(FairSpillPool::new(pool_bytes)))
+            .build()
+            .expect("build RuntimeEnv");
+        Arc::new(TaskContext::default().with_runtime(Arc::new(runtime)))
+    }
+
+    /// Sums the operator's `spill_count` metric across all partitions.
+    fn total_spill_count(plan: &Arc<dyn ExecutionPlan>) -> usize {
+        plan.metrics()
+            .and_then(|m| m.sum_by_name("spill_count"))
+            .map(|v| v.as_usize())
+            .unwrap_or(0)
+    }
+
+    /// Shared body for the spill oracle tests: run the oracle under a generous
+    /// context and `SpillingHashJoinExec` under a `pool_bytes` pool, assert the
+    /// sorted outputs match and that at least `min_spills` spill events fired.
+    async fn assert_matches_under_pool(pool_bytes: usize, min_spills: usize) {
+        let generous = Arc::new(TaskContext::default());
+        let small = small_pool_ctx(pool_bytes);
+        let num_partitions = 4;
+
+        let base_left = make_source("lk", "lv", 3_000, 500, 0, 777);
+        let base_right = make_source("rk", "rv", 3_500, 450, 1_000_000, 900);
+
+        let on: Vec<(PhysicalExprRef, PhysicalExprRef)> = vec![(
+            Arc::new(Column::new("lk", 0)),
+            Arc::new(Column::new("rk", 0)),
+        )];
+
+        let oracle_left = hash_repartition(Arc::clone(&base_left), 0, num_partitions);
+        let oracle_right = hash_repartition(Arc::clone(&base_right), 0, num_partitions);
+        let ours_left = hash_repartition(base_left, 0, num_partitions);
+        let ours_right = hash_repartition(base_right, 0, num_partitions);
+
+        let expected = oracle_join(oracle_left, oracle_right, on.clone(), generous).await;
+
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(
+            SpillingHashJoinExec::try_new(
+                ours_left,
+                ours_right,
+                on,
+                PartitionMode::Partitioned,
+                16,
+            )
+            .unwrap(),
+        );
+        let actual = collect(Arc::clone(&exec), small).await.unwrap();
+
+        let expected_rows = sorted_rows(&expected);
+        let actual_rows = sorted_rows(&actual);
+        assert!(
+            !expected_rows.is_empty(),
+            "test data should produce matching rows"
+        );
+        assert_eq!(actual_rows, expected_rows);
+
+        let spills = total_spill_count(&exec);
+        assert!(
+            spills >= min_spills,
+            "expected at least {min_spills} spill events, got {spills}"
+        );
+    }
+
+    #[tokio::test]
+    async fn matches_datafusion_with_forced_build_spill() {
+        // Pool small enough to force build-side spilling of the larger buckets
+        // while leaving room for some to stay resident.
+        assert_matches_under_pool(4 * 1024, 1).await;
+    }
+
+    #[tokio::test]
+    async fn matches_datafusion_with_forced_two_sided_spill() {
+        // Pool tiny enough that many buckets spill, so their probe rows must be
+        // routed to disk and joined in the drain phase.
+        assert_matches_under_pool(512, 8).await;
     }
 }
