@@ -79,28 +79,14 @@ impl PhysicalOptimizerRule for SpillingHashJoinRule {
             return Ok(plan);
         }
 
-        let num_sub_partitions = ballista_config.spilling_hash_join_partitions();
-
         plan.transform_up(|node| {
-            let Some(hj) = node.downcast_ref::<HashJoinExec>() else {
-                return Ok(Transformed::no(node));
-            };
-
-            if !is_eligible(hj) {
-                return Ok(Transformed::no(node));
+            let substituted =
+                maybe_substitute_spilling_hash_join(Arc::clone(&node), config)?;
+            if Arc::ptr_eq(&substituted, &node) {
+                Ok(Transformed::no(node))
+            } else {
+                Ok(Transformed::yes(substituted))
             }
-
-            let spilling = SpillingHashJoinExec::try_new(
-                Arc::clone(hj.left()),
-                Arc::clone(hj.right()),
-                hj.on().to_vec(),
-                PartitionMode::Partitioned,
-                num_sub_partitions,
-            )?;
-
-            Ok(Transformed::yes(
-                Arc::new(spilling) as Arc<dyn ExecutionPlan>
-            ))
         })
         .map(|t| t.data)
     }
@@ -112,6 +98,49 @@ impl PhysicalOptimizerRule for SpillingHashJoinRule {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+/// Substitutes a single `HashJoinExec` node with a `SpillingHashJoinExec` when
+/// it is eligible and the feature flag is on. Operates on the given node only
+/// (non-recursive), returning `plan` unchanged when the flag is off, the node
+/// is not a `HashJoinExec`, or the join does not match the eligibility
+/// predicate.
+///
+/// This is the single source of truth for spilling-join eligibility and
+/// substitution. It is shared by [`SpillingHashJoinRule`] (which applies it
+/// bottom-up over a whole tree) and the distributed planner (which applies it
+/// per node, immediately after broadcast promotion).
+pub(crate) fn maybe_substitute_spilling_hash_join(
+    plan: Arc<dyn ExecutionPlan>,
+    config: &ConfigOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let ballista_config = config
+        .extensions
+        .get::<BallistaConfig>()
+        .cloned()
+        .unwrap_or_default();
+
+    if !ballista_config.spilling_hash_join_enabled() {
+        return Ok(plan);
+    }
+
+    let Some(hj) = plan.downcast_ref::<HashJoinExec>() else {
+        return Ok(plan);
+    };
+
+    if !is_eligible(hj) {
+        return Ok(plan);
+    }
+
+    let spilling = SpillingHashJoinExec::try_new(
+        Arc::clone(hj.left()),
+        Arc::clone(hj.right()),
+        hj.on().to_vec(),
+        PartitionMode::Partitioned,
+        ballista_config.spilling_hash_join_partitions(),
+    )?;
+
+    Ok(Arc::new(spilling) as Arc<dyn ExecutionPlan>)
 }
 
 /// Whether `hj` matches the strict v1 shape `SpillingHashJoinExec` can
