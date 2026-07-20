@@ -16,7 +16,9 @@
 // under the License.
 
 mod exec;
+mod hash_table;
 mod partitioner;
 
 pub use exec::SpillingHashJoinExec;
+pub use hash_table::{ProbeTable, assemble_output};
 pub use partitioner::{PartitionedBatch, RowPartitioner};
