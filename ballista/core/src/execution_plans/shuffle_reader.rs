@@ -1288,7 +1288,6 @@ mod tests {
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common;
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
@@ -1742,7 +1741,7 @@ mod tests {
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1)),
+            None,
         )
         .unwrap();
 
@@ -1770,10 +1769,9 @@ mod tests {
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
-        // Writer's K=1 hash routes every row to partition 0. Its coordinator
-        // reads its full input slice (2 partitions × 2 batches = 4 batches),
-        // all routed to the single output file.
-        assert_eq!(result.len(), 4);
+        // With single-partition (None) output, executing input partition 0
+        // writes just that partition's 2 batches to a single output file.
+        assert_eq!(result.len(), 2);
         for b in result {
             assert_eq!(b, create_test_batch())
         }
