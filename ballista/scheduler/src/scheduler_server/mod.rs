@@ -27,6 +27,7 @@ use tokio::sync::broadcast;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -37,7 +38,7 @@ use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{debug, error, warn};
 
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 
 use crate::state::executor_manager::ExecutorManager;
@@ -226,6 +227,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.job_state_sender.subscribe()
     }
 
+    /// True when at least `min_ready_executors` executors currently have
+    /// live heartbeats. Embedders can call this from their own health/readiness
+    /// handler and AND it with whatever app-specific state they track. The
+    /// built-in `/readyz` endpoint (see `api::health`) reports the same value.
+    pub fn is_ready(&self) -> bool {
+        let alive = self.state.executor_manager.get_alive_executors().len();
+        alive >= self.state.config.min_ready_executors
+    }
+
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.query_stage_scheduler.metrics_collector()
@@ -262,12 +272,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
-    /// Submits a job to executor returning job_id
-    pub async fn submit_job(
+    /// Shared entry point for logical and physical submissions.
+    pub async fn submit_plan(
         &self,
         job_name: &str,
         ctx: Arc<SessionContext>,
-        plan: &LogicalPlan,
+        plan: &SubmitPlan,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
@@ -285,6 +295,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .await?;
 
         Ok(job_id)
+    }
+
+    /// Submit a logical plan for distributed execution, returning the job id.
+    pub async fn submit_job(
+        &self,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<JobId> {
+        self.submit_plan(
+            job_name,
+            ctx,
+            &SubmitPlan::Logical(plan.clone()),
+            subscriber,
+        )
+        .await
+    }
+
+    /// Submit an already-built physical plan for distributed execution. The physical
+    /// plan is planned with the static distributed planner; adaptive query planning
+    /// (AQE) is not available for this path.
+    pub async fn submit_physical_plan(
+        &self,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: Arc<dyn ExecutionPlan>,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<JobId> {
+        self.submit_plan(job_name, ctx, &SubmitPlan::Physical(plan), subscriber)
+            .await
     }
 
     /// It just send task status update event to the channel,
@@ -416,8 +457,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     async fn do_register_executor(&self, metadata: ExecutorMetadata) -> Result<()> {
         let executor_data = ExecutorData {
             executor_id: metadata.id.clone(),
-            total_task_slots: metadata.specification.task_slots,
-            available_task_slots: metadata.specification.task_slots,
+            total_vcores: metadata.specification.vcores,
+            available_vcores: metadata.specification.vcores,
         };
 
         // Save the executor to state
@@ -496,11 +537,11 @@ mod test {
         let plan = test_plan();
         // this test will fail when AQE scheduling is used.
         // as AQE will fold plan due to empty scan
-        let task_slots = 4;
+        let total_vcores = 4;
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
 
-        let executors = test_executors(task_slots);
+        let executors = test_executors(total_vcores);
         for (executor_metadata, executor_data) in executors {
             scheduler
                 .state
@@ -510,7 +551,7 @@ mod test {
         }
 
         let config =
-            SessionConfig::new_with_ballista().with_target_partitions(task_slots);
+            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
 
         let ctx = scheduler
             .state
@@ -529,6 +570,7 @@ mod test {
         // Submit job
         scheduler
             .state
+            .task_manager
             .submit_job(&job_id, "", ctx, &plan, 0, None)
             .await
             .expect("submitting plan");
@@ -561,11 +603,10 @@ mod test {
 
                 // Complete the task
                 let task_status = TaskStatus {
-                    task_id: task.task_id as u32,
-                    job_id: task.partition.job_id.clone().into(),
-                    stage_id: task.partition.stage_id as u32,
+                    task_id: task.key.task_id as u32,
+                    job_id: task.key.job_id.clone().into(),
+                    stage_id: task.key.stage_id as u32,
                     stage_attempt_num: task.stage_attempt_num as u32,
-                    partition_id: task.partition.partition_id as u32,
                     launch_time: 0,
                     start_exec_time: 0,
                     end_exec_time: 0,
@@ -598,6 +639,60 @@ mod test {
         for output_location in final_graph.output_locations() {
             assert_eq!(output_location.executor_meta.host, "localhost1".to_owned())
         }
+
+        Ok(())
+    }
+
+    // Verify a job can be submitted as an already-built physical plan.
+    #[tokio::test]
+    async fn test_submit_physical_plan() -> Result<()> {
+        let logical_plan = test_plan();
+        let total_vcores = 4;
+
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
+
+        let executors = test_executors(total_vcores);
+        for (executor_metadata, executor_data) in executors {
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(executor_metadata, executor_data)
+                .await?;
+        }
+
+        let config =
+            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
+
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_or_update_session("session_id", &config)
+            .await?;
+
+        // Plan the logical plan into a physical plan and submit it directly.
+        let physical_plan = ctx.state().create_physical_plan(&logical_plan).await?;
+
+        let job_id: JobId = "physical_job".into();
+
+        scheduler
+            .state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+
+        scheduler
+            .state
+            .task_manager
+            .submit_physical_plan(&job_id, "", ctx, physical_plan, 0, None)
+            .await
+            .expect("submitting physical plan");
+
+        assert!(
+            scheduler
+                .state
+                .task_manager
+                .get_active_execution_graph(&job_id)
+                .is_some()
+        );
 
         Ok(())
     }
@@ -706,19 +801,13 @@ mod test {
             |_executor_id: String, task: MultiTaskDefinition| {
                 let mut statuses = vec![];
 
-                for TaskId {
-                    task_id,
-                    partition_id,
-                    ..
-                } in task.task_ids
-                {
+                for TaskId { task_id, .. } in task.task_ids {
                     let timestamp = timestamp_millis();
                     statuses.push(TaskStatus {
                         task_id,
                         job_id: task.job_id.clone(),
                         stage_id: task.stage_id,
                         stage_attempt_num: task.stage_attempt_num,
-                        partition_id,
                         launch_time: timestamp,
                         start_exec_time: timestamp,
                         end_exec_time: timestamp,
@@ -782,19 +871,13 @@ mod test {
             |_executor_id: String, task: MultiTaskDefinition| {
                 let mut statuses = vec![];
 
-                for TaskId {
-                    task_id,
-                    partition_id,
-                    ..
-                } in task.task_ids
-                {
+                for TaskId { task_id, .. } in task.task_ids {
                     let timestamp = timestamp_millis();
                     statuses.push(TaskStatus {
                         task_id,
                         job_id: task.job_id.clone(),
                         stage_id: task.stage_id,
                         stage_attempt_num: task.stage_attempt_num,
-                        partition_id,
                         launch_time: timestamp,
                         start_exec_time: timestamp,
                         end_exec_time: timestamp,
@@ -995,7 +1078,7 @@ mod test {
     }
 
     fn test_executors(num_partitions: usize) -> Vec<(ExecutorMetadata, ExecutorData)> {
-        let task_slots = (num_partitions as u32).div_ceil(2);
+        let vcores = (num_partitions as u32).div_ceil(2);
 
         vec![
             (
@@ -1004,14 +1087,13 @@ mod test {
                     host: "localhost1".to_string(),
                     port: 8080,
                     grpc_port: 9090,
-                    specification: ExecutorSpecification::default()
-                        .with_task_slots(task_slots),
+                    specification: ExecutorSpecification::default().with_vcores(vcores),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 ExecutorData {
                     executor_id: "executor-1".to_owned(),
-                    total_task_slots: task_slots,
-                    available_task_slots: task_slots,
+                    total_vcores: vcores,
+                    available_vcores: vcores,
                 },
             ),
             (
@@ -1021,13 +1103,13 @@ mod test {
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification::default()
-                        .with_task_slots(num_partitions as u32 - task_slots),
+                        .with_vcores(num_partitions as u32 - vcores),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 ExecutorData {
                     executor_id: "executor-2".to_owned(),
-                    total_task_slots: num_partitions as u32 - task_slots,
-                    available_task_slots: num_partitions as u32 - task_slots,
+                    total_vcores: num_partitions as u32 - vcores,
+                    available_vcores: num_partitions as u32 - vcores,
                 },
             ),
         ]

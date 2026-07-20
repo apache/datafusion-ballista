@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::config::BallistaConfig;
 use datafusion::{
     arrow::compute::SortOptions,
     common::{JoinType, NullEquality, Result, exec_err, internal_err},
@@ -32,7 +33,9 @@ use datafusion::{
 use log::debug;
 use std::sync::Arc;
 
+use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
 use crate::state::aqe::execution_plan::ExchangeExec;
+use crate::state::aqe::optimizer_rule::join_selection::SelectJoinRule;
 
 /// has children of this join been
 /// repartitioned
@@ -63,10 +66,6 @@ pub struct DynamicJoinSelectionExec {
 impl ExecutionPlan for DynamicJoinSelectionExec {
     fn name(&self) -> &str {
         "DynamicJoinSelectionExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -216,24 +215,57 @@ impl DynamicJoinSelectionExec {
         config: &ConfigOptions,
     ) -> Result<JoinSelectionAction> {
         let prefer_hash_join = config.optimizer.prefer_hash_join;
-        let threshold_collect_left_join_bytes =
-            config.optimizer.hash_join_single_partition_threshold;
-        let threshold_collect_left_join_rows =
-            config.optimizer.hash_join_single_partition_threshold_rows;
+        // Both broadcast thresholds come from Ballista's own config so that a
+        // single set of keys governs broadcast selection under both the static
+        // planner (`maybe_promote_to_broadcast`) and AQE. A byte threshold of 0
+        // disables broadcast promotion entirely, matching the static planner.
+        // The row threshold is only consulted as a fallback when byte-size
+        // statistics are absent.
+        let bc = config
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_default();
+        let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
+        let threshold_collect_left_join_rows = bc.broadcast_join_threshold_rows();
 
-        let partition_mode = if Self::supports_collect_by_thresholds(
+        // The `!= 0` guard sits here rather than inside
+        // `supports_collect_by_thresholds`: that helper falls back to the row
+        // check when the byte threshold is 0/absent, so gating at this level is
+        // what makes a 0 threshold disable both the byte and row broadcast paths.
+        let under_threshold = threshold_collect_left_join_bytes != 0
+            && (Self::supports_collect_by_thresholds(
+                self.left.as_ref(),
+                threshold_collect_left_join_bytes,
+                threshold_collect_left_join_rows,
+            ) || Self::supports_collect_by_thresholds(
+                self.right.as_ref(),
+                threshold_collect_left_join_bytes,
+                threshold_collect_left_join_rows,
+            ));
+
+        // The resolver collects the smaller side onto the build (left) input,
+        // swapping the join type when the right side is the smaller one (the
+        // `swap_inputs` calls in `SelectJoinRule`). A `CollectLeft` join then
+        // broadcasts that build side to every probe task, which is only correct
+        // for join types that never emit rows on behalf of the build side. Use
+        // the same swap decision as the resolver to determine the resulting join
+        // type and skip the broadcast when it would be unsafe.
+        let build_side_join_type = if SelectJoinRule::supports_swap_join_order(
             self.left.as_ref(),
-            threshold_collect_left_join_bytes,
-            threshold_collect_left_join_rows,
-        ) || Self::supports_collect_by_thresholds(
             self.right.as_ref(),
-            threshold_collect_left_join_bytes,
-            threshold_collect_left_join_rows,
-        ) {
-            PartitionMode::CollectLeft
+        )? {
+            self.join_type.swap()
         } else {
-            PartitionMode::Partitioned
+            self.join_type
         };
+
+        let partition_mode =
+            if under_threshold && collect_left_broadcast_safe(build_side_join_type) {
+                PartitionMode::CollectLeft
+            } else {
+                PartitionMode::Partitioned
+            };
 
         let stats_left = self.left.partition_statistics(None)?;
         let stats_right = self.right.partition_statistics(None)?;
@@ -383,16 +415,14 @@ impl DynamicJoinSelectionExec {
     /// its children.
     pub(crate) fn upstream_resolved(&self) -> bool {
         fn has_join_or_unresolved_exchange(plan: &Arc<dyn ExecutionPlan>) -> bool {
-            if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+            if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
                 // this should be fine, once we find first resolved
                 // exchange it should not have any unresolved shuffles later
                 // nor dynamic joins
                 return !exchange.shuffle_created();
             };
 
-            plan.as_any()
-                .downcast_ref::<DynamicJoinSelectionExec>()
-                .is_some()
+            plan.downcast_ref::<DynamicJoinSelectionExec>().is_some()
                 || plan
                     .children()
                     .iter()
@@ -430,10 +460,248 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
+    use datafusion::config::ExtensionOptions;
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::test::exec::StatisticsExec;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+    }
+
+    fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Inexact(num_rows * 16),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
+        ))
+    }
+
+    /// A source that reports a row count but no byte-size statistic, so the
+    /// resolver must fall back to the row-count broadcast threshold.
+    fn stats_exec_rows_only(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
+        ))
+    }
+
+    /// Core driver: runs the join-strategy decision for the given children with
+    /// explicit Ballista broadcast thresholds.
+    fn run_to_actual_join(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+        join_type: JoinType,
+        prefer_hash_join: bool,
+        broadcast_threshold_bytes: usize,
+        broadcast_threshold_rows: usize,
+    ) -> JoinSelectionAction {
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+        let dj = DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Unknown,
+            null_aware: false,
+            plan_id: 0,
+        };
+        let mut config = ConfigOptions::new();
+        config.optimizer.prefer_hash_join = prefer_hash_join;
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "optimizer.broadcast_join_threshold_bytes",
+            &broadcast_threshold_bytes.to_string(),
+        )
+        .unwrap();
+        bc.set(
+            "optimizer.broadcast_join_threshold_rows",
+            &broadcast_threshold_rows.to_string(),
+        )
+        .unwrap();
+        config.extensions.insert(bc);
+        dj.to_actual_join(&config).unwrap()
+    }
+
+    /// Run the resolver's join-strategy decision for `join_type` with `left_rows`
+    /// and `right_rows` on the two sides, both small enough to be collectable.
+    fn actual_join_for(
+        join_type: JoinType,
+        left_rows: usize,
+        right_rows: usize,
+        prefer_hash_join: bool,
+    ) -> JoinSelectionAction {
+        // 10 MiB is large enough for the tiny StatisticsExec sides below to be
+        // collectable, matching the default broadcast threshold.
+        actual_join_with_threshold(
+            join_type,
+            left_rows,
+            right_rows,
+            prefer_hash_join,
+            10 * 1024 * 1024,
+        )
+    }
+
+    /// Same as [`actual_join_for`] but with an explicit
+    /// `broadcast_join_threshold_bytes`, so tests can prove the Ballista config
+    /// drives the byte cutoff (0 disables broadcast promotion).
+    fn actual_join_with_threshold(
+        join_type: JoinType,
+        left_rows: usize,
+        right_rows: usize,
+        prefer_hash_join: bool,
+        broadcast_threshold_bytes: usize,
+    ) -> JoinSelectionAction {
+        run_to_actual_join(
+            stats_exec(left_rows),
+            stats_exec(right_rows),
+            join_type,
+            prefer_hash_join,
+            broadcast_threshold_bytes,
+            // Large row threshold: byte stats are present here, so the row path
+            // is never consulted; keep it out of the way of the byte decision.
+            1_000_000,
+        )
+    }
+
+    fn is_collected(action: &JoinSelectionAction) -> bool {
+        matches!(
+            action,
+            JoinSelectionAction::CollectLeft(_) | JoinSelectionAction::LateCollectLeft(_)
+        )
+    }
+
+    // With equal-sized sides (no swap) the resolver must collect a small build
+    // side into a CollectLeft broadcast only for join types whose output is
+    // driven by the probe side; everything that emits build-side rows must be
+    // repartitioned instead. `prefer_hash_join` only selects the repartitioned
+    // fallback (hash vs sort-merge), so the broadcast-safety decision must be
+    // identical under both settings.
+    #[test]
+    fn to_actual_join_collects_only_broadcast_safe_join_types() {
+        for prefer_hash_join in [true, false] {
+            for join_type in [
+                JoinType::Inner,
+                JoinType::Left,
+                JoinType::Right,
+                JoinType::Full,
+                JoinType::LeftSemi,
+                JoinType::RightSemi,
+                JoinType::LeftAnti,
+                JoinType::RightAnti,
+                JoinType::LeftMark,
+                JoinType::RightMark,
+            ] {
+                let action = actual_join_for(join_type, 100, 100, prefer_hash_join);
+                assert_eq!(
+                    is_collected(&action),
+                    collect_left_broadcast_safe(join_type),
+                    "join_type {join_type:?} (prefer_hash_join={prefer_hash_join}): collected={}, expected safe={}",
+                    is_collected(&action),
+                    collect_left_broadcast_safe(join_type),
+                );
+            }
+        }
+    }
+
+    // Safety is evaluated on the join type *after* the build-side swap. A LEFT
+    // join with the smaller side on the right swaps to a (safe) RIGHT join and is
+    // collected; a RIGHT join with the smaller side on the right swaps to an
+    // (unsafe) LEFT join and must be repartitioned.
+    #[test]
+    fn to_actual_join_uses_post_swap_join_type() {
+        assert!(
+            is_collected(&actual_join_for(JoinType::Left, 1000, 10, true)),
+            "LEFT with small right swaps to a safe RIGHT join and should collect"
+        );
+        assert!(
+            !is_collected(&actual_join_for(JoinType::Right, 1000, 10, true)),
+            "RIGHT with small right swaps to an unsafe LEFT join and must repartition"
+        );
+    }
+
+    // The byte cutoff comes from `ballista.optimizer.broadcast_join_threshold_bytes`,
+    // not DataFusion's `hash_join_single_partition_threshold`. `stats_exec(n)`
+    // reports `n * 16` bytes, so the smaller side here is 1600 bytes. A threshold
+    // above it collects; a threshold below it repartitions.
+    #[test]
+    fn broadcast_threshold_bytes_drives_collect_decision() {
+        // smaller (left) side = 100 * 16 = 1600 bytes, larger = 16000 bytes
+        assert!(
+            is_collected(&actual_join_with_threshold(
+                JoinType::Inner,
+                100,
+                1000,
+                true,
+                2000,
+            )),
+            "smaller side (1600 B) is under a 2000 B threshold and must collect"
+        );
+        assert!(
+            !is_collected(&actual_join_with_threshold(
+                JoinType::Inner,
+                100,
+                1000,
+                true,
+                1000,
+            )),
+            "neither side is under a 1000 B threshold, so the join must repartition"
+        );
+    }
+
+    // When byte-size statistics are absent, the decision falls back to the
+    // Ballista row-count threshold (`broadcast_join_threshold_rows`), not
+    // DataFusion's `hash_join_single_partition_threshold_rows`.
+    #[test]
+    fn broadcast_threshold_rows_drives_fallback_decision() {
+        // Byte-size is Absent on both sides, so only the row threshold applies.
+        // Smaller side = 100 rows. A generous byte threshold keeps the byte
+        // guard open so the row fallback is what decides.
+        assert!(
+            is_collected(&run_to_actual_join(
+                stats_exec_rows_only(100),
+                stats_exec_rows_only(1000),
+                JoinType::Inner,
+                true,
+                10 * 1024 * 1024,
+                200,
+            )),
+            "smaller side (100 rows) is under a 200-row threshold and must collect"
+        );
+        assert!(
+            !is_collected(&run_to_actual_join(
+                stats_exec_rows_only(100),
+                stats_exec_rows_only(1000),
+                JoinType::Inner,
+                true,
+                10 * 1024 * 1024,
+                50,
+            )),
+            "neither side is under a 50-row threshold, so the join must repartition"
+        );
+    }
+
+    // A threshold of 0 disables broadcast promotion entirely, matching the static
+    // planner, even for a side small enough to collect under any positive cutoff.
+    #[test]
+    fn zero_broadcast_threshold_disables_collect() {
+        assert!(
+            !is_collected(&actual_join_with_threshold(JoinType::Inner, 1, 1, true, 0,)),
+            "broadcast_join_threshold_bytes=0 must disable CollectLeft promotion"
+        );
     }
 
     /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.

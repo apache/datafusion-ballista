@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ballista_core::JobId;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus};
 use log::{debug, error, info, trace, warn};
 use tokio::sync::broadcast;
@@ -69,6 +70,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     fn broadcast_job_state(&self, event: JobStateEvent) {
         // Ignore send errors - no receivers is a valid state
         let _ = self.job_state_sender.send(event);
+    }
+
+    async fn abort_job(&self, job_id: &JobId, failure_reason: String) -> Result<()> {
+        let executor_manager = self.state.executor_manager.clone();
+        self.state
+            .task_manager
+            .abort_job(job_id, failure_reason, move |running_tasks| async move {
+                if running_tasks.is_empty() {
+                    Ok(())
+                } else {
+                    executor_manager.cancel_running_tasks(running_tasks).await
+                }
+            })
+            .await?;
+        Ok(())
     }
 
     #[cfg(feature = "rest-api")]
@@ -165,7 +181,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             }
                         }
 
-                        error!("{}", &fail_message);
+                        error!("{}", fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
                             fail_message,
@@ -237,13 +253,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 info!("Job finished successfully: [{job_id}]");
 
-                if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
-                    error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
-                } else {
-                    // Broadcast only after state transition succeeds
-                    self.broadcast_job_state(JobStateEvent::completed(&job_id));
-                }
-                self.state.clean_up_successful_job(job_id);
+                let intermediate_stage_ids =
+                    match self.state.task_manager.succeed_job(&job_id).await {
+                        Ok(ids) => {
+                            // Broadcast only after state transition succeeds
+                            self.broadcast_job_state(JobStateEvent::completed(&job_id));
+                            ids
+                        }
+                        Err(e) => {
+                            error!(
+                                "Fail to invoke succeed_job for job {job_id} due to {e:?}"
+                            );
+                            vec![]
+                        }
+                    };
+                self.state
+                    .clean_up_successful_job(job_id, intermediate_stage_ids);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -255,26 +280,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job failed: [{job_id}]");
-
-                match self
-                    .state
-                    .task_manager
-                    .abort_job(&job_id, fail_message.clone())
-                    .await
-                {
-                    Ok((running_tasks, _pending_tasks)) => {
+                match self.abort_job(&job_id, fail_message.clone()).await {
+                    Ok(()) => {
                         // Broadcast only after state transition succeeds
-                        self.broadcast_job_state(JobStateEvent::failed(&job_id, &fail_message));
-                        if !running_tasks.is_empty() {
-                            event_sender
-                                .post_event(QueryStageSchedulerEvent::CancelTasks(
-                                    running_tasks,
-                                ))
-                                .await?;
-                        }
+                        self.broadcast_job_state(JobStateEvent::failed(
+                            &job_id,
+                            &fail_message,
+                        ));
                     }
                     Err(e) => {
-                        error!("Fail to invoke abort_job for job {job_id} due to {e:?}");
+                        error!("Fail to abort job {job_id} due to {e:?}");
                     }
                 }
                 self.state.clean_up_failed_job(job_id);
@@ -289,19 +304,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job cancelled: [{job_id}]");
-
-                match self.state.task_manager.cancel_job(&job_id).await {
-                    Ok((running_tasks, _pending_tasks)) => {
+                match self.abort_job(&job_id, "Cancelled".to_owned()).await {
+                    Ok(()) => {
                         // Broadcast only after state transition succeeds
                         self.broadcast_job_state(JobStateEvent::cancelled(&job_id));
-                        event_sender
-                            .post_event(QueryStageSchedulerEvent::CancelTasks(
-                                running_tasks,
-                            ))
-                            .await?;
                     }
                     Err(e) => {
-                        error!("Fail to invoke cancel_job for job {job_id} due to {e:?}");
+                        error!("Fail to cancel job {job_id} due to {e:?}");
                     }
                 }
                 self.state.clean_up_failed_job(job_id);
@@ -313,9 +322,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 let num_status = tasks_status.len();
                 if self.state.config.is_push_staged_scheduling() {
+                    // Refund the vcores each completing task consumed at bind
+                    // time (see `bind_one` in `cluster/mod.rs`). Refunding
+                    // one vcore per task would leak leftovers under the
+                    // multi-partition-task model, draining executor budgets
+                    // to 1 vcore over the course of a query.
+                    let vcores_freed = self
+                        .state
+                        .task_manager
+                        .sum_vcores_for_statuses(&tasks_status)
+                        .await;
                     self.state
                         .executor_manager
-                        .unbind_tasks(vec![(executor_id.clone(), num_status as u32)])
+                        .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
                         .await?;
                 }
                 match self
@@ -476,7 +495,8 @@ mod tests {
         let mut states = vec![];
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining =
+                deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 break;
             }
@@ -517,14 +537,26 @@ mod tests {
         )
         .await;
 
-        let queued_pos = states.iter().position(|s| *s == JobState::Queued)
+        let queued_pos = states
+            .iter()
+            .position(|s| *s == JobState::Queued)
             .expect("Expected Queued event");
-        let running_pos = states.iter().position(|s| *s == JobState::Running)
+        let running_pos = states
+            .iter()
+            .position(|s| *s == JobState::Running)
             .expect("Expected Running event");
-        let completed_pos = states.iter().position(|s| *s == JobState::Completed)
+        let completed_pos = states
+            .iter()
+            .position(|s| *s == JobState::Completed)
             .expect("Expected Completed event");
-        assert!(queued_pos < running_pos, "Queued should precede Running, got: {states:?}");
-        assert!(running_pos < completed_pos, "Running should precede Completed, got: {states:?}");
+        assert!(
+            queued_pos < running_pos,
+            "Queued should precede Running, got: {states:?}"
+        );
+        assert!(
+            running_pos < completed_pos,
+            "Running should precede Completed, got: {states:?}"
+        );
 
         Ok(())
     }

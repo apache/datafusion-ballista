@@ -19,6 +19,7 @@ use crate::{
     assert_plan,
     state::aqe::{planner::AdaptivePlanner, test::mock_partitions_with_statistics},
 };
+use ballista_core::extension::SessionConfigExt;
 use datafusion::{
     arrow::{
         array::{Int32Array, RecordBatch},
@@ -85,6 +86,10 @@ fn make_ctx_without_collect_left(prefer_hash_join: bool) -> SessionContext {
             "datafusion.optimizer.hash_join_single_partition_threshold_rows",
             0,
         )
+        // AQE join selection reads the broadcast cutoff from Ballista's own
+        // config; a byte threshold of 0 disables CollectLeft promotion, keeping
+        // these joins repartitioned.
+        .with_ballista_broadcast_join_threshold_bytes(0)
         .with_target_partitions(4)
         .with_round_robin_repartition(false);
     let state = SessionStateBuilder::new_with_default_features()
@@ -137,6 +142,38 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
         ExchangeExec: partitioning=None, plan_id=1, stage_id=pending, stage_resolved=false, broadcast=true
           DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
         DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
+    Ok(())
+}
+
+// A `CollectLeft` join broadcasts (replicates) the build/left side to every
+// probe task, each of which sees only its slice of the probe/right side. For a
+// LEFT join that emits a null-padded row for every unmatched left row, each
+// task would emit those rows independently, producing duplicate/spurious rows
+// (apache/datafusion-ballista#1055). The resolver must therefore keep an
+// unsafe-to-broadcast join type repartitioned instead of collecting it.
+#[tokio::test]
+async fn test_left_join_not_collected_left() -> datafusion::common::Result<()> {
+    let ctx = make_ctx(true);
+    register_2tables(&ctx);
+
+    let lp = ctx
+        .sql("SELECT t1.id, t2.val FROM t1 LEFT JOIN t2 ON t1.id = t2.id")
+        .await
+        .unwrap()
+        .into_optimized_plan()
+        .unwrap();
+
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let plan = planner.current_plan();
+    assert_plan!(plan, @ r"
+    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
+      ProjectionExec: expr=[id@0 as id, val@2 as val]
+        DynamicJoinSelectionExec: plan_id=0, join_type=Left, on=[(id@0, id@0)] repartitioned=true
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
     Ok(())
 }

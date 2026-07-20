@@ -22,7 +22,6 @@ use datafusion::{
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties},
 };
 use parking_lot::Mutex;
-use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, atomic::AtomicI64};
@@ -124,10 +123,6 @@ impl DisplayAs for AdaptiveDatafusionExec {
 impl ExecutionPlan for AdaptiveDatafusionExec {
     fn name(&self) -> &str {
         "AdaptiveDatafusionExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

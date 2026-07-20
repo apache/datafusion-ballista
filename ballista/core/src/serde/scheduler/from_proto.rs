@@ -19,7 +19,7 @@ use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::logical_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, PruningMetrics, RatioMetrics, Time, Timestamp,
 };
@@ -130,42 +130,42 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
     }
 }
 
-impl TryInto<MetricValue> for protobuf::OperatorMetric {
+impl TryInto<MetricValue> for operator_metric::Metric {
     type Error = BallistaError;
 
     fn try_into(self) -> Result<MetricValue, Self::Error> {
-        match self.metric {
-            Some(operator_metric::Metric::OutputRows(value)) => {
+        match self {
+            operator_metric::Metric::OutputRows(value) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::OutputRows(count))
             }
-            Some(operator_metric::Metric::ElapseTime(value)) => {
+            operator_metric::Metric::ElapseTime(value) => {
                 let time = Time::new();
                 time.add_duration(Duration::from_nanos(value));
                 Ok(MetricValue::ElapsedCompute(time))
             }
-            Some(operator_metric::Metric::SpillCount(value)) => {
+            operator_metric::Metric::SpillCount(value) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::SpillCount(count))
             }
-            Some(operator_metric::Metric::SpilledBytes(value)) => {
+            operator_metric::Metric::SpilledBytes(value) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::SpilledBytes(count))
             }
-            Some(operator_metric::Metric::SpilledRows(value)) => {
+            operator_metric::Metric::SpilledRows(value) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::SpilledRows(count))
             }
-            Some(operator_metric::Metric::CurrentMemoryUsage(value)) => {
+            operator_metric::Metric::CurrentMemoryUsage(value) => {
                 let gauge = Gauge::new();
                 gauge.add(value as usize);
                 Ok(MetricValue::CurrentMemoryUsage(gauge))
             }
-            Some(operator_metric::Metric::Count(NamedCount { name, value })) => {
+            operator_metric::Metric::Count(NamedCount { name, value }) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::Count {
@@ -173,7 +173,7 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                     count,
                 })
             }
-            Some(operator_metric::Metric::Gauge(NamedGauge { name, value })) => {
+            operator_metric::Metric::Gauge(NamedGauge { name, value }) => {
                 let gauge = Gauge::new();
                 gauge.add(value as usize);
                 Ok(MetricValue::Gauge {
@@ -181,7 +181,7 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                     gauge,
                 })
             }
-            Some(operator_metric::Metric::Time(NamedTime { name, value })) => {
+            operator_metric::Metric::Time(NamedTime { name, value }) => {
                 let time = Time::new();
                 time.add_duration(Duration::from_nanos(value));
                 Ok(MetricValue::Time {
@@ -189,26 +189,26 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                     time,
                 })
             }
-            Some(operator_metric::Metric::StartTimestamp(value)) => {
+            operator_metric::Metric::StartTimestamp(value) => {
                 let timestamp = Timestamp::new();
                 timestamp.set(Utc.timestamp_nanos(value));
                 Ok(MetricValue::StartTimestamp(timestamp))
             }
-            Some(operator_metric::Metric::EndTimestamp(value)) => {
+            operator_metric::Metric::EndTimestamp(value) => {
                 let timestamp = Timestamp::new();
                 timestamp.set(Utc.timestamp_nanos(value));
                 Ok(MetricValue::EndTimestamp(timestamp))
             }
-            Some(operator_metric::Metric::OutputBytes(value)) => {
+            operator_metric::Metric::OutputBytes(value) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::OutputBytes(count))
             }
-            Some(operator_metric::Metric::PruningMetrics(NamedPruningMetrics {
+            operator_metric::Metric::PruningMetrics(NamedPruningMetrics {
                 name,
                 pruned,
                 matched,
-            })) => {
+            }) => {
                 let pruning_metrics = PruningMetrics::new();
                 pruning_metrics.add_pruned(pruned as usize);
                 pruning_metrics.add_matched(matched as usize);
@@ -217,7 +217,7 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                     pruning_metrics,
                 })
             }
-            Some(operator_metric::Metric::Ratio(NamedRatio { name, part, total })) => {
+            operator_metric::Metric::Ratio(NamedRatio { name, part, total }) => {
                 let ratio_metrics = RatioMetrics::new();
                 ratio_metrics.add_part(part as usize);
                 ratio_metrics.add_total(total as usize);
@@ -226,14 +226,11 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                     ratio_metrics,
                 })
             }
-            Some(operator_metric::Metric::OutputBatches(value)) => {
+            operator_metric::Metric::OutputBatches(value) => {
                 let count = Count::new();
                 count.add(value as usize);
                 Ok(MetricValue::OutputBatches(count))
             }
-            None => Err(BallistaError::General(
-                "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
-            )),
         }
     }
 }
@@ -243,15 +240,15 @@ impl TryInto<MetricsSet> for protobuf::OperatorMetricsSet {
 
     fn try_into(self) -> Result<MetricsSet, Self::Error> {
         let mut ms = MetricsSet::new();
-        let metrics = self
-            .metrics
-            .into_iter()
-            .map(|m| m.try_into())
-            .collect::<Result<Vec<_>, BallistaError>>()?;
-
-        for value in metrics {
-            let new_metric = Arc::new(Metric::new(value, None));
-            ms.push(new_metric)
+        for proto_metric in self.metrics {
+            let partition = proto_metric.partition.map(|p| p as usize);
+            let inner = proto_metric.metric.ok_or_else(|| {
+                BallistaError::General(
+                    "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
+                )
+            })?;
+            let value: MetricValue = inner.try_into()?;
+            ms.push(Arc::new(Metric::new(value, partition)));
         }
         Ok(ms)
     }
@@ -274,12 +271,12 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
 #[allow(clippy::from_over_into)]
 impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
     fn into(self) -> ExecutorSpecification {
-        let mut ret = ExecutorSpecification { task_slots: 0 };
+        let mut ret = ExecutorSpecification { vcores: 0 };
         for resource in self.resources {
             if let Some(resource_spec) = resource.resource {
                 match resource_spec {
-                    protobuf::executor_resource::Resource::TaskSlots(num_slots) => {
-                        ret.task_slots = num_slots
+                    protobuf::executor_resource::Resource::Vcores(vcores) => {
+                        ret.vcores = vcores
                     }
                 }
             }
@@ -313,21 +310,21 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
     fn into(self) -> ExecutorData {
         let mut ret = ExecutorData {
             executor_id: self.executor_id,
-            total_task_slots: 0,
-            available_task_slots: 0,
+            total_vcores: 0,
+            available_vcores: 0,
         };
         for resource in self.resources {
-            if let Some(task_slots) = resource.total
-                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
-                    task_slots.resource
+            if let Some(total) = resource.total
+                && let Some(protobuf::executor_resource::Resource::Vcores(vcores)) =
+                    total.resource
             {
-                ret.total_task_slots = task_slots
+                ret.total_vcores = vcores
             };
-            if let Some(task_slots) = resource.available
-                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
-                    task_slots.resource
+            if let Some(available) = resource.available
+                && let Some(protobuf::executor_resource::Resource::Vcores(vcores)) =
+                    available.resource
             {
-                ret.available_task_slots = task_slots
+                ret.available_vcores = vcores
             };
         }
         ret
@@ -338,6 +335,7 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
 ///
 /// This function deserializes the execution plan from the protobuf representation
 /// and constructs a complete task definition with the provided runtime configuration.
+#[allow(clippy::too_many_arguments)]
 pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     task: protobuf::TaskDefinition,
     produce_runtime: RuntimeProducer,
@@ -345,6 +343,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
+    higher_order_functions: HashMap<String, Arc<HigherOrderUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&task.props);
@@ -354,6 +353,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         scalar_functions: scalar_functions.clone(),
         aggregate_functions: aggregate_functions.clone(),
         window_functions: window_functions.clone(),
+        higher_order_functions: higher_order_functions.clone(),
     });
 
     let ctx = TaskContext::new(
@@ -361,6 +361,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         task.session_id.clone(),
         session_config.clone(),
         scalar_functions,
+        higher_order_functions,
         aggregate_functions,
         window_functions,
         runtime.clone(),
@@ -373,12 +374,16 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let job_id = task.job_id.into();
     let stage_id = task.stage_id as usize;
-    let partition_id = task.partition_id as usize;
     let task_attempt_num = task.task_attempt_num as usize;
     let stage_attempt_num = task.stage_attempt_num as usize;
     let launch_time = task.launch_time;
     let task_id = task.task_id as usize;
     let session_id = task.session_id;
+    let global_output_partition_ids = task
+        .global_output_partition_ids
+        .iter()
+        .map(|pid| *pid as usize)
+        .collect::<Vec<_>>();
 
     Ok(TaskDefinition {
         task_id,
@@ -386,7 +391,8 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         job_id,
         stage_id,
         stage_attempt_num,
-        partition_id,
+        global_output_partition_ids,
+        vcores_consumed: task.vcores_consumed,
         plan,
         launch_time,
         session_id,
@@ -399,6 +405,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 ///
 /// This function handles batch task definitions where multiple partitions share
 /// the same execution plan, creating individual task definitions for each partition.
+#[allow(clippy::too_many_arguments)]
 pub fn get_task_definition_vec<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
@@ -409,6 +416,7 @@ pub fn get_task_definition_vec<
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
+    higher_order_functions: HashMap<String, Arc<HigherOrderUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&multi_task.props);
@@ -418,6 +426,7 @@ pub fn get_task_definition_vec<
         scalar_functions: scalar_functions.clone(),
         aggregate_functions: aggregate_functions.clone(),
         window_functions: window_functions.clone(),
+        higher_order_functions: higher_order_functions.clone(),
     });
 
     let ctx = TaskContext::new(
@@ -425,6 +434,7 @@ pub fn get_task_definition_vec<
         uuid::Uuid::new_v4().to_string(),
         session_config.clone(),
         scalar_functions,
+        higher_order_functions,
         aggregate_functions,
         window_functions,
         runtime.clone(),
@@ -451,7 +461,12 @@ pub fn get_task_definition_vec<
                 job_id: job_id.clone(),
                 stage_id,
                 stage_attempt_num,
-                partition_id: task_id.partition_id as usize,
+                global_output_partition_ids: task_id
+                    .global_output_partition_ids
+                    .iter()
+                    .map(|pid| *pid as usize)
+                    .collect(),
+                vcores_consumed: task_id.vcores_consumed,
                 plan: reset_metrics_for_execution_plan(plan.clone())?,
                 launch_time,
                 session_id: session_id.clone(),

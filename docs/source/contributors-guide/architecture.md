@@ -199,3 +199,65 @@ and [ShuffleReaderExec] operators.
 
 [shufflewriterexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
 [shufflereaderexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs
+
+## Adaptive Query Execution (AQE)
+
+The scheduling described above is _static_: the full set of query stages is computed once, at job
+submission time, from the plan-time cost estimates. Adaptive Query Execution (AQE) is an experimental
+alternative in which the stage DAG is built _incrementally_, re-optimizing the remaining plan using the
+exact row counts and byte sizes observed as each shuffle stage completes. It is disabled by default and
+enabled with the `ballista.planner.adaptive.enabled` configuration setting.
+
+### Static vs adaptive execution graphs
+
+Job scheduling revolves around an `ExecutionGraph`, which translates a physical plan into a set of stages.
+There are two implementations, selected by configuration when a job is submitted:
+
+- **`StaticExecutionGraph`** — the default. All stages are planned up front by the `DistributedPlanner`,
+  which returns a static list of stages.
+- **`AdaptiveExecutionGraph`** — the adaptive counterpart. It is driven by the `AdaptivePlanner`, which runs
+  a set of pluggable physical optimizer rules after each stage completes and returns only the stages that are
+  currently runnable. Because decisions are deferred, stages come back already resolved, so the
+  `UnResolved` stage state used by the static path is not needed here.
+
+Keeping the two graphs side by side lets the adaptive implementation mature without destabilizing the static
+path.
+
+### How re-optimization works
+
+As each shuffle stage finishes, its exact output statistics are attached to the remaining plan and the
+optimizer rules are re-run. This is the key difference from DataFusion's normal single-shot physical
+optimization, where each rule runs once per plan. Running the full rule set repeatedly means the rules must be
+**idempotent** — otherwise they would keep inserting redundant exec nodes on each pass.
+
+Two adaptive optimizations are implemented today:
+
+- **Join reordering** — runtime row counts are used so the smaller side drives the join.
+- **Empty stage elimination** — when a completed stage produces zero rows, its downstream exchange is
+  replaced with an empty execution node and emptiness is propagated up the plan so dependent stages are
+  skipped entirely.
+
+### Code layout
+
+The adaptive scheduler code lives under [`ballista/scheduler/src/state/aqe`], with the
+`AdaptiveExecutionGraph` in `mod.rs`, the planner in `planner.rs`, and the optimizer rules in
+`optimizer_rule.rs`.
+
+### Current limitations
+
+The adaptive path currently covers the happy path only. Known gaps, each with a tracking issue:
+
+- Executor failure handling on the AQE path ([#1986])
+- Dynamic coalescing of shuffle partitions ([#1987])
+- Switching from hash join to sort-merge join based on runtime statistics ([#1988])
+- Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989])
+
+Design and progress are tracked in the AQE epic ([#1359]). See also the
+[AQE section of the tuning guide](../user-guide/tuning-guide.md) for the user-facing description.
+
+[`ballista/scheduler/src/state/aqe`]: https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/state/aqe
+[#1359]: https://github.com/apache/datafusion-ballista/issues/1359
+[#1986]: https://github.com/apache/datafusion-ballista/issues/1986
+[#1987]: https://github.com/apache/datafusion-ballista/issues/1987
+[#1988]: https://github.com/apache/datafusion-ballista/issues/1988
+[#1989]: https://github.com/apache/datafusion-ballista/issues/1989

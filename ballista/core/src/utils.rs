@@ -24,6 +24,7 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::{SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
@@ -72,6 +73,10 @@ pub struct GrpcClientConfig {
     pub io_retries_times: u8,
     /// Wait time in milliseconds between IO retries.
     pub io_retry_wait_time_ms: u64,
+    /// HTTP/2 initial connection-level flow-control window in bytes. 0 = tonic default.
+    pub initial_connection_window_size: u32,
+    /// HTTP/2 initial stream-level flow-control window in bytes. 0 = tonic default.
+    pub initial_stream_window_size: u32,
 }
 
 impl From<&BallistaConfig> for GrpcClientConfig {
@@ -87,6 +92,9 @@ impl From<&BallistaConfig> for GrpcClientConfig {
             max_message_size: config.grpc_client_max_message_size(),
             io_retries_times: config.io_retries_times() as u8,
             io_retry_wait_time_ms: config.io_retry_wait_time_ms() as u64,
+            initial_connection_window_size: config
+                .grpc_client_initial_connection_window_size(),
+            initial_stream_window_size: config.grpc_client_initial_stream_window_size(),
         }
     }
 }
@@ -102,6 +110,8 @@ impl Default for GrpcClientConfig {
             max_message_size: 16 * 1024 * 1024,
             io_retries_times: 3,
             io_retry_wait_time_ms: 3000,
+            initial_connection_window_size: 67108864,
+            initial_stream_window_size: 16777216,
         }
     }
 }
@@ -168,6 +178,17 @@ pub fn default_config_producer() -> SessionConfig {
     SessionConfig::new_with_ballista()
 }
 
+/// Creates [IpcWriteOptions] using the compression codec configured in the BallistaConfig
+pub fn create_write_options(
+    compression_type: Option<CompressionType>,
+) -> std::result::Result<IpcWriteOptions, DataFusionError> {
+    IpcWriteOptions::default()
+        .try_with_compression(compression_type)
+        .map_err(|err| {
+            DataFusionError::Internal(format!("Failed to set compression codec: {err}"))
+        })
+}
+
 /// Stream data to disk in Arrow IPC format.
 ///
 /// Batches are read from the async stream and forwarded through a bounded
@@ -178,6 +199,7 @@ pub async fn write_stream_to_disk(
     path: &Path,
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
+    compression_type: Option<CompressionType>,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
@@ -191,8 +213,7 @@ pub async fn write_stream_to_disk(
             BallistaError::IoError(e)
         })?);
 
-        let options = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let options = create_write_options(compression_type)?;
 
         let mut writer =
             StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
@@ -294,7 +315,7 @@ where
 {
     let endpoint = tonic::transport::Endpoint::new(dst)?;
     if let Some(config) = config {
-        Ok(endpoint
+        let mut endpoint = endpoint
             .connect_timeout(Duration::from_secs(config.connect_timeout_seconds))
             .timeout(Duration::from_secs(config.timeout_seconds))
             .tcp_nodelay(true)
@@ -303,7 +324,17 @@ where
                 config.http2_keepalive_interval_seconds,
             ))
             .keep_alive_timeout(Duration::from_secs(20))
-            .keep_alive_while_idle(true))
+            .keep_alive_while_idle(true);
+        if config.initial_connection_window_size > 0 {
+            endpoint = endpoint.initial_connection_window_size(Some(
+                config.initial_connection_window_size,
+            ));
+        }
+        if config.initial_stream_window_size > 0 {
+            endpoint = endpoint
+                .initial_stream_window_size(Some(config.initial_stream_window_size));
+        }
+        Ok(endpoint)
     } else {
         Ok(endpoint)
     }
@@ -396,6 +427,8 @@ mod tests {
             max_message_size: 16 * 1024 * 1024,
             io_retries_times: 3,
             io_retry_wait_time_ms: 3000,
+            initial_connection_window_size: 67108864,
+            initial_stream_window_size: 16777216,
         };
         let result = create_grpc_client_endpoint("http://localhost:50051", Some(&config));
         assert!(result.is_ok());
