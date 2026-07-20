@@ -45,7 +45,7 @@ impl BallistaAdapter {
         &mut self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(exchange) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
             let schema = exchange.schema().clone();
             let partitions = exchange.shuffle_partitions().ok_or_else(|| {
                 DataFusionError::Execution(
@@ -119,7 +119,7 @@ impl BallistaAdapter {
         job_id: &JobId,
         config: &ConfigOptions,
     ) -> datafusion::error::Result<AdaptiveStageInfo> {
-        if let Some(root) = plan.as_any().downcast_ref::<ExchangeExec>() {
+        if let Some(root) = plan.downcast_ref::<ExchangeExec>() {
             let mut adapter = BallistaAdapter::default();
             let plan = root
                 .input()
@@ -146,8 +146,7 @@ impl BallistaAdapter {
                 plan: writer,
                 inputs: adapter.inputs,
             })
-        } else if let Some(root) = plan.as_any().downcast_ref::<AdaptiveDatafusionExec>()
-        {
+        } else if let Some(root) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
             let mut adapter = BallistaAdapter::default();
             let plan = root
                 .input()

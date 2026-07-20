@@ -38,6 +38,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   pull_request:
     paths:
       - "ballista/**"
@@ -53,6 +55,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -68,7 +72,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: cargo check
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
@@ -88,7 +92,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -105,7 +109,7 @@ jobs:
       - uses: actions/checkout@v7.0.0
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
 
@@ -121,7 +125,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -141,7 +145,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -161,7 +165,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run tests
         shell: bash
         run: |
@@ -182,7 +186,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Verify that benchmark queries return expected results
         run: |
           cargo test --package ballista-benchmarks --profile release-nonlto --features=ci --locked -- --test-threads=1
@@ -197,7 +201,7 @@ jobs:
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run
         run: ci/scripts/rust_fmt.sh
 
@@ -214,7 +218,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
 
@@ -233,9 +237,9 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2.82.2
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2.83.3
         with:
           tool: cargo-tomlfmt@0.2.1
 
@@ -250,6 +254,21 @@ jobs:
               echo "cargo tomlfmt found format violations"
               exit 1
           fi
+
+  datafusion-proto-sync-check:
+    name: Check vendored DataFusion proto is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Check vendored DataFusion proto matches pinned crate
+        run: ci/scripts/rust_proto_check.sh
 
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 

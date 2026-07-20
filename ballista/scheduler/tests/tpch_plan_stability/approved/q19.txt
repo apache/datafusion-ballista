@@ -1,0 +1,26 @@
+=== Stage 1 ===
+SortShuffleWriterExec: partitioning=Hash([l_partkey@0], 16)
+  FilterExec: (l_shipmode@5 = AIR OR l_shipmode@5 = AIR REG) AND l_shipinstruct@4 = DELIVER IN PERSON AND (l_quantity@1 >= Some(100),15,2 AND l_quantity@1 <= Some(1100),15,2 OR l_quantity@1 >= Some(1000),15,2 AND l_quantity@1 <= Some(2000),15,2 OR l_quantity@1 >= Some(2000),15,2 AND l_quantity@1 <= Some(3000),15,2), projection=[l_partkey@0, l_quantity@1, l_extendedprice@2, l_discount@3]
+    StatsExec: rows=600037902
+
+=== Stage 2 ===
+SortShuffleWriterExec: partitioning=Hash([p_partkey@0], 16)
+  FilterExec: p_size@2 >= 1 AND (p_brand@1 = Brand#12 AND p_container@3 IN (SET) ([SM CASE, SM BOX, SM PACK, SM PKG]) AND p_size@2 <= 5 OR p_brand@1 = Brand#23 AND p_container@3 IN (SET) ([MED BAG, MED BOX, MED PKG, MED PACK]) AND p_size@2 <= 10 OR p_brand@1 = Brand#34 AND p_container@3 IN (SET) ([LG CASE, LG BOX, LG PACK, LG PKG]) AND p_size@2 <= 15)
+    StatsExec: rows=20000000
+
+=== Stage 3 ===
+ShuffleWriterExec: partitioning: None
+  AggregateExec: mode=Partial, gby=[], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+    ProjectionExec: expr=[l_extendedprice@2 as l_extendedprice, l_discount@3 as l_discount]
+      SortMergeJoinExec: join_type=Inner, on=[(l_partkey@0, p_partkey@0)], filter=p_brand@1 = Brand#12 AND p_container@3 IN (SET) ([SM CASE, SM BOX, SM PACK, SM PKG]) AND l_quantity@0 >= Some(100),15,2 AND l_quantity@0 <= Some(1100),15,2 AND p_size@2 <= 5 OR p_brand@1 = Brand#23 AND p_container@3 IN (SET) ([MED BAG, MED BOX, MED PKG, MED PACK]) AND l_quantity@0 >= Some(1000),15,2 AND l_quantity@0 <= Some(2000),15,2 AND p_size@2 <= 10 OR p_brand@1 = Brand#34 AND p_container@3 IN (SET) ([LG CASE, LG BOX, LG PACK, LG PKG]) AND l_quantity@0 >= Some(2000),15,2 AND l_quantity@0 <= Some(3000),15,2 AND p_size@2 <= 15
+        SortExec: expr=[l_partkey@0 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=1, partitioning: Hash([l_partkey@0], 16)
+        SortExec: expr=[p_partkey@0 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=2, partitioning: Hash([p_partkey@0], 16)
+
+=== Stage 4 ===
+ShuffleWriterExec: partitioning: None
+  ProjectionExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@0 as revenue]
+    AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+      CoalescePartitionsExec
+        UnresolvedShuffleExec: stage=3, partitioning: Hash([p_partkey@4], 16)

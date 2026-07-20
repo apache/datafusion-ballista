@@ -35,8 +35,8 @@ OPTIONS:
         --color
             Enables console syntax highlighting
 
-        --concurrent-tasks <CONCURRENT_TASKS>
-            The max concurrent tasks, only for Ballista local mode. Default: all available cores
+        --vcores <VCORES>
+            Virtual cores for the local Ballista executor. Default: all available physical cores.
 
     -f, --file <FILE>...
             Execute commands from file(s), then exit

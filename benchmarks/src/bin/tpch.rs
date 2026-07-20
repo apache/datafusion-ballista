@@ -19,9 +19,13 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
-use datafusion::arrow::array::*;
+use ballista_benchmarks::{
+    answer_statement_index, compare_results, execute_query_capturing_answer, find_path,
+};
+use ballista_core::object_store::{
+    session_config_with_s3_support, session_state_with_s3_support,
+};
 use datafusion::arrow::datatypes::SchemaBuilder;
-use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
@@ -92,9 +96,11 @@ struct BallistaBenchmarkOpt {
     #[structopt(short = "s", long = "batch-size", default_value = "8192")]
     batch_size: usize,
 
-    /// Path to data files
-    #[structopt(parse(from_os_str), required = true, short = "p", long = "path")]
-    path: PathBuf,
+    /// Path to data files. May be a local path or an object-store URL such as
+    /// `s3://bucket/prefix` (credentials/endpoint via AWS_* env vars or
+    /// `-c s3.*` config overrides).
+    #[structopt(required = true, short = "p", long = "path")]
+    path: String,
 
     /// File format: `csv` or `parquet`
     #[structopt(short = "f", long = "format", default_value = "csv")]
@@ -125,6 +131,11 @@ struct BallistaBenchmarkOpt {
     /// -c datafusion.execution.target_partitions=16
     #[structopt(short = "c", long = "config", number_of_values = 1)]
     config_overrides: Vec<String>,
+
+    /// Verify each Ballista result against single-process DataFusion over the
+    /// same data.
+    #[structopt(long = "verify")]
+    verify: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -296,19 +307,19 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let ctx = SessionContext::new_with_config(config);
 
     // register tables
-    for table in TABLES {
-        let table_provider = {
-            let mut session_state = ctx.state();
-            get_table(
-                &mut session_state,
-                opt.path.to_str().unwrap(),
-                table,
-                opt.file_format.as_str(),
-                opt.partitions,
-            )
-            .await?
-        };
-        if opt.mem_table {
+    if opt.mem_table {
+        for table in TABLES {
+            let table_provider = {
+                let mut session_state = ctx.state();
+                get_table(
+                    &mut session_state,
+                    opt.path.to_str().unwrap(),
+                    table,
+                    opt.file_format.as_str(),
+                    opt.partitions,
+                )
+                .await?
+            };
             println!("Loading table '{table}' into memory");
             let start = Instant::now();
             let memtable =
@@ -320,9 +331,15 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                 start.elapsed().as_millis()
             );
             ctx.register_table(*table, Arc::new(memtable))?;
-        } else {
-            ctx.register_table(*table, table_provider)?;
         }
+    } else {
+        register_datafusion_tables(
+            &ctx,
+            opt.path.to_str().unwrap(),
+            opt.file_format.as_str(),
+            opt.partitions,
+        )
+        .await?;
     }
 
     // Determine which queries to run
@@ -347,14 +364,9 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         for i in 0..opt.iterations {
             let start = Instant::now();
             // Execute each SQL statement sequentially (required for queries like q15
-            // that create views and then reference them)
-            for sql in &sqls {
-                if opt.debug {
-                    println!("Executing: {sql}");
-                }
-                let df = ctx.sql(sql).await?;
-                result = df.collect().await?;
-            }
+            // that create views and then reference them), keeping the result of
+            // the answer statement, not a trailing DROP VIEW.
+            result = execute_query_capturing_answer(&ctx, &sqls, opt.debug).await?;
             let elapsed = start.elapsed().as_secs_f64();
             if opt.debug {
                 pretty::print_batches(&result)?;
@@ -410,13 +422,30 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .map(|q| vec![q])
         .unwrap_or_else(|| (1..=22).collect());
 
+    let oracle_ctx = if opt.verify {
+        let cfg = SessionConfig::new()
+            .with_target_partitions(opt.partitions)
+            .with_batch_size(opt.batch_size);
+        let ctx = SessionContext::new_with_config(cfg);
+        register_datafusion_tables(
+            &ctx,
+            opt.path.as_str(),
+            opt.file_format.as_str(),
+            opt.partitions,
+        )
+        .await?;
+        Some(ctx)
+    } else {
+        None
+    };
+
     let mut benchmark_run = BenchmarkRun::new();
     let mut total_elapsed = 0.0;
 
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
 
-        let mut config = SessionConfig::new_with_ballista()
+        let mut config = session_config_with_s3_support()
             .with_target_partitions(opt.partitions)
             .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
             .with_batch_size(opt.batch_size)
@@ -436,14 +465,11 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             }
         }
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .build();
+        let state = session_state_with_s3_support(config)?;
         let ctx = SessionContext::remote_with_state(&address, state).await?;
 
         // register tables with Ballista context
-        let path = opt.path.to_str().unwrap();
+        let path = opt.path.as_str();
         let file_format = opt.file_format.as_str();
 
         register_tables(path, file_format, &ctx, opt.debug).await?;
@@ -456,9 +482,10 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             println!("Running benchmark with query {}:\n {:?}", query, sqls);
         }
         let mut batches = vec![];
+        let answer_idx = answer_statement_index(&sqls);
         for i in 0..opt.iterations {
             let start = Instant::now();
-            for sql in &sqls {
+            for (idx, sql) in sqls.iter().enumerate() {
                 let df = ctx
                     .sql(sql)
                     .await
@@ -468,11 +495,14 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                 if opt.debug {
                     println!("=== Optimized logical plan ===\n{plan:?}\n");
                 }
-                batches = df
+                let collected = df
                     .collect()
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
+                if idx == answer_idx {
+                    batches = collected;
+                }
             }
             let elapsed = start.elapsed().as_secs_f64();
             secs.push(elapsed);
@@ -495,8 +525,19 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
 
             if let Some(expected_results_path) = opt.expected_results.as_ref() {
                 let expected = get_expected_results(query, expected_results_path).await?;
-                assert_expected_results(&expected, &batches)
+                compare_results(&expected, &batches)?;
             }
+        }
+
+        if let Some(oracle_ctx) = &oracle_ctx {
+            let expected =
+                execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug).await?;
+            compare_results(&expected, &batches).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "query {query} verification failed: {e}"
+                ))
+            })?;
+            println!("Query {query} verified against DataFusion: OK");
         }
 
         if opt.iterations > 1 {
@@ -574,7 +615,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
         .split(',')
         .map(|s| s.parse().unwrap())
         .collect();
-    println!("query list: {:?} ", &query_list);
+    println!("query list: {:?} ", query_list);
 
     let total = Instant::now();
     let mut futures = vec![];
@@ -596,7 +637,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                         .unwrap();
                 println!(
                     "Client {} Round {} Query {} started",
-                    &client_id, &i, query_id
+                    client_id, i, query_id
                 );
                 let start = Instant::now();
                 let df = client
@@ -612,7 +653,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 println!(
                     "Client {} Round {} Query {} took {:.1} ms ",
-                    &client_id, &i, query_id, elapsed
+                    client_id, i, query_id, elapsed
                 );
                 if opt.debug && !batches.is_empty() {
                     pretty::print_batches(&batches).unwrap();
@@ -640,6 +681,24 @@ fn get_query_sql_by_path(query: usize, mut sql_path: String) -> Result<String> {
             "invalid query. Expected value between 1 and 22".to_owned(),
         ))
     }
+}
+
+/// Registers all TPC-H tables on a single-process DataFusion context (the
+/// correctness oracle for `--verify`).
+async fn register_datafusion_tables(
+    ctx: &SessionContext,
+    path: &str,
+    file_format: &str,
+    partitions: usize,
+) -> Result<()> {
+    for table in TABLES {
+        let table_provider = {
+            let mut session_state = ctx.state();
+            get_table(&mut session_state, path, table, file_format, partitions).await?
+        };
+        ctx.register_table(*table, table_provider)?;
+    }
+    Ok(())
 }
 
 async fn register_tables(
@@ -700,20 +759,6 @@ async fn register_tables(
         }
     }
     Ok(())
-}
-
-fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
-    let path1 = format!("{path}/{table}.{ext}");
-    let path2 = format!("{path}/{table}");
-    if Path::new(&path1).exists() {
-        Ok(path1)
-    } else if Path::new(&path2).exists() {
-        Ok(path2)
-    } else {
-        Err(DataFusionError::Plan(format!(
-            "Could not find {ext} files at {path1} or {path2}"
-        )))
-    }
 }
 
 /// Get the SQL statements from the specified query file
@@ -843,7 +888,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
 
         println!(
             "Converting '{}' to {} files in directory '{}'",
-            &input_path, &opt.file_format, &output_path
+            input_path, opt.file_format, output_path
         );
         match opt.file_format.as_str() {
             "csv" => ctx.write_csv(csv, output_path).await?,
@@ -1116,27 +1161,6 @@ impl BenchmarkRun {
     }
 }
 
-/// Compare actual results against expected results at scale factor 1
-fn assert_expected_results(expected: &[RecordBatch], actual: &[RecordBatch]) {
-    // assert schema equality without comparing nullable values
-    assert_eq!(
-        nullable_schema(expected[0].schema()),
-        nullable_schema(actual[0].schema())
-    );
-
-    // convert both datasets to Vec<Vec<String>> for simple comparison
-    let expected_vec = result_vec(expected);
-    let actual_vec = result_vec(actual);
-
-    // basic result comparison
-    assert_eq!(expected_vec.len(), actual_vec.len());
-
-    // compare each row. this works as all TPC-H queries have deterministically ordered results
-    for i in 0..actual_vec.len() {
-        assert_eq!(expected_vec[i], actual_vec[i]);
-    }
-}
-
 /// Get the expected answer for a specific query at scale factor 1
 async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> {
     let ctx = SessionContext::new();
@@ -1177,37 +1201,6 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
             .collect::<Vec<Expr>>(),
     )?;
     df.collect().await
-}
-
-// convert the schema to the same but with all columns set to nullable=true.
-// this allows direct schema comparison ignoring nullable.
-fn nullable_schema(schema: Arc<Schema>) -> Schema {
-    Schema::new(
-        schema
-            .fields()
-            .iter()
-            .map(|field| {
-                Field::new(Field::name(field), Field::data_type(field).to_owned(), true)
-            })
-            .collect::<Vec<Field>>(),
-    )
-}
-
-/// Converts the results into a 2d array of strings, `result[row][column]`
-/// Special cases nulls to NULL for testing
-fn result_vec(results: &[RecordBatch]) -> Vec<Vec<String>> {
-    let mut result = vec![];
-    for batch in results {
-        for row_index in 0..batch.num_rows() {
-            let row_vec = batch
-                .columns()
-                .iter()
-                .map(|column| col_str(column, row_index))
-                .collect();
-            result.push(row_vec);
-        }
-    }
-    result
 }
 
 fn get_answer_schema(n: usize) -> Schema {
@@ -1374,30 +1367,6 @@ fn string_schema(schema: Schema) -> Schema {
             })
             .collect::<Vec<Field>>(),
     )
-}
-
-/// Specialised String representation
-fn col_str(column: &ArrayRef, row_index: usize) -> String {
-    if column.is_null(row_index) {
-        return "NULL".to_string();
-    }
-
-    // Special case ListArray as there is no pretty print support for it yet
-    if let DataType::FixedSizeList(_, n) = column.data_type() {
-        let array = column
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .unwrap()
-            .value(row_index);
-
-        let mut r = Vec::with_capacity(*n as usize);
-        for i in 0..*n {
-            r.push(col_str(&array, i as usize));
-        }
-        return format!("[{}]", r.join(","));
-    }
-
-    array_value_to_string(column, row_index).unwrap()
 }
 
 #[derive(Debug, Serialize)]
@@ -1757,7 +1726,7 @@ mod tests {
             let expected_schema = get_answer_schema(n);
             let normalized = normalize_for_verification(actual, expected_schema).await?;
 
-            assert_expected_results(&expected, &normalized)
+            compare_results(&expected, &normalized)?;
         } else {
             println!("TPCH_DATA environment variable not set, skipping test");
         }

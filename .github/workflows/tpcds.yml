@@ -1,0 +1,184 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: TPC-DS SF1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/tpcds.yml"
+      - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/tpcds.yml"
+      - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  workflow_dispatch:
+
+jobs:
+  tpcds-sf1:
+    name: TPC-DS SF1 (all queries, static planner)
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y netcat-traditional
+
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: stable
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+
+      - name: Build Ballista binaries
+        run: |
+          cargo build --profile tpch-ci --locked \
+            -p ballista-scheduler \
+            -p ballista-executor \
+            -p ballista-benchmarks
+
+      - name: Install tpcgen-cli
+        run: |
+          cargo install --git https://github.com/clflushopt/tpchgen-rs \
+            --rev 573fd0018dd1b41e52880162f615e9903418c397 --locked tpcgen-cli
+
+      - name: Generate TPC-DS SF1 data
+        run: |
+          mkdir -p "$RUNNER_TEMP/tpcds-data"
+          tpcgen-cli tpcds parquet \
+            --scale-factor 1 \
+            --output-dir "$RUNNER_TEMP/tpcds-data"
+
+      - name: Run TPC-DS queries against Ballista cluster
+        env:
+          DATA_DIR: ${{ runner.temp }}/tpcds-data
+          WORK_DIR: ${{ runner.temp }}/work
+          SCHEDULER_LOG: ${{ runner.temp }}/scheduler.log
+          EXECUTOR_LOG: ${{ runner.temp }}/executor.log
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORK_DIR"
+
+          ./target/tpch-ci/ballista-scheduler \
+            --bind-host 127.0.0.1 \
+            > "$SCHEDULER_LOG" 2>&1 &
+          SCHEDULER_PID=$!
+
+          ./target/tpch-ci/ballista-executor \
+            --bind-host 127.0.0.1 \
+            --bind-port 50051 \
+            --scheduler-host 127.0.0.1 \
+            --scheduler-connect-timeout-seconds 10 \
+            --concurrent-tasks 4 \
+            --memory-pool-size 2GB \
+            --work-dir "$WORK_DIR" \
+            > "$EXECUTOR_LOG" 2>&1 &
+          EXECUTOR_PID=$!
+
+          cleanup() {
+            echo "::group::scheduler log (tail)"
+            tail -n 200 "$SCHEDULER_LOG" || true
+            echo "::endgroup::"
+            echo "::group::executor log (tail)"
+            tail -n 200 "$EXECUTOR_LOG" || true
+            echo "::endgroup::"
+            kill "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+            wait "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for scheduler on 127.0.0.1:50050..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50050; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
+
+          echo "Waiting for executor on 127.0.0.1:50051..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50051; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
+
+          # Run the suite under the default (static) planner. The tpcds binary
+          # internally loops all non-skipped queries and exits non-zero on any
+          # failure, so a single invocation covers the whole suite.
+          #
+          # The adaptive planner (AQE on) is intentionally not run here yet: it
+          # currently fails many TPC-DS queries with an `EmptyExec invalid
+          # partition` assertion (issue #2047). Re-add an `AQE on` invocation
+          # once that is fixed.
+          run_suite() {
+            local label="$1"; shift
+            echo "::group::[$label] TPC-DS suite"
+            ./target/tpch-ci/tpcds \
+              --host 127.0.0.1 --port 50050 \
+              --path "$DATA_DIR" \
+              --partitions 16 \
+              --verify \
+              "$@"
+            echo "::endgroup::"
+          }
+
+          run_suite "static planner" \
+            -c datafusion.optimizer.prefer_hash_join=false
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tpcds-sf1-cluster-logs
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/scheduler.log
+            ${{ runner.temp }}/executor.log
+          if-no-files-found: ignore

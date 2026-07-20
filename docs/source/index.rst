@@ -58,6 +58,18 @@ Table of content
    user-guide/spark-compatible-functions
    user-guide/extensions-example
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Changelog
+
+   changelog/index
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Upgrade Guides
+
+   upgrading/index
+
 .. _toc.contributors:
 
 .. toctree::
@@ -66,7 +78,9 @@ Table of content
 
    contributors-guide/architecture
    contributors-guide/code-organization
+   contributors-guide/user-personas
    contributors-guide/development
+   contributors-guide/benchmarking
    Source code <https://github.com/apache/datafusion-ballista/>
 
 .. _toc.community:
