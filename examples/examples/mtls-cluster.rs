@@ -54,6 +54,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use ballista_core::BALLISTA_PROTOCOL_VERSION;
 use ballista_core::ConfigProducer;
 use ballista_core::extension::{SessionConfigExt, SessionStateExt};
 use ballista_core::serde::protobuf::executor_resource::Resource;
@@ -367,6 +368,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
             }],
         }),
         os_info: None,
+        ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     };
 
     let config_producer = create_tls_config_producer(tls.client_tls.clone());
@@ -429,8 +431,9 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
     // Run the pull-based execution loop
     // This registers the executor and starts polling for tasks
     info!("Starting execution poll loop...");
+    let health = ballista_executor::health::ExecutorHealth::new();
     let poll_handle = tokio::spawn(async move {
-        execution_loop::poll_loop(scheduler, executor, codec).await
+        execution_loop::poll_loop(scheduler, executor, codec, None, health).await
     });
 
     tokio::select! {

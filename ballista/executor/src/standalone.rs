@@ -27,7 +27,7 @@ use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::utils::{GrpcServerConfig, default_config_producer};
 use ballista_core::{
-    BALLISTA_VERSION,
+    BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION,
     error::Result,
     serde::BallistaCodec,
     serde::protobuf::{ExecutorRegistration, scheduler_grpc_client::SchedulerGrpcClient},
@@ -110,6 +110,7 @@ pub async fn new_standalone_executor_from_builder(
                 .into(),
         ),
         os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+        ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     };
 
     let config = config_producer();
@@ -142,7 +143,13 @@ pub async fn new_standalone_executor_from_builder(
             )),
     );
 
-    tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));
+    tokio::spawn(execution_loop::poll_loop(
+        scheduler,
+        executor,
+        codec,
+        None,
+        crate::health::ExecutorHealth::new(),
+    ));
     Ok(())
 }
 
