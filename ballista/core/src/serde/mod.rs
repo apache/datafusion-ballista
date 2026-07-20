@@ -1427,6 +1427,12 @@ mod test {
     // tested. The rendered plan string must be byte-identical before and
     // after, which also proves `on`, `partition_mode`, and
     // `num_sub_partitions` all survived the round trip.
+    //
+    // `left` and `right` deliberately use distinct schemas (`l_*` vs `r_*`
+    // column names) so that a left/right key-side swap through encode/decode
+    // (e.g. encoding right's exprs into `left_keys`, or decoding `right_keys`
+    // against `left.schema()`) changes the rendered `on=[...]` string instead
+    // of going unnoticed by symmetry.
     #[tokio::test]
     async fn spilling_hash_join_exec_roundtrip() {
         use crate::execution_plans::SpillingHashJoinExec;
@@ -1438,18 +1444,23 @@ mod test {
         use datafusion::physical_plan::expressions::Column;
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k1", DataType::Int32, false),
-            Field::new("k2", DataType::Int32, false),
-            Field::new("v", DataType::Int32, false),
+        let left_schema = Arc::new(Schema::new(vec![
+            Field::new("l_k1", DataType::Int32, false),
+            Field::new("l_k2", DataType::Int32, false),
+            Field::new("l_v", DataType::Int32, false),
+        ]));
+        let right_schema = Arc::new(Schema::new(vec![
+            Field::new("r_k1", DataType::Int32, false),
+            Field::new("r_k2", DataType::Int32, false),
+            Field::new("r_v", DataType::Int32, false),
         ]));
         let partitions: Vec<Vec<_>> = (0..4).map(|_| vec![]).collect();
 
         let left_source =
-            MemorySourceConfig::try_new(&partitions, Arc::clone(&schema), None)
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&left_schema), None)
                 .expect("left MemorySourceConfig");
         let right_source =
-            MemorySourceConfig::try_new(&partitions, Arc::clone(&schema), None)
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&right_schema), None)
                 .expect("right MemorySourceConfig");
 
         let left: Arc<dyn ExecutionPlan> =
@@ -1458,15 +1469,17 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(right_source)));
 
         // Multi-key `on`, deliberately not in column-index order, so a
-        // left/right key mismatch or a mis-zip would be caught.
+        // left/right key mismatch or a mis-zip would be caught. Left and
+        // right columns have distinct names, so a whole-side swap (not just
+        // intra-list reordering) also changes the `Display` output.
         let on: Vec<(PhysicalExprRef, PhysicalExprRef)> = vec![
             (
-                Arc::new(Column::new("k2", 1)),
-                Arc::new(Column::new("k2", 1)),
+                Arc::new(Column::new("l_k2", 1)),
+                Arc::new(Column::new("r_k2", 1)),
             ),
             (
-                Arc::new(Column::new("k1", 0)),
-                Arc::new(Column::new("k1", 0)),
+                Arc::new(Column::new("l_k1", 0)),
+                Arc::new(Column::new("r_k1", 0)),
             ),
         ];
 
