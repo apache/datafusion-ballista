@@ -38,12 +38,18 @@
 //
 //   3. Drain. After the probe side ends, resident tables are dropped and the
 //      reservation freed, then each spilled bucket is processed one at a time:
-//      its build spill is read back and concatenated, its hashes recomputed by
-//      re-partitioning the concatenated build (the fixed seed guarantees all
-//      rows land in the one bucket, so the recomputed hashes match build time),
-//      a `ProbeTable` is built, and its probe spill is streamed through it.
-//      The table is dropped before the next bucket, so only one spilled
-//      bucket's build side is resident at a time.
+//      its build spill is read back and concatenated, and the reservation is
+//      grown for it. When it fits, its hashes are recomputed by re-partitioning
+//      the concatenated build (the fixed seed guarantees all rows land in the
+//      one bucket, so the recomputed hashes match build time), a `ProbeTable`
+//      is built, and its probe spill is streamed through it. When a bucket's
+//      build side will not fit, it is re-partitioned — build and probe together,
+//      under a depth-varied seed so equal keys still co-locate — into finer
+//      sub-buckets that are drained recursively, one resident table at a time.
+//      A build side for a single join key that exceeds the whole pool is
+//      irreducible skew and fails with a clean error rather than an OOM. The
+//      table is dropped before the next bucket, so only one (sub-)bucket's
+//      build side is resident at a time, at any recursion depth.
 //
 // The stream is a single `futures::stream::once` future (do the async build
 // phase) flattened via `try_flatten` into a `stream::unfold` that carries the
@@ -53,12 +59,16 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{ArrayRef, RecordBatch};
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Result;
+use datafusion::arrow::row::{RowConverter, SortField};
+use datafusion::common::{Result, exec_err};
 use datafusion::execution::TaskContext;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::execution::disk_manager::DiskManager;
+use datafusion::execution::memory_pool::{
+    MemoryConsumer, MemoryLimit, MemoryReservation,
+};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
@@ -66,8 +76,13 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 
 use super::hash_table::{ProbeTable, assemble_output};
-use super::partitioner::RowPartitioner;
+use super::partitioner::{RowPartitioner, seed_for_depth};
 use super::spill::{JoinSpillReader, JoinSpillWriter};
+
+/// Maximum drain-phase re-partition depth. A bucket that still will not fit
+/// after this many splits is treated as irreducible skew and reported as a
+/// clean error rather than recursed on forever.
+const MAX_DRAIN_DEPTH: usize = 8;
 
 /// Spill counters for one `SpillingHashJoinExec` partition, published on the
 /// operator's `ExecutionPlanMetricsSet`.
@@ -77,6 +92,9 @@ struct SpillMetrics {
     spill_count: Count,
     /// Sum of `RecordBatch::get_array_memory_size` over all spilled batches.
     spilled_bytes: Count,
+    /// Number of times a spilled bucket's build side did not fit in memory
+    /// during drain and was recursively re-partitioned into finer sub-buckets.
+    repartition_count: Count,
 }
 
 impl SpillMetrics {
@@ -85,6 +103,8 @@ impl SpillMetrics {
             spill_count: MetricBuilder::new(metrics).counter("spill_count", partition),
             spilled_bytes: MetricBuilder::new(metrics)
                 .counter("spilled_bytes", partition),
+            repartition_count: MetricBuilder::new(metrics)
+                .counter("repartition_count", partition),
         }
     }
 
@@ -92,6 +112,11 @@ impl SpillMetrics {
     fn record(&self, batch: &RecordBatch) {
         self.spill_count.add(1);
         self.spilled_bytes.add(batch.get_array_memory_size());
+    }
+
+    /// Records one drain-phase recursive re-partition of an oversized bucket.
+    fn record_repartition(&self) {
+        self.repartition_count.add(1);
     }
 }
 
@@ -166,6 +191,14 @@ async fn build_then_stream(
     let partitioner_left = RowPartitioner::new(left_keys.clone(), num_sub_partitions);
     let partitioner_right = RowPartitioner::new(right_keys.clone(), num_sub_partitions);
 
+    // The pool's total capacity, used during drain to tell irreducible
+    // single-key skew (a build side larger than the whole pool) apart from a
+    // grow that merely lost a race with other resident buckets.
+    let pool_limit = match runtime.memory_pool.memory_limit() {
+        MemoryLimit::Finite(bytes) => Some(bytes),
+        MemoryLimit::Infinite | MemoryLimit::Unknown => None,
+    };
+
     let (tables, spilled) = build_phase(
         left,
         &left_keys,
@@ -184,7 +217,11 @@ async fn build_then_stream(
         left_keys,
         right_keys,
         left_schema,
+        right_schema,
         output_schema,
+        num_sub: num_sub_partitions,
+        pool_limit,
+        disk_manager: Arc::clone(&runtime.disk_manager),
         tables,
         spilled,
         reservation,
@@ -321,11 +358,13 @@ enum Phase {
     Drain,
 }
 
-/// The active spilled bucket being drained: its build-side `ProbeTable` and a
-/// reader over its probe spill.
+/// The active spilled bucket being drained: its build-side `ProbeTable`, a
+/// reader over its probe spill, and the pool bytes reserved for the table
+/// (released when the bucket is exhausted).
 struct DrainBucket {
     table: ProbeTable,
     probe_reader: JoinSpillReader,
+    reserved: usize,
 }
 
 /// All state threaded through `join_stream`'s `stream::unfold`.
@@ -335,7 +374,15 @@ struct JoinState {
     left_keys: Vec<PhysicalExprRef>,
     right_keys: Vec<PhysicalExprRef>,
     left_schema: SchemaRef,
+    right_schema: SchemaRef,
     output_schema: SchemaRef,
+    /// Number of sub-partitions ("buckets"), reused as the fan-out for each
+    /// drain-phase re-partition level.
+    num_sub: usize,
+    /// The memory pool's total capacity, or `None` for an unbounded pool.
+    pool_limit: Option<usize>,
+    /// Source of temp files for spilling re-partitioned buckets during drain.
+    disk_manager: Arc<DiskManager>,
     /// Resident probe tables per bucket (`None` for empty or spilled buckets).
     /// Dropped when the drain phase begins.
     tables: Vec<Option<ProbeTable>>,
@@ -439,7 +486,10 @@ impl JoinState {
                     }
                     Some(Err(e)) => return Err(e),
                     None => {
-                        // Bucket exhausted; drop its table before the next one.
+                        // Bucket exhausted; free its build-table reservation and
+                        // drop the table before loading the next one.
+                        let reserved = current.reserved;
+                        self.reservation.shrink(reserved);
                         self.current = None;
                     }
                 }
@@ -450,50 +500,297 @@ impl JoinState {
             let Some(bucket) = self.drain_buckets.pop_front() else {
                 return Ok(false);
             };
-            let Some(table) = self.build_drain_table(bucket)? else {
-                // No build rows for this bucket: an inner join yields nothing,
-                // so skip it (and its probe spill, if any).
+
+            // Read the bucket's build side back from disk and concatenate it.
+            let build_batches: Vec<RecordBatch> = match self.build_spill.reader(bucket)? {
+                Some(r) => r.collect::<Result<_>>()?,
+                None => continue, // no build rows -> inner join yields nothing
+            };
+            if build_batches.is_empty() {
                 continue;
-            };
-            let probe_reader = match self.probe_spill.reader(bucket)? {
-                Some(r) => r,
-                None => continue, // build rows but no probe rows -> no output
-            };
-            self.current = Some(DrainBucket {
-                table,
-                probe_reader,
-            });
+            }
+            let concatenated = concat_batches(&self.left_schema, build_batches.iter())?;
+            let build_size = concatenated.get_array_memory_size();
+            let probe_reader = self.probe_spill.reader(bucket)?;
+
+            if self.reservation.try_grow(build_size).is_ok() {
+                // The build side fits: build its `ProbeTable` and stream the
+                // probe spill through it, one probe batch at a time. Re-partition
+                // to recover per-row hashes consistent with build time; all rows
+                // share the one bucket, so exactly one partitioned batch comes
+                // back, carrying every row in concatenated order.
+                let mut parts = self.partitioner_left.partition(&concatenated)?;
+                let Some(part) = parts.pop() else {
+                    self.reservation.shrink(build_size);
+                    continue;
+                };
+                let table = ProbeTable::build(part.batch, &part.hashes, &self.left_keys)?;
+                match probe_reader {
+                    Some(probe_reader) => {
+                        self.current = Some(DrainBucket {
+                            table,
+                            probe_reader,
+                            reserved: build_size,
+                        });
+                    }
+                    None => {
+                        // Build rows but no probe rows -> no output.
+                        self.reservation.shrink(build_size);
+                    }
+                }
+            } else {
+                // The build side does not fit right now: re-partition this
+                // bucket into finer sub-buckets and drain them recursively (or
+                // fail cleanly on irreducible single-join-key skew). Output is
+                // materialized because this fallback is rare; boundedness is
+                // preserved by keeping only one sub-bucket's table resident.
+                let ctx = DrainCtx {
+                    left_schema: &self.left_schema,
+                    right_schema: &self.right_schema,
+                    left_keys: &self.left_keys,
+                    right_keys: &self.right_keys,
+                    output_schema: &self.output_schema,
+                    num_sub: self.num_sub,
+                    pool_limit: self.pool_limit,
+                    disk_manager: &self.disk_manager,
+                    spill_metrics: &self.spill_metrics,
+                };
+                let out = drain_overflowed_bucket(
+                    &ctx,
+                    &mut self.reservation,
+                    concatenated,
+                    probe_reader,
+                    0,
+                )?;
+                self.pending.extend(out);
+                if !self.pending.is_empty() {
+                    // Surface this bucket's output before loading the next one,
+                    // otherwise `join_stream` would end the drain on the next
+                    // `Ok(false)` and discard the queued rows.
+                    return Ok(true);
+                }
+            }
         }
     }
+}
 
-    /// Reads a spilled bucket's build side back from disk, concatenates it, and
-    /// builds its `ProbeTable`, recomputing hashes by re-partitioning the
-    /// concatenated build. The fixed seed guarantees every row lands in the
-    /// single original bucket, so the recomputed hashes match build time.
-    /// Returns `None` if the bucket has no build rows.
-    fn build_drain_table(&self, bucket: usize) -> Result<Option<ProbeTable>> {
-        let Some(reader) = self.build_spill.reader(bucket)? else {
-            return Ok(None);
-        };
-        let batches: Vec<RecordBatch> = reader.collect::<Result<_>>()?;
-        if batches.is_empty() {
-            return Ok(None);
-        }
-        let concatenated = concat_batches(&self.left_schema, batches.iter())?;
+/// Shared, read-only context threaded through the drain-phase recursion.
+struct DrainCtx<'a> {
+    left_schema: &'a SchemaRef,
+    right_schema: &'a SchemaRef,
+    left_keys: &'a [PhysicalExprRef],
+    right_keys: &'a [PhysicalExprRef],
+    output_schema: &'a SchemaRef,
+    num_sub: usize,
+    pool_limit: Option<usize>,
+    disk_manager: &'a Arc<DiskManager>,
+    spill_metrics: &'a SpillMetrics,
+}
 
-        // Re-partition to recover per-row hashes consistent with build time.
-        // All rows share the one bucket, so exactly one partitioned batch is
-        // returned, carrying every row in the concatenated order.
-        let mut parts = self.partitioner_left.partition(&concatenated)?;
-        let Some(part) = parts.pop() else {
-            return Ok(None);
-        };
-        Ok(Some(ProbeTable::build(
-            part.batch,
-            &part.hashes,
-            &self.left_keys,
-        )?))
+/// Drains one spilled (sub-)bucket whose rows were partitioned with
+/// `seed_for_depth(depth)`. If the concatenated build side fits the pool it is
+/// joined against its probe spill and the output returned; otherwise the bucket
+/// is handled by [`drain_overflowed_bucket`] (re-partition, best-effort hold,
+/// or clean error). Only one (sub-)bucket's build table is resident at any
+/// instant, at any depth.
+fn drain_bucket_recursive(
+    ctx: &DrainCtx,
+    reservation: &mut MemoryReservation,
+    build: RecordBatch,
+    probe_reader: Option<JoinSpillReader>,
+    depth: usize,
+) -> Result<Vec<RecordBatch>> {
+    let build_size = build.get_array_memory_size();
+    if reservation.try_grow(build_size).is_ok() {
+        let out = join_resident_bucket(ctx, &build, probe_reader, depth);
+        reservation.shrink(build_size);
+        return out;
     }
+    drain_overflowed_bucket(ctx, reservation, build, probe_reader, depth)
+}
+
+/// Handles a (sub-)bucket whose build side did not fit the pool via `try_grow`.
+///
+///   - More than one distinct join key (and depth budget left) → re-partition
+///     into finer sub-buckets and drain each recursively.
+///   - A single distinct key (or the depth cap) whose build side is larger than
+///     the whole pool → irreducible skew, returned as a clean error.
+///   - Otherwise the build side fits the pool and the `try_grow` only lost a
+///     race with other resident buckets → hold this one bucket anyway with an
+///     infallible reservation (still at most one table resident).
+fn drain_overflowed_bucket(
+    ctx: &DrainCtx,
+    reservation: &mut MemoryReservation,
+    build: RecordBatch,
+    probe_reader: Option<JoinSpillReader>,
+    depth: usize,
+) -> Result<Vec<RecordBatch>> {
+    if depth < MAX_DRAIN_DEPTH && has_multiple_distinct_keys(&build, ctx.left_keys)? {
+        return repartition_and_recurse(ctx, reservation, build, probe_reader, depth);
+    }
+
+    let build_size = build.get_array_memory_size();
+    if depth >= MAX_DRAIN_DEPTH || exceeds_pool(build_size, ctx.pool_limit) {
+        return exec_err!(
+            "SpillingHashJoinExec: build side for a single join key exceeds \
+             memory; enable SMJ fallback for this query"
+        );
+    }
+
+    reservation.grow(build_size);
+    let out = join_resident_bucket(ctx, &build, probe_reader, depth);
+    reservation.shrink(build_size);
+    out
+}
+
+/// Returns `true` iff a bounded pool of total capacity `pool_limit` cannot hold
+/// a build side of `size` even when otherwise empty (irreducible skew). An
+/// unbounded pool (`None`) is never exceeded.
+fn exceeds_pool(size: usize, pool_limit: Option<usize>) -> bool {
+    matches!(pool_limit, Some(limit) if size > limit)
+}
+
+/// Joins one resident build bucket (already reserved by the caller) against its
+/// probe spill, returning the assembled output batches. Hashes for both sides
+/// are recomputed with `seed_for_depth(depth)` — the same seed the level that
+/// produced this bucket used — so build and probe stay consistent.
+fn join_resident_bucket(
+    ctx: &DrainCtx,
+    build: &RecordBatch,
+    probe_reader: Option<JoinSpillReader>,
+    depth: usize,
+) -> Result<Vec<RecordBatch>> {
+    let seed = seed_for_depth(depth);
+    let partitioner_left =
+        RowPartitioner::with_seed(ctx.left_keys.to_vec(), ctx.num_sub, seed);
+    let partitioner_right =
+        RowPartitioner::with_seed(ctx.right_keys.to_vec(), ctx.num_sub, seed);
+
+    // All build rows share the one bucket at this seed, so a single partitioned
+    // batch comes back carrying every row (with build-consistent hashes).
+    let mut parts = partitioner_left.partition(build)?;
+    let Some(part) = parts.pop() else {
+        return Ok(Vec::new());
+    };
+    let table = ProbeTable::build(part.batch, &part.hashes, ctx.left_keys)?;
+
+    let mut out = Vec::new();
+    let Some(reader) = probe_reader else {
+        return Ok(out); // build rows but no probe rows -> no output
+    };
+    for probe_batch in reader {
+        let probe_batch = probe_batch?;
+        for pb in partitioner_right.partition(&probe_batch)? {
+            let (build_rows, probe_rows) =
+                table.probe(&pb.batch, &pb.hashes, ctx.right_keys)?;
+            if build_rows.is_empty() {
+                continue;
+            }
+            out.push(assemble_output(
+                ctx.output_schema,
+                table.build_batch(),
+                &pb.batch,
+                &build_rows,
+                &probe_rows,
+            )?);
+        }
+    }
+    Ok(out)
+}
+
+/// Re-partitions an oversized (sub-)bucket's build and probe spills into
+/// `num_sub` finer sub-buckets using a deeper hash seed, then drains each
+/// recursively. The caller (`drain_overflowed_bucket`) has already established
+/// that the bucket has more than one distinct join key, so the split makes
+/// progress.
+fn repartition_and_recurse(
+    ctx: &DrainCtx,
+    reservation: &mut MemoryReservation,
+    build: RecordBatch,
+    probe_reader: Option<JoinSpillReader>,
+    depth: usize,
+) -> Result<Vec<RecordBatch>> {
+    ctx.spill_metrics.record_repartition();
+
+    let child_depth = depth + 1;
+    let child_seed = seed_for_depth(child_depth);
+    let child_left =
+        RowPartitioner::with_seed(ctx.left_keys.to_vec(), ctx.num_sub, child_seed);
+    let child_right =
+        RowPartitioner::with_seed(ctx.right_keys.to_vec(), ctx.num_sub, child_seed);
+
+    // Spill the build side into finer sub-buckets, then release it before
+    // recursing so only one sub-bucket's build side is ever resident.
+    let mut build_writer =
+        JoinSpillWriter::new(Arc::clone(ctx.left_schema), Arc::clone(ctx.disk_manager));
+    for pb in child_left.partition(&build)? {
+        build_writer.append(pb.bucket, &pb.batch)?;
+        ctx.spill_metrics.record(&pb.batch);
+    }
+    build_writer.finish()?;
+    drop(build);
+
+    // Spill the probe side into finer sub-buckets with the SAME seed, so rows
+    // with equal keys co-locate with their build rows.
+    let mut probe_writer =
+        JoinSpillWriter::new(Arc::clone(ctx.right_schema), Arc::clone(ctx.disk_manager));
+    if let Some(reader) = probe_reader {
+        for probe_batch in reader {
+            let probe_batch = probe_batch?;
+            for pb in child_right.partition(&probe_batch)? {
+                probe_writer.append(pb.bucket, &pb.batch)?;
+                ctx.spill_metrics.record(&pb.batch);
+            }
+        }
+    }
+    probe_writer.finish()?;
+
+    let mut out = Vec::new();
+    for b in 0..ctx.num_sub {
+        let build_batches: Vec<RecordBatch> = match build_writer.reader(b)? {
+            Some(r) => r.collect::<Result<_>>()?,
+            None => continue, // no build rows -> inner join yields nothing
+        };
+        if build_batches.is_empty() {
+            continue;
+        }
+        let sub_build = concat_batches(ctx.left_schema, build_batches.iter())?;
+        let sub_probe = probe_writer.reader(b)?;
+        out.extend(drain_bucket_recursive(
+            ctx,
+            reservation,
+            sub_build,
+            sub_probe,
+            child_depth,
+        )?);
+    }
+    Ok(out)
+}
+
+/// Returns `true` iff `build` contains more than one distinct join-key value.
+/// Keys are compared via Arrow's row encoding (the same equality basis the
+/// probe table uses), comparing every row to row 0; a bucket with a single
+/// distinct key is irreducible and cannot be re-partitioned further.
+fn has_multiple_distinct_keys(
+    build: &RecordBatch,
+    keys: &[PhysicalExprRef],
+) -> Result<bool> {
+    let num_rows = build.num_rows();
+    if num_rows <= 1 {
+        return Ok(false);
+    }
+    let key_arrays: Vec<ArrayRef> = keys
+        .iter()
+        .map(|expr| expr.evaluate(build)?.into_array(num_rows))
+        .collect::<Result<_>>()?;
+    let fields: Vec<SortField> = key_arrays
+        .iter()
+        .map(|a| SortField::new(a.data_type().clone()))
+        .collect();
+    let converter = RowConverter::new(fields)?;
+    let rows = converter.convert_columns(&key_arrays)?;
+    let first = rows.row(0);
+    Ok((1..num_rows).any(|i| rows.row(i) != first))
 }
 
 /// Turns `JoinState` into the output stream: emit any queued output, then in

@@ -504,6 +504,15 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Sums the operator's `repartition_count` metric (drain-phase recursive
+    /// re-partition events) across all partitions.
+    fn total_repartition_count(plan: &Arc<dyn ExecutionPlan>) -> usize {
+        plan.metrics()
+            .and_then(|m| m.sum_by_name("repartition_count"))
+            .map(|v| v.as_usize())
+            .unwrap_or(0)
+    }
+
     /// Shared body for the spill oracle tests: run the oracle under a generous
     /// context and `SpillingHashJoinExec` under a `pool_bytes` pool, assert the
     /// sorted outputs match and that at least `min_spills` spill events fired.
@@ -564,7 +573,114 @@ mod tests {
     #[tokio::test]
     async fn matches_datafusion_with_forced_two_sided_spill() {
         // Pool tiny enough that many buckets spill, so their probe rows must be
-        // routed to disk and joined in the drain phase.
-        assert_matches_under_pool(512, 8).await;
+        // routed to disk and joined in the drain phase. Kept at (just) one
+        // minimal Arrow batch so a spilled bucket's build side can still be held
+        // resident while it is drained.
+        assert_matches_under_pool(1024, 8).await;
+    }
+
+    // --- recursive re-partition (skew fallback) tests ---
+    //
+    // When a single spilled bucket's build side still will not fit in memory
+    // during drain, the join re-partitions that bucket (build and probe) into
+    // finer sub-buckets with a depth-varied hash seed and recurses, keeping at
+    // most one sub-bucket's build table resident. If a bucket holds only one
+    // distinct join key it cannot be split, so the join returns a clean error
+    // rather than an OOM/panic/hang.
+
+    #[tokio::test]
+    async fn matches_datafusion_with_forced_recursion() {
+        // Pool so small that even one spilled bucket's build side must be
+        // re-partitioned at least once during drain. Driven from a single
+        // partition so the tiny pool is exercised by one draining task, not
+        // shared across concurrent partitions.
+        let generous = Arc::new(TaskContext::default());
+        let small = small_pool_ctx(2048);
+        let num_partitions = 1;
+
+        // All-distinct keys, so any oversized bucket is guaranteed to hold more
+        // than one distinct join key and can therefore always be split. A small
+        // sub-partition count (2) packs many keys into each first-level bucket.
+        let base_left = make_source("lk", "lv", 600, 600, 0, 128);
+        let base_right = make_source("rk", "rv", 600, 600, 1_000_000, 128);
+
+        let on: Vec<(PhysicalExprRef, PhysicalExprRef)> = vec![(
+            Arc::new(Column::new("lk", 0)),
+            Arc::new(Column::new("rk", 0)),
+        )];
+
+        let oracle_left = hash_repartition(Arc::clone(&base_left), 0, num_partitions);
+        let oracle_right = hash_repartition(Arc::clone(&base_right), 0, num_partitions);
+        let ours_left = hash_repartition(base_left, 0, num_partitions);
+        let ours_right = hash_repartition(base_right, 0, num_partitions);
+
+        let expected = oracle_join(oracle_left, oracle_right, on.clone(), generous).await;
+
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(
+            SpillingHashJoinExec::try_new(
+                ours_left,
+                ours_right,
+                on,
+                PartitionMode::Partitioned,
+                2,
+            )
+            .unwrap(),
+        );
+        let actual = collect(Arc::clone(&exec), small).await.unwrap();
+
+        let expected_rows = sorted_rows(&expected);
+        let actual_rows = sorted_rows(&actual);
+        assert!(
+            !expected_rows.is_empty(),
+            "test data should produce matching rows"
+        );
+        assert_eq!(actual_rows, expected_rows);
+        assert!(
+            total_repartition_count(&exec) > 0,
+            "the recursive re-partition path must actually be taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_key_too_large_errors_cleanly() {
+        // Every build row shares ONE join key, so the whole build side lands in
+        // a single bucket that cannot be split; under a tiny pool it cannot fit
+        // either, so draining it must return a clean, named error.
+        let ctx = small_pool_ctx(2048);
+        let num_partitions = 1;
+
+        let base_left = make_source("lk", "lv", 2_000, 1, 0, 256);
+        let base_right = make_source("rk", "rv", 2_000, 1, 1_000_000, 256);
+
+        let on: Vec<(PhysicalExprRef, PhysicalExprRef)> = vec![(
+            Arc::new(Column::new("lk", 0)),
+            Arc::new(Column::new("rk", 0)),
+        )];
+
+        let ours_left = hash_repartition(base_left, 0, num_partitions);
+        let ours_right = hash_repartition(base_right, 0, num_partitions);
+
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(
+            SpillingHashJoinExec::try_new(
+                ours_left,
+                ours_right,
+                on,
+                PartitionMode::Partitioned,
+                2,
+            )
+            .unwrap(),
+        );
+
+        let result = collect(exec, ctx).await;
+        let err = result.expect_err("single oversized join key must error, not hang/OOM");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SpillingHashJoinExec"),
+            "error should name the operator, got: {msg}"
+        );
+        assert!(
+            msg.contains("single join key"),
+            "error should identify single-join-key skew, got: {msg}"
+        );
     }
 }

@@ -40,6 +40,16 @@ use datafusion::physical_expr::PhysicalExprRef;
 /// diverge from it; the exact value carries no other meaning.
 const ROW_PARTITIONER_SEED: u64 = 0x5350_4a5f_484a_3121;
 
+/// Derives the hashing seed for drain-phase recursion `depth`.
+/// `seed_for_depth(0)` returns the base seed, so level-0 bucketing is
+/// byte-identical to [`RowPartitioner::new`]; deeper levels perturb the seed so
+/// re-partitioning a bucket that did not fit splits its keys differently than
+/// the level that produced it. The multiplier is an arbitrary odd constant
+/// (the golden-ratio mix) chosen only to spread successive depths apart.
+pub fn seed_for_depth(depth: usize) -> u64 {
+    ROW_PARTITIONER_SEED ^ (depth as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 /// Splits the rows of a `RecordBatch` into `num_sub` sub-partitions by
 /// hashing a set of join key expressions, so that rows with equal keys
 /// always land in the same sub-partition.
@@ -68,10 +78,18 @@ impl RowPartitioner {
     /// into `num_sub` sub-partitions using a fixed, non-default random
     /// state.
     pub fn new(keys: Vec<PhysicalExprRef>, num_sub: usize) -> Self {
+        Self::with_seed(keys, num_sub, ROW_PARTITIONER_SEED)
+    }
+
+    /// Creates a `RowPartitioner` hashing with an explicit `seed`. Used by the
+    /// drain-phase recursion to split an oversized bucket differently than the
+    /// level that produced it (see [`seed_for_depth`]); `new` delegates here
+    /// with the fixed base seed.
+    pub fn with_seed(keys: Vec<PhysicalExprRef>, num_sub: usize, seed: u64) -> Self {
         Self {
             keys,
             num_sub,
-            random_state: RandomState::with_seed(ROW_PARTITIONER_SEED),
+            random_state: RandomState::with_seed(seed),
         }
     }
 
