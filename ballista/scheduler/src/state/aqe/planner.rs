@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
+use crate::physical_optimizer::spilling_hash_join::SpillingHashJoinRule;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
@@ -370,6 +371,21 @@ impl AdaptivePlanner {
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
+                        // Broadcast-first ordering, mirroring the static planner:
+                        // AQE's dynamic-join / broadcast-promotion machinery has
+                        // already run (`DelayJoinSelectionRule` +
+                        // `SelectJoinRule` in the optimizer chain), so any join
+                        // still left as a plain `Inner`/`Partitioned`
+                        // `HashJoinExec` is one AQE chose not to broadcast. Only
+                        // those are substituted with `SpillingHashJoinExec`
+                        // (flag-gated). A `DynamicJoinSelectionExec` stores its
+                        // join parameters as fields and exposes only the join
+                        // inputs as children, so a whole-tree `transform_up`
+                        // cannot reach a wrapped join to clobber; and a
+                        // `CollectLeft` broadcast join is not `Partitioned` and
+                        // is therefore ineligible.
+                        let plan =
+                            SpillingHashJoinRule::default().optimize(plan, config)?;
                         // adapt_to_ballista takes an job_id, we are passing a job_name. Need to transform to fix compiler.
                         let job_id = self.job_name.clone().into();
                         BallistaAdapter::adapt_to_ballista(plan, &job_id, config)
