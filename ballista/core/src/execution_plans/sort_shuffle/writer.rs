@@ -26,7 +26,7 @@ use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 use super::super::shuffle_writer::{result_schema, summaries_to_batch};
@@ -62,7 +62,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, Statistics, displayable,
 };
 use futures::{StreamExt, TryStreamExt};
-use log::debug;
+use log::{debug, warn};
 
 /// Result of finalizing shuffle output: (data_path, index_path, partition_write_stats)
 /// where partition_write_stats is (partition_id, num_batches, num_rows, num_bytes)
@@ -407,7 +407,6 @@ impl SortShuffleWriterExec {
         let file_id_usize = file_id as usize;
 
         async move {
-            let now = Instant::now();
             let mut stream = plan.execute(input_partition, context.clone())?;
             let schema = stream.schema();
             let ballista_config = Arc::new(context.session_config().ballista_config());
@@ -549,18 +548,42 @@ impl SortShuffleWriterExec {
             // Reservation drops naturally; nothing left to free.
             drop(reservation);
 
-            debug!(
-                "Sort shuffle write for partition {} completed in {} seconds. \
-                 Output: {:?}, Index: {:?}, Spill events: {}, Spill batches: {}, \
-                 Spill bytes: {}",
-                input_partition,
-                now.elapsed().as_secs(),
-                data_path,
-                index_path,
-                spill_events,
-                total_spilled_batches,
-                total_bytes_spilled
-            );
+            let repart_time = Duration::from_nanos(metrics.repart_time.value() as u64);
+            let spill_time = Duration::from_nanos(metrics.spill_time.value() as u64);
+            let write_time = Duration::from_nanos(metrics.write_time.value() as u64);
+            if total_bytes_spilled > 0 {
+                warn!(
+                    "Sort shuffle spill: job={} stage={} input_partition={} \
+                     spilled {} bytes in {} batches ({} events) under memory \
+                     pressure; repart_time={:?} spill_time={:?} write_time={:?}",
+                    job_id,
+                    stage_id,
+                    input_partition,
+                    total_bytes_spilled,
+                    total_spilled_batches,
+                    spill_events,
+                    repart_time,
+                    spill_time,
+                    write_time,
+                );
+            } else {
+                debug!(
+                    "Sort shuffle write for partition {} completed. \
+                     Output: {:?}, Index: {:?}, Rows: {}, \
+                     repart_time={:?} spill_time={:?} write_time={:?}, \
+                     Spill events: {}, Spill batches: {}, Spill bytes: {}",
+                    input_partition,
+                    data_path,
+                    index_path,
+                    total_rows,
+                    repart_time,
+                    spill_time,
+                    write_time,
+                    spill_events,
+                    total_spilled_batches,
+                    total_bytes_spilled
+                );
+            }
 
             let mut results = Vec::new();
             for (part_id, num_batches, num_rows, num_bytes) in partition_stats {
