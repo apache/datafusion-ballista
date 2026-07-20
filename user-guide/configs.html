@@ -484,25 +484,15 @@ explanation of the sort-based (default) and hash-based shuffle writers.</p>
 <td><p>true</p></td>
 <td><p>Enables the sort-based shuffle writer (consolidated data file per input partition with an index, instead of one file per (input partition, output partition) pair).</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.sort_based.buffer_size</p></td>
-<td><p>UInt64</p></td>
-<td><p>1048576</p></td>
-<td><p>Per-partition buffer size in bytes for the sort-based writer (1 MiB default).</p></td>
-</tr>
-<tr class="row-odd"><td><p>ballista.shuffle.sort_based.memory_limit</p></td>
-<td><p>UInt64</p></td>
-<td><p>268435456</p></td>
-<td><p>Total in-memory budget across all output-partition buffers for the sort-based writer (256 MiB default).</p></td>
-</tr>
-<tr class="row-even"><td><p>ballista.shuffle.sort_based.spill_threshold</p></td>
-<td><p>Utf8</p></td>
-<td><p>“0.8”</p></td>
-<td><p>Fraction of <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> at which the largest buffers spill to disk. Must be in the range 0–1.</p></td>
-</tr>
-<tr class="row-odd"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
 <td><p>UInt64</p></td>
 <td><p>8192</p></td>
 <td><p>Target row count when coalescing buffered batches before they are written or spilled.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>268435456</p></td>
+<td><p>Per-task buffered-bytes budget at which the sort-based writer spills to disk (256 MiB default), counted independently of the runtime memory pool. Set to <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable the per-task budget and spill only under memory-pool pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
 </tr>
 </tbody>
 </table>

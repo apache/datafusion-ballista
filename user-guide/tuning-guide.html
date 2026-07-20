@@ -487,15 +487,38 @@ available, with different trade-offs around file count, memory use, and
 write latency.</p>
 <section id="sort-based-shuffle-default">
 <h3>Sort-based shuffle (default)<a class="headerlink" href="#sort-based-shuffle-default" title="Link to this heading">#</a></h3>
-<p>The sort-based writer accumulates batches in a per-output-partition
-in-memory buffer. When the total buffered size crosses a threshold, the
-largest buffers are spilled to disk. After the input stream finishes, the
-remaining in-memory data and any spilled batches are merged and written
-into a single consolidated Arrow IPC file per input partition, alongside
-an index file that lets readers seek directly to a given output partition.</p>
+<p>The sort-based writer accumulates incoming batches in memory, tracking each
+row’s output partition. It spills the buffered batches to disk when either of
+two independent triggers fires:</p>
+<ul class="simple">
+<li><p>the runtime memory pool rejects a growth request (the executor is under
+memory pressure — see <a class="reference internal" href="#configuring-executor-memory-pool"><span class="xref myst">Configuring Executor Memory Pool</span></a>), or</p></li>
+<li><p>the per-task buffered-bytes budget
+(<code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes</span></code>) is reached. This
+budget is counted independently of the memory pool, so it bounds the writer’s
+memory even when the pool is unbounded (the default). Setting it to <code class="docutils literal notranslate"><span class="pre">0</span></code>
+disables this trigger, leaving memory-pool pressure as the sole spill signal.</p></li>
+</ul>
+<p><strong>Warning:</strong> setting <code class="docutils literal notranslate"><span class="pre">memory_limit_per_task_bytes</span></code> to <code class="docutils literal notranslate"><span class="pre">0</span></code> while the executor
+uses the default unbounded memory pool disables both spill triggers. The writer
+then buffers the entire task’s shuffle output in memory and never spills, which
+can exhaust the executor and cause an out-of-memory failure on large inputs.
+Only use <code class="docutils literal notranslate"><span class="pre">0</span></code> together with a bounded memory pool (see
+<a class="reference internal" href="#configuring-executor-memory-pool"><span class="xref myst">Configuring Executor Memory Pool</span></a>), so
+pool pressure still forces spilling.</p>
+<p>After the input stream finishes, the remaining in-memory data and any spilled
+batches are written into a single consolidated Arrow IPC file per input
+partition, alongside an index file that lets readers seek directly to a given
+output partition.</p>
 <p>This produces <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">×</span> <span class="pre">N</span></code> files instead of <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">×</span> <span class="pre">M</span></code>, coalesces small batches
 to a target size before writing, and bounds shuffle memory use via
 spilling — at the cost of higher write latency than the hash writer.</p>
+<p>Worst-case sort-shuffle memory per executor is approximately
+<code class="docutils literal notranslate"><span class="pre">vcores</span> <span class="pre">×</span> <span class="pre">memory_limit_per_task_bytes</span></code>, since one writer task can run per
+core. Lower the per-task budget on memory-constrained executors to spill
+sooner, or raise it to keep more data in memory and reduce spill I/O. Setting it
+to <code class="docutils literal notranslate"><span class="pre">0</span></code> removes the budget entirely and is safe only with a bounded memory pool
+(see the warning above).</p>
 </section>
 <section id="hash-based-shuffle-opt-in">
 <h3>Hash-based shuffle (opt-in)<a class="headerlink" href="#hash-based-shuffle-opt-in" title="Link to this heading">#</a></h3>
@@ -527,25 +550,15 @@ and merging of the sort-based writer is unnecessary overhead:</p>
 <td><p>true</p></td>
 <td><p>Enables the sort-based shuffle writer.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.sort_based.buffer_size</p></td>
-<td><p>UInt64</p></td>
-<td><p>1048576</p></td>
-<td><p>Per-partition buffer size in bytes (1 MiB default).</p></td>
-</tr>
-<tr class="row-even"><td><p>ballista.shuffle.sort_based.memory_limit</p></td>
-<td><p>UInt64</p></td>
-<td><p>268435456</p></td>
-<td><p>Total in-memory budget across all output-partition buffers (256 MiB default).</p></td>
-</tr>
-<tr class="row-odd"><td><p>ballista.shuffle.sort_based.spill_threshold</p></td>
-<td><p>Utf8</p></td>
-<td><p>“0.8”</p></td>
-<td><p>Fraction of <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> at which the largest buffers begin spilling to disk. Must be in the range 0–1.</p></td>
-</tr>
-<tr class="row-even"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
+<tr class="row-odd"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
 <td><p>UInt64</p></td>
 <td><p>8192</p></td>
 <td><p>Target row count when coalescing buffered batches before they are written or spilled.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>268435456</p></td>
+<td><p>Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to <code class="docutils literal notranslate"><span class="pre">0</span></code> to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
 </tr>
 </tbody>
 </table>
