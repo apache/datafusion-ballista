@@ -179,6 +179,11 @@ jobs:
             --verify \
             -c datafusion.optimizer.prefer_hash_join=false \
             -c ballista.planner.adaptive.enabled=true
+          run_suite "AQE on, multi-partition tasks" \
+            --verify \
+            -c datafusion.optimizer.prefer_hash_join=false \
+            -c ballista.planner.adaptive.enabled=true \
+            -c ballista.scheduler.max_partitions_per_task=0
 
       - name: Upload cluster logs on failure
         if: failure()
