@@ -149,15 +149,22 @@ tpch benchmark ballista \
   --query 18 \
   --path /mnt/bigdata/tpch/sf1000 --format parquet \
   --partitions 64 --iterations 1 \
-  -c datafusion.optimizer.prefer_hash_join=false \
   -c ballista.planner.adaptive.enabled=true
 ```
 
 Omit `--query` to run all 22. `ballista.planner.adaptive.enabled=true` is the AQE-on
 configuration these results use.
 
-`prefer_hash_join=false` makes DataFusion plan joins as `SortMergeJoin`, which is the
-join strategy this page compares across engines (Comet is configured to match, below).
+Note that `datafusion.optimizer.prefer_hash_join` is deliberately left at its default.
+Under AQE it does not select the join strategy: `DelayJoinSelectionRule` folds both
+`HashJoinExec` and `SortMergeJoinExec` into a single `DynamicJoinSelectionExec`, and
+the strategy is then chosen from runtime statistics — the broadcast thresholds, and
+`ballista.optimizer.hash_join_max_build_partition_bytes` (64 MiB by default), which
+lowers a Partitioned hash join to the spillable `SortMergeJoin` when the build side's
+largest partition would not fit. Setting `prefer_hash_join=false` does not force
+sort-merge; it only changes which conversion path the plan takes, and the
+`SortMergeJoinExec` path discards the join's projection, so it measures a slower plan
+rather than a different join strategy.
 
 ### Spark
 
@@ -217,9 +224,13 @@ spark-submit \
 ```
 
 `spark.comet.exec.replaceSortMergeJoin=false` keeps Comet on Spark's `SortMergeJoin`
-instead of converting it to a shuffled hash join. This matches Ballista, which plans
-`SortMergeJoin` (`prefer_hash_join=false`), so the two engines are compared on the
-same join strategy rather than one being handed a different one.
+instead of converting it to a shuffled hash join.
+
+This no longer pins the two engines to the same join strategy. Ballista under AQE
+chooses per join at runtime — broadcast, Partitioned hash, or sort-merge — and there
+is no supported way to force it to sort-merge throughout (see the note in the Ballista
+section above). So a Ballista-vs-Comet gap may partly reflect different join
+strategies, not only different execution. Read the comparison with that in mind.
 
 [comet]: https://datafusion.apache.org/comet/
 
@@ -259,8 +270,9 @@ planner.
 ## Results
 
 TPC-H **SF1000**, reference cluster above, **AQE on**, 1 iteration,
-`target_partitions=64`, `prefer_hash_join=false`. All three engines plan
-`SortMergeJoin`. Times in seconds; lower is better.
+`target_partitions=64`, all Ballista join settings at their defaults. Ballista picks
+each join's strategy at runtime; Spark and Comet are held to `SortMergeJoin`. Times in
+seconds; lower is better.
 
 Versions under test:
 
