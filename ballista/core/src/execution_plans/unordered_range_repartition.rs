@@ -23,8 +23,8 @@
 //!
 //! # Dynamic discovery
 //!
-//! The whole point of this operator is that boundaries are *discovered at
-//! runtime*, not baked in at plan time. On the first batch to arrive from
+//! The point of this operator is that boundaries are discovered at
+//! runtime, not baked in at plan time. On the first batch to arrive from
 //! any input partition, the operator walks its own child subtree to find a
 //! sibling [`RuntimeStatsExec`], snapshots its `merged_quantile_sketch()`,
 //! and computes `K - 1` quantile cuts at `1/K, 2/K, ..., (K-1)/K`. All
@@ -58,11 +58,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
-use datafusion::common::{Result, internal_datafusion_err, internal_err};
+use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
-    EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalSortExpr,
+    Distribution, EquivalenceProperties, OrderingRequirements, Partitioning,
+    PhysicalExpr, PhysicalSortExpr,
 };
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -134,6 +136,14 @@ impl UnorderedRangeRepartitionExec {
                 "UnorderedRangeRepartitionExec routing expression `{}` must be Float64, got {:?}",
                 routing.expr,
                 routing_type
+            );
+        }
+        // TODO: fixed by KLL — a NULL-aware sketch lifts this restriction and
+        // lets `split_batch_by_range` honor SortOptions::nulls_first properly.
+        if routing.expr.nullable(&schema)? {
+            return internal_err!(
+                "UnorderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
+                routing.expr
             );
         }
         let properties = Arc::new(PlanProperties::new(
@@ -209,6 +219,41 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
         vec![&self.input]
     }
 
+    /// Input distribution is irrelevant — the operator re-routes every row
+    /// by value range regardless of how the child organized them.
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        vec![Distribution::UnspecifiedDistribution]
+    }
+
+    /// "Unordered" in the name: no ordering requirement on the child.
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
+        vec![None]
+    }
+
+    /// Scattering by value range across K outputs definitively breaks the
+    /// input order — that's the whole point.
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    /// Extra input repartitioning above us buys nothing — we already read
+    /// all P input partitions concurrently and scatter them to K outputs.
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    /// Row count is preserved but redistributed across K new output
+    /// partitions; per-partition breakdown depends on the runtime sketch,
+    /// which isn't known at plan time.
+    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
+        Ok(Arc::new(Statistics::new_unknown(&self.schema())))
+    }
+
+    /// Every input row is emitted exactly once. Overrides default `Unknown`.
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -246,9 +291,6 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             state.receivers = receivers;
             state.initialized = true;
             let senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> = senders.into();
-            // Empty `Vec<f64>` = discovery failed = single-bucket fallback.
-            // Populated once, on the first batch, by whichever scatter task
-            // wins the `OnceLock::get_or_init` race.
             let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
             let input_partitions = self.input.output_partitioning().partition_count();
             let routing_expr = self.order_by[0].expr.clone(); // TODO: KLL for multi-column?
@@ -433,6 +475,24 @@ mod tests {
         assert!(
             err.to_string().contains("must be Float64"),
             "error should name the type mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_nullable_routing_key() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, true), // nullable
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let err = UnorderedRangeRepartitionExec::try_new(
+            empty_input(&schema),
+            vec![asc(&schema, "v2")],
+            3,
+        )
+        .expect_err("nullable routing key must be rejected");
+        assert!(
+            err.to_string().contains("must be non-nullable"),
+            "error should name the nullability constraint, got: {err}"
         );
     }
 

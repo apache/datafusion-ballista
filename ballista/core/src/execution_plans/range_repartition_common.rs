@@ -160,7 +160,7 @@ pub(super) fn find_runtime_stats<'a>(
 /// up → single-bucket fallback. Extending this list requires positive
 /// verification that the operator is a distribution-preserving passthrough
 /// for the routing key. Absent an upstream `ExecutionPlan::affects_distribution()`
-/// method (nice-to-have that isn't going to land), we maintain this by hand.
+/// method (nice-to-have that hopefully lands one day), we maintain this by hand.
 pub(super) fn preserves_distribution(plan: &dyn ExecutionPlan) -> bool {
     // Every entry here is a *claim* that the operator (1) doesn't drop
     // rows, (2) doesn't duplicate rows, (3) doesn't transform the routing
@@ -235,6 +235,7 @@ pub(super) fn split_batch_by_range(
             )
         })?;
 
+    // TODO: vectorized arrow computation
     let mut buckets: Vec<Vec<u32>> = (0..output_partitions).map(|_| Vec::new()).collect();
     for row in 0..batch.num_rows() {
         let target = if keys.is_null(row) {
