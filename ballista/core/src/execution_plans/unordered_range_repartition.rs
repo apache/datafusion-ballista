@@ -21,6 +21,20 @@
 //! convention: partition `p` owns `[cut[p-1], cut[p])` with virtual `-∞`/`+∞`
 //! sentinels on the ends.
 //!
+//! ```text
+//!    P input                                                     outputs (K = 4)
+//!    partitions
+//!         ─┐                                                     ┌─▶ 0: key < c₁
+//!         ─┼──▶ RuntimeStatsExec ──▶ BufferExec ──▶ UnorderedRRE ─┼─▶ 1: c₁ ≤ key < c₂
+//!         ─┤    (T-Digest tap)       (Dam,          (K = 4)      ├─▶ 2: c₂ ≤ key < c₃
+//!         ─┘                          whitelisted)    │          └─▶ 3: c₃ ≤ key
+//!                     ▲                               │
+//!                     └────────── walker ◀────────────┘
+//!                                 (descends past BufferExec,
+//!                                  matches on routing expr,
+//!                                  reads K−1 quantile cuts)
+//! ```
+//!
 //! # Dynamic discovery
 //!
 //! The point of this operator is that boundaries are discovered at
