@@ -27,9 +27,9 @@ pub struct SortShuffleConfig {
     pub batch_size: usize,
     /// Per-task buffered-bytes budget at which the writer spills its in-memory
     /// batches to disk. Counted independently of the runtime `MemoryPool`, so
-    /// spilling kicks in even when the pool is unbounded. A value of 0 (the
-    /// default) disables the per-task budget, leaving the runtime `MemoryPool`
-    /// as the sole spill trigger.
+    /// spilling kicks in even when the pool is unbounded. A value of 0 disables
+    /// the per-task budget, leaving the runtime `MemoryPool` as the sole spill
+    /// trigger.
     pub memory_limit_per_task_bytes: usize,
 }
 
@@ -38,14 +38,13 @@ impl Default for SortShuffleConfig {
         Self {
             enabled: false,
             batch_size: 8192,
-            memory_limit_per_task_bytes: 0,
+            memory_limit_per_task_bytes: 256 * 1024 * 1024,
         }
     }
 }
 
 impl SortShuffleConfig {
-    /// Creates a new configuration with the default (uncapped) per-task memory
-    /// limit.
+    /// Creates a new configuration with the default per-task memory limit.
     pub fn new(enabled: bool, batch_size: usize) -> Self {
         Self {
             enabled,
@@ -70,7 +69,7 @@ mod tests {
         let config = SortShuffleConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.batch_size, 8192);
-        assert_eq!(config.memory_limit_per_task_bytes, 0);
+        assert_eq!(config.memory_limit_per_task_bytes, 256 * 1024 * 1024);
     }
 
     #[test]
@@ -78,7 +77,7 @@ mod tests {
         let config = SortShuffleConfig::new(true, 4096);
         assert!(config.enabled);
         assert_eq!(config.batch_size, 4096);
-        assert_eq!(config.memory_limit_per_task_bytes, 0);
+        assert_eq!(config.memory_limit_per_task_bytes, 256 * 1024 * 1024);
     }
 
     #[test]

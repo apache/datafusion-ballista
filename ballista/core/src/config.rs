@@ -249,12 +249,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Per-task buffered-bytes budget at which the sort shuffle writer spills its \
                          in-memory batches to disk. Counted independently of the runtime memory pool, so \
                          spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle \
-                         memory per executor is approximately vcores * this value. The default of 0 disables \
-                         the per-task budget and relies solely on runtime memory-pool pressure to trigger \
-                         spilling; this is safe only with a bounded memory pool, otherwise the writer never \
-                         spills and may run out of memory.".to_string(),
+                         memory per executor is approximately vcores * this value. Set to 0 to disable the \
+                         per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; \
+                         this is safe only with a bounded memory pool, otherwise the writer never spills and \
+                         may run out of memory.".to_string(),
                          DataType::UInt64,
-                         Some("0".to_string())),
+                         Some((256 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
                          "Byte-size threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern. \
