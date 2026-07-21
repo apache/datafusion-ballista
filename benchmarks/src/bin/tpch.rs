@@ -80,6 +80,12 @@ struct BallistaBenchmarkOpt {
     #[structopt(short, long)]
     query: Option<usize>,
 
+    /// Query numbers to skip when running the whole suite. Can be specified
+    /// multiple times, e.g. `--skip 18 --skip 21`. Ignored when `--query` is
+    /// given.
+    #[structopt(long = "skip", number_of_values = 1)]
+    skip: Vec<usize>,
+
     /// Activate debug mode to see query results
     #[structopt(short, long)]
     debug: bool,
@@ -143,6 +149,12 @@ struct DataFusionBenchmarkOpt {
     /// Query number (1-22). If not specified, runs all queries.
     #[structopt(short, long)]
     query: Option<usize>,
+
+    /// Query numbers to skip when running the whole suite. Can be specified
+    /// multiple times, e.g. `--skip 18 --skip 21`. Ignored when `--query` is
+    /// given.
+    #[structopt(long = "skip", number_of_values = 1)]
+    skip: Vec<usize>,
 
     /// Activate debug mode to see query results
     #[structopt(short, long)]
@@ -312,6 +324,48 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Resolves which TPC-H queries a benchmark run should execute.
+///
+/// A `--query` selects exactly that one and `--skip` is ignored, so asking for a
+/// query explicitly always runs it. Otherwise the full 1..=22 suite runs minus
+/// any `--skip` entries. Skip values outside 1..=22 are reported rather than
+/// silently ignored, since a typo would otherwise look like it took effect.
+fn select_queries(query: Option<usize>, skip: &[usize]) -> Result<Vec<usize>> {
+    if let Some(q) = query {
+        return Ok(vec![q]);
+    }
+
+    if let Some(bad) = skip.iter().find(|q| !(1..=22).contains(*q)) {
+        return Err(DataFusionError::Execution(format!(
+            "--skip {bad} is not a TPC-H query number (expected 1-22)"
+        )));
+    }
+
+    let selected: Vec<usize> = (1..=22).filter(|q| !skip.contains(q)).collect();
+    if selected.is_empty() {
+        return Err(DataFusionError::Execution(
+            "--skip excluded every query; nothing to run".to_string(),
+        ));
+    }
+
+    if !skip.is_empty() {
+        let mut skipped: Vec<usize> = skip.to_vec();
+        skipped.sort_unstable();
+        skipped.dedup();
+        println!(
+            "Skipping {} of 22 queries: {}",
+            skipped.len(),
+            skipped
+                .iter()
+                .map(|q| q.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    Ok(selected)
+}
+
 #[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
     println!("Running benchmarks with the following options: {opt:?}");
@@ -357,10 +411,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     }
 
     // Determine which queries to run
-    let query_numbers: Vec<usize> = opt
-        .query
-        .map(|q| vec![q])
-        .unwrap_or_else(|| (1..=22).collect());
+    let query_numbers = select_queries(opt.query, &opt.skip)?;
 
     let mut benchmark_run = BenchmarkRun::new();
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
@@ -496,10 +547,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     );
 
     // Determine which queries to run
-    let query_numbers: Vec<usize> = opt
-        .query
-        .map(|q| vec![q])
-        .unwrap_or_else(|| (1..=22).collect());
+    let query_numbers = select_queries(opt.query, &opt.skip)?;
 
     let oracle_ctx = if opt.verify {
         let cfg = SessionConfig::new()
@@ -1627,6 +1675,62 @@ mod tests {
     use std::env;
     use std::sync::Arc;
 
+    #[test]
+    fn select_queries_runs_whole_suite_by_default() {
+        assert_eq!(
+            select_queries(None, &[]).unwrap(),
+            (1..=22).collect::<Vec<_>>()
+        );
+    }
+
+    // The motivating case: run the full suite but leave out the query that
+    // exhausts the memory pool, without having to drive 21 single-query jobs.
+    #[test]
+    fn select_queries_omits_skipped() {
+        let selected = select_queries(None, &[18]).unwrap();
+        assert_eq!(selected.len(), 21);
+        assert!(!selected.contains(&18));
+        assert!(selected.contains(&17) && selected.contains(&19));
+    }
+
+    #[test]
+    fn select_queries_omits_several_skipped() {
+        let selected = select_queries(None, &[18, 21, 5]).unwrap();
+        assert_eq!(selected.len(), 19);
+        for q in [5, 18, 21] {
+            assert!(!selected.contains(&q), "query {q} should have been skipped");
+        }
+    }
+
+    // An explicit --query is a direct instruction, so it wins over --skip rather
+    // than silently producing an empty run.
+    #[test]
+    fn select_queries_prefers_explicit_query_over_skip() {
+        assert_eq!(select_queries(Some(18), &[18]).unwrap(), vec![18]);
+    }
+
+    // A repeated skip must not change the outcome.
+    #[test]
+    fn select_queries_tolerates_duplicate_skips() {
+        assert_eq!(select_queries(None, &[18, 18]).unwrap().len(), 21);
+    }
+
+    // A typo like `--skip 42` would otherwise look like it took effect.
+    #[test]
+    fn select_queries_rejects_out_of_range_skip() {
+        for bad in [0usize, 23, 100] {
+            assert!(
+                select_queries(None, &[bad]).is_err(),
+                "--skip {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn select_queries_rejects_skipping_everything() {
+        assert!(select_queries(None, &(1..=22).collect::<Vec<_>>()).is_err());
+    }
+
     fn run_with(queries: Vec<QueryRun>) -> BenchmarkRun {
         BenchmarkRun {
             benchmark_version: "test".to_string(),
@@ -2054,6 +2158,7 @@ mod tests {
             // run the query to compute actual results of the query
             let opt = DataFusionBenchmarkOpt {
                 query: Some(n),
+                skip: vec![],
                 debug: false,
                 iterations: 1,
                 partitions: 2,
