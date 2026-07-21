@@ -67,7 +67,7 @@ jobs:
     name: cargo check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -86,7 +86,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -106,7 +106,7 @@ jobs:
     needs: build-lib
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
@@ -119,7 +119,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -139,7 +139,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -159,7 +159,7 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -181,7 +181,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -195,7 +195,7 @@ jobs:
     name: Lint
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -213,7 +213,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -230,7 +230,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -259,7 +259,7 @@ jobs:
     name: Check vendored DataFusion proto is in sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -280,7 +280,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v7.0.0
+#     - uses: actions/checkout@v7.0.1
 #       with:
 #         submodules: true
 #     - name: Cache Cargo
