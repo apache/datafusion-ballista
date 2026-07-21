@@ -511,6 +511,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "datafusion",
+ "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-proto-common",
  "futures",

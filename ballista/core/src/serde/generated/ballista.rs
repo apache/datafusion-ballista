@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5"
+        tags = "1, 2, 3, 4, 5, 6"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -51,7 +51,35 @@ pub mod ballista_physical_plan_node {
         SortShuffleWriter(super::SortShuffleWriterExecNode),
         #[prost(message, tag = "5")]
         ChaosExec(super::ChaosExecNode),
+        #[prost(message, tag = "6")]
+        RuntimeStats(super::RuntimeStatsExecNode),
     }
+}
+/// Runtime-stats tap. Passes batches through unmodified while accumulating:
+///
+/// * per-partition row counts (always)
+/// * a quantile sketch over the first ORDER BY expression's Float64 values
+///   (only when order_by is non-empty)
+///   Downstream operators inside the same Ballista task read the stats via a
+///   child-tree walk. The child plan is plumbed by the framework as `inputs\[0\]`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeStatsExecNode {
+    /// Optional lexicographic ORDER BY. Empty means row-count-only mode
+    /// (no sketch allocated). When non-empty, the first entry drives the
+    /// sketch and the rest are preserved for downstream operators
+    /// (SortExec, BoundedWindowAggExec) that need the full ordering.
+    #[prost(message, repeated, tag = "1")]
+    pub order_by: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
+}
+/// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
+/// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
+/// centroid_means..., centroid_weights....
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QuantileSketchState {
+    #[prost(message, repeated, tag = "1")]
+    pub state: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChaosExecNode {
