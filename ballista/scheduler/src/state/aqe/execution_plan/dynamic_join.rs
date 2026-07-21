@@ -319,7 +319,7 @@ impl DynamicJoinSelectionExec {
             JoinSelectionAction::Sort(_) => "SortMerge(Partitioned)",
         };
 
-        info!(
+        debug!(
             "AQE join decision plan_id={} action={} partition_mode={:?} under_threshold={} \
              build_max_partition_bytes={:?} hash_join_max_build_partition_bytes={} \
              left=(rows={:?}, bytes={:?}) right=(rows={:?}, bytes={:?}) \
