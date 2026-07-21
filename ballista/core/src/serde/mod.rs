@@ -389,19 +389,22 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
-                    shuffle_writer.output_partitioning.as_ref(),
-                    &decode_ctx,
-                    input.schema().as_ref(),
-                    &converter,
-                )?;
+                // ShuffleWriterExec never repartitions. A plan that still
+                // carries an output partitioning is a legacy hash-shuffle
+                // plan, which this writer no longer implements.
+                if shuffle_writer.output_partitioning.is_some() {
+                    return Err(DataFusionError::Internal(
+                        "hash-partitioned ShuffleWriterExec is no longer supported; \
+                         hash-repartition stages use SortShuffleWriterExec"
+                            .to_string(),
+                    ));
+                }
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
                     shuffle_writer.job_id.clone().into(),
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
-                    shuffle_output_partitioning,
                 )?))
             }
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
@@ -603,33 +606,15 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         buf: &mut Vec<u8>,
     ) -> Result<(), DataFusionError> {
         if let Some(exec) = node.downcast_ref::<ShuffleWriterExec>() {
-            // note that we use shuffle_output_partitioning() rather than output_partitioning()
-            // to get the true output partitioning
-            let output_partitioning = match exec.shuffle_output_partitioning() {
-                Some(Partitioning::Hash(exprs, partition_count)) => {
-                    Some(datafusion_proto::protobuf::PhysicalHashRepartition {
-                        hash_expr: exprs
-                            .iter()
-                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(&expr.clone(), self.default_codec.as_ref()))
-                            .collect::<Result<Vec<_>, DataFusionError>>()?,
-                        partition_count: *partition_count as u64,
-                    })
-                }
-                None => None,
-                other => {
-                    return Err(DataFusionError::Internal(format!(
-                        "physical_plan::to_proto() invalid partitioning for ShuffleWriterExec: {other:?}"
-                    )));
-                }
-            };
-
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleWriter(
                     protobuf::ShuffleWriterExecNode {
                         job_id: exec.job_id().to_string(),
                         stage_id: exec.stage_id() as u32,
                         input: None,
-                        output_partitioning,
+                        // This writer preserves its input partitioning, so
+                        // there is never a shuffle partitioning to encode.
+                        output_partitioning: None,
                     },
                 )),
             };

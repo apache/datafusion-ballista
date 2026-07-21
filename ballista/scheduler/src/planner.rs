@@ -700,16 +700,17 @@ pub(crate) fn create_shuffle_writer_with_config(
 ) -> Result<Arc<dyn ShuffleWriter>> {
     let plan = make_empty_exec_serde_safe(plan)?;
 
-    // Check if sort-based shuffle is enabled
+    // Sort-based shuffle is the only shuffle writer for hash-repartition
+    // stages. Its tuning values still come from the session config.
     let ballista_config = config
         .extensions
         .get::<BallistaConfig>()
         .cloned()
         .unwrap_or_default();
 
-    if ballista_config.shuffle_sort_based_enabled() {
-        // Sort shuffle requires hash partitioning
-        if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
+    // Sort shuffle requires hash partitioning.
+    match partitioning {
+        Some(Partitioning::Hash(exprs, partition_count)) => {
             let sort_config = SortShuffleConfig::new(
                 true,
                 ballista_config.shuffle_sort_based_batch_size(),
@@ -718,25 +719,27 @@ pub(crate) fn create_shuffle_writer_with_config(
                 ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
             );
 
-            return Ok(Arc::new(SortShuffleWriterExec::try_new(
+            Ok(Arc::new(SortShuffleWriterExec::try_new(
                 job_id.to_owned(),
                 stage_id,
                 plan,
                 "".to_owned(),
                 Partitioning::Hash(exprs, partition_count),
                 sort_config,
-            )?));
+            )?))
         }
+        // Stages that don't repartition write their input partitioning
+        // through: one file per output partition.
+        None => Ok(Arc::new(ShuffleWriterExec::try_new(
+            job_id.to_owned(),
+            stage_id,
+            plan,
+            "".to_owned(),
+        )?)),
+        Some(other) => Err(BallistaError::General(format!(
+            "unsupported shuffle output partitioning: {other}"
+        ))),
     }
-
-    // Fall back to standard shuffle writer
-    Ok(Arc::new(ShuffleWriterExec::try_new(
-        job_id.to_owned(),
-        stage_id,
-        plan,
-        "".to_owned(),
-        partitioning,
-    )?))
 }
 
 #[cfg(test)]

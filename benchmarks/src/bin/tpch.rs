@@ -127,7 +127,7 @@ struct BallistaBenchmarkOpt {
 
     /// Configuration overrides in key=value format.
     /// Can be specified multiple times, e.g.
-    /// -c ballista.shuffle.sort_based.enabled=true
+    /// -c ballista.shuffle.sort_based.batch_size=8192
     /// -c datafusion.execution.target_partitions=16
     #[structopt(short = "c", long = "config", number_of_values = 1)]
     config_overrides: Vec<String>,

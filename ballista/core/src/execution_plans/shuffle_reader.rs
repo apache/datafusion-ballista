@@ -772,7 +772,6 @@ fn send_fetch_partitions(
     let max_blocks_per_addr =
         ballista_config.shuffle_reader_max_blocks_in_flight_per_address();
     let default_block_size = ballista_config.shuffle_reader_default_block_size_bytes();
-    let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
 
     let (response_sender, response_receiver) = mpsc::channel(max_reqs.max(1));
 
@@ -816,7 +815,7 @@ fn send_fetch_partitions(
             for p in local_locations {
                 let r = {
                     let _timer = local_read_time.timer();
-                    fetch_partition_local(&work_dir, &p, sort_shuffle_enabled)
+                    fetch_partition_local(&work_dir, &p)
                 };
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
@@ -1112,7 +1111,6 @@ async fn fetch_partition_remote(
 fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
-    sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
@@ -1123,10 +1121,10 @@ fn fetch_partition_local(
     //       replace this check with open, and check for error
     //
     // Check if this is a sort-based shuffle output (has index file)
-    if sort_shuffle_enabled && is_sort_shuffle_output(data_path) {
-        // note: in some cases sort shuffle is not going to be used
-        //       even its enabled. thus we need to check if there is
-        //       sort shuffle file index
+    if is_sort_shuffle_output(data_path) {
+        // A stage's on-disk layout is authoritative: sort-shuffle outputs have a
+        // companion index file. Standard single-partition outputs do not, so a
+        // missing index means this is a plain Arrow IPC file.
         debug!(
             "Reading sort-based shuffle for partition {} from {:?}",
             partition_id.partition_id, data_path
@@ -1147,7 +1145,7 @@ fn fetch_partition_local(
         });
     }
     debug!("fetch local partition file: {data_path:?} ");
-    // Standard hash-based shuffle - read the file directly
+    // Standard single-file shuffle output - read the file directly
     let reader = fetch_partition_local_inner(path).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
         BallistaError::FetchFailed(
@@ -1290,7 +1288,6 @@ mod tests {
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common;
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
@@ -1744,7 +1741,6 @@ mod tests {
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1)),
         )
         .unwrap();
 
@@ -1772,10 +1768,9 @@ mod tests {
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
-        // Writer's K=1 hash routes every row to partition 0. Its coordinator
-        // reads its full input slice (2 partitions × 2 batches = 4 batches),
-        // all routed to the single output file.
-        assert_eq!(result.len(), 4);
+        // With single-partition (None) output, executing input partition 0
+        // writes just that partition's 2 batches to a single output file.
+        assert_eq!(result.len(), 2);
         for b in result {
             assert_eq!(b, create_test_batch())
         }
