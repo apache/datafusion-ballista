@@ -150,7 +150,6 @@ tpch benchmark ballista \
   --path /mnt/bigdata/tpch/sf1000 --format parquet \
   --partitions 64 --iterations 1 \
   -c datafusion.optimizer.prefer_hash_join=false \
-  -c datafusion.optimizer.enable_dynamic_filter_pushdown=false \
   -c ballista.planner.adaptive.enabled=true
 ```
 
@@ -159,10 +158,6 @@ configuration these results use.
 
 `prefer_hash_join=false` makes DataFusion plan joins as `SortMergeJoin`, which is the
 join strategy this page compares across engines (Comet is configured to match, below).
-
-Note `datafusion.optimizer.enable_dynamic_filter_pushdown=false`: DataFusion's
-dynamic filter pushdown assumes single-process execution and can deadlock
-distributed execution, so it is pinned off for benchmark runs.
 
 ### Spark
 
@@ -264,11 +259,8 @@ planner.
 ## Results
 
 TPC-H **SF1000**, reference cluster above, **AQE on**, 1 iteration,
-`target_partitions=64`, `prefer_hash_join=false`,
-`enable_dynamic_filter_pushdown=false`, and the sort-shuffle spill cap overridden to
-uncapped (`ballista.shuffle.sort_based.memory_limit_per_task_bytes=0`; the shipped
-default is 256 MiB). All three engines plan `SortMergeJoin`. Times in seconds; lower
-is better.
+`target_partitions=64`, `prefer_hash_join=false`. All three engines plan
+`SortMergeJoin`. Times in seconds; lower is better.
 
 Versions under test:
 
@@ -349,63 +341,6 @@ regression.
 `TBD` means not yet measured on this cluster at this commit; a query that ran but
 did not produce an answer is recorded as `FAIL`, or `OOM` where the failure is a
 known memory exhaustion.
-
-### Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)
-
-A second Ballista configuration exercises `prefer_hash_join=true` together with the
-AQE hash-join safety fallback
-([`ballista.optimizer.hash_join_max_build_partition_bytes`](https://github.com/apache/datafusion-ballista/pull/2084)).
-The fallback lowers a Partitioned hash join to `SortMergeJoin` per join when the
-build side's largest partition exceeds the configured budget, so a hash-join run does
-not abort on the queries whose non-spillable hash-join build exceeds one task slot's
-pool — notably Q18
-([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). That fallback
-is what makes `prefer_hash_join=true` usable across the whole suite instead of
-failing partway.
-
-This run uses a **larger cluster than the reference above** and a **different
-`target_partitions`**, so its numbers are not comparable to the table above: TPC-H
-**SF1000**, **2 executors × 16 cores** (one per node, ~2.8 GB per task slot),
-**`target_partitions=64`**, **AQE on**, `prefer_hash_join=true`,
-`hash_join_max_build_partition_bytes=67108864` (64 MiB),
-`enable_dynamic_filter_pushdown=false`, sort-shuffle spill uncapped. Each query ran
-on a **freshly restarted cluster**. Ballista @ `afef9afc`. Times in seconds.
-
-|     Query | Ballista (AQE on, hash join + 64 MiB fallback) |
-| --------: | ---------------------------------------------: |
-|         1 |                                           72.1 |
-|         2 |                                           52.9 |
-|         3 |                                          154.2 |
-|         4 |                                           72.9 |
-|         5 |                                          355.4 |
-|         6 |                                           65.9 |
-|         7 |                                          371.7 |
-|         8 |                                          452.4 |
-|         9 |                                          559.8 |
-|        10 |                                          152.3 |
-|        11 |                                           74.6 |
-|        12 |                                           88.7 |
-|        13 |                                           99.2 |
-|        14 |                                           38.6 |
-|        15 |                                           62.5 |
-|        16 |                                           29.0 |
-|        17 |                                          446.3 |
-|        18 |                                          744.6 |
-|        19 |                                           80.8 |
-|        20 |                                          117.0 |
-|        21 |                                          605.6 |
-|        22 |                                           20.5 |
-| **Total** |                                     **4716.9** |
-
-**All 22 queries completed — no OOMs, no failures.** At the 64 MiB threshold the
-large-build joins (Q5, Q7–Q9, Q17, Q18, Q21) fall back to `SortMergeJoin` while
-smaller-build joins stay hash, so the heavy queries run at roughly sort-merge speed
-but the suite runs end to end. Q18 completes at **744.6 s** where the same
-configuration with the fallback disabled (`hash_join_max_build_partition_bytes=0`)
-exhausts the per-slot pool and fails the job
-([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). The fallback is
-opt-in and off by default (a `0` budget); the 64 MiB value here is tuned to this
-cluster's ~2.8 GB task-slot pool.
 
 ### Recording a result
 
