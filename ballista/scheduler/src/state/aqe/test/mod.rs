@@ -17,6 +17,8 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// Broadcast-threshold decisions over declared statistics
+mod broadcast_thresholds;
 /// Functional tests for the CoalescePartitionsRule end-to-end through the planner
 mod coalesce_rule;
 /// Job-failure lifecycle tests for the adaptive graph
@@ -25,6 +27,8 @@ mod job_failure;
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// A table whose statistics are declared rather than measured
+mod stats_table;
 
 use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use ballista_core::extension::SessionConfigExt;

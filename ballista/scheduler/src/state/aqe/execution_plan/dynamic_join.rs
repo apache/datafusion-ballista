@@ -18,7 +18,8 @@
 use ballista_core::config::BallistaConfig;
 use datafusion::{
     arrow::compute::SortOptions,
-    common::{JoinType, NullEquality, Result, exec_err, internal_err},
+    arrow::datatypes::{DataType, Schema},
+    common::{ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err},
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
     physical_expr_common::physical_expr::fmt_sql,
@@ -228,6 +229,8 @@ impl DynamicJoinSelectionExec {
             .unwrap_or_default();
         let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
         let threshold_collect_left_join_rows = bc.broadcast_join_threshold_rows();
+        let max_build_bytes = bc.hash_join_max_build_partition_bytes();
+        let build_max_partition_bytes = max_per_partition_build_bytes(&self.left);
 
         // The `!= 0` guard sits here rather than inside
         // `supports_collect_by_thresholds`: that helper falls back to the row
@@ -270,22 +273,13 @@ impl DynamicJoinSelectionExec {
         let stats_left = self.left.partition_statistics(None)?;
         let stats_right = self.right.partition_statistics(None)?;
 
-        debug!(
-            "to_actual_join - plan_id: {}, decision: {:?} left: ({:?} | {:?}), right: ({:?} | {:?})",
-            self.plan_id,
-            partition_mode,
-            stats_left.num_rows,
-            stats_left.total_byte_size,
-            stats_right.num_rows,
-            stats_right.total_byte_size
-        );
-
-        match (&self.selection_state, partition_mode) {
+        let action = match (&self.selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
             (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if prefer_hash_join =>
+                if prefer_hash_join
+                    && hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
             {
                 self.to_hash_join(PartitionMode::Partitioned)
                     .map(JoinSelectionAction::Hash)
@@ -315,7 +309,36 @@ impl DynamicJoinSelectionExec {
             // this method calculates partition mode, and at the moment it
             // can't calculate it as PartitionMode::Auto
             (_, PartitionMode::Auto) => internal_err!("this case should not be possible"),
-        }
+        }?;
+
+        let action_label = match &action {
+            JoinSelectionAction::Repartition(_) => "Repartition",
+            JoinSelectionAction::CollectLeft(_) => "CollectLeft(broadcast)",
+            JoinSelectionAction::LateCollectLeft(_) => "LateCollectLeft(broadcast)",
+            JoinSelectionAction::Hash(_) => "Hash(Partitioned)",
+            JoinSelectionAction::Sort(_) => "SortMerge(Partitioned)",
+        };
+
+        debug!(
+            "AQE join decision plan_id={} action={} partition_mode={:?} under_threshold={} \
+             build_max_partition_bytes={:?} hash_join_max_build_partition_bytes={} \
+             left=(rows={:?}, bytes={:?}) right=(rows={:?}, bytes={:?}) \
+             byte_threshold={} row_threshold={}",
+            self.plan_id,
+            action_label,
+            partition_mode,
+            under_threshold,
+            build_max_partition_bytes,
+            max_build_bytes,
+            stats_left.num_rows,
+            stats_left.total_byte_size,
+            stats_right.num_rows,
+            stats_right.total_byte_size,
+            threshold_collect_left_join_bytes,
+            threshold_collect_left_join_rows,
+        );
+
+        Ok(action)
     }
 
     pub(crate) fn to_hash_join(
@@ -365,12 +388,29 @@ impl DynamicJoinSelectionExec {
         };
 
         if let Some(byte_size) = stats.total_byte_size.get_value() {
-            *byte_size != 0 && *byte_size < threshold_byte_size
-        } else if let Some(num_rows) = stats.num_rows.get_value() {
-            *num_rows != 0 && *num_rows < threshold_num_rows
-        } else {
-            false
+            return *byte_size != 0 && *byte_size < threshold_byte_size;
         }
+
+        // `total_byte_size` is unknown, which is the common case rather than the
+        // exception: DataFusion discards it on every join, and rebuilding it in
+        // `Statistics::calculate_total_byte_size` only works when every column has
+        // a fixed width, so one `Utf8` column loses it for good.
+        //
+        // A row count on its own says nothing about how much data a broadcast
+        // would replicate to every probe task, so estimate the size and hold it
+        // to the same byte threshold. The row threshold is kept as an additional
+        // ceiling, so this can only ever reject a broadcast the row rule would
+        // have allowed, never introduce a new one.
+        let Some(num_rows) = stats.num_rows.get_value().copied() else {
+            return false;
+        };
+
+        if num_rows == 0 || num_rows >= threshold_num_rows {
+            return false;
+        }
+
+        estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
+            .is_some_and(|estimated| estimated < threshold_byte_size)
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {
@@ -455,19 +495,283 @@ impl DynamicJoinSelectionExec {
     }
 }
 
+/// Whether the build (left) side of a `Partitioned` hash join fits the
+/// per-slot memory budget. A `max_build_bytes` of 0 disables the check (the
+/// join always uses hash join); an unknown build size (`build_max_partition_bytes
+/// == None`) is treated as fitting too, since there is no evidence to force a
+/// fallback.
+fn hash_build_fits(
+    max_build_bytes: usize,
+    build_max_partition_bytes: Option<usize>,
+) -> bool {
+    if max_build_bytes == 0 {
+        return true;
+    }
+    match build_max_partition_bytes {
+        Some(bytes) => bytes <= max_build_bytes,
+        None => true, // unknown size → don't force a fallback
+    }
+}
+
+/// Skew-aware fit check for the build side of a `Partitioned` hash join: the
+/// MAX (not average) per-partition materialized byte size. A single
+/// oversized partition is enough to blow the per-slot memory pool even when
+/// every other partition — and thus the average — is small; this is exactly
+/// the shape of the Q18 OOM, so an average would have hidden the failure
+/// mode this check exists to catch.
+///
+/// Reachability: at the one call site this feeds — the
+/// `(JoinInputState::Repartitioned, PartitionMode::Partitioned)` arm of
+/// `to_actual_join` — `self.left` is always the `ExchangeExec` that
+/// `SelectJoinRule` inserted while resolving the prior `Repartition` action
+/// (see `JoinSelectionAction::Repartition` in `join_selection.rs`), and
+/// `upstream_resolved()` guarantees that exchange's shuffle has already
+/// finished. So the actual, materialized per-partition byte sizes that
+/// `CoalescePartitionsRule` reads (`ExchangeExec::shuffle_partitions()` ->
+/// `PartitionLocation::partition_stats::num_bytes()`) are reachable here too,
+/// and are used directly rather than falling back to an average.
+///
+/// Returns `None` (callers treat this as "fits", not as a forced fallback)
+/// when `build` isn't an `ExchangeExec`, its shuffle hasn't resolved yet, or
+/// the resolved shuffle has no partitions at all. A resolved shuffle whose
+/// partitions are missing byte-size stats is not `None`: each such partition
+/// contributes 0 bytes, so the result is `Some(0)` (or higher, if other
+/// partitions do report sizes) — still small enough to be treated as fitting.
+fn max_per_partition_build_bytes(build: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    let exchange = build.downcast_ref::<ExchangeExec>()?;
+    let partitions = exchange.shuffle_partitions()?;
+    partitions
+        .iter()
+        .map(|locations| {
+            locations
+                .iter()
+                .filter_map(|location| location.partition_stats.num_bytes())
+                .sum::<u64>()
+        })
+        .max()
+        .map(|bytes| bytes as usize)
+}
+
+/// Assumed width of a variable-width value when statistics carry no size for it.
+/// Mirrors Spark's `StringType.defaultSize`, which serves the same purpose in
+/// `EstimationUtils.getSizePerRow`.
+const DEFAULT_VARIABLE_WIDTH_BYTES: usize = 20;
+
+/// Assumed width of a binary value with no size in statistics. Mirrors Spark's
+/// `BinaryType.defaultSize`.
+const DEFAULT_BINARY_WIDTH_BYTES: usize = 100;
+
+/// Estimates the size in bytes of `num_rows` rows of `schema`.
+///
+/// Used only when `Statistics::total_byte_size` is `Absent`. Each column
+/// contributes the best figure available: its own `byte_size` statistic (which
+/// is a total for the column's output, already scaled for filters and limits),
+/// otherwise its fixed width times the row count, otherwise a default width.
+///
+/// Returns `None` if the estimate overflows, so the caller declines to broadcast
+/// rather than wrapping around to a small number.
+fn estimate_output_byte_size(
+    schema: &Schema,
+    num_rows: usize,
+    column_statistics: &[ColumnStatistics],
+) -> Option<usize> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .try_fold(0usize, |total, (idx, field)| {
+            let column_bytes = match column_statistics
+                .get(idx)
+                .and_then(|c| c.byte_size.get_value().copied())
+            {
+                Some(byte_size) => byte_size,
+                None => num_rows.checked_mul(estimated_value_width(field.data_type()))?,
+            };
+            total.checked_add(column_bytes)
+        })
+}
+
+/// Estimated width of a single value of `data_type`.
+///
+/// `DataType::primitive_width` covers the fixed-width types. It returns `None`
+/// for `Boolean` and for the variable-width types, which are the cases handled
+/// here.
+fn estimated_value_width(data_type: &DataType) -> usize {
+    if let Some(width) = data_type.primitive_width() {
+        return width;
+    }
+
+    match data_type {
+        DataType::Boolean => 1,
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => DEFAULT_BINARY_WIDTH_BYTES,
+        _ => DEFAULT_VARIABLE_WIDTH_BYTES,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
+    use ballista_core::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId, PartitionLocation, PartitionStats,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::config::ExtensionOptions;
+    use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::test::exec::StatisticsExec;
 
+    const BYTE_THRESHOLD: usize = 10 * 1024 * 1024;
+    const ROW_THRESHOLD: usize = 1_000_000;
+    const MB: usize = 1024 * 1024;
+
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+    }
+
+    /// A plan reporting `num_rows` with no `total_byte_size` and no per-column
+    /// size, which is what a join output looks like.
+    fn sizeless_stats_exec(
+        num_rows: usize,
+        fields: Vec<Field>,
+    ) -> Arc<dyn ExecutionPlan> {
+        let column_statistics = vec![ColumnStatistics::new_unknown(); fields.len()];
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(num_rows),
+                total_byte_size: Precision::Absent,
+                column_statistics,
+            },
+            Schema::new(fields),
+        ))
+    }
+
+    fn supports_collect(plan: &Arc<dyn ExecutionPlan>) -> bool {
+        DynamicJoinSelectionExec::supports_collect_by_thresholds(
+            plan.as_ref(),
+            BYTE_THRESHOLD,
+            ROW_THRESHOLD,
+        )
+    }
+
+    // A build side under the row threshold but far over the byte threshold must
+    // not be broadcast. 900k rows of a string column is roughly 18 MB by the
+    // default width, which every probe task would otherwise have to hold.
+    #[test]
+    fn does_not_collect_wide_rows_when_byte_size_is_unknown() {
+        let plan = sizeless_stats_exec(
+            900_000,
+            vec![
+                Field::new("name", DataType::Utf8, false),
+                Field::new("address", DataType::Utf8, false),
+            ],
+        );
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // The estimate must not reject a build side that really is small: the same
+    // row count over narrow fixed-width columns stays well inside the threshold.
+    #[test]
+    fn collects_narrow_rows_when_byte_size_is_unknown() {
+        let plan = sizeless_stats_exec(
+            100_000,
+            vec![
+                Field::new("a", DataType::Int32, false),
+                Field::new("b", DataType::Int32, false),
+            ],
+        );
+
+        assert!(supports_collect(&plan));
+    }
+
+    // A per-column `byte_size` is a measured total for that column, so it should
+    // be preferred over the default width. Here it proves the column is small
+    // even though the type is variable-width.
+    #[test]
+    fn prefers_column_byte_size_over_default_width() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(900_000),
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![ColumnStatistics {
+                    byte_size: Precision::Exact(1024),
+                    ..ColumnStatistics::new_unknown()
+                }],
+            },
+            Schema::new(vec![Field::new("name", DataType::Utf8, false)]),
+        ));
+
+        assert!(supports_collect(&plan));
+    }
+
+    // A known `total_byte_size` is authoritative and must still short-circuit the
+    // estimate, in both directions.
+    #[test]
+    fn known_total_byte_size_still_decides() {
+        let over: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(10),
+                total_byte_size: Precision::Exact(BYTE_THRESHOLD + 1),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
+        ));
+        assert!(!supports_collect(&over));
+
+        let under: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(10),
+                total_byte_size: Precision::Exact(64),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
+        ));
+        assert!(supports_collect(&under));
+    }
+
+    // The row threshold is retained as a ceiling, so a row count at or above it
+    // is rejected without regard to how narrow the rows are.
+    #[test]
+    fn row_threshold_remains_a_ceiling() {
+        let plan = sizeless_stats_exec(
+            ROW_THRESHOLD,
+            vec![Field::new("a", DataType::Int8, false)],
+        );
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // Statistics with neither a size nor a row count carry no evidence that the
+    // side is small.
+    #[test]
+    fn does_not_collect_without_any_statistics() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Absent,
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
+        ));
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // Zero rows is treated as absent rather than as a very small side, matching
+    // the existing distrust of a zero in statistics.
+    #[test]
+    fn does_not_collect_on_zero_rows() {
+        let plan = sizeless_stats_exec(0, vec![Field::new("x", DataType::Int32, false)]);
+
+        assert!(!supports_collect(&plan));
     }
 
     fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
@@ -826,5 +1130,173 @@ mod tests {
             !outer.upstream_resolved(),
             "a DynamicJoinSelectionExec nested in the right child must block resolution"
         );
+    }
+
+    /// Builds a resolved `ExchangeExec` with one shuffle partition per entry in
+    /// `per_partition_bytes`, each reporting that many bytes via a single
+    /// `PartitionLocation`. Mirrors `test/coalesce_rule.rs`'s
+    /// `partitions_with_byte_sizes` helper (same synthetic-stats pattern),
+    /// duplicated here since that helper lives in a sibling private test
+    /// module this file can't reach.
+    fn test_exchange_with_partition_bytes(
+        per_partition_bytes: &[usize],
+    ) -> Arc<dyn ExecutionPlan> {
+        let schema = test_schema();
+        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let n = per_partition_bytes.len();
+        let exchange =
+            ExchangeExec::new(input, Some(Partitioning::UnknownPartitioning(n)), 0);
+
+        let partitions = per_partition_bytes
+            .iter()
+            .enumerate()
+            .map(|(idx, &bytes)| {
+                vec![PartitionLocation {
+                    map_partition_id: 0,
+                    partition_id: PartitionId {
+                        job_id: "".into(),
+                        stage_id: 0,
+                        partition_id: idx,
+                    },
+                    executor_meta: ExecutorMetadata {
+                        id: "".to_string(),
+                        host: "".to_string(),
+                        port: 0,
+                        grpc_port: 0,
+                        specification: ExecutorSpecification::default().with_vcores(0),
+                        os_info: ExecutorOperatingSystemSpecification::default(),
+                    },
+                    partition_stats: PartitionStats::new(
+                        Some(1),
+                        None,
+                        Some(bytes as u64),
+                    ),
+                    file_id: None,
+                    is_sort_shuffle: false,
+                }]
+            })
+            .collect();
+        exchange.resolve_shuffle_partitions(partitions);
+
+        Arc::new(exchange) as Arc<dyn ExecutionPlan>
+    }
+
+    // Q18 OOMed on one fat partition while the average partition was small, so
+    // the fit check must key off the MAX per-partition build size, not the
+    // average — an average would have hidden exactly the skew that caused the
+    // OOM.
+    #[test]
+    fn max_per_partition_build_bytes_takes_the_max() {
+        let build = test_exchange_with_partition_bytes(&[100 * MB, 400 * MB]);
+        assert_eq!(max_per_partition_build_bytes(&build), Some(400 * MB));
+    }
+
+    /// Builds a `ConfigOptions` with `prefer_hash_join = true` and a Ballista
+    /// `hash_join_max_build_partition_bytes` set to `max_build_bytes`, via the
+    /// string-keyed `BallistaConfig::set` path (the same path
+    /// `run_to_actual_join` above uses for other Ballista settings) since
+    /// there is no fluent setter for this key yet.
+    fn config_with_max_build(max_build_bytes: usize) -> ConfigOptions {
+        let mut config = ConfigOptions::new();
+        config.optimizer.prefer_hash_join = true;
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "optimizer.hash_join_max_build_partition_bytes",
+            &max_build_bytes.to_string(),
+        )
+        .unwrap();
+        config.extensions.insert(bc);
+        config
+    }
+
+    /// Builds a `DynamicJoinSelectionExec` already in `Repartitioned` state
+    /// whose build side (`left`) is a resolved `ExchangeExec` reporting the
+    /// given per-partition byte sizes, so `to_actual_join`'s
+    /// `(Repartitioned, Partitioned)` arm is reached and
+    /// `max_per_partition_build_bytes` sees known sizes.
+    fn repartitioned_join_with_build_partition_bytes(
+        per_partition_bytes: &[usize],
+    ) -> DynamicJoinSelectionExec {
+        // test_exchange_with_partition_bytes wraps test_schema(), whose sole
+        // field is named "x" (not "k" like stats_exec's schema), so the join
+        // key below must match that name.
+        let left = test_exchange_with_partition_bytes(per_partition_bytes);
+        let right = stats_exec(1_000_000); // large enough to never be broadcast
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("x", 0)), Arc::new(Column::new("k", 0)))];
+        DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type: JoinType::Inner,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Repartitioned,
+            null_aware: false,
+            plan_id: 0,
+        }
+    }
+
+    /// Renders the `ExecutionPlan` a `JoinSelectionAction` resolves to, so
+    /// tests can assert on `displayable(..).indent(false).to_string()` rather
+    /// than matching on the action's structure.
+    fn resolved_plan(action: &JoinSelectionAction) -> Arc<dyn ExecutionPlan> {
+        match action {
+            JoinSelectionAction::Repartition(exec) => {
+                Arc::clone(exec) as Arc<dyn ExecutionPlan>
+            }
+            JoinSelectionAction::CollectLeft(exec) => {
+                Arc::clone(exec) as Arc<dyn ExecutionPlan>
+            }
+            JoinSelectionAction::LateCollectLeft(exec) => {
+                Arc::clone(exec) as Arc<dyn ExecutionPlan>
+            }
+            JoinSelectionAction::Hash(exec) => Arc::clone(exec) as Arc<dyn ExecutionPlan>,
+            JoinSelectionAction::Sort(exec) => Arc::clone(exec) as Arc<dyn ExecutionPlan>,
+        }
+    }
+
+    // A build partition over the configured max falls back to SortMergeJoin,
+    // even though `prefer_hash_join` is true — the fit check overrides the
+    // preference rather than the other way around.
+    #[test]
+    fn build_over_threshold_falls_back_to_sort_merge_join() {
+        let exec = repartitioned_join_with_build_partition_bytes(&[500 * MB]); // > 200 MB
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("SortMergeJoinExec"), "{rendered}");
+    }
+
+    // A build partition within the configured max keeps the Partitioned hash
+    // join `prefer_hash_join` selected.
+    #[test]
+    fn build_within_threshold_uses_partitioned_hash_join() {
+        let exec = repartitioned_join_with_build_partition_bytes(&[50 * MB]); // < 200 MB
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("HashJoinExec"), "{rendered}");
+        assert!(rendered.contains("mode=Partitioned"), "{rendered}");
+    }
+
+    // `hash_join_max_build_partition_bytes = 0` disables the check entirely,
+    // matching the design contract: 0 always fits regardless of build size.
+    #[test]
+    fn zero_threshold_disables_the_check() {
+        let exec = repartitioned_join_with_build_partition_bytes(&[500 * MB]);
+        let action = exec.to_actual_join(&config_with_max_build(0)).unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("HashJoinExec"), "{rendered}");
     }
 }

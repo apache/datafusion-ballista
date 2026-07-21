@@ -439,8 +439,9 @@ impl SortShuffleWriterExec {
             let mut hash_buffer: Vec<u64> = Vec::new();
             let mut spill_events: u64 = 0;
             // Absolute buffered-bytes counter, independent of the runtime
-            // `MemoryPool`. Drives spill decisions so the writer bounds its
-            // RSS even when the pool is unbounded.
+            // `MemoryPool`. When `memory_limit` is non-zero it caps this counter
+            // as a second spill trigger; a `memory_limit` of 0 disables the cap
+            // so spilling is driven solely by memory-pool pressure.
             let mut buffered_bytes: usize = 0;
             // A limit of 0 disables the per-task budget, leaving the runtime
             // `MemoryPool` as the sole spill trigger.
