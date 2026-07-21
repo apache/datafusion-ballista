@@ -215,7 +215,17 @@ impl DynamicJoinSelectionExec {
         &self,
         config: &ConfigOptions,
     ) -> Result<JoinSelectionAction> {
-        let prefer_hash_join = config.optimizer.prefer_hash_join;
+        // `datafusion.optimizer.prefer_hash_join` is deliberately NOT consulted
+        // here. It is a *planner* flag: DataFusion applies it when it builds the
+        // physical plan, and `DelayJoinSelectionRule` then maps both
+        // `HashJoinExec` and `SortMergeJoinExec` onto this node, so the flag has
+        // already had its effect by the time AQE runs. Re-reading it would apply
+        // the same preference twice, and — since the two `CollectLeft` arms below
+        // produce a hash join unconditionally — it would only ever apply to one
+        // of the three paths that can emit one. AQE picks its strategy from
+        // runtime evidence instead: broadcast thresholds and the build-side fit
+        // check.
+        //
         // Both broadcast thresholds come from Ballista's own config so that a
         // single set of keys governs broadcast selection under both the static
         // planner (`maybe_promote_to_broadcast`) and AQE. A byte threshold of 0
@@ -289,8 +299,7 @@ impl DynamicJoinSelectionExec {
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
             (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if prefer_hash_join
-                    && hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
+                if hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
             {
                 self.to_hash_join(PartitionMode::Partitioned)
                     .map(JoinSelectionAction::Hash)
@@ -1265,9 +1274,13 @@ mod tests {
     /// Broadcast promotion is switched off (`broadcast_join_threshold_bytes = 0`)
     /// so the build-fit tests below exercise the `Partitioned` path without a
     /// `CollectLeft` decision shadowing it.
+    ///
+    /// `prefer_hash_join` is set to `false` deliberately — the hostile value. AQE
+    /// does not consult it, so every test below that asserts a `HashJoinExec`
+    /// would fail if that ever regressed.
     fn config_with_max_build(max_build_bytes: usize) -> ConfigOptions {
         let mut config = ConfigOptions::new();
-        config.optimizer.prefer_hash_join = true;
+        config.optimizer.prefer_hash_join = false;
         let mut bc = BallistaConfig::default();
         bc.set(
             "optimizer.hash_join_max_build_partition_bytes",
@@ -1408,6 +1421,32 @@ mod tests {
             .indent(false)
             .to_string();
         assert!(rendered.contains("SortMergeJoinExec"), "{rendered}");
+    }
+
+    // `datafusion.optimizer.prefer_hash_join` is a planner flag that DataFusion
+    // has already applied by the time `DelayJoinSelectionRule` folds both join
+    // operators into this node, so AQE must not consult it again. A build side
+    // that fits stays a Partitioned hash join under either setting; the strategy
+    // follows runtime evidence, not the flag.
+    #[test]
+    fn prefer_hash_join_does_not_affect_the_aqe_decision() {
+        for prefer_hash_join in [true, false] {
+            let exec =
+                repartitioned_join_between_exchanges(&[50 * MB], PROBE_PARTITION_BYTES);
+            let mut config = config_with_max_build(200 * MB);
+            config.optimizer.prefer_hash_join = prefer_hash_join;
+
+            let action = exec.to_actual_join(&config).unwrap();
+            let rendered = displayable(resolved_plan(&action).as_ref())
+                .indent(false)
+                .to_string();
+
+            assert!(
+                rendered.contains("HashJoinExec")
+                    && rendered.contains("mode=Partitioned"),
+                "prefer_hash_join={prefer_hash_join} must not change the decision: {rendered}"
+            );
+        }
     }
 
     // `hash_join_max_build_partition_bytes = 0` disables the check entirely,
