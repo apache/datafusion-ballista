@@ -265,14 +265,16 @@ planner.
 
 TPC-H **SF1000**, reference cluster above, **AQE on**, 1 iteration,
 `target_partitions=64`, `prefer_hash_join=false`,
-`enable_dynamic_filter_pushdown=false`. All three engines plan `SortMergeJoin`. Times
-in seconds; lower is better.
+`enable_dynamic_filter_pushdown=false`, and the sort-shuffle spill cap overridden to
+uncapped (`ballista.shuffle.sort_based.memory_limit_per_task_bytes=0`; the shipped
+default is 256 MiB). All three engines plan `SortMergeJoin`. Times in seconds; lower
+is better.
 
 Versions under test:
 
 | Engine   | Version                                         |
 | -------- | ----------------------------------------------- |
-| Ballista | `#2084` @ `becb3767`                            |
+| Ballista | `#2084` @ `fac1fa22`                            |
 | Spark    | 3.5.3 (vanilla, Comet disabled)                 |
 | Comet    | `main` @ `b0165552` (1.0.0-SNAPSHOT, Spark 3.5) |
 
