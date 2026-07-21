@@ -43,7 +43,7 @@ jobs:
           - "3.12"
           - "3.13"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-python@v7
         with:
@@ -74,7 +74,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Install Python
         uses: actions/setup-python@v7
         with:
@@ -102,7 +102,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
@@ -124,7 +124,7 @@ jobs:
         python-version: [ "3.10" ]
         os: [ macos-latest ]
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-python@v7
         with:
@@ -180,7 +180,7 @@ jobs:
     name: Manylinux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup Rust toolchain
         run: |
@@ -225,7 +225,7 @@ jobs:
     name: Manylinux arm64
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup Rust toolchain
         run: |
@@ -270,7 +270,7 @@ jobs:
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup Rust toolchain
         run: |
