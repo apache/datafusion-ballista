@@ -149,18 +149,17 @@ impl ExecutionEngine for DefaultExecutionEngine {
 
         // the query plan created by the scheduler always starts with a shuffle writer
         // (either ShuffleWriterExec or SortShuffleWriterExec)
-        if let Some(shuffle_writer) = plan.downcast_ref::<ShuffleWriterExec>() {
+        if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
             let exec = ShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
                 plan.children()[0].clone(),
                 work_dir.to_string(),
-                shuffle_writer.shuffle_output_partitioning().cloned(),
             )?
             .with_task_id(task_id)
             .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
-                ShuffleWriterVariant::Hash(exec),
+                ShuffleWriterVariant::Passthrough(exec),
             )))
         } else if let Some(sort_shuffle_writer) =
             plan.downcast_ref::<SortShuffleWriterExec>()
@@ -190,8 +189,9 @@ impl ExecutionEngine for DefaultExecutionEngine {
 /// Enum representing the different shuffle writer implementations.
 #[derive(Debug, Clone)]
 pub enum ShuffleWriterVariant {
-    /// Hash-based shuffle writer (original implementation).
-    Hash(ShuffleWriterExec),
+    /// Passthrough shuffle writer: preserves its input partitioning,
+    /// one file per output partition.
+    Passthrough(ShuffleWriterExec),
     /// Sort-based shuffle writer.
     Sort(SortShuffleWriterExec),
 }
@@ -216,7 +216,7 @@ impl DefaultQueryStageExec {
 impl Display for DefaultQueryStageExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.shuffle_writer {
-            ShuffleWriterVariant::Hash(writer) => {
+            ShuffleWriterVariant::Passthrough(writer) => {
                 let stage_metrics: Vec<String> = writer
                     .metrics()
                     .unwrap_or_default()
@@ -225,7 +225,7 @@ impl Display for DefaultQueryStageExec {
                     .collect();
                 write!(
                     f,
-                    "DefaultQueryStageExec(Hash): ({})\n{}",
+                    "DefaultQueryStageExec(Passthrough): ({})\n{}",
                     stage_metrics.join(", "),
                     writer
                 )
@@ -257,7 +257,9 @@ impl QueryStageExecutor for DefaultQueryStageExec {
     ) -> Result<Vec<ShuffleWritePartition>> {
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
             match &self.shuffle_writer {
-                ShuffleWriterVariant::Hash(writer) => (Arc::new(writer.clone()), false),
+                ShuffleWriterVariant::Passthrough(writer) => {
+                    (Arc::new(writer.clone()), false)
+                }
                 ShuffleWriterVariant::Sort(writer) => (Arc::new(writer.clone()), true),
             };
         info!(
@@ -282,7 +284,9 @@ impl QueryStageExecutor for DefaultQueryStageExec {
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
         match &self.shuffle_writer {
-            ShuffleWriterVariant::Hash(writer) => utils::collect_plan_metrics(writer),
+            ShuffleWriterVariant::Passthrough(writer) => {
+                utils::collect_plan_metrics(writer)
+            }
             ShuffleWriterVariant::Sort(writer) => utils::collect_plan_metrics(writer),
         }
     }

@@ -1741,7 +1741,6 @@ mod tests {
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
-            None,
         )
         .unwrap();
 

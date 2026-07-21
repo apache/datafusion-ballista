@@ -142,12 +142,11 @@ fn walk_child_partition_mapping(
 /// the wire. The executor-side writer then uses these ids directly rather
 /// than re-walking the plan.
 ///
-/// Three cases:
+/// Two cases:
 ///
 /// - `SortShuffleWriter(Hash(K))` — HashSpace by construction; the K-space
 ///   `[0..K-1]` is intrinsic. Input ids are irrelevant.
-/// - `ShuffleWriter(Hash(K)|RoundRobin(K))` — same K-space semantics.
-/// - `ShuffleWriter(None)` — passthrough; the child's plan shape decides:
+/// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
 ///   - Otherwise (leaf-preserved partitioning) → the input ids as-is.
@@ -165,36 +164,19 @@ pub fn compute_global_output_partition_ids(
         };
         return (0..*k).collect();
     }
-    if let Some(w) = stage_plan.downcast_ref::<ShuffleWriterExec>() {
-        match w.shuffle_output_partitioning() {
-            Some(Partitioning::Hash(_, k)) | Some(Partitioning::RoundRobinBatch(k)) => {
-                return (0..*k).collect();
+    if stage_plan.downcast_ref::<ShuffleWriterExec>().is_some() {
+        let children = stage_plan.children();
+        let [child] = children.as_slice() else {
+            unreachable!("ShuffleWriterExec always has exactly one child");
+        };
+        return match walk_child_partition_mapping(child, global_input_partition_ids) {
+            GlobalPartitionMap::Collapsed => vec![0],
+            GlobalPartitionMap::HashSpace => {
+                let k = child.properties().output_partitioning().partition_count();
+                (0..k).collect()
             }
-            None => {
-                let children = stage_plan.children();
-                let [child] = children.as_slice() else {
-                    unreachable!("ShuffleWriterExec always has exactly one child");
-                };
-                return match walk_child_partition_mapping(
-                    child,
-                    global_input_partition_ids,
-                ) {
-                    GlobalPartitionMap::Collapsed => vec![0],
-                    GlobalPartitionMap::HashSpace => {
-                        let k =
-                            child.properties().output_partitioning().partition_count();
-                        (0..k).collect()
-                    }
-                    GlobalPartitionMap::PassThrough(ids) => ids,
-                };
-            }
-            Some(Partitioning::UnknownPartitioning(_)) => {
-                panic!(
-                    "ShuffleWriterExec::UnknownPartitioning has no meaningful output-id \
-                     space; upstream planner should never emit this shape"
-                );
-            }
-        }
+            GlobalPartitionMap::PassThrough(ids) => ids,
+        };
     }
     global_input_partition_ids.to_vec()
 }
@@ -234,13 +216,13 @@ impl Debug for WriterState {
 /// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 /// will use the ShuffleReaderExec to read these results.
 ///
-/// # Threading (passthrough / `None` branch)
+/// # Threading
 ///
 /// One Ballista task holds one `ShuffleWriterExec`. The first `execute(k)`
 /// call from the executor initializes K oneshot handoffs and spawns
-/// `run_coordinator`, which invokes `execute_shuffle_write`. In the
-/// passthrough branch (`shuffle_output_partitioning == None`, i.e. the
-/// child already has the target K partitions), `execute_shuffle_write`
+/// `run_coordinator`, which invokes `execute_shuffle_write`. The writer only
+/// ever passes its child's partitioning through (the child already has the
+/// target K partitions), so `execute_shuffle_write`
 /// spawns K concurrent tokio tasks — one per output partition — each
 /// pulling `child.execute(k)` and streaming directly to
 /// `data-{task_id}.arrow` for partition k. Each drain emits one summary;
@@ -257,8 +239,8 @@ impl Debug for WriterState {
 /// deadlock the scatter side.
 ///
 /// Data flows bottom → top (child produces, executor consumes), matching
-/// DataFusion's convention. Under passthrough M = K (child preserves
-/// partition count). Example: K=3.
+/// DataFusion's convention. M = K (the child preserves partition count).
+/// Example: K=3.
 ///
 /// ```text
 ///                     K=3 output partitions (pulled by executor)
@@ -309,9 +291,9 @@ impl Debug for WriterState {
 /// what differs, and downstream `ShuffleReaderExec` uses the summaries to
 /// open whichever set of files is right.
 ///
-/// `shuffle_output_partitioning` is always `None` in practice: hash-repartition
-/// stages use [`SortShuffleWriterExec`] instead, and `try_new` rejects
-/// `Some(Partitioning::Hash(..))` outright.
+/// This writer never repartitions: hash-repartition stages use
+/// [`SortShuffleWriterExec`] instead, so the only scheme left here is
+/// passthrough and the writer carries no output-partitioning of its own.
 ///
 /// The coordinator + oneshot plumbing is a shared idiom with
 /// [`SortShuffleWriterExec`]; passthrough alone doesn't structurally need
@@ -329,9 +311,6 @@ pub struct ShuffleWriterExec {
     plan: Arc<dyn ExecutionPlan>,
     /// Path to write output streams to
     work_dir: String,
-    /// Optional shuffle output partitioning.
-    /// If it's none, it means there's no need to do repartitioning.
-    shuffle_output_partitioning: Option<Partitioning>,
     /// Task id (the task's append-order slot in `RunningStage.task_infos`)
     /// used as `file_id` in shuffle paths so files from different tasks
     /// (including retries) don't collide. Seeded by the executor's
@@ -365,7 +344,6 @@ impl Clone for ShuffleWriterExec {
             stage_id: self.stage_id,
             plan: self.plan.clone(),
             work_dir: self.work_dir.clone(),
-            shuffle_output_partitioning: self.shuffle_output_partitioning.clone(),
             task_id: self.task_id,
             global_output_partition_ids: self.global_output_partition_ids.clone(),
             metrics: self.metrics.clone(),
@@ -382,12 +360,8 @@ impl std::fmt::Display for ShuffleWriterExec {
             .indent(false);
         write!(
             f,
-            "ShuffleWriterExec: job={} stage={} work_dir={} partitioning={:?} plan: \n {}",
-            self.job_id,
-            self.stage_id,
-            self.work_dir,
-            self.shuffle_output_partitioning,
-            printable_plan
+            "ShuffleWriterExec: job={} stage={} work_dir={} plan: \n {}",
+            self.job_id, self.stage_id, self.work_dir, printable_plan
         )
     }
 }
@@ -434,21 +408,10 @@ impl ShuffleWriterExec {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,
-        shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Self> {
-        if matches!(shuffle_output_partitioning, Some(Partitioning::Hash(..))) {
-            return Err(DataFusionError::Plan(
-                "hash-partitioned shuffle is no longer supported; \
-                 hash-repartition stages use SortShuffleWriterExec"
-                    .to_owned(),
-            ));
-        }
-
-        // If [`shuffle_output_partitioning`] is none, then there's no need to do repartitioning.
-        // Therefore, the partition is the same as its input plan's.
-        let partitioning = shuffle_output_partitioning
-            .clone()
-            .unwrap_or_else(|| plan.properties().output_partitioning().clone());
+        // This writer never repartitions, so its output partitioning is
+        // exactly its input plan's.
+        let partitioning = plan.properties().output_partitioning().clone();
         let output_partition_count = partitioning.partition_count();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
@@ -461,15 +424,12 @@ impl ShuffleWriterExec {
         // unit tests that don't set a slice. Once every construction path
         // calls `with_global_output_partition_ids`, drop the default and fold it into
         // `try_new`'s signature.
-        let child_partition_count =
-            plan.properties().output_partitioning().partition_count();
-        let default_partition_slice: Vec<usize> = (0..child_partition_count).collect();
+        let default_partition_slice: Vec<usize> = (0..output_partition_count).collect();
         Ok(Self {
             job_id,
             stage_id,
             plan,
             work_dir,
-            shuffle_output_partitioning,
             task_id: 0,
             global_output_partition_ids: default_partition_slice,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -527,28 +487,20 @@ impl ShuffleWriterExec {
             .partition_count()
     }
 
-    /// Get the true output partitioning
-    pub fn shuffle_output_partitioning(&self) -> Option<&Partitioning> {
-        self.shuffle_output_partitioning.as_ref()
-    }
-
     /// Executes the shuffle write operation for this task.
     ///
     /// Returns `(handoff_idx, summary)` pairs. `handoff_idx` indexes into the
     /// coordinator's per-output-partition oneshot slots (0..K in this
     /// operator's output_partitioning). `summary.partition_id` is the
-    /// **global** output partition id downstream will address:
-    ///
-    /// - Passthrough (`None`, the only supported scheme): computed via
-    ///   `walk_child_partition_mapping` over the child plan — either
-    ///   `global_output_partition_ids[local]`, `local` (hash K-space), or `0`
-    ///   (collapsed / SPM).
+    /// **global** output partition id downstream will address, computed via
+    /// `walk_child_partition_mapping` over the child plan — either
+    /// `global_output_partition_ids[local]`, `local` (hash K-space), or `0`
+    /// (collapsed / SPM).
     pub fn execute_shuffle_write(
         self,
         context: Arc<TaskContext>,
     ) -> impl Future<Output = Result<Vec<(usize, ShuffleWritePartition)>>> {
         let task_id = self.task_id;
-        let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
         let partition_map =
             walk_child_partition_mapping(&plan, &self.global_output_partition_ids);
@@ -560,94 +512,83 @@ impl ShuffleWriterExec {
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
 
-            match output_partitioning {
-                None => {
-                    // Passthrough shuffle: drain each of the child's output
-                    // partitions into its own file. All K must drain
-                    // CONCURRENTLY, not sequentially — coordinating operators
-                    // below (DynamicRangeRepartitionExec) push to all K
-                    // senders from shared scatter tasks; draining one to EOF
-                    // before the next starts fills up the undrained channel
-                    // and deadlocks the scatter side.
-                    let num_partitions =
-                        plan.properties().output_partitioning().partition_count();
-                    let mut handles = Vec::with_capacity(num_partitions);
-                    for local_input_partition in 0..num_partitions {
-                        // Each drain owns its own metric bucket, keyed by the
-                        // operator-local input partition it drains. Passthrough
-                        // is 1:1 so local input == local output here.
-                        let write_metrics =
-                            ShuffleWriteMetrics::new(local_input_partition, &metrics);
-                        let global_partition =
-                            partition_map.resolve(local_input_partition) as usize;
-                        let path = create_shuffle_path(
-                            &self.work_dir,
-                            &self.job_id,
-                            self.stage_id,
-                            global_partition,
-                            Some(task_id as u64),
-                            false,
-                        )?;
+            // Passthrough shuffle: drain each of the child's output
+            // partitions into its own file. All K must drain
+            // CONCURRENTLY, not sequentially — coordinating operators
+            // below (DynamicRangeRepartitionExec) push to all K
+            // senders from shared scatter tasks; draining one to EOF
+            // before the next starts fills up the undrained channel
+            // and deadlocks the scatter side.
+            let num_partitions =
+                plan.properties().output_partitioning().partition_count();
+            let mut handles = Vec::with_capacity(num_partitions);
+            for local_input_partition in 0..num_partitions {
+                // Each drain owns its own metric bucket, keyed by the
+                // operator-local input partition it drains. Passthrough
+                // is 1:1 so local input == local output here.
+                let write_metrics =
+                    ShuffleWriteMetrics::new(local_input_partition, &metrics);
+                let global_partition =
+                    partition_map.resolve(local_input_partition) as usize;
+                let path = create_shuffle_path(
+                    &self.work_dir,
+                    &self.job_id,
+                    self.stage_id,
+                    global_partition,
+                    Some(task_id as u64),
+                    false,
+                )?;
 
-                        if let Some(parent) = path.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-
-                        debug!("Writing results to {path:?}");
-
-                        let mut stream =
-                            plan.execute(local_input_partition, context.clone())?;
-                        handles.push(tokio::spawn(async move {
-                            let stats = utils::write_stream_to_disk(
-                                &mut stream,
-                                path.as_path(),
-                                &write_metrics.write_time,
-                                channel_capacity,
-                                compression_type,
-                            )
-                            .await
-                            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-                            let rows = stats.num_rows.unwrap_or(0) as usize;
-                            write_metrics.input_rows.add(rows);
-                            write_metrics.output_rows.add(rows);
-                            Ok::<_, DataFusionError>((local_input_partition, stats))
-                        }));
-                    }
-
-                    let mut results = Vec::with_capacity(num_partitions);
-                    for handle in handles {
-                        let (local_input_partition, stats) =
-                            handle.await.map_err(|e| {
-                                DataFusionError::Execution(format!(
-                                    "shuffle-write drain task panicked: {e}"
-                                ))
-                            })??;
-                        results.push((
-                            local_input_partition,
-                            ShuffleWritePartition {
-                                partition_id: partition_map
-                                    .resolve(local_input_partition),
-                                num_batches: stats.num_batches.unwrap_or(0),
-                                num_rows: stats.num_rows.unwrap_or(0),
-                                num_bytes: stats.num_bytes.unwrap_or(0),
-                                file_id: Some(task_id as u64),
-                                is_sort_shuffle: false,
-                            },
-                        ));
-                    }
-                    debug!(
-                        "task_id {} drained {} partitions in {}s",
-                        task_id,
-                        num_partitions,
-                        now.elapsed().as_secs()
-                    );
-                    Ok(results)
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
                 }
 
-                _ => Err(DataFusionError::Execution(
-                    "Invalid shuffle partitioning scheme".to_owned(),
-                )),
+                debug!("Writing results to {path:?}");
+
+                let mut stream = plan.execute(local_input_partition, context.clone())?;
+                handles.push(tokio::spawn(async move {
+                    let stats = utils::write_stream_to_disk(
+                        &mut stream,
+                        path.as_path(),
+                        &write_metrics.write_time,
+                        channel_capacity,
+                        compression_type,
+                    )
+                    .await
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                    let rows = stats.num_rows.unwrap_or(0) as usize;
+                    write_metrics.input_rows.add(rows);
+                    write_metrics.output_rows.add(rows);
+                    Ok::<_, DataFusionError>((local_input_partition, stats))
+                }));
             }
+
+            let mut results = Vec::with_capacity(num_partitions);
+            for handle in handles {
+                let (local_input_partition, stats) = handle.await.map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "shuffle-write drain task panicked: {e}"
+                    ))
+                })??;
+                results.push((
+                    local_input_partition,
+                    ShuffleWritePartition {
+                        partition_id: partition_map.resolve(local_input_partition),
+                        num_batches: stats.num_batches.unwrap_or(0),
+                        num_rows: stats.num_rows.unwrap_or(0),
+                        num_bytes: stats.num_bytes.unwrap_or(0),
+                        file_id: Some(task_id as u64),
+                        is_sort_shuffle: false,
+                    },
+                ));
+            }
+            debug!(
+                "task_id {} drained {} partitions in {}s",
+                task_id,
+                num_partitions,
+                now.elapsed().as_secs()
+            );
+            Ok(results)
         }
     }
 }
@@ -659,25 +600,13 @@ impl DisplayAs for ShuffleWriterExec {
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         match t {
+            // "None" is retained for plan-shape stability: this writer never
+            // repartitions, so the value can only ever be None.
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
-                    f,
-                    "ShuffleWriterExec: partitioning: {}",
-                    self.shuffle_output_partitioning
-                        .as_ref()
-                        .map(|p| p.to_string())
-                        .unwrap_or("None".to_string())
-                )
+                write!(f, "ShuffleWriterExec: partitioning: None")
             }
             DisplayFormatType::TreeRender => {
-                write!(
-                    f,
-                    "partitioning={}",
-                    self.shuffle_output_partitioning
-                        .as_ref()
-                        .map(|p| p.to_string())
-                        .unwrap_or("None".to_string())
-                )
+                write!(f, "partitioning=None")
             }
         }
     }
@@ -717,7 +646,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.stage_id,
                     input,
                     self.work_dir.clone(),
-                    self.shuffle_output_partitioning.clone(),
                 )?
                 .with_task_id(self.task_id)
                 .with_global_output_partition_ids(
@@ -830,8 +758,9 @@ impl ShuffleWriter for ShuffleWriterExec {
         self.stage_id
     }
 
+    /// Always `None`: this writer preserves its input partitioning.
     fn shuffle_output_partitioning(&self) -> Option<&Partitioning> {
-        self.shuffle_output_partitioning.as_ref()
+        None
     }
 
     fn input_partition_count(&self) -> usize {
@@ -1040,7 +969,6 @@ mod tests {
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
-            None,
         )?);
         let batches = drive_all_partitions(query_stage, task_ctx).await?;
         // K=2 output partitions -> one metadata batch per execute(N) call
@@ -1095,7 +1023,6 @@ mod tests {
             1,
             input_plan,
             work_dir.path().to_str().unwrap().to_owned(),
-            None,
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let _ = utils::collect_stream(&mut stream)
@@ -1139,7 +1066,6 @@ mod tests {
             1,
             input_plan,
             work_dir,
-            None,
         )?);
         let result = drive_all_partitions(query_stage, task_ctx).await;
         assert!(
@@ -1171,33 +1097,11 @@ mod tests {
             1,
             input_plan,
             work_dir,
-            None,
         )?);
         let result = drive_all_partitions(query_stage, task_ctx).await;
         assert!(
             result.is_err(),
             "expected create_dir_all failure in writer to propagate"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn try_new_rejects_hash_partitioning() -> Result<()> {
-        use datafusion::physical_plan::expressions::Column;
-        let input_plan = create_input_plan()?;
-        let hash = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let err = ShuffleWriterExec::try_new(
-            JobId::new("jobHash"),
-            1,
-            input_plan,
-            "/tmp/does-not-matter".to_owned(),
-            Some(hash),
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("hash-partitioned shuffle is no longer supported"),
-            "unexpected error: {err}"
         );
         Ok(())
     }

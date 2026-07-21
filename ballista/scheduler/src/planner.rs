@@ -709,31 +709,37 @@ pub(crate) fn create_shuffle_writer_with_config(
         .unwrap_or_default();
 
     // Sort shuffle requires hash partitioning.
-    if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
-        let sort_config =
-            SortShuffleConfig::new(true, ballista_config.shuffle_sort_based_batch_size())
-                .with_memory_limit_per_task_bytes(
-                    ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
-                );
+    match partitioning {
+        Some(Partitioning::Hash(exprs, partition_count)) => {
+            let sort_config = SortShuffleConfig::new(
+                true,
+                ballista_config.shuffle_sort_based_batch_size(),
+            )
+            .with_memory_limit_per_task_bytes(
+                ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
+            );
 
-        return Ok(Arc::new(SortShuffleWriterExec::try_new(
+            Ok(Arc::new(SortShuffleWriterExec::try_new(
+                job_id.to_owned(),
+                stage_id,
+                plan,
+                "".to_owned(),
+                Partitioning::Hash(exprs, partition_count),
+                sort_config,
+            )?))
+        }
+        // Stages that don't repartition write their input partitioning
+        // through: one file per output partition.
+        None => Ok(Arc::new(ShuffleWriterExec::try_new(
             job_id.to_owned(),
             stage_id,
             plan,
             "".to_owned(),
-            Partitioning::Hash(exprs, partition_count),
-            sort_config,
-        )?));
+        )?)),
+        Some(other) => Err(BallistaError::General(format!(
+            "unsupported shuffle output partitioning: {other}"
+        ))),
     }
-
-    // Single-partition / non-hash stages use the single-file writer.
-    Ok(Arc::new(ShuffleWriterExec::try_new(
-        job_id.to_owned(),
-        stage_id,
-        plan,
-        "".to_owned(),
-        partitioning,
-    )?))
 }
 
 #[cfg(test)]
