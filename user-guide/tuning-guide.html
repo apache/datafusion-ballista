@@ -395,16 +395,29 @@
 <p>The goal of any distributed compute engine is to parallelize work as much as possible, allowing the work to scale
 by adding more compute resource.</p>
 <p>The basic unit of concurrency and parallelism in Ballista is the concept of a partition. The leaf nodes of a query
-are typically table scans that read from files on disk and Ballista currently treats each file within a table as a
-single partition (in the future, Ballista will support splitting files into partitions but this is not implemented yet).</p>
-<p>For example, if there is a table “customer” that consists of 200 Parquet files, that table scan will naturally have
-200 partitions and the table scan and certain subsequent operations will also have 200 partitions. Conversely, if the
-table only has a single Parquet file then there will be a single partition and the work will not be able to scale even
-if the cluster has resource available. Ballista supports repartitioning within a query to improve parallelism.
-The configuration setting <code class="docutils literal notranslate"><span class="pre">datafusion.execution.target_partitions</span></code>can be set to the desired number of partitions. This is
-currently a global setting for the entire context. The default value for this setting is 16.</p>
-<p>Note that Ballista will never decrease the number of partitions based on this setting and will only repartition if
-the source operation has fewer partitions than this setting.</p>
+are typically table scans that read files from object storage, and the number of partitions such a scan produces is
+driven by <code class="docutils literal notranslate"><span class="pre">datafusion.execution.target_partitions</span></code>. This is currently a global setting for the entire context.</p>
+<p>DataFusion’s own default for this setting is the number of CPU cores available to the process. Ballista overrides it
+to 16 in <code class="docutils literal notranslate"><span class="pre">SessionConfig::new_with_ballista()</span></code>, so a context created with <code class="docutils literal notranslate"><span class="pre">SessionContext::remote()</span></code> or
+<code class="docutils literal notranslate"><span class="pre">SessionContext::standalone()</span></code> starts at 16. If you instead build your own <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code> and pass it to
+<code class="docutils literal notranslate"><span class="pre">remote_with_state()</span></code> or <code class="docutils literal notranslate"><span class="pre">standalone_with_state()</span></code>, Ballista leaves the setting alone and you get whatever that
+config carries, which is the client machine’s core count for a plain <code class="docutils literal notranslate"><span class="pre">SessionConfig::new()</span></code>. Set it explicitly if
+you care about the value.</p>
+<p>A scan is partitioned in two steps:</p>
+<ol class="arabic simple">
+<li><p>When the table is listed, its files are sorted by path and distributed into <strong>at most</strong> <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code>
+file groups. A “customer” table of 200 Parquet files read with <code class="docutils literal notranslate"><span class="pre">target_partitions</span> <span class="pre">=</span> <span class="pre">16</span></code> therefore produces
+16 partitions of roughly 13 files each, not 200 partitions.</p></li>
+<li><p>The physical optimizer then splits individual files by byte range, so a table with fewer files than
+<code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> can still be read in parallel. A table consisting of a single large Parquet file is split
+into <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> byte ranges rather than being read by one task. This step is controlled by
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.repartition_file_scans</span></code> (default <code class="docutils literal notranslate"><span class="pre">true</span></code>) and only applies when the scan reads at least
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.repartition_file_min_size</span></code> bytes (default 10 MB). Small tables below that threshold are
+left as a single partition, since splitting them costs more than it saves.</p></li>
+</ol>
+<p>Ballista disables DataFusion’s round-robin repartitioning, so this file-group splitting is the only source of
+parallelism for a scan stage. Raising <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> is the way to increase it, and lowering it is the way to
+reduce the number of partitions a large table is read with.</p>
 <p>Example: Setting the desired number of shuffle partitions when creating a context.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">extension</span><span class="p">::{</span><span class="n">SessionConfigExt</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContextExt</span><span class="p">};</span>
 
@@ -419,6 +432,40 @@ the source operation has fewer partitions than this setting.</p>
 <span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="p">:</span><span class="w"> </span><span class="nc">SessionContext</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="o">&amp;</span><span class="n">url</span><span class="p">,</span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
+<section id="partitions-and-tasks">
+<h3>Partitions and Tasks<a class="headerlink" href="#partitions-and-tasks" title="Link to this heading">#</a></h3>
+<p>A stage’s partition count is not the same as its task count. The scheduler keeps a cursor over the stage’s
+partitions and, each time an executor is assigned work, hands out a slice of those partitions to run as a single
+task. The size of that slice is bounded by both the executor’s free vcores and
+<code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code>.</p>
+<p>That setting still defaults to <code class="docutils literal notranslate"><span class="pre">1</span></code>, so out of the box a 16-partition scan stage runs as 16 single-partition tasks.
+Raising it lets the scheduler pack several partitions into one task, which reduces task count and scheduling
+overhead and allows operators such as sort and hash join to work across partitions within a task. Setting it to <code class="docutils literal notranslate"><span class="pre">0</span></code>
+removes the cap entirely, so each task is filled up to the assigned executor’s free vcore count: a 16-partition
+stage then runs as one task on an idle 16-vcore executor, or as four 4-partition tasks across four 4-vcore
+executors.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>type</p></th>
+<th class="head"><p>default</p></th>
+<th class="head"><p>description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
+<td><p>UInt64</p></td>
+<td><p>1</p></td>
+<td><p>Upper bound on the number of input partitions packed into a single task. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per partition. <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded, filling each task up to the executor’s free vcores.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Stages whose plan collapses all input into a single partition (for example under a <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> or
+<code class="docutils literal notranslate"><span class="pre">SortPreservingMergeExec</span></code>) ignore this cap and always pack their full pending queue into one task, since splitting
+them would produce partial results that downstream stages cannot merge.</p>
+<p>Each task’s plan is rewritten before dispatch so that its scan sees only the file groups belonging to its own slice.</p>
+</section>
 </section>
 <section id="configuring-executor-concurrency-levels">
 <h2>Configuring Executor Concurrency Levels<a class="headerlink" href="#configuring-executor-concurrency-levels" title="Link to this heading">#</a></h2>
@@ -699,7 +746,10 @@ processes. The default is <code class="docutils literal notranslate"><span class
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#partitions-and-parallelism">Partitions and Parallelism</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#partitions-and-parallelism">Partitions and Parallelism</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#partitions-and-tasks">Partitions and Tasks</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-concurrency-levels">Configuring Executor Concurrency Levels</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-pool">Configuring Executor Memory Pool</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#join-strategy">Join Strategy</a></li>
