@@ -26,14 +26,20 @@ by adding more compute resource.
 
 The basic unit of concurrency and parallelism in Ballista is the concept of a partition. The leaf nodes of a query
 are typically table scans that read files from object storage, and the number of partitions such a scan produces is
-driven by `datafusion.execution.target_partitions`. This is currently a global setting for the entire context. The
-default value for this setting is 16.
+driven by `datafusion.execution.target_partitions`. This is currently a global setting for the entire context.
+
+DataFusion's own default for this setting is the number of CPU cores available to the process. Ballista overrides it
+to 16 in `SessionConfig::new_with_ballista()`, so a context created with `SessionContext::remote()` or
+`SessionContext::standalone()` starts at 16. If you instead build your own `SessionConfig` and pass it to
+`remote_with_state()` or `standalone_with_state()`, Ballista leaves the setting alone and you get whatever that
+config carries, which is the client machine's core count for a plain `SessionConfig::new()`. Set it explicitly if
+you care about the value.
 
 A scan is partitioned in two steps:
 
 1. When the table is listed, its files are sorted by path and distributed into **at most** `target_partitions`
-   file groups. A "customer" table of 200 Parquet files read with the default `target_partitions = 16` therefore
-   produces 16 partitions of roughly 13 files each, not 200 partitions.
+   file groups. A "customer" table of 200 Parquet files read with `target_partitions = 16` therefore produces
+   16 partitions of roughly 13 files each, not 200 partitions.
 2. The physical optimizer then splits individual files by byte range, so a table with fewer files than
    `target_partitions` can still be read in parallel. A table consisting of a single large Parquet file is split
    into `target_partitions` byte ranges rather than being read by one task. This step is controlled by
