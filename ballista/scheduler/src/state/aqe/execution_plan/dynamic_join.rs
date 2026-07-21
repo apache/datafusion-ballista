@@ -31,7 +31,7 @@ use datafusion::{
         },
     },
 };
-use log::info;
+use log::debug;
 use std::sync::Arc;
 
 use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;

@@ -62,7 +62,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, Statistics, displayable,
 };
 use futures::{StreamExt, TryStreamExt};
-use log::{debug, info, warn};
+use log::{debug, warn};
 
 /// Result of finalizing shuffle output: (data_path, index_path, partition_write_stats)
 /// where partition_write_stats is (partition_id, num_batches, num_rows, num_bytes)
@@ -568,7 +568,7 @@ impl SortShuffleWriterExec {
                     write_time,
                 );
             } else {
-                info!(
+                debug!(
                     "Sort shuffle write for partition {} completed. \
                      Output: {:?}, Index: {:?}, Rows: {}, \
                      repart_time={:?} spill_time={:?} write_time={:?}, \
