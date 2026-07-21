@@ -235,7 +235,7 @@ impl From<BallistaError> for FailedTask {
                 }
             }
             BallistaError::DataFusionError(e)
-                if matches!(*e, DataFusionError::IoError(_)) =>
+                if matches!(e.find_root(), DataFusionError::IoError(_)) =>
             {
                 FailedTask {
                     error: format!("Task failed due to DataFusion IO error: {e:?}"),
@@ -256,3 +256,76 @@ impl From<BallistaError> for FailedTask {
 }
 
 impl Error for BallistaError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn io_failed_task(e: BallistaError) -> FailedTask {
+        FailedTask::from(e)
+    }
+
+    #[test]
+    fn bare_datafusion_io_error_is_retryable() {
+        let e = BallistaError::DataFusionError(Box::new(DataFusionError::IoError(
+            io::Error::new(io::ErrorKind::ConnectionReset, "connection reset"),
+        )));
+        let task = io_failed_task(e);
+        assert!(task.retryable);
+        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
+    }
+
+    #[test]
+    fn shared_wrapped_io_error_is_retryable() {
+        // Errors from a join's shared build side arrive as Shared(Arc<IoError>);
+        // the classifier must see through the wrapper or it will not retry a
+        // transient IO failure.
+        let inner = DataFusionError::IoError(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        let shared = DataFusionError::Shared(Arc::new(inner));
+        let e = BallistaError::DataFusionError(Box::new(shared));
+        let task = io_failed_task(e);
+        assert!(task.retryable);
+        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
+    }
+
+    #[test]
+    fn context_wrapped_shared_io_error_is_retryable() {
+        let inner = DataFusionError::IoError(io::Error::other("s3 timeout"));
+        let shared = DataFusionError::Shared(Arc::new(inner));
+        let ctx = shared.context("reading join build side");
+        let e = BallistaError::DataFusionError(Box::new(ctx));
+        let task = io_failed_task(e);
+        assert!(task.retryable);
+        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
+    }
+
+    #[test]
+    fn non_io_datafusion_error_stays_non_retryable() {
+        let e = BallistaError::DataFusionError(Box::new(DataFusionError::Plan(
+            "bad plan".to_string(),
+        )));
+        let task = io_failed_task(e);
+        assert!(!task.retryable);
+        assert!(matches!(
+            task.failed_reason,
+            Some(FailedReason::ExecutionError(_))
+        ));
+    }
+
+    #[test]
+    fn shared_wrapped_non_io_error_stays_non_retryable() {
+        let inner = DataFusionError::Plan("bad plan".to_string());
+        let shared = DataFusionError::Shared(Arc::new(inner));
+        let e = BallistaError::DataFusionError(Box::new(shared));
+        let task = io_failed_task(e);
+        assert!(!task.retryable);
+        assert!(matches!(
+            task.failed_reason,
+            Some(FailedReason::ExecutionError(_))
+        ));
+    }
+}
