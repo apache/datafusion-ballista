@@ -133,7 +133,7 @@ struct BallistaBenchmarkOpt {
 
     /// Configuration overrides in key=value format.
     /// Can be specified multiple times, e.g.
-    /// -c ballista.shuffle.sort_based.enabled=true
+    /// -c ballista.shuffle.sort_based.batch_size=8192
     /// -c datafusion.execution.target_partitions=16
     #[structopt(short = "c", long = "config", number_of_values = 1)]
     config_overrides: Vec<String>,
@@ -324,7 +324,6 @@ async fn main() -> Result<()> {
     }
 }
 
-#[allow(clippy::await_holding_lock)]
 /// Resolves which TPC-H queries a benchmark run should execute.
 ///
 /// A `--query` selects exactly that one and `--skip` is ignored, so asking for a
@@ -367,6 +366,7 @@ fn select_queries(query: Option<usize>, skip: &[usize]) -> Result<Vec<usize>> {
     Ok(selected)
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
     println!("Running benchmarks with the following options: {opt:?}");
     let config = SessionConfig::new()

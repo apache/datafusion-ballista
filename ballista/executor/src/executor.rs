@@ -424,12 +424,11 @@ mod test {
             1,
             Arc::new(NeverendingOperator::new()),
             work_dir.clone(),
-            None,
         )
         .expect("creating shuffle writer");
 
         let query_stage_exec =
-            DefaultQueryStageExec::new(ShuffleWriterVariant::Hash(shuffle_write));
+            DefaultQueryStageExec::new(ShuffleWriterVariant::Passthrough(shuffle_write));
 
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),

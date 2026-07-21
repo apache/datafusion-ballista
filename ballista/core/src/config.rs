@@ -84,9 +84,6 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
-/// Configuration key for enabling sort-based shuffle.
-pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
-    "ballista.shuffle.sort_based.enabled";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
@@ -235,10 +232,6 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
                          DataType::Boolean,
                          Some(false.to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
-                         "Enable sort-based shuffle which writes consolidated files with index".to_string(),
-                         DataType::Boolean,
-                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -590,14 +583,6 @@ impl BallistaConfig {
     /// Is Adaptive Query Planner enabled
     pub fn adaptive_query_planner_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
-    }
-
-    /// Returns whether sort-based shuffle is enabled.
-    ///
-    /// When enabled, shuffle writes produce a single consolidated file per input
-    /// partition with an index file, rather than one file per output partition.
-    pub fn shuffle_sort_based_enabled(&self) -> bool {
-        self.get_bool_setting(BALLISTA_SHUFFLE_SORT_BASED_ENABLED)
     }
 
     /// Returns the target batch size for sort-based shuffle.

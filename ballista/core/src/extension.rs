@@ -267,9 +267,6 @@ pub trait SessionConfigExt {
     /// Get whether to use TLS for executor connections
     fn ballista_use_tls(&self) -> bool;
 
-    /// Is short shuffle used
-    fn ballista_sort_shuffle_enabled(&self) -> bool;
-
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
     fn ballista_coalesce_enabled(&self) -> bool;
     /// Sets whether the AQE coalesce-shuffle-partitions rule is enabled.
@@ -550,14 +547,6 @@ impl SessionConfigExt for SessionConfig {
             .unwrap_or_else(|| {
                 BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
             })
-    }
-
-    fn ballista_sort_shuffle_enabled(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.shuffle_sort_based_enabled())
-            .unwrap_or_else(|| BallistaConfig::default().shuffle_sort_based_enabled())
     }
 
     fn with_ballista_shuffle_reader_maximum_concurrent_requests(

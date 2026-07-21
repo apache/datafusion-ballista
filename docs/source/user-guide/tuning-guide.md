@@ -25,18 +25,31 @@ The goal of any distributed compute engine is to parallelize work as much as pos
 by adding more compute resource.
 
 The basic unit of concurrency and parallelism in Ballista is the concept of a partition. The leaf nodes of a query
-are typically table scans that read from files on disk and Ballista currently treats each file within a table as a
-single partition (in the future, Ballista will support splitting files into partitions but this is not implemented yet).
+are typically table scans that read files from object storage, and the number of partitions such a scan produces is
+driven by `datafusion.execution.target_partitions`. This is currently a global setting for the entire context.
 
-For example, if there is a table "customer" that consists of 200 Parquet files, that table scan will naturally have
-200 partitions and the table scan and certain subsequent operations will also have 200 partitions. Conversely, if the
-table only has a single Parquet file then there will be a single partition and the work will not be able to scale even
-if the cluster has resource available. Ballista supports repartitioning within a query to improve parallelism.
-The configuration setting `datafusion.execution.target_partitions`can be set to the desired number of partitions. This is
-currently a global setting for the entire context. The default value for this setting is 16.
+DataFusion's own default for this setting is the number of CPU cores available to the process. Ballista overrides it
+to 16 in `SessionConfig::new_with_ballista()`, so a context created with `SessionContext::remote()` or
+`SessionContext::standalone()` starts at 16. If you instead build your own `SessionConfig` and pass it to
+`remote_with_state()` or `standalone_with_state()`, Ballista leaves the setting alone and you get whatever that
+config carries, which is the client machine's core count for a plain `SessionConfig::new()`. Set it explicitly if
+you care about the value.
 
-Note that Ballista will never decrease the number of partitions based on this setting and will only repartition if
-the source operation has fewer partitions than this setting.
+A scan is partitioned in two steps:
+
+1. When the table is listed, its files are sorted by path and distributed into **at most** `target_partitions`
+   file groups. A "customer" table of 200 Parquet files read with `target_partitions = 16` therefore produces
+   16 partitions of roughly 13 files each, not 200 partitions.
+2. The physical optimizer then splits individual files by byte range, so a table with fewer files than
+   `target_partitions` can still be read in parallel. A table consisting of a single large Parquet file is split
+   into `target_partitions` byte ranges rather than being read by one task. This step is controlled by
+   `datafusion.optimizer.repartition_file_scans` (default `true`) and only applies when the scan reads at least
+   `datafusion.optimizer.repartition_file_min_size` bytes (default 10 MB). Small tables below that threshold are
+   left as a single partition, since splitting them costs more than it saves.
+
+Ballista disables DataFusion's round-robin repartitioning, so this file-group splitting is the only source of
+parallelism for a scan stage. Raising `target_partitions` is the way to increase it, and lowering it is the way to
+reduce the number of partitions a large table is read with.
 
 Example: Setting the desired number of shuffle partitions when creating a context.
 
@@ -53,6 +66,30 @@ let state = SessionStateBuilder::new()
 
 let ctx: SessionContext = SessionContext::remote_with_state(&url,state).await?;
 ```
+
+### Partitions and Tasks
+
+A stage's partition count is not the same as its task count. The scheduler keeps a cursor over the stage's
+partitions and, each time an executor is assigned work, hands out a slice of those partitions to run as a single
+task. The size of that slice is bounded by both the executor's free vcores and
+`ballista.scheduler.max_partitions_per_task`.
+
+That setting still defaults to `1`, so out of the box a 16-partition scan stage runs as 16 single-partition tasks.
+Raising it lets the scheduler pack several partitions into one task, which reduces task count and scheduling
+overhead and allows operators such as sort and hash join to work across partitions within a task. Setting it to `0`
+removes the cap entirely, so each task is filled up to the assigned executor's free vcore count: a 16-partition
+stage then runs as one task on an idle 16-vcore executor, or as four 4-partition tasks across four 4-vcore
+executors.
+
+| key                                        | type   | default | description                                                                                                                                                                         |
+| ------------------------------------------ | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.scheduler.max_partitions_per_task | UInt64 | 1       | Upper bound on the number of input partitions packed into a single task. `1` means one task per partition. `0` means unbounded, filling each task up to the executor's free vcores. |
+
+Stages whose plan collapses all input into a single partition (for example under a `CoalescePartitionsExec` or
+`SortPreservingMergeExec`) ignore this cap and always pack their full pending queue into one task, since splitting
+them would produce partial results that downstream stages cannot merge.
+
+Each task's plan is rewritten before dispatch so that its scan sees only the file groups belonging to its own slice.
 
 ## Configuring Executor Concurrency Levels
 
@@ -127,11 +164,12 @@ scheduler or executors.
 
 Ballista exchanges data between query stages by writing the output of each
 upstream task to local files, which downstream tasks read either from disk
-(when co-located) or over Arrow Flight. Two shuffle implementations are
-available, with different trade-offs around file count, memory use, and
-write latency.
+(when co-located) or over Arrow Flight. Ballista uses a sort-based shuffle
+writer that bounds file count and memory use. Single-partition stages (a
+query's final output, coalesce, and broadcast-build stages) are written
+directly to one file.
 
-### Sort-based shuffle (default)
+### Sort-based shuffle
 
 The sort-based writer accumulates incoming batches in memory, tracking each
 row's output partition. It spills the buffered batches to disk when either of
@@ -160,7 +198,7 @@ output partition.
 
 This produces `2 × N` files instead of `N × M`, coalesces small batches
 to a target size before writing, and bounds shuffle memory use via
-spilling — at the cost of higher write latency than the hash writer.
+spilling.
 
 Worst-case sort-shuffle memory per executor is approximately
 `vcores × memory_limit_per_task_bytes`, since one writer task can run per
@@ -169,31 +207,12 @@ sooner, or raise it to keep more data in memory and reduce spill I/O. Setting it
 to `0` removes the budget entirely and is safe only with a bounded memory pool
 (see the warning above).
 
-### Hash-based shuffle (opt-in)
-
-The hash-based writer hashes each incoming `RecordBatch` and immediately
-encodes the per-partition slices to Arrow IPC, streaming them into one
-file per `(input_partition, output_partition)` pair. Nothing is buffered
-in memory across batches.
-
-This is simple and low latency, but for `N` input partitions and `M`
-output partitions it produces `N × M` files. Wide shuffles can therefore
-generate a large number of small files. Consider switching to the
-hash-based writer for narrow shuffles where the additional buffering
-and merging of the sort-based writer is unnecessary overhead:
-
-```rust
-let session_config = SessionConfig::new_with_ballista()
-    .set_bool("ballista.shuffle.sort_based.enabled", false);
-```
-
 The following session-level keys tune its behavior:
 
-| key                                                     | type    | default   | description                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------- | ------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ballista.shuffle.sort_based.enabled                     | Boolean | true      | Enables the sort-based shuffle writer.                                                                                                                                                                                                                                                     |
-| ballista.shuffle.sort_based.batch_size                  | UInt64  | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                                                                                                                                                      |
-| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64  | 268435456 | Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to `0` to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
+| key                                                     | type   | default   | description                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------- | ------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ballista.shuffle.sort_based.batch_size                  | UInt64 | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                                                                                                                                                      |
+| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to `0` to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
 
 ## Adaptive Query Execution (Experimental)
 
