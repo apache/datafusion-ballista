@@ -249,7 +249,6 @@ pub async fn get_webtui<
 
     let ballista_scheduler_url =
         params.remove("ballista_scheduler_url").unwrap_or_else(|| {
-            let default_scheduler_url = &format!("{external_host}:{bind_port}");
             let proto = header_map
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())
