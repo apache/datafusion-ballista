@@ -884,7 +884,7 @@ fn failed_reason(failed: &FailedTask) -> String {
         Some(TaskKilled(_)) => "TaskKilled",
         None => "Failed",
     }
-        .to_string()
+    .to_string()
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
