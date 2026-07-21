@@ -265,14 +265,16 @@ planner.
 
 TPC-H **SF1000**, reference cluster above, **AQE on**, 1 iteration,
 `target_partitions=64`, `prefer_hash_join=false`,
-`enable_dynamic_filter_pushdown=false`. All three engines plan `SortMergeJoin`. Times
-in seconds; lower is better.
+`enable_dynamic_filter_pushdown=false`, and the sort-shuffle spill cap overridden to
+uncapped (`ballista.shuffle.sort_based.memory_limit_per_task_bytes=0`; the shipped
+default is 256 MiB). All three engines plan `SortMergeJoin`. Times in seconds; lower
+is better.
 
 Versions under test:
 
 | Engine   | Version                                         |
 | -------- | ----------------------------------------------- |
-| Ballista | `main` @ `49d1fec8`                             |
+| Ballista | `#2084` @ `fac1fa22`                            |
 | Spark    | 3.5.3 (vanilla, Comet disabled)                 |
 | Comet    | `main` @ `b0165552` (1.0.0-SNAPSHOT, Spark 3.5) |
 
@@ -287,29 +289,29 @@ Spark each completed the full suite in one run.
 
 |                 Query |      Spark |      Comet | Ballista (AQE on) |   Rows |
 | --------------------: | ---------: | ---------: | ----------------: | -----: |
-|                     1 |      427.1 |       46.6 |              21.4 |      4 |
-|                     2 |       75.9 |       39.2 |              64.1 |    100 |
-|                     3 |      154.1 |      195.4 |             202.5 |     10 |
-|                     4 |       82.0 |       42.6 |              54.6 |      5 |
-|                     5 |      336.4 |      493.4 |             474.7 |      5 |
-|                     6 |       28.9 |       14.6 |              27.7 |      1 |
-|                     7 |      180.6 |      149.5 |             457.0 |      4 |
-|                     8 |      391.8 |      642.1 |             731.0 |      2 |
-|                     9 |      509.8 |      843.5 |             934.3 |    175 |
-|                    10 |      151.1 |      104.8 |             136.8 |     20 |
-|                    11 |       44.7 |       44.1 |              85.4 |  0 [1] |
-|                    12 |       74.1 |       49.9 |              70.9 |      2 |
-|                    13 |       98.7 |       58.3 |              92.5 |     30 |
-|                    14 |       43.0 |       27.4 |              38.9 |      1 |
-|                    15 |      121.5 |       65.6 |              84.5 |  1 [2] |
-|                    16 |       24.5 |       17.5 |              24.3 |  27840 |
-|                    17 |      406.7 |      285.8 |             355.3 |      1 |
+|                     1 |      427.1 |       46.6 |              59.4 |      4 |
+|                     2 |       75.9 |       39.2 |              57.0 |    100 |
+|                     3 |      154.1 |      195.4 |             214.8 |     10 |
+|                     4 |       82.0 |       42.6 |              65.2 |      5 |
+|                     5 |      336.4 |      493.4 |             456.6 |      5 |
+|                     6 |       28.9 |       14.6 |              29.5 |      1 |
+|                     7 |      180.6 |      149.5 |             369.0 |      4 |
+|                     8 |      391.8 |      642.1 |             540.3 |      2 |
+|                     9 |      509.8 |      843.5 |             764.9 |    175 |
+|                    10 |      151.1 |      104.8 |             168.3 |     20 |
+|                    11 |       44.7 |       44.1 |              91.4 |  0 [1] |
+|                    12 |       74.1 |       49.9 |              74.9 |      2 |
+|                    13 |       98.7 |       58.3 |              91.9 |     30 |
+|                    14 |       43.0 |       27.4 |              43.0 |      1 |
+|                    15 |      121.5 |       65.6 |             116.5 |  1 [2] |
+|                    16 |       24.5 |       17.5 |              29.0 |  27840 |
+|                    17 |      406.7 |      285.8 |             392.8 |      1 |
 |                    18 |      428.8 |      370.5 |               OOM |    100 |
-|                    19 |       58.9 |       35.5 |             120.4 |      1 |
-|                    20 |      105.9 |       67.6 |             111.2 | 110759 |
-|                    21 |      562.2 |      460.1 |             694.7 |    100 |
-|                    22 |       36.8 |       21.5 |              35.6 |      7 |
-| **Total (excl. Q18)** | **3914.7** | **3705.0** |        **4817.8** |        |
+|                    19 |       58.9 |       35.5 |             183.9 |      1 |
+|                    20 |      105.9 |       67.6 |             112.2 | 110759 |
+|                    21 |      562.2 |      460.1 |             765.2 |    100 |
+|                    22 |       36.8 |       21.5 |              35.2 |      7 |
+| **Total (excl. Q18)** | **3914.7** | **3705.0** |        **4661.0** |        |
 
 The **Total** row sums the 21 queries **excluding Q18**, because Q18 does not complete
 on Ballista at this sizing (below), so a 22-query total would not be comparable across
@@ -317,6 +319,10 @@ engines. Q18's own times are in its row.
 
 Row counts agree across all three engines on every query, including Q18 (Spark and
 Comet return 100; Ballista OOMs before producing a result).
+
+The **AQE-off** Ballista column has been removed pending a re-run at a matched core
+count; the numbers above for AQE off were taken at a different executor size and are
+not comparable to a fresh AQE-off run, so they were dropped rather than left stale.
 
 [1] Q11 returns 0 rows for every engine at this scale factor: the query's threshold
 constant is tuned for SF1.
@@ -343,6 +349,63 @@ regression.
 `TBD` means not yet measured on this cluster at this commit; a query that ran but
 did not produce an answer is recorded as `FAIL`, or `OOM` where the failure is a
 known memory exhaustion.
+
+### Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)
+
+A second Ballista configuration exercises `prefer_hash_join=true` together with the
+AQE hash-join safety fallback
+([`ballista.optimizer.hash_join_max_build_partition_bytes`](https://github.com/apache/datafusion-ballista/pull/2084)).
+The fallback lowers a Partitioned hash join to `SortMergeJoin` per join when the
+build side's largest partition exceeds the configured budget, so a hash-join run does
+not abort on the queries whose non-spillable hash-join build exceeds one task slot's
+pool — notably Q18
+([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). That fallback
+is what makes `prefer_hash_join=true` usable across the whole suite instead of
+failing partway.
+
+This run uses a **larger cluster than the reference above** and a **different
+`target_partitions`**, so its numbers are not comparable to the table above: TPC-H
+**SF1000**, **2 executors × 16 cores** (one per node, ~2.8 GB per task slot),
+**`target_partitions=64`**, **AQE on**, `prefer_hash_join=true`,
+`hash_join_max_build_partition_bytes=67108864` (64 MiB),
+`enable_dynamic_filter_pushdown=false`, sort-shuffle spill uncapped. Each query ran
+on a **freshly restarted cluster**. Ballista @ `afef9afc`. Times in seconds.
+
+|     Query | Ballista (AQE on, hash join + 64 MiB fallback) |
+| --------: | ---------------------------------------------: |
+|         1 |                                           72.1 |
+|         2 |                                           52.9 |
+|         3 |                                          154.2 |
+|         4 |                                           72.9 |
+|         5 |                                          355.4 |
+|         6 |                                           65.9 |
+|         7 |                                          371.7 |
+|         8 |                                          452.4 |
+|         9 |                                          559.8 |
+|        10 |                                          152.3 |
+|        11 |                                           74.6 |
+|        12 |                                           88.7 |
+|        13 |                                           99.2 |
+|        14 |                                           38.6 |
+|        15 |                                           62.5 |
+|        16 |                                           29.0 |
+|        17 |                                          446.3 |
+|        18 |                                          744.6 |
+|        19 |                                           80.8 |
+|        20 |                                          117.0 |
+|        21 |                                          605.6 |
+|        22 |                                           20.5 |
+| **Total** |                                     **4716.9** |
+
+**All 22 queries completed — no OOMs, no failures.** At the 64 MiB threshold the
+large-build joins (Q5, Q7–Q9, Q17, Q18, Q21) fall back to `SortMergeJoin` while
+smaller-build joins stay hash, so the heavy queries run at roughly sort-merge speed
+but the suite runs end to end. Q18 completes at **744.6 s** where the same
+configuration with the fallback disabled (`hash_join_max_build_partition_bytes=0`)
+exhausts the per-slot pool and fails the job
+([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). The fallback is
+opt-in and off by default (a `0` budget); the 64 MiB value here is tuned to this
+cluster's ~2.8 GB task-slot pool.
 
 ### Recording a result
 

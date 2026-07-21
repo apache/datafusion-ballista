@@ -629,8 +629,10 @@ planner.</p>
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
 <p>TPC-H <strong>SF1000</strong>, reference cluster above, <strong>AQE on</strong>, 1 iteration,
 <code class="docutils literal notranslate"><span class="pre">target_partitions=64</span></code>, <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>,
-<code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>. All three engines plan <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>. Times
-in seconds; lower is better.</p>
+<code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>, and the sort-shuffle spill cap overridden to
+uncapped (<code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes=0</span></code>; the shipped
+default is 256 MiB). All three engines plan <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>. Times in seconds; lower
+is better.</p>
 <p>Versions under test:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -640,7 +642,7 @@ in seconds; lower is better.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">main</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">49d1fec8</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">#2084</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">fac1fa22</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
 <td><p>3.5.3 (vanilla, Comet disabled)</p></td>
@@ -671,103 +673,103 @@ Spark each completed the full suite in one run.</p>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
 <td class="text-right"><p>427.1</p></td>
 <td class="text-right"><p>46.6</p></td>
-<td class="text-right"><p>21.4</p></td>
+<td class="text-right"><p>59.4</p></td>
 <td class="text-right"><p>4</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
 <td class="text-right"><p>75.9</p></td>
 <td class="text-right"><p>39.2</p></td>
-<td class="text-right"><p>64.1</p></td>
+<td class="text-right"><p>57.0</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
 <td class="text-right"><p>154.1</p></td>
 <td class="text-right"><p>195.4</p></td>
-<td class="text-right"><p>202.5</p></td>
+<td class="text-right"><p>214.8</p></td>
 <td class="text-right"><p>10</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
 <td class="text-right"><p>82.0</p></td>
 <td class="text-right"><p>42.6</p></td>
-<td class="text-right"><p>54.6</p></td>
+<td class="text-right"><p>65.2</p></td>
 <td class="text-right"><p>5</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
 <td class="text-right"><p>336.4</p></td>
 <td class="text-right"><p>493.4</p></td>
-<td class="text-right"><p>474.7</p></td>
+<td class="text-right"><p>456.6</p></td>
 <td class="text-right"><p>5</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
 <td class="text-right"><p>28.9</p></td>
 <td class="text-right"><p>14.6</p></td>
-<td class="text-right"><p>27.7</p></td>
+<td class="text-right"><p>29.5</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
 <td class="text-right"><p>180.6</p></td>
 <td class="text-right"><p>149.5</p></td>
-<td class="text-right"><p>457.0</p></td>
+<td class="text-right"><p>369.0</p></td>
 <td class="text-right"><p>4</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
 <td class="text-right"><p>391.8</p></td>
 <td class="text-right"><p>642.1</p></td>
-<td class="text-right"><p>731.0</p></td>
+<td class="text-right"><p>540.3</p></td>
 <td class="text-right"><p>2</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
 <td class="text-right"><p>509.8</p></td>
 <td class="text-right"><p>843.5</p></td>
-<td class="text-right"><p>934.3</p></td>
+<td class="text-right"><p>764.9</p></td>
 <td class="text-right"><p>175</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
 <td class="text-right"><p>151.1</p></td>
 <td class="text-right"><p>104.8</p></td>
-<td class="text-right"><p>136.8</p></td>
+<td class="text-right"><p>168.3</p></td>
 <td class="text-right"><p>20</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
 <td class="text-right"><p>44.7</p></td>
 <td class="text-right"><p>44.1</p></td>
-<td class="text-right"><p>85.4</p></td>
+<td class="text-right"><p>91.4</p></td>
 <td class="text-right"><p>0 [1]</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
 <td class="text-right"><p>74.1</p></td>
 <td class="text-right"><p>49.9</p></td>
-<td class="text-right"><p>70.9</p></td>
+<td class="text-right"><p>74.9</p></td>
 <td class="text-right"><p>2</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
 <td class="text-right"><p>98.7</p></td>
 <td class="text-right"><p>58.3</p></td>
-<td class="text-right"><p>92.5</p></td>
+<td class="text-right"><p>91.9</p></td>
 <td class="text-right"><p>30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
 <td class="text-right"><p>43.0</p></td>
 <td class="text-right"><p>27.4</p></td>
-<td class="text-right"><p>38.9</p></td>
+<td class="text-right"><p>43.0</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
 <td class="text-right"><p>121.5</p></td>
 <td class="text-right"><p>65.6</p></td>
-<td class="text-right"><p>84.5</p></td>
+<td class="text-right"><p>116.5</p></td>
 <td class="text-right"><p>1 [2]</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
 <td class="text-right"><p>24.5</p></td>
 <td class="text-right"><p>17.5</p></td>
-<td class="text-right"><p>24.3</p></td>
+<td class="text-right"><p>29.0</p></td>
 <td class="text-right"><p>27840</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
 <td class="text-right"><p>406.7</p></td>
 <td class="text-right"><p>285.8</p></td>
-<td class="text-right"><p>355.3</p></td>
+<td class="text-right"><p>392.8</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
@@ -779,31 +781,31 @@ Spark each completed the full suite in one run.</p>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
 <td class="text-right"><p>58.9</p></td>
 <td class="text-right"><p>35.5</p></td>
-<td class="text-right"><p>120.4</p></td>
+<td class="text-right"><p>183.9</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
 <td class="text-right"><p>105.9</p></td>
 <td class="text-right"><p>67.6</p></td>
-<td class="text-right"><p>111.2</p></td>
+<td class="text-right"><p>112.2</p></td>
 <td class="text-right"><p>110759</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
 <td class="text-right"><p>562.2</p></td>
 <td class="text-right"><p>460.1</p></td>
-<td class="text-right"><p>694.7</p></td>
+<td class="text-right"><p>765.2</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
 <td class="text-right"><p>36.8</p></td>
 <td class="text-right"><p>21.5</p></td>
-<td class="text-right"><p>35.6</p></td>
+<td class="text-right"><p>35.2</p></td>
 <td class="text-right"><p>7</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total (excl. Q18)</strong></p></td>
 <td class="text-right"><p><strong>3914.7</strong></p></td>
 <td class="text-right"><p><strong>3705.0</strong></p></td>
-<td class="text-right"><p><strong>4817.8</strong></p></td>
+<td class="text-right"><p><strong>4661.0</strong></p></td>
 <td class="text-right"><p></p></td>
 </tr>
 </tbody>
@@ -814,6 +816,9 @@ on Ballista at this sizing (below), so a 22-query total would not be comparable 
 engines. Q18’s own times are in its row.</p>
 <p>Row counts agree across all three engines on every query, including Q18 (Spark and
 Comet return 100; Ballista OOMs before producing a result).</p>
+<p>The <strong>AQE-off</strong> Ballista column has been removed pending a re-run at a matched core
+count; the numbers above for AQE off were taken at a different executor size and are
+not comparable to a fresh AQE-off run, so they were dropped rather than left stale.</p>
 <p>[1] Q11 returns 0 rows for every engine at this scale factor: the query’s threshold
 constant is tuned for SF1.</p>
 <p>[2] Q15 is a multi-statement query (<code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">VIEW</span></code> / <code class="docutils literal notranslate"><span class="pre">SELECT</span></code> / <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">VIEW</span></code>); all three
@@ -834,6 +839,114 @@ regression.</p>
 <p><code class="docutils literal notranslate"><span class="pre">TBD</span></code> means not yet measured on this cluster at this commit; a query that ran but
 did not produce an answer is recorded as <code class="docutils literal notranslate"><span class="pre">FAIL</span></code>, or <code class="docutils literal notranslate"><span class="pre">OOM</span></code> where the failure is a
 known memory exhaustion.</p>
+<section id="hash-join-with-a-per-partition-build-size-fallback-aqe-on-216-cores-64-partitions">
+<h3>Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)<a class="headerlink" href="#hash-join-with-a-per-partition-build-size-fallback-aqe-on-216-cores-64-partitions" title="Link to this heading">#</a></h3>
+<p>A second Ballista configuration exercises <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=true</span></code> together with the
+AQE hash-join safety fallback
+(<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2084"><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code></a>).
+The fallback lowers a Partitioned hash join to <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> per join when the
+build side’s largest partition exceeds the configured budget, so a hash-join run does
+not abort on the queries whose non-spillable hash-join build exceeds one task slot’s
+pool — notably Q18
+(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a>). That fallback
+is what makes <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=true</span></code> usable across the whole suite instead of
+failing partway.</p>
+<p>This run uses a <strong>larger cluster than the reference above</strong> and a <strong>different
+<code class="docutils literal notranslate"><span class="pre">target_partitions</span></code></strong>, so its numbers are not comparable to the table above: TPC-H
+<strong>SF1000</strong>, <strong>2 executors × 16 cores</strong> (one per node, ~2.8 GB per task slot),
+<strong><code class="docutils literal notranslate"><span class="pre">target_partitions=64</span></code></strong>, <strong>AQE on</strong>, <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=true</span></code>,
+<code class="docutils literal notranslate"><span class="pre">hash_join_max_build_partition_bytes=67108864</span></code> (64 MiB),
+<code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>, sort-shuffle spill uncapped. Each query ran
+on a <strong>freshly restarted cluster</strong>. Ballista &#64; <code class="docutils literal notranslate"><span class="pre">afef9afc</span></code>. Times in seconds.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head text-right"><p>Query</p></th>
+<th class="head text-right"><p>Ballista (AQE on, hash join + 64 MiB fallback)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td class="text-right"><p>1</p></td>
+<td class="text-right"><p>72.1</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>2</p></td>
+<td class="text-right"><p>52.9</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>3</p></td>
+<td class="text-right"><p>154.2</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>4</p></td>
+<td class="text-right"><p>72.9</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>5</p></td>
+<td class="text-right"><p>355.4</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>6</p></td>
+<td class="text-right"><p>65.9</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>7</p></td>
+<td class="text-right"><p>371.7</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>8</p></td>
+<td class="text-right"><p>452.4</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>9</p></td>
+<td class="text-right"><p>559.8</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>10</p></td>
+<td class="text-right"><p>152.3</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>11</p></td>
+<td class="text-right"><p>74.6</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>12</p></td>
+<td class="text-right"><p>88.7</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>13</p></td>
+<td class="text-right"><p>99.2</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>14</p></td>
+<td class="text-right"><p>38.6</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>15</p></td>
+<td class="text-right"><p>62.5</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>16</p></td>
+<td class="text-right"><p>29.0</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>17</p></td>
+<td class="text-right"><p>446.3</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>18</p></td>
+<td class="text-right"><p>744.6</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>19</p></td>
+<td class="text-right"><p>80.8</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>20</p></td>
+<td class="text-right"><p>117.0</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>21</p></td>
+<td class="text-right"><p>605.6</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>22</p></td>
+<td class="text-right"><p>20.5</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
+<td class="text-right"><p><strong>4716.9</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>All 22 queries completed — no OOMs, no failures.</strong> At the 64 MiB threshold the
+large-build joins (Q5, Q7–Q9, Q17, Q18, Q21) fall back to <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> while
+smaller-build joins stay hash, so the heavy queries run at roughly sort-merge speed
+but the suite runs end to end. Q18 completes at <strong>744.6 s</strong> where the same
+configuration with the fallback disabled (<code class="docutils literal notranslate"><span class="pre">hash_join_max_build_partition_bytes=0</span></code>)
+exhausts the per-slot pool and fails the job
+(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a>). The fallback is
+opt-in and off by default (a <code class="docutils literal notranslate"><span class="pre">0</span></code> budget); the 64 MiB value here is tuned to this
+cluster’s ~2.8 GB task-slot pool.</p>
+</section>
 <section id="recording-a-result">
 <h3>Recording a result<a class="headerlink" href="#recording-a-result" title="Link to this heading">#</a></h3>
 <ul class="simple">
@@ -937,6 +1050,7 @@ knowing about before interpreting a number:</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-compare-against-comet">Why compare against Comet</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-join-with-a-per-partition-build-size-fallback-aqe-on-216-cores-64-partitions">Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-a-result">Recording a result</a></li>
 </ul>
 </li>
