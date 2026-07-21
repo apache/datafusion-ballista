@@ -52,10 +52,23 @@ on:
 
 jobs:
   tpch-sf10:
-    name: TPC-H SF10 (all queries, AQE off + on)
+    name: TPC-H SF10 (${{ matrix.label }})
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "AQE off"
+            planner_args: ""
+            slug: "aqe-off"
+          - label: "AQE on"
+            planner_args: "-c ballista.planner.adaptive.enabled=true"
+            slug: "aqe-on"
+          - label: "AQE on, multi-partition tasks"
+            planner_args: "-c ballista.planner.adaptive.enabled=true -c ballista.scheduler.max_partitions_per_task=0"
+            slug: "aqe-on-mpt"
     steps:
       - name: Install dependencies
         run: |
@@ -72,6 +85,10 @@ jobs:
           rust-version: stable
 
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+        with:
+          # Share the build cache across all matrix legs — the compiled
+          # binaries are identical; only the per-suite CLI args differ.
+          shared-key: tpch-sf10
 
       - name: Build Ballista binaries
         run: |
@@ -151,45 +168,29 @@ jobs:
           done
           nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
 
-          # Run the suite once per planner mode against the same data and
-          # cluster. AQE on/off is a per-query session setting, so the scheduler
-          # picks the planner per job; no need to regenerate data or restart the
-          # cluster.
-          run_suite() {
-            local label="$1"; shift
-            # q16 omitted: still unsupported (matches benchmarks/run.sh).
-            for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
-              echo "::group::[$label] Query $q"
-              ./target/tpch-ci/tpch benchmark ballista \
-                --host 127.0.0.1 --port 50050 \
-                --query "$q" \
-                --path "$DATA_DIR" \
-                --format parquet \
-                --partitions 16 \
-                --iterations 1 \
-                "$@"
-              echo "::endgroup::"
-            done
-          }
-
-          run_suite "AQE off" \
-            --verify \
-            -c datafusion.optimizer.prefer_hash_join=false
-          run_suite "AQE on" \
-            --verify \
-            -c datafusion.optimizer.prefer_hash_join=false \
-            -c ballista.planner.adaptive.enabled=true
-          run_suite "AQE on, multi-partition tasks" \
-            --verify \
-            -c datafusion.optimizer.prefer_hash_join=false \
-            -c ballista.planner.adaptive.enabled=true \
-            -c ballista.scheduler.max_partitions_per_task=0
+          # This matrix leg runs one planner configuration against the whole
+          # SF10 dataset. The other legs run in parallel jobs.
+          # q16 omitted: still unsupported (matches benchmarks/run.sh).
+          for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
+            echo "::group::[${{ matrix.label }}] Query $q"
+            ./target/tpch-ci/tpch benchmark ballista \
+              --host 127.0.0.1 --port 50050 \
+              --query "$q" \
+              --path "$DATA_DIR" \
+              --format parquet \
+              --partitions 16 \
+              --iterations 1 \
+              --verify \
+              -c datafusion.optimizer.prefer_hash_join=false \
+              ${{ matrix.planner_args }}
+            echo "::endgroup::"
+          done
 
       - name: Upload cluster logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: tpch-sf10-cluster-logs
+          name: tpch-sf10-cluster-logs-${{ matrix.slug }}
           retention-days: 14
           path: |
             ${{ runner.temp }}/scheduler.log
