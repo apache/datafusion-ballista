@@ -56,8 +56,8 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    ChaosExec, CoalescePlan, PartitionGroup, RuntimeStatsExec, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, PartitionGroup, RuntimeStatsExec,
+    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -576,6 +576,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     order_by,
                 )?))
             }
+            PhysicalPlanType::Buffer(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "BufferExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let mode = match protobuf::BufferMode::try_from(node.mode) {
+                    Ok(protobuf::BufferMode::Dam) => BufferMode::Dam,
+                    Err(_) => {
+                        return Err(DataFusionError::Internal(format!(
+                            "BufferExec: unknown mode enum discriminant {}",
+                            node.mode
+                        )));
+                    }
+                };
+                Ok(Arc::new(BufferExec::try_new(input.clone(), mode)?))
+            }
         }
     }
 
@@ -775,6 +793,19 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 DataFusionError::Internal(format!(
                     "failed to encode RuntimeStatsExec: {e:?}"
                 ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<BufferExec>() {
+            let mode = match *exec.mode() {
+                BufferMode::Dam => protobuf::BufferMode::Dam,
+            };
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::Buffer(
+                    protobuf::BufferExecNode { mode: mode.into() },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!("failed to encode BufferExec: {e:?}"))
             })?;
             Ok(())
         } else {
@@ -1557,5 +1588,30 @@ mod test {
                 .contains("routing expression must be non-nullable"),
             "got: {err}"
         );
+    }
+
+    /// `BufferExec` in `Dam` mode round-trips through the codec.
+    /// The child is decoded from `inputs[0]` by the framework, so the
+    /// wire only carries the mode discriminant — a wrong discriminant
+    /// (added but not handled) would surface as a decode error.
+    #[tokio::test]
+    async fn test_buffer_exec_dam_roundtrip() {
+        use crate::execution_plans::{BufferExec, BufferMode};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let original = BufferExec::try_new(input.clone(), BufferMode::Dam).unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<BufferExec>()
+            .expect("Expected BufferExec");
+        assert!(matches!(decoded.mode(), BufferMode::Dam));
     }
 }

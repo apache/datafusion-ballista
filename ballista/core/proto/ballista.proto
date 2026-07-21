@@ -52,6 +52,7 @@ message BallistaPhysicalPlanNode {
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
     ChaosExecNode chaos_exec = 5;
     RuntimeStatsExecNode runtime_stats = 6;
+    BufferExecNode buffer = 7;
   }
 }
 
@@ -74,6 +75,20 @@ message RuntimeStatsExecNode {
 // centroid_means..., centroid_weights....
 message QuantileSketchState {
   repeated datafusion_common.ScalarValue state = 1;
+}
+
+// Flow-control operator with an operator-mode enum. The child plan is
+// plumbed by the framework as `inputs[0]` during decode.
+message BufferExecNode {
+  BufferMode mode = 1;
+}
+
+enum BufferMode {
+  // Buffers input while a MemoryReservation grows against the runtime's
+  // MemoryPool; the dam breaks when `try_grow` refuses further allocation.
+  BUFFER_MODE_DAM = 0;
+  // Future modes: PASS_THROUGH, BUFFER_ALL, SPILL_ON_PRESSURE, ...
+  // Add here as they land in Rust.
 }
 
 message ChaosExecNode {
