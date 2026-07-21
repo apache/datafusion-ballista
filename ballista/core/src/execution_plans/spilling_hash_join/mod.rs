@@ -15,16 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// filter pushdown has been copied over
-// from datafusion to patch non idempotent
-// behavior.
-// TODO: remove when updated to datafusion 55
-pub mod filter_pushdown;
-// join selection has been copied over from
-// datafusion and patched to support ballista
-// specific cases. it has been used in static
-// execution graph only.
-pub mod join_selection;
-// substitutes eligible `HashJoinExec` nodes with `SpillingHashJoinExec`,
-// gated by `ballista.execution.spilling_hash_join.enabled`.
-pub mod spilling_hash_join;
+mod exec;
+mod hash_table;
+mod partitioner;
+mod spill;
+mod stream;
+
+// `SpillingHashJoinExec` is the only public surface of this module; it is
+// re-exported further up in `execution_plans::mod`.
+pub use exec::SpillingHashJoinExec;
+
+// `hash_table` and `partitioner` are private submodules. Their `pub` items
+// (`ProbeTable`, `assemble_output`, `RowPartitioner`, `PartitionedBatch`) are
+// internal helpers consumed only by `stream.rs` via `super::hash_table::` /
+// `super::partitioner::` — they are not re-exported here, so they are not
+// part of `ballista_core`'s public API.

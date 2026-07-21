@@ -138,6 +138,18 @@ impl DefaultDistributedPlanner {
         // Apply broadcast-join promotion before recursing.
         let execution_plan = Self::maybe_promote_to_broadcast(execution_plan, config)?;
 
+        // Broadcast promotion has already had its chance to turn a small-build
+        // join into a `CollectLeft` broadcast. Any join still left as an
+        // `Inner`/`Partitioned` `HashJoinExec` (a large build side that was not
+        // broadcast) is now substituted with `SpillingHashJoinExec` when the
+        // feature flag is set. A promoted `CollectLeft` join is not
+        // `Partitioned`, so it is never eligible — broadcast wins for small
+        // build sides.
+        let execution_plan = crate::physical_optimizer::spilling_hash_join::maybe_substitute_spilling_hash_join(
+            execution_plan,
+            config,
+        )?;
+
         // recurse down and replace children
         if execution_plan.children().is_empty() {
             return Ok((execution_plan, vec![]));
@@ -744,10 +756,13 @@ mod test {
     use crate::assert_plan;
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
+    use ballista_core::config::BallistaConfig;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
+    use datafusion::config::ConfigOptions;
+    use datafusion::physical_plan::joins::PartitionMode;
 
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
@@ -1205,6 +1220,200 @@ order by
                 walker.extend(node.children().iter().map(|c| (*c).clone()));
             }
         }
+
+        Ok(())
+    }
+
+    /// An `Inner`/`Partitioned` `HashJoinExec` over two 2-partition inputs,
+    /// eligible for `SpillingHashJoinRule` substitution. Built directly
+    /// (bypassing SQL/`JoinSelection`) so the partition mode is deterministic.
+    fn inner_partitioned_hash_join_plan() -> Arc<dyn ExecutionPlan> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::common::{JoinType, NullEquality};
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion::physical_expr::PhysicalExprRef;
+        use datafusion::physical_plan::expressions::Column;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let partitions: Vec<Vec<_>> = (0..2).map(|_| vec![]).collect();
+
+        let left_source =
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&schema), None)
+                .expect("left MemorySourceConfig");
+        let right_source =
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&schema), None)
+                .expect("right MemorySourceConfig");
+        let left: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(left_source)));
+        let right: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(right_source)));
+
+        let on: Vec<(PhysicalExprRef, PhysicalExprRef)> =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+
+        Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                on,
+                None,
+                &JoinType::Inner,
+                None,
+                PartitionMode::Partitioned,
+                NullEquality::NullEqualsNothing,
+                false,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// A bare `ConfigOptions` carrying a `BallistaConfig` extension with
+    /// `ballista.execution.spilling_hash_join.enabled` set as requested,
+    /// mirroring how a real per-job `SessionConfig::options()` looks once
+    /// `BallistaConfig` has been upgraded onto it (see
+    /// `ballista_core::extension::SessionConfigExt`).
+    fn config_with_spilling_hash_join(enabled: bool) -> ConfigOptions {
+        use datafusion::config::ExtensionOptions;
+
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "execution.spilling_hash_join.enabled",
+            if enabled { "true" } else { "false" },
+        )
+        .unwrap();
+        let mut config = ConfigOptions::default();
+        config.extensions.insert(bc);
+        config
+    }
+
+    /// Drives the actual `DefaultDistributedPlanner::plan_query_stages` entry
+    /// point (the real, production code path used for every job when AQE is
+    /// off) with an eligible join and the flag on: the resulting stage plan
+    /// must contain `SpillingHashJoinExec`.
+    #[tokio::test]
+    async fn planner_substitutes_spilling_hash_join_when_enabled()
+    -> Result<(), BallistaError> {
+        let plan = inner_partitioned_hash_join_plan();
+        let config = config_with_spilling_hash_join(true);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &config)?;
+
+        let rendered: String = stages
+            .iter()
+            .map(|s| format!("{}", displayable(s.as_ref()).indent(false)))
+            .collect();
+        assert!(rendered.contains("SpillingHashJoinExec"), "{rendered}");
+        // `SpillingHashJoinExec` ends in `HashJoinExec`, so a plain
+        // `contains("HashJoinExec")` would false-pass. Assert no *bare*
+        // `HashJoinExec` node survives the substitution.
+        assert!(
+            !rendered
+                .lines()
+                .any(|line| line.trim_start().starts_with("HashJoinExec")),
+            "{rendered}"
+        );
+
+        Ok(())
+    }
+
+    /// Broadcast-first ordering: a small-build-side `Inner`/`Partitioned`
+    /// `HashJoinExec` under the Ballista broadcast threshold, planned with BOTH
+    /// broadcast promotion AND spilling-hash-join substitution enabled, must be
+    /// promoted to a `CollectLeft` broadcast join and NOT substituted with
+    /// `SpillingHashJoinExec`. Broadcast promotion runs first and turns the join
+    /// `CollectLeft`, which is not `Partitioned` and therefore ineligible for
+    /// substitution — so broadcast wins the small-join case.
+    #[tokio::test]
+    async fn planner_broadcast_wins_over_spilling_for_small_build()
+    -> Result<(), BallistaError> {
+        use datafusion::config::ExtensionOptions;
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        // DF's own `hash_join_single_partition_threshold` is 0 in this fixture,
+        // so DataFusion leaves the join `Partitioned`; Ballista's broadcast
+        // threshold (10 MB) is what promotes the small side to `CollectLeft`.
+        let (ctx, mut options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
+        // Turn on spilling substitution alongside broadcast promotion.
+        options
+            .extensions
+            .get_mut::<BallistaConfig>()
+            .expect("BallistaConfig extension present")
+            .set("execution.spilling_hash_join.enabled", "true")
+            .unwrap();
+
+        let df = ctx
+            .sql("select count(*) from big join small on big.k = small.k")
+            .await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        let rendered: String = stages
+            .iter()
+            .map(|s| format!("{}", displayable(s.as_ref()).indent(false)))
+            .collect();
+        // Broadcast won: no spilling substitution happened.
+        assert!(
+            !rendered.contains("SpillingHashJoinExec"),
+            "broadcast should win over spilling for a small build side\n{rendered}"
+        );
+
+        // And the surviving join is a `CollectLeft` broadcast join.
+        let mut found_broadcast_join = false;
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    assert_eq!(*hj.partition_mode(), PartitionMode::CollectLeft);
+                    found_broadcast_join = true;
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+        assert!(
+            found_broadcast_join,
+            "expected a CollectLeft broadcast HashJoinExec\n{rendered}"
+        );
+
+        Ok(())
+    }
+
+    /// Same plan through the same entry point with the flag off: the plan
+    /// must be left as a plain `HashJoinExec`, with no substitution.
+    #[tokio::test]
+    async fn planner_leaves_hash_join_untouched_when_disabled()
+    -> Result<(), BallistaError> {
+        let plan = inner_partitioned_hash_join_plan();
+        let config = config_with_spilling_hash_join(false);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &config)?;
+
+        let rendered: String = stages
+            .iter()
+            .map(|s| format!("{}", displayable(s.as_ref()).indent(false)))
+            .collect();
+        assert!(!rendered.contains("SpillingHashJoinExec"), "{rendered}");
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.trim_start().starts_with("HashJoinExec")),
+            "{rendered}"
+        );
 
         Ok(())
     }

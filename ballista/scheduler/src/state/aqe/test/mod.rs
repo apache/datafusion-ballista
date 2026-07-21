@@ -25,6 +25,8 @@ mod job_failure;
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// Covers spilling-hash-join substitution through the adaptive planner
+mod spilling_hash_join;
 
 use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use ballista_core::extension::SessionConfigExt;

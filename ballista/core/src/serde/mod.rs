@@ -26,14 +26,18 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Extension;
+use datafusion::physical_expr::PhysicalExprRef;
+use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
 };
+use datafusion_proto::physical_plan::from_proto::parse_physical_exprs;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::to_proto::serialize_physical_exprs;
 use datafusion_proto::physical_plan::{
     DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
     PhysicalPlanDecodeContext,
@@ -55,7 +59,7 @@ use std::{convert::TryInto, io::Cursor};
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     ChaosExec, CoalescePlan, PartitionGroup, ShuffleReaderExec, ShuffleWriterExec,
-    SortShuffleWriterExec, UnresolvedShuffleExec,
+    SortShuffleWriterExec, SpillingHashJoinExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -550,6 +554,54 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Some(chaos_exec.seed),
                 )?))
             }
+            PhysicalPlanType::SpillingHashJoin(spilling_hash_join) => {
+                let (left, right) = match inputs {
+                    [left, right] => (left.clone(), right.clone()),
+                    _ => {
+                        return Err(DataFusionError::Internal(format!(
+                            "SpillingHashJoinExec expects exactly 2 inputs, got {}",
+                            inputs.len()
+                        )));
+                    }
+                };
+                let left_keys = parse_physical_exprs(
+                    &spilling_hash_join.left_keys,
+                    &decode_ctx,
+                    left.schema().as_ref(),
+                    &converter,
+                )?;
+                let right_keys = parse_physical_exprs(
+                    &spilling_hash_join.right_keys,
+                    &decode_ctx,
+                    right.schema().as_ref(),
+                    &converter,
+                )?;
+                if left_keys.len() != right_keys.len() {
+                    return Err(DataFusionError::Internal(format!(
+                        "SpillingHashJoinExec left_keys/right_keys length mismatch: {} vs {}",
+                        left_keys.len(),
+                        right_keys.len()
+                    )));
+                }
+                let on: Vec<(PhysicalExprRef, PhysicalExprRef)> =
+                    left_keys.into_iter().zip(right_keys).collect();
+                let partition_mode = match spilling_hash_join.partition_mode {
+                    0 => PartitionMode::Partitioned,
+                    1 => PartitionMode::CollectLeft,
+                    other => {
+                        return Err(DataFusionError::Internal(format!(
+                            "SpillingHashJoinExec unknown partition_mode: {other}"
+                        )));
+                    }
+                };
+                Ok(Arc::new(SpillingHashJoinExec::try_new(
+                    left,
+                    right,
+                    on,
+                    partition_mode,
+                    spilling_hash_join.num_sub_partitions as usize,
+                )?))
+            }
         }
     }
 
@@ -725,6 +777,45 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode chaos monkey execution plan: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<SpillingHashJoinExec>() {
+            let converter = DefaultPhysicalProtoConverter {};
+            let (left_exprs, right_exprs): (Vec<PhysicalExprRef>, Vec<PhysicalExprRef>) =
+                exec.on().iter().cloned().unzip();
+            let left_keys = serialize_physical_exprs(
+                &left_exprs,
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let right_keys = serialize_physical_exprs(
+                &right_exprs,
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let partition_mode = match exec.partition_mode() {
+                PartitionMode::Partitioned => 0,
+                PartitionMode::CollectLeft => 1,
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "SpillingHashJoinExec unsupported partition_mode for serialization: {other:?}"
+                    )));
+                }
+            };
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::SpillingHashJoin(
+                    protobuf::SpillingHashJoinExecNode {
+                        left_keys,
+                        right_keys,
+                        partition_mode,
+                        num_sub_partitions: exec.num_sub_partitions() as u64,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode spilling hash join execution plan: {e:?}"
                 ))
             })?;
             Ok(())
@@ -1326,5 +1417,97 @@ mod test {
         assert!(decoded_exec.broadcast);
         assert_eq!(decoded_exec.upstream_partition_count, 4);
         assert_eq!(decoded_exec.partition.len(), 1);
+    }
+
+    // Round-trips a `SpillingHashJoinExec` with a multi-key `on` (exercising
+    // key ordering/pairing) through `BallistaPhysicalExtensionCodec`. Children
+    // are not carried in the proto message (see `SpillingHashJoinExecNode`'s
+    // doc comment); they are supplied directly to `try_decode` via `inputs`,
+    // matching how `ChaosExec` and the other single/no-child nodes above are
+    // tested. The rendered plan string must be byte-identical before and
+    // after, which also proves `on`, `partition_mode`, and
+    // `num_sub_partitions` all survived the round trip.
+    //
+    // `left` and `right` deliberately use distinct schemas (`l_*` vs `r_*`
+    // column names) so that a left/right key-side swap through encode/decode
+    // (e.g. encoding right's exprs into `left_keys`, or decoding `right_keys`
+    // against `left.schema()`) changes the rendered `on=[...]` string instead
+    // of going unnoticed by symmetry.
+    #[tokio::test]
+    async fn spilling_hash_join_exec_roundtrip() {
+        use crate::execution_plans::SpillingHashJoinExec;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion::physical_expr::PhysicalExprRef;
+        use datafusion::physical_plan::displayable;
+        use datafusion::physical_plan::expressions::Column;
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let left_schema = Arc::new(Schema::new(vec![
+            Field::new("l_k1", DataType::Int32, false),
+            Field::new("l_k2", DataType::Int32, false),
+            Field::new("l_v", DataType::Int32, false),
+        ]));
+        let right_schema = Arc::new(Schema::new(vec![
+            Field::new("r_k1", DataType::Int32, false),
+            Field::new("r_k2", DataType::Int32, false),
+            Field::new("r_v", DataType::Int32, false),
+        ]));
+        let partitions: Vec<Vec<_>> = (0..4).map(|_| vec![]).collect();
+
+        let left_source =
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&left_schema), None)
+                .expect("left MemorySourceConfig");
+        let right_source =
+            MemorySourceConfig::try_new(&partitions, Arc::clone(&right_schema), None)
+                .expect("right MemorySourceConfig");
+
+        let left: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(left_source)));
+        let right: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(right_source)));
+
+        // Multi-key `on`, deliberately not in column-index order, so a
+        // left/right key mismatch or a mis-zip would be caught. Left and
+        // right columns have distinct names, so a whole-side swap (not just
+        // intra-list reordering) also changes the `Display` output.
+        let on: Vec<(PhysicalExprRef, PhysicalExprRef)> = vec![
+            (
+                Arc::new(Column::new("l_k2", 1)),
+                Arc::new(Column::new("r_k2", 1)),
+            ),
+            (
+                Arc::new(Column::new("l_k1", 0)),
+                Arc::new(Column::new("r_k1", 0)),
+            ),
+        ];
+
+        let exec = Arc::new(
+            SpillingHashJoinExec::try_new(
+                left.clone(),
+                right.clone(),
+                on,
+                PartitionMode::Partitioned,
+                16,
+            )
+            .unwrap(),
+        );
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(exec.clone() as Arc<dyn ExecutionPlan>, &mut buf)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = codec.try_decode(&buf, &[left, right], &ctx).unwrap();
+
+        let before = format!(
+            "{}",
+            displayable(exec.as_ref() as &dyn ExecutionPlan).indent(false)
+        );
+        let after = format!("{}", displayable(decoded.as_ref()).indent(false));
+        assert_eq!(before, after);
     }
 }

@@ -523,6 +523,7 @@ dependencies = [
  "rand 0.10.2",
  "rustc_version",
  "serde",
+ "smallvec",
  "tokio",
  "tokio-stream",
  "tonic",
