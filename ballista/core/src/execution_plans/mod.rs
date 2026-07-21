@@ -22,11 +22,13 @@ mod buffer;
 mod chaos_exec;
 mod distributed_explain_analyze;
 mod distributed_query;
+mod range_repartition_common;
 mod runtime_stats;
 mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+mod unordered_range_repartition;
 mod unresolved_shuffle;
 
 use std::path::{Path, PathBuf};
@@ -44,6 +46,7 @@ pub use shuffle_writer::ShuffleWriterExec;
 pub use shuffle_writer::compute_global_output_partition_ids;
 pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
+pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
 
 use crate::JobId;

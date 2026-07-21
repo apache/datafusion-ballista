@@ -53,6 +53,7 @@ message BallistaPhysicalPlanNode {
     ChaosExecNode chaos_exec = 5;
     RuntimeStatsExecNode runtime_stats = 6;
     BufferExecNode buffer = 7;
+    UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
   }
 }
 
@@ -89,6 +90,21 @@ enum BufferMode {
   BUFFER_MODE_DAM = 0;
   // Future modes: PASS_THROUGH, BUFFER_ALL, SPILL_ON_PRESSURE, ...
   // Add here as they land in Rust.
+}
+
+// Value-range router over unordered inputs. Reads P input partitions with
+// no sort assumption, evaluates the first ORDER BY expression per row, and
+// routes each row to one of K output partitions using cuts discovered at
+// runtime from a sibling RuntimeStatsExec's quantile sketch. The child
+// plan is plumbed by the framework as `inputs[0]`.
+message UnorderedRangeRepartitionExecNode {
+  // Lexicographic ORDER BY carried through from the wrapping window
+  // operator. Routing keys off the first entry today; the full ordering is
+  // preserved so downstream operators (SortExec, BWAG) that need it keep
+  // working.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+  // K — number of output partitions. Must be ≥ 2.
+  uint32 output_partitions = 2;
 }
 
 message ChaosExecNode {
