@@ -859,6 +859,45 @@ mod test {
         );
     }
 
+    // `datafusion-proto` encodes an `EmptyExec` as its schema alone, so a
+    // multi-partition `EmptyExec` decodes with a single partition (apache/datafusion
+    // #23642). `make_empty_exec_serde_safe` in the scheduler works around this by
+    // rewriting such nodes into a round-robin `RepartitionExec` before a stage plan
+    // goes on the wire.
+    //
+    // This test pins the upstream behaviour that makes the workaround necessary: when
+    // it starts failing, DataFusion preserves the partition count and the workaround
+    // can be deleted.
+    #[tokio::test]
+    async fn empty_exec_partition_count_is_lost_by_datafusion_proto() {
+        use datafusion::physical_plan::ExecutionPlanProperties;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion_proto::physical_plan::{
+            AsExecutionPlan, DefaultPhysicalExtensionCodec,
+        };
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema).with_partitions(4));
+        assert_eq!(
+            plan.output_partitioning().partition_count(),
+            4,
+            "precondition: EmptyExec reports 4 partitions"
+        );
+
+        let codec = DefaultPhysicalExtensionCodec {};
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = proto.try_into_physical_plan(&ctx, &codec).unwrap();
+
+        assert_eq!(
+            decoded.output_partitioning().partition_count(),
+            1,
+            "EmptyExec partition count is dropped on the wire; if this now decodes as \
+             4, apache/datafusion#23642 is fixed and make_empty_exec_serde_safe can go"
+        );
+    }
+
     #[tokio::test]
     async fn test_unresolved_shuffle_exec_roundtrip() {
         let schema = create_test_schema();
