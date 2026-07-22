@@ -332,8 +332,10 @@ fn run(check: bool) -> Result<(), String> {
             .join("\n");
         return Err(format!(
             "these configuration keys are rendered by no generated region:\n{list}\n\
-             Add them to a marker region under docs/source, or widen an existing \
-             region's `prefix=` list."
+             Add them to the marker region for the section they belong in. Only \
+             widen an existing region's `prefix=` list if that's actually the \
+             right section for them; widening all the way to `prefix=ballista.` \
+             would dump every key into one table and duplicate the others."
         ));
     }
 
