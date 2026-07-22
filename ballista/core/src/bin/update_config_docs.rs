@@ -21,6 +21,12 @@
 //! Run via `./dev/update_config_docs.sh`. Pass `--check` to report drift
 //! without writing, which is what CI does.
 
+// `main` is still an `unimplemented!()` stub, so in a non-test build nothing
+// below is reachable from it. The test build exercises every item, hence the
+// `not(test)` guard. `expect` rather than `allow` so that wiring up `main`
+// makes this attribute a hard error instead of silently outliving its purpose.
+#![cfg_attr(not(test), expect(dead_code))]
+
 use ballista_core::config::{BallistaConfig, ConfigEntry};
 
 /// Column headers for every generated table.
