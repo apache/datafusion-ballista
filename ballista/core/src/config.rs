@@ -295,8 +295,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          Some(false.to_string())),
         ConfigEntry::new(BALLISTA_PROPAGATE_EMPTY_ENABLED.to_string(),
                         "Enables the AQE propagate-empty-relation rule. Injects EmptyExec \
-                        into the plan when a join input is known to be empty (e.g. during \
-                        joins), allowing downstream work to be skipped.".to_string(),
+                        into the plan where an input is known to be empty, such as one side \
+                        of a join, allowing downstream work to be skipped.".to_string(),
                         DataType::Boolean,
                         Some(true.to_string())),
         ConfigEntry::new(
