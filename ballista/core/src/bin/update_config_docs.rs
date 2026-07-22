@@ -21,13 +21,11 @@
 //! Run via `./dev/update_config_docs.sh`. Pass `--check` to report drift
 //! without writing, which is what CI does.
 
-// `main` is still an `unimplemented!()` stub, so in a non-test build nothing
-// below is reachable from it. The test build exercises every item, hence the
-// `not(test)` guard. `expect` rather than `allow` so that wiring up `main`
-// makes this attribute a hard error instead of silently outliving its purpose.
-#![cfg_attr(not(test), expect(dead_code))]
-
 use ballista_core::config::{BallistaConfig, ConfigEntry};
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 /// Column headers for every generated table.
 const HEADER: [&str; 4] = ["key", "type", "default", "description"];
@@ -257,8 +255,116 @@ fn splice(content: &str, settings: &[Setting]) -> Result<(String, Vec<String>), 
     Ok((out, rendered))
 }
 
-fn main() {
-    unimplemented!("Task 4")
+/// Configuration keys that no generated region rendered.
+///
+/// A non-empty result is a hard error: it means a key exists in the registry
+/// but appears in no documentation, which is the drift this tool exists to
+/// prevent.
+fn orphan_keys<'a>(settings: &'a [Setting], covered: &BTreeSet<String>) -> Vec<&'a str> {
+    let mut orphans: Vec<&str> = settings
+        .iter()
+        .map(|setting| setting.key.as_str())
+        .filter(|key| !covered.contains(*key))
+        .collect();
+    orphans.sort_unstable();
+    orphans
+}
+
+/// Collects every `.md` file under `dir`, recursively.
+fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            markdown_files(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn run(check: bool) -> Result<(), String> {
+    // Resolved at compile time so the tool works from any working directory.
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/source");
+
+    let mut files = Vec::new();
+    markdown_files(&docs, &mut files)
+        .map_err(|e| format!("failed to walk {}: {e}", docs.display()))?;
+    files.sort();
+
+    let settings = settings_from_registry();
+    let mut covered: BTreeSet<String> = BTreeSet::new();
+    let mut stale: Vec<PathBuf> = Vec::new();
+
+    for file in &files {
+        let content = fs::read_to_string(file)
+            .map_err(|e| format!("failed to read {}: {e}", file.display()))?;
+        if !content.contains(BEGIN) {
+            continue;
+        }
+
+        let (updated, keys) = splice(&content, &settings)
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+        covered.extend(keys);
+
+        if updated != content {
+            stale.push(file.clone());
+            if !check {
+                fs::write(file, updated)
+                    .map_err(|e| format!("failed to write {}: {e}", file.display()))?;
+            }
+        }
+    }
+
+    let orphans = orphan_keys(&settings, &covered);
+    if !orphans.is_empty() {
+        let list = orphans
+            .iter()
+            .map(|key| format!("  - {key}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "these configuration keys are rendered by no generated region:\n{list}\n\
+             Add them to a marker region under docs/source, or widen an existing \
+             region's `prefix=` list."
+        ));
+    }
+
+    if check && !stale.is_empty() {
+        let list = stale
+            .iter()
+            .map(|file| format!("  - {}", file.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "the generated configuration tables are out of date:\n{list}\n\
+             Run ./dev/update_config_docs.sh and commit the result."
+        ));
+    }
+
+    if check {
+        println!("configuration tables are up to date");
+    } else if stale.is_empty() {
+        println!("configuration tables already up to date");
+    } else {
+        for file in &stale {
+            println!("updated {}", file.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let check = std::env::args().any(|arg| arg == "--check");
+
+    match run(check) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
@@ -642,5 +748,27 @@ mod tests {
         .expect("parses");
 
         assert_eq!(prefixes, vec!["ballista.a.", "ballista.b."]);
+    }
+
+    #[test]
+    fn orphan_keys_reports_undocumented_settings() {
+        let settings = settings();
+        let mut covered = std::collections::BTreeSet::new();
+        covered.insert("ballista.shuffle.one".to_string());
+        covered.insert("ballista.shuffle.two".to_string());
+
+        assert_eq!(
+            orphan_keys(&settings, &covered),
+            vec!["ballista.testing.one"]
+        );
+    }
+
+    #[test]
+    fn orphan_keys_is_empty_when_all_covered() {
+        let settings = settings();
+        let covered: std::collections::BTreeSet<String> =
+            settings.iter().map(|s| s.key.clone()).collect();
+
+        assert!(orphan_keys(&settings, &covered).is_empty());
     }
 }
