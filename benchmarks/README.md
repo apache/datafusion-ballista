@@ -351,10 +351,10 @@ yet published to crates.io, so the script installs `tpcgen-cli` from git,
 pinned to a fixed rev:
 
 ```bash
-SCALE_FACTOR=1 OUTPUT_DIR=./data-tpcds ./benchmarks/tpcds-gen.sh
+SCALE_FACTOR=10 OUTPUT_DIR=./data-tpcds ./benchmarks/tpcds-gen.sh
 ```
 
-`SCALE_FACTOR` (default `1`) and `OUTPUT_DIR` (default `benchmarks/data-tpcds`,
+`SCALE_FACTOR` (default `10`, matching CI) and `OUTPUT_DIR` (default `benchmarks/data-tpcds`,
 resolved relative to the script) are env overrides; `TPCGEN_REV` overrides the
 pinned `tpcgen-cli` git rev if needed. Note that, unlike the TPC-H generator, `tpcgen-cli tpcds` has no
 `--parts` flag — it writes a single `<table>.parquet` file per table for all
@@ -393,7 +393,7 @@ DataFusion query text. A default run (no `--query`) executes `1..=99` minus
 
 ### CI
 
-`.github/workflows/tpcds.yml` runs the SF1 suite against a local
+`.github/workflows/tpcds.yml` runs the SF10 suite against a local
 scheduler + executor on every push/PR touching `ballista/**` or
 `benchmarks/**`, under the default (static) planner. The adaptive planner
 (AQE on) is not gated yet — it currently fails many TPC-DS queries with an

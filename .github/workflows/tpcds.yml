@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: TPC-DS SF1
+name: TPC-DS SF10
 
 permissions:
   contents: read
@@ -51,8 +51,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  tpcds-sf1:
-    name: TPC-DS SF1 (all queries, static planner)
+  tpcds-sf10:
+    name: TPC-DS SF10 (all queries, static planner)
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -85,11 +85,11 @@ jobs:
           cargo install --git https://github.com/clflushopt/tpchgen-rs \
             --rev 573fd0018dd1b41e52880162f615e9903418c397 --locked tpcgen-cli
 
-      - name: Generate TPC-DS SF1 data
+      - name: Generate TPC-DS SF10 data
         run: |
           mkdir -p "$RUNNER_TEMP/tpcds-data"
           tpcgen-cli tpcds parquet \
-            --scale-factor 1 \
+            --scale-factor 10 \
             --output-dir "$RUNNER_TEMP/tpcds-data"
 
       - name: Run TPC-DS queries against Ballista cluster
@@ -176,7 +176,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: tpcds-sf1-cluster-logs
+          name: tpcds-sf10-cluster-logs
           retention-days: 14
           path: |
             ${{ runner.temp }}/scheduler.log

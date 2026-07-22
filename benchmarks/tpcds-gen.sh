@@ -23,12 +23,12 @@
 # writes one Parquet file per table and has no --parts option.
 #
 # Env overrides:
-#   SCALE_FACTOR   TPC-DS scale factor (default: 1)
+#   SCALE_FACTOR   TPC-DS scale factor (default: 10, matching CI)
 #   OUTPUT_DIR     Where data is written (default: ./data-tpcds)
 #   TPCGEN_REV     tpcgen-cli git rev to install (default: pinned below)
 set -euo pipefail
 
-SCALE_FACTOR="${SCALE_FACTOR:-1}"
+SCALE_FACTOR="${SCALE_FACTOR:-10}"
 TPCGEN_REV="${TPCGEN_REV:-573fd0018dd1b41e52880162f615e9903418c397}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
