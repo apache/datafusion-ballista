@@ -358,8 +358,35 @@ fn run(check: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Printed by `--help`/`-h`, and ahead of the error for any unrecognised
+/// argument so a typo (e.g. `--chek`) fails loudly instead of silently
+/// falling back to write mode.
+const USAGE: &str = "\
+usage: update_config_docs [--check]
+
+Regenerates the marker-delimited configuration tables in docs/source
+from the CONFIG_ENTRIES registry in ballista/core/src/config.rs.
+
+options:
+  --check       report drift without writing (used by CI)
+  -h, --help    print this message and exit
+";
+
 fn main() -> ExitCode {
-    let check = std::env::args().any(|arg| arg == "--check");
+    let mut check = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--check" => check = true,
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("error: unrecognised argument `{other}`\n\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
 
     match run(check) {
         Ok(()) => ExitCode::SUCCESS,
