@@ -116,6 +116,118 @@ fn render_separator(widths: &[usize; 4]) -> String {
     line
 }
 
+/// Opening marker. The rest of the line may carry a `prefix=` attribute.
+const BEGIN: &str = "<!-- BEGIN GENERATED CONFIG REFERENCE";
+/// Closing marker, matched exactly.
+const END: &str = "<!-- END GENERATED CONFIG REFERENCE -->";
+/// Stops prettier reformatting the generated table. Without it the prettier CI
+/// job and the config-docs CI job would disagree about the table's layout and
+/// neither could pass.
+const PRETTIER_IGNORE: &str = "<!-- prettier-ignore -->";
+
+/// Extracts the key prefixes selected by a `BEGIN` marker line. An empty
+/// result means the region selects every key.
+fn parse_prefixes(line: &str) -> Result<Vec<String>, String> {
+    let attributes = line
+        .strip_prefix(BEGIN)
+        .and_then(|rest| rest.strip_suffix("-->"))
+        .ok_or_else(|| format!("malformed marker: `{line}`"))?
+        .trim();
+
+    if attributes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let value = attributes.strip_prefix("prefix=").ok_or_else(|| {
+        format!("unrecognised marker attribute in `{line}`; only `prefix=` is supported")
+    })?;
+
+    Ok(value
+        .split(',')
+        .map(|prefix| prefix.trim().to_string())
+        .filter(|prefix| !prefix.is_empty())
+        .collect())
+}
+
+/// Rewrites the body of every generated region in `content`.
+///
+/// Returns the new content and the keys rendered into it. Callers union those
+/// key lists across files to check that no configuration key is undocumented.
+fn splice(content: &str, settings: &[Setting]) -> Result<(String, Vec<String>), String> {
+    let mut out = String::with_capacity(content.len());
+    let mut rendered: Vec<String> = Vec::new();
+    let mut lines = content.lines();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+
+        if trimmed == END {
+            return Err(format!("found `{END}` with no matching BEGIN marker"));
+        }
+
+        out.push_str(line);
+        out.push('\n');
+
+        if !trimmed.starts_with(BEGIN) {
+            continue;
+        }
+
+        let prefixes = parse_prefixes(trimmed)?;
+
+        // Discard the old body.
+        let mut closed = false;
+        for inner in lines.by_ref() {
+            let inner = inner.trim();
+            if inner.starts_with(BEGIN) {
+                return Err(format!(
+                    "nested BEGIN marker inside the region opened by `{trimmed}`"
+                ));
+            }
+            if inner == END {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            return Err(format!("unterminated marker: `{trimmed}`"));
+        }
+
+        let selected: Vec<&Setting> = settings
+            .iter()
+            .filter(|setting| {
+                prefixes.is_empty()
+                    || prefixes
+                        .iter()
+                        .any(|prefix| setting.key.starts_with(prefix.as_str()))
+            })
+            .collect();
+
+        if selected.is_empty() {
+            return Err(format!("marker `{trimmed}` matched no configuration keys"));
+        }
+
+        rendered.extend(selected.iter().map(|setting| setting.key.clone()));
+
+        let rows: Vec<[String; 4]> = selected
+            .iter()
+            .map(|setting| setting.cells.clone())
+            .collect();
+
+        // The prettier-ignore directive keeps prettier from reformatting the
+        // table. The blank line before END is required even so: prettier
+        // inserts one between a table and a following HTML comment.
+        out.push('\n');
+        out.push_str(PRETTIER_IGNORE);
+        out.push('\n');
+        out.push_str(&render_table(&rows));
+        out.push('\n');
+        out.push_str(END);
+        out.push('\n');
+    }
+
+    Ok((out, rendered))
+}
+
 fn main() {
     unimplemented!("Task 4")
 }
@@ -225,5 +337,196 @@ mod tests {
                 entry.name()
             );
         }
+    }
+
+    fn settings() -> Vec<Setting> {
+        vec![
+            Setting {
+                key: "ballista.shuffle.one".to_string(),
+                cells: row("ballista.shuffle.one", "Utf8", "-", "shuffle one"),
+            },
+            Setting {
+                key: "ballista.shuffle.two".to_string(),
+                cells: row("ballista.shuffle.two", "Utf8", "-", "shuffle two"),
+            },
+            Setting {
+                key: "ballista.testing.one".to_string(),
+                cells: row("ballista.testing.one", "Utf8", "-", "testing one"),
+            },
+        ]
+    }
+
+    fn doc(body: &str) -> String {
+        format!("# Title\n\n{body}\ntail\n")
+    }
+
+    #[test]
+    fn splice_fills_an_empty_region() {
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let (out, keys) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert_eq!(keys, vec!["ballista.testing.one".to_string()]);
+        assert!(out.contains("| ballista.testing.one |"), "got:\n{out}");
+        assert!(!out.contains("ballista.shuffle.one"), "got:\n{out}");
+        // Prose outside the region survives.
+        assert!(out.starts_with("# Title\n"), "got:\n{out}");
+        assert!(out.ends_with("tail\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn splice_emits_prettier_ignore_and_blank_lines() {
+        // Without the directive the prettier CI job and the config-docs CI job
+        // would fight over the table's formatting and neither could pass. The
+        // blank line before END is required even with the directive: prettier
+        // inserts one there regardless.
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let (out, _) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert!(
+            out.contains(
+                "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\n<!-- prettier-ignore -->\n| key"
+            ),
+            "missing blank line or prettier-ignore after BEGIN:\n{out}"
+        );
+        assert!(
+            out.contains(" |\n\n<!-- END GENERATED CONFIG REFERENCE -->"),
+            "missing blank line before END:\n{out}"
+        );
+    }
+
+    #[test]
+    fn splice_is_idempotent() {
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let (once, _) = splice(&content, &settings()).expect("first splice");
+        let (twice, _) = splice(&once, &settings()).expect("second splice");
+
+        assert_eq!(once, twice, "splice must converge");
+    }
+
+    #[test]
+    fn splice_replaces_stale_content() {
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\n\
+             | key | type |\n| --- | ---- |\n| ballista.gone | Utf8 |\n\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let (out, _) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert!(!out.contains("ballista.gone"), "stale row survived:\n{out}");
+        assert!(out.contains("ballista.testing.one"), "got:\n{out}");
+    }
+
+    #[test]
+    fn splice_handles_multiple_regions() {
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n\n\
+             ## Testing\n\n\
+             <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let (out, mut keys) = splice(&content, &settings()).expect("splice succeeds");
+        keys.sort();
+
+        assert_eq!(
+            keys,
+            vec![
+                "ballista.shuffle.one".to_string(),
+                "ballista.shuffle.two".to_string(),
+                "ballista.testing.one".to_string(),
+            ]
+        );
+        assert!(
+            out.contains("## Testing"),
+            "prose between regions lost:\n{out}"
+        );
+    }
+
+    #[test]
+    fn splice_without_prefix_selects_every_key() {
+        let content = doc("<!-- BEGIN GENERATED CONFIG REFERENCE -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n");
+
+        let (_, keys) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn splice_rejects_unterminated_region() {
+        let content = doc("<!-- BEGIN GENERATED CONFIG REFERENCE -->\n");
+
+        let err = splice(&content, &settings()).expect_err("must fail");
+
+        assert!(err.contains("unterminated"), "got: {err}");
+    }
+
+    #[test]
+    fn splice_rejects_nested_begin() {
+        let content = doc("<!-- BEGIN GENERATED CONFIG REFERENCE -->\n\
+             <!-- BEGIN GENERATED CONFIG REFERENCE -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n");
+
+        let err = splice(&content, &settings()).expect_err("must fail");
+
+        assert!(err.contains("nested"), "got: {err}");
+    }
+
+    #[test]
+    fn splice_rejects_orphan_end() {
+        let content = doc("<!-- END GENERATED CONFIG REFERENCE -->\n");
+
+        let err = splice(&content, &settings()).expect_err("must fail");
+
+        assert!(err.contains("no matching BEGIN"), "got: {err}");
+    }
+
+    #[test]
+    fn splice_rejects_prefix_matching_nothing() {
+        // Catches typos in a prefix attribute.
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.typo. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let err = splice(&content, &settings()).expect_err("must fail");
+
+        assert!(err.contains("matched no configuration keys"), "got: {err}");
+    }
+
+    #[test]
+    fn splice_rejects_unknown_attribute() {
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE suffix=ballista. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let err = splice(&content, &settings()).expect_err("must fail");
+
+        assert!(err.contains("unrecognised marker attribute"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_prefixes_reads_a_comma_separated_list() {
+        let prefixes = parse_prefixes(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.a.,ballista.b. -->",
+        )
+        .expect("parses");
+
+        assert_eq!(prefixes, vec!["ballista.a.", "ballista.b."]);
     }
 }
