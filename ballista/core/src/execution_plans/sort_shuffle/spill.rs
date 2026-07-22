@@ -17,7 +17,9 @@
 
 //! Spill manager for sort-based shuffle.
 //!
-//! Handles writing partition buffers to disk when memory pressure is high.
+//! Handles writing partition buffers to disk when the writer decides to flush
+//! them, either because the runtime `MemoryPool` rejected a reservation grow or
+//! because the per-task buffer budget was reached.
 //! At finalization, the spill bytes are concatenated verbatim into the
 //! consolidated output file alongside the in-memory remainder.
 
@@ -191,7 +193,7 @@ impl SpillManager {
 
     /// Returns the total number of batches written to spill files across all
     /// partitions. Note this counts batches, not spill *events*: a single
-    /// memory-pressure event in the writer typically produces one batch per
+    /// spill event in the writer typically produces one batch per
     /// non-empty output partition. Spill-event accounting lives at the writer
     /// layer because the spill manager only sees batch-level calls.
     pub fn total_spilled_batches(&self) -> u64 {
