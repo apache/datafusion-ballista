@@ -92,7 +92,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::execution_plans::range_repartition_common::{
-    discover_cuts, split_batch_by_range, wait_for_task,
+    discover_cuts, guarded_scatter, split_batch_by_range,
 };
 
 /// Per-output-partition channel capacity. Small = tight backpressure; the
@@ -127,11 +127,12 @@ struct DispatchState {
     /// K slots. Each holds `Some(receiver)` after setup, `None` once its
     /// output partition has been consumed.
     receivers: Vec<Option<mpsc::Receiver<Result<RecordBatch>>>>,
-    /// P wait-tasks (one per input partition). Each awaits its scatter task
-    /// and turns panic/error/clean-end into an explicit signal on every
-    /// output channel. `SpawnedTask` aborts its inner tokio task on drop, so
-    /// holding these here ties the background work's lifetime to this exec's
-    /// — dropping the exec cancels all scatter work.
+    /// P scatter tasks (one per input partition). Each runs its scatter
+    /// body inside `guarded_scatter`, which converts panic/error/clean-end
+    /// into an explicit signal on every output channel. `SpawnedTask`
+    /// aborts its inner tokio task on drop, so holding these here ties the
+    /// background work's lifetime to this exec's — dropping the exec
+    /// cancels all scatter work.
     _drop_helper: Vec<SpawnedTask<()>>,
     initialized: bool,
 }
@@ -331,11 +332,16 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             for input_partition in 0..input_partitions {
                 let child = self.input.clone();
                 let scatter_senders = senders.clone();
+                let guard_senders = senders.clone();
                 let cuts_cell = cuts_cell.clone();
                 let routing_expr = routing_expr.clone();
                 let ctx = ctx.clone();
                 let output_partitions = self.output_partitions;
-                let input_task = SpawnedTask::spawn(async move {
+                // `guarded_scatter` wraps the body in `catch_unwind`: a
+                // panic inside `scatter_input_partition` (or anything it
+                // calls) becomes a broadcast error rather than a silent
+                // sender-drop that downstream would misread as clean EOF.
+                drop_helper.push(SpawnedTask::spawn(guarded_scatter(
                     scatter_input_partition(
                         child,
                         input_partition,
@@ -344,17 +350,9 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
                         scatter_senders,
                         cuts_cell,
                         output_partitions,
-                    )
-                    .await
-                });
-                // A separate task awaits the scatter and surfaces panic /
-                // error / clean-end onto every output channel. Without this
-                // layer, a scatter panic drops its senders silently and
-                // downstream sees a spurious EOF.
-                let wait_senders = senders.clone();
-                drop_helper.push(SpawnedTask::spawn(async move {
-                    wait_for_task(input_task, wait_senders).await
-                }));
+                    ),
+                    guard_senders,
+                )));
             }
             state._drop_helper = drop_helper;
         }
@@ -875,11 +873,14 @@ mod tests {
 
     /// A panic inside the scatter task's polling of the child stream must
     /// surface to every output partition as an `Err(..)` — not a silent EOF.
-    /// The wrapping wait-task converts `JoinError` on panic into a
-    /// `DataFusionError::Context("scatter task panicked", ..)` broadcast
-    /// across all K senders.
+    /// `guarded_scatter`'s `catch_unwind` wraps the panic into a
+    /// `DataFusionError` broadcast across all K senders, and the payload
+    /// downcast preserves the original panic message.
     #[tokio::test]
     async fn scatter_task_panic_surfaces_as_error() {
+        use crate::execution_plans::range_repartition_common::test_util::{
+            PanickingSourceExec, SYNTHETIC_PANIC_MESSAGE,
+        };
         let schema = schema_v2_id();
         let source: Arc<dyn ExecutionPlan> = Arc::new(PanickingSourceExec::new(&schema));
         let exec: Arc<dyn ExecutionPlan> = Arc::new(
@@ -891,92 +892,40 @@ mod tests {
         let streams: Vec<_> = (0..output_partitions)
             .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
             .collect();
-        let mut saw_panic_err = false;
+        let mut outputs_with_err = 0;
+        let mut outputs_carrying_original_message = 0;
         for stream in streams {
             let results: Vec<Result<RecordBatch>> =
                 <_ as futures::stream::StreamExt>::collect(stream).await;
+            let mut err_seen = false;
+            let mut msg_seen = false;
             for r in results {
-                if let Err(err) = r
-                    && err.to_string().contains("panicked")
-                {
-                    saw_panic_err = true;
+                if let Err(err) = r {
+                    let text = err.to_string();
+                    if text.contains("panicked") {
+                        err_seen = true;
+                    }
+                    if text.contains(SYNTHETIC_PANIC_MESSAGE) {
+                        msg_seen = true;
+                    }
                 }
             }
-        }
-        assert!(
-            saw_panic_err,
-            "at least one output partition must surface the scatter panic \
-             as an Err — otherwise consumers see a spurious clean EOF"
-        );
-    }
-
-    /// Test-only source: its stream panics on the first poll. Used to
-    /// exercise the wait-task's JoinError → broadcast-error path.
-    #[derive(Debug)]
-    struct PanickingSourceExec {
-        schema: SchemaRef,
-        properties: Arc<PlanProperties>,
-    }
-
-    impl PanickingSourceExec {
-        fn new(schema: &Arc<Schema>) -> Self {
-            let properties = Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema.clone()),
-                Partitioning::UnknownPartitioning(1),
-                datafusion::physical_plan::execution_plan::EmissionType::Incremental,
-                datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-            ));
-            Self {
-                schema: schema.clone(),
-                properties,
+            if err_seen {
+                outputs_with_err += 1;
+            }
+            if msg_seen {
+                outputs_carrying_original_message += 1;
             }
         }
-    }
-
-    impl DisplayAs for PanickingSourceExec {
-        fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter<'_>) -> fmt::Result {
-            write!(f, "PanickingSourceExec")
-        }
-    }
-
-    impl ExecutionPlan for PanickingSourceExec {
-        fn name(&self) -> &str {
-            "PanickingSourceExec"
-        }
-
-        fn schema(&self) -> SchemaRef {
-            self.schema.clone()
-        }
-
-        fn properties(&self) -> &Arc<PlanProperties> {
-            &self.properties
-        }
-
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![]
-        }
-
-        fn with_new_children(
-            self: Arc<Self>,
-            _children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> Result<Arc<dyn ExecutionPlan>> {
-            Ok(self)
-        }
-
-        fn execute(
-            &self,
-            _partition: usize,
-            _ctx: Arc<TaskContext>,
-        ) -> Result<SendableRecordBatchStream> {
-            let stream = futures::stream::once(async {
-                panic!("PanickingSourceExec stream boom");
-                #[allow(unreachable_code)]
-                Ok(RecordBatch::new_empty(Arc::new(Schema::empty())))
-            });
-            Ok(Box::pin(RecordBatchStreamAdapter::new(
-                self.schema.clone(),
-                stream,
-            )))
-        }
+        // Every output partition must see the panic — not a spurious EOF —
+        // and the original panic message must survive the payload downcast.
+        assert_eq!(
+            outputs_with_err, output_partitions,
+            "all output partitions must surface the scatter panic as Err"
+        );
+        assert_eq!(
+            outputs_carrying_original_message, output_partitions,
+            "original panic message must survive catch_unwind payload extraction"
+        );
     }
 }

@@ -36,17 +36,19 @@
 //! [`UnorderedRangeRepartitionExec`]: super::UnorderedRangeRepartitionExec
 //! [`RuntimeStatsExec`]: super::RuntimeStatsExec
 
+use std::any::Any;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{Array, Float64Array, RecordBatch, UInt32Array};
 use datafusion::arrow::compute::take_arrays;
-use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{Result, internal_datafusion_err};
-use datafusion::error::DataFusionError;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use futures::FutureExt;
 use log::warn;
 use tokio::sync::mpsc;
 
@@ -282,38 +284,145 @@ pub(super) async fn broadcast_error(
     }
 }
 
-/// Await a scatter task and turn every terminal state into something the K
-/// downstream consumers can observe. Modelled on DataFusion's
-/// `RepartitionExec::wait_for_task`.
+/// Run a scatter body and convert every terminal state — clean EOF, DFError,
+/// or panic — into an explicit signal on the K output channels. Wraps the
+/// future in `catch_unwind` so a panic inside `fut` becomes a broadcast
+/// error rather than a silent sender drop (which downstream would misread
+/// as a clean EOF).
 ///
-/// Without this, a panic in a scatter task closes its senders with no data
-/// sent — every output partition sees a clean EOF and the overall task
-/// reports success while silently dropping all remaining rows. Here every
-/// terminal state (panic, DFError, clean end) becomes an explicit signal
-/// on every output channel.
-pub(super) async fn wait_for_task(
-    input_task: SpawnedTask<Result<()>>,
+/// `AssertUnwindSafe` is required because async futures aren't `UnwindSafe`
+/// by default. Safe here because the scatter futures' captured state is
+/// `Arc`s and owned locals — nothing observes post-panic state after we
+/// broadcast and return.
+pub(super) async fn guarded_scatter<F>(
+    fut: F,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-) {
-    match input_task.join().await {
-        Err(join_err) => {
-            let ctx = if join_err.is_panic() {
-                "scatter task panicked"
-            } else {
-                "scatter task cancelled"
-            };
+) where
+    F: Future<Output = Result<()>>,
+{
+    match AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(Ok(())) => {
+            // Drop the senders — receivers see clean EOF.
+        }
+        Ok(Err(err)) => broadcast_error(&senders, err).await,
+        Err(panic_payload) => {
+            let msg = panic_payload_message(panic_payload);
             broadcast_error(
                 &senders,
-                DataFusionError::Context(
-                    ctx.to_string(),
-                    Box::new(DataFusionError::External(Box::new(join_err))),
-                ),
+                internal_datafusion_err!("scatter task panicked: {msg}"),
             )
             .await;
         }
-        Ok(Err(err)) => broadcast_error(&senders, err).await,
-        Ok(Ok(())) => {
-            // Drop the senders — receivers see clean EOF.
+    }
+}
+
+/// Extract a human-readable message from a `catch_unwind` panic payload.
+/// `panic!("literal")` yields `&'static str`; `panic!("{x}")` yields
+/// `String`. Anything else falls back to a placeholder.
+fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+/// Shared test-only utilities for the two range-repartition operators.
+/// The ordered variant will exercise the same `guarded_scatter` panic-path,
+/// so the panic-source lives here rather than being duplicated per operator.
+#[cfg(test)]
+pub(super) mod test_util {
+    use std::fmt::{self, Formatter};
+    use std::sync::Arc;
+
+    use datafusion::arrow::array::RecordBatch;
+    use datafusion::arrow::datatypes::{Schema, SchemaRef};
+    use datafusion::common::Result;
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        SendableRecordBatchStream,
+    };
+
+    /// Message the synthetic panic will surface. Exposed so tests can
+    /// assert-round-trip: after `guarded_scatter`'s payload downcast, this
+    /// exact string must appear in the broadcast error.
+    pub(crate) const SYNTHETIC_PANIC_MESSAGE: &str =
+        "PanickingSourceExec: synthetic test panic";
+
+    /// Test-only source whose stream panics on the first poll. Used to
+    /// exercise `guarded_scatter`'s `catch_unwind` → broadcast-error path
+    /// end-to-end through a real `ExecutionPlan::execute()` call.
+    #[derive(Debug)]
+    pub(crate) struct PanickingSourceExec {
+        schema: SchemaRef,
+        properties: Arc<PlanProperties>,
+    }
+
+    impl PanickingSourceExec {
+        pub(crate) fn new(schema: &Arc<Schema>) -> Self {
+            let properties = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema.clone()),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self {
+                schema: schema.clone(),
+                properties,
+            }
+        }
+    }
+
+    impl DisplayAs for PanickingSourceExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "PanickingSourceExec")
+        }
+    }
+
+    impl ExecutionPlan for PanickingSourceExec {
+        fn name(&self) -> &str {
+            "PanickingSourceExec"
+        }
+
+        fn schema(&self) -> SchemaRef {
+            self.schema.clone()
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(self)
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _ctx: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            let stream = futures::stream::once(async {
+                panic!("{SYNTHETIC_PANIC_MESSAGE}");
+                #[allow(unreachable_code)]
+                Ok(RecordBatch::new_empty(Arc::new(Schema::empty())))
+            });
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema.clone(),
+                stream,
+            )))
         }
     }
 }
