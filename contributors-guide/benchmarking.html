@@ -521,18 +521,23 @@ ephemeral ports.</p>
 <span class="w">  </span>--query<span class="w"> </span><span class="m">18</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--path<span class="w"> </span>/mnt/bigdata/tpch/sf1000<span class="w"> </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--partitions<span class="w"> </span><span class="m">64</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-c<span class="w"> </span>datafusion.optimizer.prefer_hash_join<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-c<span class="w"> </span>datafusion.optimizer.enable_dynamic_filter_pushdown<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>ballista.planner.adaptive.enabled<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
-<p>Omit <code class="docutils literal notranslate"><span class="pre">--query</span></code> to run all 22. <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code> is the AQE-on
-configuration these results use.</p>
-<p><code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code> makes DataFusion plan joins as <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>, which is the
-join strategy this page compares across engines (Comet is configured to match, below).</p>
-<p>Note <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.enable_dynamic_filter_pushdown=false</span></code>: DataFusion’s
-dynamic filter pushdown assumes single-process execution and can deadlock
-distributed execution, so it is pinned off for benchmark runs.</p>
+<p>Omit <code class="docutils literal notranslate"><span class="pre">--query</span></code> to run all 22, and add <code class="docutils literal notranslate"><span class="pre">--skip</span> <span class="pre">&lt;n&gt;</span></code> (repeatable) to leave individual
+queries out of that run — <code class="docutils literal notranslate"><span class="pre">--skip</span> <span class="pre">18</span></code> is what produced the Ballista column below.
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled=true</span></code> is the AQE-on configuration these results
+use.</p>
+<p>Note that <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code> is deliberately left at its default.
+Under AQE it does not select the join strategy: <code class="docutils literal notranslate"><span class="pre">DelayJoinSelectionRule</span></code> folds both
+<code class="docutils literal notranslate"><span class="pre">HashJoinExec</span></code> and <code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> into a single <code class="docutils literal notranslate"><span class="pre">DynamicJoinSelectionExec</span></code>, and
+the strategy is then chosen from runtime statistics — the broadcast thresholds, and
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code> (64 MiB by default), which
+lowers a Partitioned hash join to the spillable <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> when the build side’s
+largest partition would not fit. Setting <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code> does not force
+sort-merge; it only changes which conversion path the plan takes, and the
+<code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> path discards the join’s projection, so it measures a slower plan
+rather than a different join strategy.</p>
 </section>
 <section id="spark">
 <h3>Spark<a class="headerlink" href="#spark" title="Link to this heading">#</a></h3>
@@ -588,9 +593,12 @@ the Comet shuffle manager, and the jar on the classpath:</p>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin=false</span></code> keeps Comet on Spark’s <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>
-instead of converting it to a shuffled hash join. This matches Ballista, which plans
-<code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> (<code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>), so the two engines are compared on the
-same join strategy rather than one being handed a different one.</p>
+instead of converting it to a shuffled hash join.</p>
+<p>This no longer pins the two engines to the same join strategy. Ballista under AQE
+chooses per join at runtime — broadcast, Partitioned hash, or sort-merge — and there
+is no supported way to force it to sort-merge throughout (see the note in the Ballista
+section above). So a Ballista-vs-Comet gap may partly reflect different join
+strategies, not only different execution. Read the comparison with that in mind.</p>
 </section>
 </section>
 <section id="why-compare-against-comet">
@@ -628,11 +636,9 @@ planner.</p>
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
 <p>TPC-H <strong>SF1000</strong>, reference cluster above, <strong>AQE on</strong>, 1 iteration,
-<code class="docutils literal notranslate"><span class="pre">target_partitions=64</span></code>, <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>,
-<code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>, and the sort-shuffle spill cap overridden to
-uncapped (<code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes=0</span></code>; the shipped
-default is 256 MiB). All three engines plan <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>. Times in seconds; lower
-is better.</p>
+<code class="docutils literal notranslate"><span class="pre">target_partitions=64</span></code>, all Ballista join settings at their defaults. Ballista picks
+each join’s strategy at runtime; Spark and Comet are held to <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code>. Times in
+seconds; lower is better.</p>
 <p>Versions under test:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -642,7 +648,7 @@ is better.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">#2084</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">fac1fa22</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">#2124</span></code> &#64; <code class="docutils literal notranslate"><span class="pre">5290436d</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
 <td><p>3.5.3 (vanilla, Comet disabled)</p></td>
@@ -655,11 +661,19 @@ is better.</p>
 </div>
 <p>Pin the <strong>exact commit</strong> the numbers came from, not “main”: <code class="docutils literal notranslate"><span class="pre">main</span></code> moves, and a row
 that mixes numbers from different commits silently misattributes a regression.</p>
-<p>Ballista Q1–Q17 come from a <strong>full 22-query suite run</strong> (one query after another on
-freshly started executors); Q18 exhausts the memory pool and OOM-kills the executors
-(see below), which currently wedges the rest of the suite, so <strong>Q19–Q22 were run as
-individual single-query jobs</strong> against a fresh cluster of the same shape. Comet and
-Spark each completed the full suite in one run.</p>
+<p>The Ballista column comes from a <strong>single suite run of 21 queries</strong> on freshly
+started executors, using <code class="docutils literal notranslate"><span class="pre">--skip</span> <span class="pre">18</span></code> to leave out the one query that exhausts the
+memory pool and OOM-kills the executors (see below), which would otherwise wedge
+the rest of the suite. Comet and Spark each completed the full suite in one run.</p>
+<p>Keep the whole column to one continuous run wherever possible. Driving queries as
+individual single-query jobs measures something different: each job starts against
+a cold page cache, which on this cluster cost the two join-free queries (Q1, Q6)
+roughly 20 s and 20 s respectively when the two methods were compared directly. Use
+<code class="docutils literal notranslate"><span class="pre">--skip</span></code> rather than a loop of <code class="docutils literal notranslate"><span class="pre">--query</span></code> runs.</p>
+<p>Single iteration means <strong>run-to-run variance is not quantified here</strong>. Comparing the
+same commit across the two methods above showed spreads of up to ~20% on individual
+queries, so treat a per-query difference under about 20% as noise and read the total
+row instead.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
@@ -673,149 +687,149 @@ Spark each completed the full suite in one run.</p>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
 <td class="text-right"><p>427.1</p></td>
 <td class="text-right"><p>46.6</p></td>
-<td class="text-right"><p>59.4</p></td>
+<td class="text-right"><p>54.2</p></td>
 <td class="text-right"><p>4</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
 <td class="text-right"><p>75.9</p></td>
 <td class="text-right"><p>39.2</p></td>
-<td class="text-right"><p>57.0</p></td>
+<td class="text-right"><p>60.3</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
 <td class="text-right"><p>154.1</p></td>
 <td class="text-right"><p>195.4</p></td>
-<td class="text-right"><p>214.8</p></td>
+<td class="text-right"><p>140.0</p></td>
 <td class="text-right"><p>10</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
 <td class="text-right"><p>82.0</p></td>
 <td class="text-right"><p>42.6</p></td>
-<td class="text-right"><p>65.2</p></td>
+<td class="text-right"><p>46.3</p></td>
 <td class="text-right"><p>5</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
 <td class="text-right"><p>336.4</p></td>
 <td class="text-right"><p>493.4</p></td>
-<td class="text-right"><p>456.6</p></td>
+<td class="text-right"><p>327.2</p></td>
 <td class="text-right"><p>5</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
 <td class="text-right"><p>28.9</p></td>
 <td class="text-right"><p>14.6</p></td>
-<td class="text-right"><p>29.5</p></td>
+<td class="text-right"><p>27.2</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
 <td class="text-right"><p>180.6</p></td>
 <td class="text-right"><p>149.5</p></td>
-<td class="text-right"><p>369.0</p></td>
+<td class="text-right"><p>364.9</p></td>
 <td class="text-right"><p>4</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
 <td class="text-right"><p>391.8</p></td>
 <td class="text-right"><p>642.1</p></td>
-<td class="text-right"><p>540.3</p></td>
+<td class="text-right"><p>481.1</p></td>
 <td class="text-right"><p>2</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
 <td class="text-right"><p>509.8</p></td>
 <td class="text-right"><p>843.5</p></td>
-<td class="text-right"><p>764.9</p></td>
+<td class="text-right"><p>606.4</p></td>
 <td class="text-right"><p>175</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
 <td class="text-right"><p>151.1</p></td>
 <td class="text-right"><p>104.8</p></td>
-<td class="text-right"><p>168.3</p></td>
+<td class="text-right"><p>148.4</p></td>
 <td class="text-right"><p>20</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
 <td class="text-right"><p>44.7</p></td>
 <td class="text-right"><p>44.1</p></td>
-<td class="text-right"><p>91.4</p></td>
+<td class="text-right"><p>62.0</p></td>
 <td class="text-right"><p>0 [1]</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
 <td class="text-right"><p>74.1</p></td>
 <td class="text-right"><p>49.9</p></td>
-<td class="text-right"><p>74.9</p></td>
+<td class="text-right"><p>58.3</p></td>
 <td class="text-right"><p>2</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
 <td class="text-right"><p>98.7</p></td>
 <td class="text-right"><p>58.3</p></td>
-<td class="text-right"><p>91.9</p></td>
+<td class="text-right"><p>100.4</p></td>
 <td class="text-right"><p>30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
 <td class="text-right"><p>43.0</p></td>
 <td class="text-right"><p>27.4</p></td>
-<td class="text-right"><p>43.0</p></td>
+<td class="text-right"><p>71.1</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
 <td class="text-right"><p>121.5</p></td>
 <td class="text-right"><p>65.6</p></td>
-<td class="text-right"><p>116.5</p></td>
+<td class="text-right"><p>53.8</p></td>
 <td class="text-right"><p>1 [2]</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
 <td class="text-right"><p>24.5</p></td>
 <td class="text-right"><p>17.5</p></td>
-<td class="text-right"><p>29.0</p></td>
+<td class="text-right"><p>34.3</p></td>
 <td class="text-right"><p>27840</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
 <td class="text-right"><p>406.7</p></td>
 <td class="text-right"><p>285.8</p></td>
-<td class="text-right"><p>392.8</p></td>
+<td class="text-right"><p>417.8</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
 <td class="text-right"><p>428.8</p></td>
 <td class="text-right"><p>370.5</p></td>
-<td class="text-right"><p>OOM</p></td>
+<td class="text-right"><p>TBD</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
 <td class="text-right"><p>58.9</p></td>
 <td class="text-right"><p>35.5</p></td>
-<td class="text-right"><p>183.9</p></td>
+<td class="text-right"><p>68.5</p></td>
 <td class="text-right"><p>1</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
 <td class="text-right"><p>105.9</p></td>
 <td class="text-right"><p>67.6</p></td>
-<td class="text-right"><p>112.2</p></td>
+<td class="text-right"><p>93.7</p></td>
 <td class="text-right"><p>110759</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
 <td class="text-right"><p>562.2</p></td>
 <td class="text-right"><p>460.1</p></td>
-<td class="text-right"><p>765.2</p></td>
+<td class="text-right"><p>698.0</p></td>
 <td class="text-right"><p>100</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
 <td class="text-right"><p>36.8</p></td>
 <td class="text-right"><p>21.5</p></td>
-<td class="text-right"><p>35.2</p></td>
+<td class="text-right"><p>22.9</p></td>
 <td class="text-right"><p>7</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total (excl. Q18)</strong></p></td>
 <td class="text-right"><p><strong>3914.7</strong></p></td>
 <td class="text-right"><p><strong>3705.0</strong></p></td>
-<td class="text-right"><p><strong>4661.0</strong></p></td>
+<td class="text-right"><p><strong>3936.8</strong></p></td>
 <td class="text-right"><p></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The <strong>Total</strong> row sums the 21 queries <strong>excluding Q18</strong>, because Q18 does not complete
-on Ballista at this sizing (below), so a 22-query total would not be comparable across
-engines. Q18’s own times are in its row.</p>
-<p>Row counts agree across all three engines on every query, including Q18 (Spark and
-Comet return 100; Ballista OOMs before producing a result).</p>
+<p>The <strong>Total</strong> row sums the 21 queries <strong>excluding Q18</strong>, because Q18 has no Ballista
+figure at this commit (below), so a 22-query total would not be comparable across
+engines. Spark’s and Comet’s Q18 times are in its row.</p>
+<p>Row counts agree across all three engines on every query for which Ballista produced
+a result.</p>
 <p>The <strong>AQE-off</strong> Ballista column has been removed pending a re-run at a matched core
 count; the numbers above for AQE off were taken at a different executor size and are
 not comparable to a fresh AQE-off run, so they were dropped rather than left stale.</p>
@@ -824,12 +838,19 @@ constant is tuned for SF1.</p>
 <p>[2] Q15 is a multi-statement query (<code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">VIEW</span></code> / <code class="docutils literal notranslate"><span class="pre">SELECT</span></code> / <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">VIEW</span></code>); all three
 engines report 1 row here. (A previous result set saw Spark report 0 for Q15 depending
 on which statement the harness took as the result; it does not recur in this run.)</p>
-<p><strong>Q18 OOMs on Ballista at this sizing.</strong> Q18’s hash-join build side is <code class="docutils literal notranslate"><span class="pre">Partitioned</span></code>
+<p><strong>Q18 is not measured at this commit.</strong> Q18’s hash-join build side is <code class="docutils literal notranslate"><span class="pre">Partitioned</span></code>
 and does not spill; with 16 task slots sharing the 48 GB pool (3 GB per slot), the
 per-task build side exceeds the container limit and the executor is OOM-killed
 (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a>). At the previous
 8-slot sizing (6 GB per slot) Q18 completed, so this is a direct consequence of the
-denser packing. The OOM is recorded as <code class="docutils literal notranslate"><span class="pre">OOM</span></code> rather than a time.</p>
+denser packing.</p>
+<p>It was excluded from the suite run above with <code class="docutils literal notranslate"><span class="pre">--skip</span> <span class="pre">18</span></code> so that one query could not
+wedge the other 21, and it has not since been run to completion at this commit — hence
+<code class="docutils literal notranslate"><span class="pre">TBD</span></code> rather than <code class="docutils literal notranslate"><span class="pre">OOM</span></code>. An earlier attempt on this branch did OOM-kill an executor,
+but under a different configuration (<code class="docutils literal notranslate"><span class="pre">prefer_hash_join=false</span></code>, which sends the plan
+down a conversion path that discards the join’s projection and so materialises more
+columns than the configuration documented above). That result does not transfer, so it
+is not recorded here.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">Rows</span></code> column is the row count the query returned, recorded so a time is never
 read without the answer it produced.</p>
 <p>This table records <strong>one current result set</strong>. When results are refreshed, the
@@ -839,114 +860,6 @@ regression.</p>
 <p><code class="docutils literal notranslate"><span class="pre">TBD</span></code> means not yet measured on this cluster at this commit; a query that ran but
 did not produce an answer is recorded as <code class="docutils literal notranslate"><span class="pre">FAIL</span></code>, or <code class="docutils literal notranslate"><span class="pre">OOM</span></code> where the failure is a
 known memory exhaustion.</p>
-<section id="hash-join-with-a-per-partition-build-size-fallback-aqe-on-216-cores-64-partitions">
-<h3>Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)<a class="headerlink" href="#hash-join-with-a-per-partition-build-size-fallback-aqe-on-216-cores-64-partitions" title="Link to this heading">#</a></h3>
-<p>A second Ballista configuration exercises <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=true</span></code> together with the
-AQE hash-join safety fallback
-(<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2084"><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code></a>).
-The fallback lowers a Partitioned hash join to <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> per join when the
-build side’s largest partition exceeds the configured budget, so a hash-join run does
-not abort on the queries whose non-spillable hash-join build exceeds one task slot’s
-pool — notably Q18
-(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a>). That fallback
-is what makes <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=true</span></code> usable across the whole suite instead of
-failing partway.</p>
-<p>This run uses a <strong>larger cluster than the reference above</strong> and a <strong>different
-<code class="docutils literal notranslate"><span class="pre">target_partitions</span></code></strong>, so its numbers are not comparable to the table above: TPC-H
-<strong>SF1000</strong>, <strong>2 executors × 16 cores</strong> (one per node, ~2.8 GB per task slot),
-<strong><code class="docutils literal notranslate"><span class="pre">target_partitions=64</span></code></strong>, <strong>AQE on</strong>, <code class="docutils literal notranslate"><span class="pre">prefer_hash_join=true</span></code>,
-<code class="docutils literal notranslate"><span class="pre">hash_join_max_build_partition_bytes=67108864</span></code> (64 MiB),
-<code class="docutils literal notranslate"><span class="pre">enable_dynamic_filter_pushdown=false</span></code>, sort-shuffle spill uncapped. Each query ran
-on a <strong>freshly restarted cluster</strong>. Ballista &#64; <code class="docutils literal notranslate"><span class="pre">afef9afc</span></code>. Times in seconds.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head text-right"><p>Query</p></th>
-<th class="head text-right"><p>Ballista (AQE on, hash join + 64 MiB fallback)</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>72.1</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>52.9</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>154.2</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>72.9</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>355.4</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>65.9</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>371.7</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>452.4</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>559.8</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>152.3</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p>74.6</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>88.7</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>99.2</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>38.6</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>62.5</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>29.0</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>446.3</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>744.6</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>80.8</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>117.0</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p>605.6</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p>20.5</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
-<td class="text-right"><p><strong>4716.9</strong></p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><strong>All 22 queries completed — no OOMs, no failures.</strong> At the 64 MiB threshold the
-large-build joins (Q5, Q7–Q9, Q17, Q18, Q21) fall back to <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> while
-smaller-build joins stay hash, so the heavy queries run at roughly sort-merge speed
-but the suite runs end to end. Q18 completes at <strong>744.6 s</strong> where the same
-configuration with the fallback disabled (<code class="docutils literal notranslate"><span class="pre">hash_join_max_build_partition_bytes=0</span></code>)
-exhausts the per-slot pool and fails the job
-(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2025">#2025</a>). The fallback is
-opt-in and off by default (a <code class="docutils literal notranslate"><span class="pre">0</span></code> budget); the 64 MiB value here is tuned to this
-cluster’s ~2.8 GB task-slot pool.</p>
-</section>
 <section id="recording-a-result">
 <h3>Recording a result<a class="headerlink" href="#recording-a-result" title="Link to this heading">#</a></h3>
 <ul class="simple">
@@ -955,9 +868,10 @@ cluster’s ~2.8 GB task-slot pool.</p>
 configuration this page measures — from the same commit and cluster.</p></li>
 <li><p>Prefer the figure from a <strong>full suite run</strong>, not a standalone single-query run: a
 long-lived executor deep into a suite is not in the same state as a freshly started
-one. When a query cannot complete in-suite (e.g. Q18’s OOM currently wedges the
-run), note that the remaining queries were run individually, as done here for
-Q19–Q22.</p></li>
+one, and a single-query job pays a cold-cache penalty that is large enough to swamp
+the effect being measured. When a query cannot complete in-suite (e.g. Q18’s OOM
+currently wedges the run), exclude it with <code class="docutils literal notranslate"><span class="pre">--skip</span> <span class="pre">&lt;n&gt;</span></code> so the rest of the column
+still comes from one continuous run, and measure that query separately.</p></li>
 <li><p>Note the <strong>row count</strong> each query returned. A fast wrong answer is not a result,
 and distributed execution has produced silently wrong row counts before.</p></li>
 <li><p>Flag any stage whose runtime is dominated by a few partitions — that is the
@@ -1050,7 +964,6 @@ knowing about before interpreting a number:</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-compare-against-comet">Why compare against Comet</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-join-with-a-per-partition-build-size-fallback-aqe-on-216-cores-64-partitions">Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-a-result">Recording a result</a></li>
 </ul>
 </li>
