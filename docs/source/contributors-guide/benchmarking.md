@@ -149,20 +149,24 @@ tpch benchmark ballista \
   --query 18 \
   --path /mnt/bigdata/tpch/sf1000 --format parquet \
   --partitions 64 --iterations 1 \
-  -c datafusion.optimizer.prefer_hash_join=false \
-  -c datafusion.optimizer.enable_dynamic_filter_pushdown=false \
   -c ballista.planner.adaptive.enabled=true
 ```
 
-Omit `--query` to run all 22. `ballista.planner.adaptive.enabled=true` is the AQE-on
-configuration these results use.
+Omit `--query` to run all 22, and add `--skip <n>` (repeatable) to leave individual
+queries out of that run — `--skip 18` is what produced the Ballista column below.
+`ballista.planner.adaptive.enabled=true` is the AQE-on configuration these results
+use.
 
-`prefer_hash_join=false` makes DataFusion plan joins as `SortMergeJoin`, which is the
-join strategy this page compares across engines (Comet is configured to match, below).
-
-Note `datafusion.optimizer.enable_dynamic_filter_pushdown=false`: DataFusion's
-dynamic filter pushdown assumes single-process execution and can deadlock
-distributed execution, so it is pinned off for benchmark runs.
+Note that `datafusion.optimizer.prefer_hash_join` is deliberately left at its default.
+Under AQE it does not select the join strategy: `DelayJoinSelectionRule` folds both
+`HashJoinExec` and `SortMergeJoinExec` into a single `DynamicJoinSelectionExec`, and
+the strategy is then chosen from runtime statistics — the broadcast thresholds, and
+`ballista.optimizer.hash_join_max_build_partition_bytes` (64 MiB by default), which
+lowers a Partitioned hash join to the spillable `SortMergeJoin` when the build side's
+largest partition would not fit. Setting `prefer_hash_join=false` does not force
+sort-merge; it only changes which conversion path the plan takes, and the
+`SortMergeJoinExec` path discards the join's projection, so it measures a slower plan
+rather than a different join strategy.
 
 ### Spark
 
@@ -222,9 +226,13 @@ spark-submit \
 ```
 
 `spark.comet.exec.replaceSortMergeJoin=false` keeps Comet on Spark's `SortMergeJoin`
-instead of converting it to a shuffled hash join. This matches Ballista, which plans
-`SortMergeJoin` (`prefer_hash_join=false`), so the two engines are compared on the
-same join strategy rather than one being handed a different one.
+instead of converting it to a shuffled hash join.
+
+This no longer pins the two engines to the same join strategy. Ballista under AQE
+chooses per join at runtime — broadcast, Partitioned hash, or sort-merge — and there
+is no supported way to force it to sort-merge throughout (see the note in the Ballista
+section above). So a Ballista-vs-Comet gap may partly reflect different join
+strategies, not only different execution. Read the comparison with that in mind.
 
 [comet]: https://datafusion.apache.org/comet/
 
@@ -264,61 +272,69 @@ planner.
 ## Results
 
 TPC-H **SF1000**, reference cluster above, **AQE on**, 1 iteration,
-`target_partitions=64`, `prefer_hash_join=false`,
-`enable_dynamic_filter_pushdown=false`, and the sort-shuffle spill cap overridden to
-uncapped (`ballista.shuffle.sort_based.memory_limit_per_task_bytes=0`; the shipped
-default is 256 MiB). All three engines plan `SortMergeJoin`. Times in seconds; lower
-is better.
+`target_partitions=64`, all Ballista join settings at their defaults. Ballista picks
+each join's strategy at runtime; Spark and Comet are held to `SortMergeJoin`. Times in
+seconds; lower is better.
 
 Versions under test:
 
 | Engine   | Version                                         |
 | -------- | ----------------------------------------------- |
-| Ballista | `#2084` @ `fac1fa22`                            |
+| Ballista | `#2124` @ `5290436d`                            |
 | Spark    | 3.5.3 (vanilla, Comet disabled)                 |
 | Comet    | `main` @ `b0165552` (1.0.0-SNAPSHOT, Spark 3.5) |
 
 Pin the **exact commit** the numbers came from, not "main": `main` moves, and a row
 that mixes numbers from different commits silently misattributes a regression.
 
-Ballista Q1–Q17 come from a **full 22-query suite run** (one query after another on
-freshly started executors); Q18 exhausts the memory pool and OOM-kills the executors
-(see below), which currently wedges the rest of the suite, so **Q19–Q22 were run as
-individual single-query jobs** against a fresh cluster of the same shape. Comet and
-Spark each completed the full suite in one run.
+The Ballista column comes from a **single suite run of 21 queries** on freshly
+started executors, using `--skip 18` to leave out the one query that exhausts the
+memory pool and OOM-kills the executors (see below), which would otherwise wedge
+the rest of the suite. Comet and Spark each completed the full suite in one run.
+
+Keep the whole column to one continuous run wherever possible. Driving queries as
+individual single-query jobs measures something different: each job starts against
+a cold page cache, which on this cluster cost the two join-free queries (Q1, Q6)
+roughly 20 s and 20 s respectively when the two methods were compared directly. Use
+`--skip` rather than a loop of `--query` runs.
+
+Single iteration means **run-to-run variance is not quantified here**. Comparing the
+same commit across the two methods above showed spreads of up to ~20% on individual
+queries, so treat a per-query difference under about 20% as noise and read the total
+row instead.
 
 |                 Query |      Spark |      Comet | Ballista (AQE on) |   Rows |
 | --------------------: | ---------: | ---------: | ----------------: | -----: |
-|                     1 |      427.1 |       46.6 |              59.4 |      4 |
-|                     2 |       75.9 |       39.2 |              57.0 |    100 |
-|                     3 |      154.1 |      195.4 |             214.8 |     10 |
-|                     4 |       82.0 |       42.6 |              65.2 |      5 |
-|                     5 |      336.4 |      493.4 |             456.6 |      5 |
-|                     6 |       28.9 |       14.6 |              29.5 |      1 |
-|                     7 |      180.6 |      149.5 |             369.0 |      4 |
-|                     8 |      391.8 |      642.1 |             540.3 |      2 |
-|                     9 |      509.8 |      843.5 |             764.9 |    175 |
-|                    10 |      151.1 |      104.8 |             168.3 |     20 |
-|                    11 |       44.7 |       44.1 |              91.4 |  0 [1] |
-|                    12 |       74.1 |       49.9 |              74.9 |      2 |
-|                    13 |       98.7 |       58.3 |              91.9 |     30 |
-|                    14 |       43.0 |       27.4 |              43.0 |      1 |
-|                    15 |      121.5 |       65.6 |             116.5 |  1 [2] |
-|                    16 |       24.5 |       17.5 |              29.0 |  27840 |
-|                    17 |      406.7 |      285.8 |             392.8 |      1 |
-|                    18 |      428.8 |      370.5 |               OOM |    100 |
-|                    19 |       58.9 |       35.5 |             183.9 |      1 |
-|                    20 |      105.9 |       67.6 |             112.2 | 110759 |
-|                    21 |      562.2 |      460.1 |             765.2 |    100 |
-|                    22 |       36.8 |       21.5 |              35.2 |      7 |
-| **Total (excl. Q18)** | **3914.7** | **3705.0** |        **4661.0** |        |
+|                     1 |      427.1 |       46.6 |              54.2 |      4 |
+|                     2 |       75.9 |       39.2 |              60.3 |    100 |
+|                     3 |      154.1 |      195.4 |             140.0 |     10 |
+|                     4 |       82.0 |       42.6 |              46.3 |      5 |
+|                     5 |      336.4 |      493.4 |             327.2 |      5 |
+|                     6 |       28.9 |       14.6 |              27.2 |      1 |
+|                     7 |      180.6 |      149.5 |             364.9 |      4 |
+|                     8 |      391.8 |      642.1 |             481.1 |      2 |
+|                     9 |      509.8 |      843.5 |             606.4 |    175 |
+|                    10 |      151.1 |      104.8 |             148.4 |     20 |
+|                    11 |       44.7 |       44.1 |              62.0 |  0 [1] |
+|                    12 |       74.1 |       49.9 |              58.3 |      2 |
+|                    13 |       98.7 |       58.3 |             100.4 |     30 |
+|                    14 |       43.0 |       27.4 |              71.1 |      1 |
+|                    15 |      121.5 |       65.6 |              53.8 |  1 [2] |
+|                    16 |       24.5 |       17.5 |              34.3 |  27840 |
+|                    17 |      406.7 |      285.8 |             417.8 |      1 |
+|                    18 |      428.8 |      370.5 |               TBD |    100 |
+|                    19 |       58.9 |       35.5 |              68.5 |      1 |
+|                    20 |      105.9 |       67.6 |              93.7 | 110759 |
+|                    21 |      562.2 |      460.1 |             698.0 |    100 |
+|                    22 |       36.8 |       21.5 |              22.9 |      7 |
+| **Total (excl. Q18)** | **3914.7** | **3705.0** |        **3936.8** |        |
 
-The **Total** row sums the 21 queries **excluding Q18**, because Q18 does not complete
-on Ballista at this sizing (below), so a 22-query total would not be comparable across
-engines. Q18's own times are in its row.
+The **Total** row sums the 21 queries **excluding Q18**, because Q18 has no Ballista
+figure at this commit (below), so a 22-query total would not be comparable across
+engines. Spark's and Comet's Q18 times are in its row.
 
-Row counts agree across all three engines on every query, including Q18 (Spark and
-Comet return 100; Ballista OOMs before producing a result).
+Row counts agree across all three engines on every query for which Ballista produced
+a result.
 
 The **AQE-off** Ballista column has been removed pending a re-run at a matched core
 count; the numbers above for AQE off were taken at a different executor size and are
@@ -331,12 +347,20 @@ constant is tuned for SF1.
 engines report 1 row here. (A previous result set saw Spark report 0 for Q15 depending
 on which statement the harness took as the result; it does not recur in this run.)
 
-**Q18 OOMs on Ballista at this sizing.** Q18's hash-join build side is `Partitioned`
+**Q18 is not measured at this commit.** Q18's hash-join build side is `Partitioned`
 and does not spill; with 16 task slots sharing the 48 GB pool (3 GB per slot), the
 per-task build side exceeds the container limit and the executor is OOM-killed
 ([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). At the previous
 8-slot sizing (6 GB per slot) Q18 completed, so this is a direct consequence of the
-denser packing. The OOM is recorded as `OOM` rather than a time.
+denser packing.
+
+It was excluded from the suite run above with `--skip 18` so that one query could not
+wedge the other 21, and it has not since been run to completion at this commit — hence
+`TBD` rather than `OOM`. An earlier attempt on this branch did OOM-kill an executor,
+but under a different configuration (`prefer_hash_join=false`, which sends the plan
+down a conversion path that discards the join's projection and so materialises more
+columns than the configuration documented above). That result does not transfer, so it
+is not recorded here.
 
 The `Rows` column is the row count the query returned, recorded so a time is never
 read without the answer it produced.
@@ -350,63 +374,6 @@ regression.
 did not produce an answer is recorded as `FAIL`, or `OOM` where the failure is a
 known memory exhaustion.
 
-### Hash join with a per-partition build-size fallback (AQE on, 2×16 cores, 64 partitions)
-
-A second Ballista configuration exercises `prefer_hash_join=true` together with the
-AQE hash-join safety fallback
-([`ballista.optimizer.hash_join_max_build_partition_bytes`](https://github.com/apache/datafusion-ballista/pull/2084)).
-The fallback lowers a Partitioned hash join to `SortMergeJoin` per join when the
-build side's largest partition exceeds the configured budget, so a hash-join run does
-not abort on the queries whose non-spillable hash-join build exceeds one task slot's
-pool — notably Q18
-([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). That fallback
-is what makes `prefer_hash_join=true` usable across the whole suite instead of
-failing partway.
-
-This run uses a **larger cluster than the reference above** and a **different
-`target_partitions`**, so its numbers are not comparable to the table above: TPC-H
-**SF1000**, **2 executors × 16 cores** (one per node, ~2.8 GB per task slot),
-**`target_partitions=64`**, **AQE on**, `prefer_hash_join=true`,
-`hash_join_max_build_partition_bytes=67108864` (64 MiB),
-`enable_dynamic_filter_pushdown=false`, sort-shuffle spill uncapped. Each query ran
-on a **freshly restarted cluster**. Ballista @ `afef9afc`. Times in seconds.
-
-|     Query | Ballista (AQE on, hash join + 64 MiB fallback) |
-| --------: | ---------------------------------------------: |
-|         1 |                                           72.1 |
-|         2 |                                           52.9 |
-|         3 |                                          154.2 |
-|         4 |                                           72.9 |
-|         5 |                                          355.4 |
-|         6 |                                           65.9 |
-|         7 |                                          371.7 |
-|         8 |                                          452.4 |
-|         9 |                                          559.8 |
-|        10 |                                          152.3 |
-|        11 |                                           74.6 |
-|        12 |                                           88.7 |
-|        13 |                                           99.2 |
-|        14 |                                           38.6 |
-|        15 |                                           62.5 |
-|        16 |                                           29.0 |
-|        17 |                                          446.3 |
-|        18 |                                          744.6 |
-|        19 |                                           80.8 |
-|        20 |                                          117.0 |
-|        21 |                                          605.6 |
-|        22 |                                           20.5 |
-| **Total** |                                     **4716.9** |
-
-**All 22 queries completed — no OOMs, no failures.** At the 64 MiB threshold the
-large-build joins (Q5, Q7–Q9, Q17, Q18, Q21) fall back to `SortMergeJoin` while
-smaller-build joins stay hash, so the heavy queries run at roughly sort-merge speed
-but the suite runs end to end. Q18 completes at **744.6 s** where the same
-configuration with the fallback disabled (`hash_join_max_build_partition_bytes=0`)
-exhausts the per-slot pool and fails the job
-([#2025](https://github.com/apache/datafusion-ballista/issues/2025)). The fallback is
-opt-in and off by default (a `0` budget); the 64 MiB value here is tuned to this
-cluster's ~2.8 GB task-slot pool.
-
 ### Recording a result
 
 - Pin the **exact commit** the numbers came from, not a branch name.
@@ -414,9 +381,10 @@ cluster's ~2.8 GB task-slot pool.
   configuration this page measures — from the same commit and cluster.
 - Prefer the figure from a **full suite run**, not a standalone single-query run: a
   long-lived executor deep into a suite is not in the same state as a freshly started
-  one. When a query cannot complete in-suite (e.g. Q18's OOM currently wedges the
-  run), note that the remaining queries were run individually, as done here for
-  Q19–Q22.
+  one, and a single-query job pays a cold-cache penalty that is large enough to swamp
+  the effect being measured. When a query cannot complete in-suite (e.g. Q18's OOM
+  currently wedges the run), exclude it with `--skip <n>` so the rest of the column
+  still comes from one continuous run, and measure that query separately.
 - Note the **row count** each query returned. A fast wrong answer is not a result,
   and distributed execution has produced silently wrong row counts before.
 - Flag any stage whose runtime is dominated by a few partitions — that is the

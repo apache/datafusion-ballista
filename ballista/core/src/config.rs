@@ -110,8 +110,10 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
 
 /// Configuration key for the maximum per-partition hash-join build-side bytes
 /// permitted for a Partitioned hash join under AQE. When a build partition
-/// exceeds this, the join falls back to SortMergeJoin (spillable). `0` disables
-/// the check (hash join is used regardless of build size).
+/// exceeds this, the join falls back to SortMergeJoin (spillable). Defaults to
+/// 64 MiB. `0` disables the check (hash join is used regardless of build size);
+/// because AQE does not consult `datafusion.optimizer.prefer_hash_join`, that
+/// also makes SortMergeJoin unreachable for a Partitioned join.
 pub const BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES: &str =
     "ballista.optimizer.hash_join_max_build_partition_bytes";
 
@@ -267,9 +269,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES.to_string(),
                          "Maximum per-partition hash-join build-side bytes for a Partitioned \
                          hash join under AQE. A build partition larger than this falls back to \
-                         SortMergeJoin (spillable). 0 (the default) disables the check.".to_string(),
+                         SortMergeJoin (spillable). Defaults to 64 MiB; 0 disables the check, \
+                         which makes AQE use a hash join regardless of build size.".to_string(),
                          DataType::UInt64,
-                         Some("0".to_string())),
+                         Some((64 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -888,11 +891,15 @@ mod tests {
         Ok(())
     }
 
+    // The default must stay non-zero: `0` disables the fit check, and since AQE
+    // no longer consults `prefer_hash_join`, a disabled check would leave the
+    // Partitioned arm unconditionally on hash join and make SortMergeJoin — the
+    // spillable strategy — unreachable.
     #[test]
-    fn hash_join_max_build_partition_bytes_defaults_to_zero() {
+    fn hash_join_max_build_partition_bytes_defaults_to_64_mib() {
         assert_eq!(
             BallistaConfig::default().hash_join_max_build_partition_bytes(),
-            0
+            64 * 1024 * 1024
         );
     }
 }
