@@ -390,6 +390,13 @@
 -->
 <section id="configuration">
 <h1>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h1>
+<p><strong>The configuration tables on this page are generated</strong> from the <code class="docutils literal notranslate"><span class="pre">ConfigEntry</span></code>
+definitions in <code class="docutils literal notranslate"><span class="pre">ballista/core/src/config.rs</span></code>. Anything between a pair of
+generated config reference markers is overwritten the next time the docs are
+regenerated, so do not hand-edit it. To change a setting’s description, type, or
+default, edit its <code class="docutils literal notranslate"><span class="pre">ConfigEntry</span></code> in <code class="docutils literal notranslate"><span class="pre">ballista/core/src/config.rs</span></code>, then run
+<code class="docutils literal notranslate"><span class="pre">./dev/update_config_docs.sh</span></code> and commit the regenerated file. Prose outside the
+generated sections is hand-written and safe to edit normally.</p>
 <section id="ballista-configuration-settings">
 <h2>Ballista Configuration Settings<a class="headerlink" href="#ballista-configuration-settings" title="Link to this heading">#</a></h2>
 <p>Configuring Ballista is quite similar to configuring DataFusion. Most settings are identical, with only a few configurations specific to Ballista.</p>
@@ -449,12 +456,12 @@
 <span class="p">];</span>
 </pre></div>
 </div>
-</section>
-<section id="shuffle-settings">
-<h2>Shuffle Settings<a class="headerlink" href="#shuffle-settings" title="Link to this heading">#</a></h2>
-<p>The following session-level keys control Ballista’s shuffle behavior. See
-the <a class="reference internal" href="tuning-guide.html#shuffle-implementation"><span class="std std-ref">tuning guide</span></a> for an
-explanation of the sort-based shuffle writer.</p>
+<section id="session-settings">
+<h3>Session Settings<a class="headerlink" href="#session-settings" title="Link to this heading">#</a></h3>
+<p>The following keys can be set on a <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>. Ballista also accepts all
+standard DataFusion settings.</p>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.job.,ballista.standalone.,ballista.cache.,ballista.client.,ballista.optimizer.,ballista.planner.,ballista.scheduler. -->
+<!-- prettier-ignore -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>key</p></th>
@@ -464,34 +471,247 @@ explanation of the sort-based shuffle writer.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>ballista.shuffle.max_concurrent_read_requests</p></td>
-<td><p>UInt64</p></td>
-<td><p>64</p></td>
-<td><p>Maximum number of concurrent fetch requests the shuffle reader will issue.</p></td>
+<tr class="row-even"><td><p>ballista.cache.noop</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Disable default cache node extension</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.force_remote_read</p></td>
+<tr class="row-odd"><td><p>ballista.client.grpc_connect_timeout_seconds</p></td>
+<td><p>UInt64</p></td>
+<td><p>20</p></td>
+<td><p>Connection timeout for gRPC client in seconds</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.client.grpc_http2_keepalive_interval_seconds</p></td>
+<td><p>UInt64</p></td>
+<td><p>300</p></td>
+<td><p>HTTP/2 keep-alive interval for gRPC client in seconds</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.client.grpc_max_message_size</p></td>
+<td><p>UInt64</p></td>
+<td><p>16777216</p></td>
+<td><p>Configuration for max message size in gRPC clients</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.client.grpc_tcp_keepalive_seconds</p></td>
+<td><p>UInt64</p></td>
+<td><p>3600</p></td>
+<td><p>TCP keep-alive interval for gRPC client in seconds</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.client.grpc_timeout_seconds</p></td>
+<td><p>UInt64</p></td>
+<td><p>20</p></td>
+<td><p>Request timeout for gRPC client in seconds</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.client.initial_connection_window_size</p></td>
+<td><p>UInt64</p></td>
+<td><p>67108864</p></td>
+<td><p>HTTP/2 initial connection-level flow-control window for gRPC data-plane clients, in bytes. Should be &gt;= the shuffle governor byte budget so the governor, not the transport window, is the binding backpressure. 0 leaves the tonic default.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.client.initial_stream_window_size</p></td>
+<td><p>UInt64</p></td>
+<td><p>16777216</p></td>
+<td><p>HTTP/2 initial stream-level flow-control window for gRPC data-plane clients, in bytes. 0 leaves the tonic default.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.client.io_retries_times</p></td>
+<td><p>UInt16</p></td>
+<td><p>3</p></td>
+<td><p>Number of retries for IO operations in the Ballista client.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.client.io_retry_wait_time_ms</p></td>
+<td><p>UInt64</p></td>
+<td><p>3000</p></td>
+<td><p>Wait time in milliseconds between IO retries in the Ballista client.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.client.pull</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
-<td><p>Forces the shuffle reader to fetch every partition through Arrow Flight, even when the data is local. Intended for testing.</p></td>
+<td><p>Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.remote_read_prefer_flight</p></td>
+<tr class="row-odd"><td><p>ballista.client.use_tls</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
-<td><p>For remote reads, prefer the Arrow Flight reader over the block reader. The block reader is generally faster.</p></td>
+<td><p>Should connection between client, scheduler, and executors use TLS.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
-<td><p>UInt64</p></td>
-<td><p>8192</p></td>
-<td><p>Target row count when coalescing buffered batches before they are written or spilled.</p></td>
+<tr class="row-even"><td><p>ballista.job.name</p></td>
+<td><p>Utf8</p></td>
+<td><p>(none)</p></td>
+<td><p>Sets the job name that will appear in the web user interface for any submitted jobs</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
+<tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
 <td><p>UInt64</p></td>
-<td><p>268435456</p></td>
-<td><p>Per-task buffered-bytes budget at which the sort-based writer spills to disk (256 MiB default), counted independently of the runtime memory pool. Set to <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable the per-task budget and spill only under memory-pool pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
+<td><p>10485760</p></td>
+<td><p>Byte-size threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern. Governs broadcast selection under both the static distributed planner and adaptive query planning (AQE). Set to 0 to disable promotion.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
+<td><p>UInt64</p></td>
+<td><p>1000000</p></td>
+<td><p>Row-count threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern, used as a fallback when byte-size statistics are unavailable. Applies to adaptive query planning (AQE). Set to 0 to disable promotion via the row-count path.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.optimizer.hash_join_max_build_partition_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>67108864</p></td>
+<td><p>Maximum per-partition hash-join build-side bytes for a Partitioned hash join under AQE. A build partition larger than this falls back to SortMergeJoin (spillable). Defaults to 64 MiB; 0 disables the check, which makes AQE use a hash join regardless of build size.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.planner.adaptive.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Enables Adaptive Query Planning (EXPERIMENTAL)</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.adaptive_join.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Enables the AQE dynamic join-selection rule (SelectJoinRule). When true (default), DynamicJoinSelectionExec nodes are resolved to concrete HashJoin or CollectLeft join implementations at runtime. Disable only for debugging.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.planner.coalesce.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Enables the AQE coalesce-shuffle-partitions rule. Disabled by default — opt in when fewer/larger downstream tasks matter more than parallelism.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.coalesce.merged_partition_factor</p></td>
+<td><p>Float64</p></td>
+<td><p>1.2</p></td>
+<td><p>Two adjacent partitions are merged when their combined size is below target_partition_bytes times this factor. Mirrors Spark’s legacy coalesce semantics.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.planner.coalesce.small_partition_factor</p></td>
+<td><p>Float64</p></td>
+<td><p>0.2</p></td>
+<td><p>A coalesced partition smaller than target_partition_bytes times this factor counts as small and is merged into its neighbour. Mirrors Spark’s legacy coalesce semantics.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.coalesce.target_partition_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>67108864</p></td>
+<td><p>Target post-coalesce partition size in bytes. Mirrors Spark’s advisoryPartitionSizeInBytes.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.planner.propagate_empty.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Enables the AQE propagate-empty-relation rule. Injects EmptyExec into the plan where an input is known to be empty, such as one side of a join, allowing downstream work to be skipped.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
+<td><p>UInt64</p></td>
+<td><p>1</p></td>
+<td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">1</span></code> (default) means one task per input partition. Raise to enable multi-partition tasks (fewer tasks, parallel-sort / parallel-join wins); <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded — the scheduler fills each task up to the executor’s free vcore count. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.standalone.parallelism</p></td>
+<td><p>UInt16</p></td>
+<td><p>number of available CPU cores</p></td>
+<td><p>Number of concurrent tasks a standalone in-process executor will run.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<!-- END GENERATED CONFIG REFERENCE -->
+</section>
+</section>
+<section id="shuffle-settings">
+<h2>Shuffle Settings<a class="headerlink" href="#shuffle-settings" title="Link to this heading">#</a></h2>
+<p>The following session-level keys control Ballista’s shuffle behavior. See
+the <a class="reference internal" href="tuning-guide.html#shuffle-implementation"><span class="std std-ref">tuning guide</span></a> for an
+explanation of the sort-based shuffle writer.</p>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle. -->
+<!-- prettier-ignore -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>type</p></th>
+<th class="head"><p>default</p></th>
+<th class="head"><p>description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ballista.shuffle.compression.codec</p></td>
+<td><p>Utf8</p></td>
+<td><p>lz4</p></td>
+<td><p>Compression codec specification used in the shuffle process. Possible values: none, lz4, zstd. Defaults to lz4 to preserve current behaviour</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.force_remote_read</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.max_concurrent_read_requests</p></td>
+<td><p>UInt64</p></td>
+<td><p>64</p></td>
+<td><p>Maximum concurrent requests shuffle reader can process</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.reader.default_block_size_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>1048576</p></td>
+<td><p>Assumed per-partition byte size charged to the shuffle governor when partition stats carry no byte count.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.reader.max_blocks_in_flight_per_address</p></td>
+<td><p>UInt64</p></td>
+<td><p>128</p></td>
+<td><p>Reduce-side shuffle governor: maximum concurrent in-flight partition fetches to a single executor address.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.reader.max_bytes_in_flight</p></td>
+<td><p>UInt64</p></td>
+<td><p>50331648</p></td>
+<td><p>Reduce-side shuffle governor: maximum total in-flight bytes across concurrent remote partition fetches. Mirrors Spark’s spark.reducer.maxSizeInFlight. Values above 4 GiB are clamped to 4 GiB (u32 semaphore limit).</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.remote_read_prefer_flight</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
+<td><p>UInt64</p></td>
+<td><p>8192</p></td>
+<td><p>Target batch size in rows for coalescing small batches in sort shuffle</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>268435456</p></td>
+<td><p>Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.writer_channel_capacity</p></td>
+<td><p>UInt32</p></td>
+<td><p>8</p></td>
+<td><p>Bounded channel capacity for async-to-blocking I/O bridge in shuffle writer</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- END GENERATED CONFIG REFERENCE -->
+</section>
+<section id="testing-and-fault-injection">
+<h2>Testing and Fault Injection<a class="headerlink" href="#testing-and-fault-injection" title="Link to this heading">#</a></h2>
+<p>These settings drive chaos-monkey fault injection and exist for robustness
+testing. They are not intended for production use.</p>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->
+<!-- prettier-ignore -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>type</p></th>
+<th class="head"><p>default</p></th>
+<th class="head"><p>description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ballista.testing.chaos_execution.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Enables chaos-monkey execution injection for robustness testing. When true, ChaosExec is inserted at a random point in the plan once per optimize call.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.testing.chaos_execution.fault_type</p></td>
+<td><p>Utf8</p></td>
+<td><p>transient</p></td>
+<td><p>Fault type injected by chaos-monkey execution. “transient”: IoError (retryable); “fatal”: Execution error (non-retryable); “panic”: panics the task thread; “delay” or “delay:N”: sleeps N ms per batch with no error (default N=1).</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.testing.chaos_execution.probability</p></td>
+<td><p>Float64</p></td>
+<td><p>0.25</p></td>
+<td><p>Failure probability (0.0–1.0) passed to ChaosExec when chaos execution is enabled.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.testing.chaos_execution.seed</p></td>
+<td><p>Utf8</p></td>
+<td><p>(empty)</p></td>
+<td><p>Optional u64 seed for the chaos RNG. Empty string (default) means non-deterministic; set to a numeric value to get reproducible fault injection across runs.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- END GENERATED CONFIG REFERENCE -->
 </section>
 <section id="ballista-scheduler-configuration-settings">
 <h2>Ballista Scheduler Configuration Settings<a class="headerlink" href="#ballista-scheduler-configuration-settings" title="Link to this heading">#</a></h2>
@@ -588,8 +808,12 @@ manage the whole cluster are also needed to be taken care of.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-configuration-settings">Ballista Configuration Settings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-configuration-settings">Ballista Configuration Settings</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#session-settings">Session Settings</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-settings">Shuffle Settings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-and-fault-injection">Testing and Fault Injection</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-scheduler-configuration-settings">Ballista Scheduler Configuration Settings</a></li>
 </ul>
   </nav></div>
