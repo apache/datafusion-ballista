@@ -22,9 +22,10 @@
 //! without writing, which is what CI does.
 
 // `main` is still an `unimplemented!()` stub, so nothing below is reachable
-// from it yet and `-D warnings` would otherwise fail on dead code. Drop this
-// once `main` is wired up to call `settings_from_registry` / `render_table`.
-#![allow(dead_code)]
+// from it yet. Using `expect` instead of `allow` ensures this attribute
+// becomes a hard error once `main` is wired up and items become reachable,
+// forcing cleanup rather than silently suppressing lint findings forever.
+#![expect(dead_code)]
 
 use ballista_core::config::{BallistaConfig, ConfigEntry};
 
