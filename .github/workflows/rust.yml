@@ -270,6 +270,25 @@ jobs:
       - name: Check vendored DataFusion proto matches pinned crate
         run: ci/scripts/rust_proto_check.sh
 
+  config-docs-check:
+    name: Check generated config docs are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Check generated config docs match the config registry
+        run: ci/scripts/rust_config_docs_check.sh
+
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:
