@@ -75,9 +75,30 @@ fn make_ctx(prefer_hash_join: bool) -> SessionContext {
     SessionContext::new_with_state(state)
 }
 
-fn make_ctx_without_collect_left(prefer_hash_join: bool) -> SessionContext {
+/// A build budget comfortably above the mock shuffle partitions' 10 bytes, so
+/// the build-fit check passes and AQE keeps the `Partitioned` hash join. This is
+/// the shipped default.
+const FITS_BUILD_BUDGET: usize = 64 * 1024 * 1024;
+
+/// A build budget below the mock shuffle partitions' 10 bytes, so the build-fit
+/// check rejects the hash join and AQE falls back to `SortMergeJoinExec`. Not
+/// `0` — `0` disables the check entirely, which would keep the hash join.
+const REJECTS_BUILD_BUDGET: usize = 1;
+
+/// `max_build_partition_bytes` is what selects AQE's join strategy once the
+/// inputs are repartitioned: `mock_partitions_with_statistics` reports 10 bytes
+/// per shuffle partition, so a budget below that fails the build-fit check and
+/// falls back to `SortMergeJoinExec`, while a budget above it keeps the
+/// `Partitioned` `HashJoinExec`.
+///
+/// `datafusion.optimizer.prefer_hash_join` is deliberately not set here — AQE
+/// does not consult it (DataFusion has already applied it by the time
+/// `DelayJoinSelectionRule` folds both join operators into
+/// `DynamicJoinSelectionExec`), so it cannot express the distinction these
+/// tests draw.
+fn make_ctx_without_collect_left(max_build_partition_bytes: usize) -> SessionContext {
     let config = SessionConfig::new()
-        .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join)
+        .with_ballista_hash_join_max_build_partition_bytes(max_build_partition_bytes)
         .set_u64(
             "datafusion.optimizer.hash_join_single_partition_threshold",
             0,
@@ -180,7 +201,7 @@ async fn test_left_join_not_collected_left() -> datafusion::common::Result<()> {
 
 #[tokio::test]
 async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<()> {
-    let ctx = make_ctx_without_collect_left(true);
+    let ctx = make_ctx_without_collect_left(FITS_BUILD_BUDGET);
     register_2tables(&ctx);
 
     let lp = ctx
@@ -241,7 +262,7 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
 
 #[tokio::test]
 async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Result<()> {
-    let ctx = make_ctx_without_collect_left(false);
+    let ctx = make_ctx_without_collect_left(REJECTS_BUILD_BUDGET);
     register_2tables(&ctx);
 
     let lp = ctx
@@ -379,7 +400,7 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
 
 #[tokio::test]
 async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result<()> {
-    let ctx = make_ctx_without_collect_left(true);
+    let ctx = make_ctx_without_collect_left(FITS_BUILD_BUDGET);
     register_3tables(&ctx);
 
     let lp = ctx
@@ -410,7 +431,7 @@ async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result
 #[tokio::test]
 async fn test_sort_merge_join_three_tables_repartition() -> datafusion::common::Result<()>
 {
-    let ctx = make_ctx_without_collect_left(false);
+    let ctx = make_ctx_without_collect_left(REJECTS_BUILD_BUDGET);
     register_3tables(&ctx);
 
     let lp = ctx
