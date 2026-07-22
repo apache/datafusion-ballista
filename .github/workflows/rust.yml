@@ -38,6 +38,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   pull_request:
     paths:
       - "ballista/**"
@@ -53,6 +55,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -63,7 +67,7 @@ jobs:
     name: cargo check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -82,7 +86,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -102,7 +106,7 @@ jobs:
     needs: build-lib
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
@@ -115,7 +119,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -135,7 +139,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -155,7 +159,7 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
@@ -177,7 +181,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -191,7 +195,7 @@ jobs:
     name: Lint
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -209,7 +213,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -226,7 +230,7 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -235,7 +239,7 @@ jobs:
           rustup default stable
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
         with:
           tool: cargo-tomlfmt@0.2.1
 
@@ -255,7 +259,7 @@ jobs:
     name: Check vendored DataFusion proto is in sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -276,7 +280,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v7.0.0
+#     - uses: actions/checkout@v7.0.1
 #       with:
 #         submodules: true
 #     - name: Cache Cargo

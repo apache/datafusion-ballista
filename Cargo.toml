@@ -30,8 +30,13 @@ arrow = { version = "58.3", features = ["ipc_compression"] }
 arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
+# Keep these as minor-version requirements rather than exact patch pins. The
+# python workspace shares these crates through path dependencies, and
+# datafusion-python lags behind datafusion patch releases, so pinning a patch
+# here can break the wheel build. Cargo.lock records the exact patch version.
 datafusion = "54"
 datafusion-cli = "54"
+datafusion-functions-aggregate-common = "54"
 datafusion-proto = "54"
 datafusion-proto-common = "54"
 datafusion-spark = "54"
@@ -116,46 +121,3 @@ lto = false
 debug = false
 debug-assertions = false
 incremental = false
-
-# Temporarily pin DataFusion to the tip of `branch-54` to pick up the
-# logical JoinNode proto round-trip fix (apache/datafusion#22785, backport of
-# #22104), which is on branch-54 but not in the released 54.0.0 tag.
-# Remove once a 54.x patch release containing it is published.
-[patch.crates-io]
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-catalog = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-catalog-listing = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-common = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-common-runtime = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-datasource = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-datasource-arrow = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-datasource-avro = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-datasource-csv = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-datasource-json = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-datasource-parquet = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-doc = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-execution = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-expr = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions-aggregate = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions-table = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions-window = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-functions-window-common = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-macros = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-optimizer = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-physical-optimizer = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-pruning = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-session = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-sql = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion.git", rev = "2142d5b2a737fa01836906d2526265035964ac99" }

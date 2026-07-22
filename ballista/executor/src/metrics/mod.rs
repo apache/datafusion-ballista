@@ -31,7 +31,7 @@ pub trait ExecutorMetricsCollector: Send + Sync {
         &self,
         job_id: &JobId,
         stage_id: usize,
-        partition: usize,
+        task_id: usize,
         plan: Arc<dyn QueryStageExecutor>,
     );
 }
@@ -46,11 +46,11 @@ impl ExecutorMetricsCollector for LoggingMetricsCollector {
         &self,
         job_id: &JobId,
         stage_id: usize,
-        partition: usize,
+        task_id: usize,
         plan: Arc<dyn QueryStageExecutor>,
     ) {
         debug!(
-            "\n=== [{job_id}/{stage_id}/{partition}] Physical plan with metrics ===\n{plan}\n"
+            "\n=== [{job_id}/{stage_id}/{task_id}] Physical plan with metrics ===\n{plan}\n"
         );
     }
 }

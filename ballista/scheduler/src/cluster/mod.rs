@@ -22,11 +22,13 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
 use crate::state::task_manager::JobInfoCache;
+use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
+use ballista_core::execution_plans::ShuffleReaderExec;
 use ballista_core::serde::protobuf::{
-    AvailableTaskSlots, ExecutorHeartbeat, JobStatus, job_status,
+    AvailableVcores, ExecutorHeartbeat, JobStatus, job_status,
 };
-use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
+use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, TaskKey};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use datafusion::physical_plan::ExecutionPlan;
@@ -153,7 +155,7 @@ pub type ExecutorSlot = (String, u32);
 
 /// Trait for maintaining a globally consistent view of cluster resources.
 ///
-/// Implementations track executor registration, heartbeats, and available task slots.
+/// Implementations track executor registration, heartbeats, and free vcores.
 #[async_trait::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
     /// Initializes the cluster state backend.
@@ -163,9 +165,9 @@ pub trait ClusterState: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Binds ready-to-run tasks from active jobs to available executor slots.
+    /// Binds ready-to-run tasks from active jobs to executor vcores.
     ///
-    /// If `executors` is provided, only bind slots from the specified executor IDs.
+    /// If `executors` is provided, only bind on the specified executor IDs.
     async fn bind_schedulable_tasks(
         &self,
         distribution: TaskDistributionPolicy,
@@ -173,9 +175,9 @@ pub trait ClusterState: Send + Sync + 'static {
         executors: Option<HashSet<String>>,
     ) -> Result<Vec<BoundTask>>;
 
-    /// Unbinds executor slots when tasks finish or fail.
+    /// Releases reserved vcores when tasks finish or fail.
     ///
-    /// This operation is atomic: either all slots are released or none are.
+    /// This operation is atomic: either all vcores are released or none are.
     async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()>;
 
     /// Registers a new executor in the cluster.
@@ -354,24 +356,178 @@ pub trait JobState: Send + Sync {
     fn produce_config(&self) -> SessionConfig;
 }
 
+/// Whether this stage's plan contains a collapse — any operator whose
+/// `output_partitioning().partition_count() == 1` (`CoalescePartitionsExec`,
+/// `SortPreservingMergeExec`, `AggregateExec(Final, gby=[])`,
+/// `SortExec(preserve_partitioning=false)`, …). Downstream of a collapse
+/// expects the *combined* input; splitting across tasks would give each
+/// task's local collapse only a slice, producing partial results.
+///
+/// Walks past *any* single-child operator: today's writers that bake
+/// partitioning into the shuffle write itself (`SortShuffleWriterExec::Hash`),
+/// and future partition operators that separate partitioning from writing
+/// (e.g. `UnorderedRangeRepartitionExec`). Stops at leaves, multi-child
+/// operators (fan-in / joins), and stage boundaries.
+///
+/// The stage-boundary stop is currently a `ShuffleReaderExec` downcast — the
+/// only kind of stage-boundary leaf that appears in a resolved stage plan.
+/// The *general* rule is "stop at any stage boundary"; if new stage-boundary
+/// operators appear, add them here (or, better, get `ExecutionPlan` upstream
+/// to expose an `is_stage_boundary()` property so we don't keep
+/// enumerating).
+fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
+    fn walk(node: &Arc<dyn ExecutionPlan>) -> bool {
+        if node.downcast_ref::<ShuffleReaderExec>().is_some() {
+            return false;
+        }
+        if node.properties().output_partitioning().partition_count() == 1 {
+            return true;
+        }
+        match node.children().as_slice() {
+            [child] => walk(child),
+            _ => false,
+        }
+    }
+    let result = match plan_root.children().as_slice() {
+        [child] => walk(child),
+        _ => false,
+    };
+    debug!(
+        "stage_has_input_collapse: root={} root_partitions={} → {result}",
+        plan_root.name(),
+        plan_root
+            .properties()
+            .output_partitioning()
+            .partition_count(),
+    );
+    result
+}
+
+/// Bind a task to an executor: draw a partition slice, append the resulting
+/// `TaskInfo` to the stage, and produce a `TaskDescription` for dispatch.
+///
+/// Vcore accounting under DataFusion's volcano/pull model — the plan is
+/// driven by one tokio task per root output partition, so a task consumes
+/// vcores equal to the number of threads it will actually keep busy:
+///
+/// - **Non-collapse stage**: the root's output partitioning matches the
+///   number of input partitions bundled into this task, so consumption =
+///   `slice.len()`. Leftover budget stays available for another bind on
+///   the same executor in the same scheduling round.
+///
+/// - **Collapse stage** (see [`stage_has_input_collapse`]): the plan's
+///   root has a single output partition, so only 1 thread is ever active
+///   driving the whole pipeline — reserve 1 vcore regardless of how many
+///   input partitions are packed into the task, and let other stages'
+///   tasks run in parallel on the remaining vcores. Correctness still
+///   requires packing the entire pending queue into one bind (a split
+///   collapse would produce partial results downstream can't merge).
+fn bind_one(
+    running_stage: &mut crate::state::execution_stage::RunningStage,
+    session_id: &str,
+    job_id: &JobId,
+    budget: &mut AvailableVcores,
+) -> Option<BoundTask> {
+    let is_collapse = stage_has_input_collapse(&running_stage.plan);
+    // Cap non-collapse slices at the configured `max_partitions_per_task`.
+    // Collapse stages must still pack their full pending queue into a single
+    // task for correctness — a split collapse would produce partial results
+    // downstream can't merge.
+    let cap = running_stage
+        .session_config
+        .options()
+        .extensions
+        .get::<BallistaConfig>()
+        .map(|bc| bc.max_partitions_per_task())
+        .filter(|&n| n > 0)
+        .unwrap_or(usize::MAX);
+    let max_partitions = if is_collapse {
+        usize::MAX
+    } else {
+        (budget.vcores as usize).min(cap)
+    };
+    let input_partition_ids = running_stage.pending.next_slice(max_partitions);
+    if input_partition_ids.is_empty() {
+        return None;
+    }
+    // Non-collapse: DataFusion's volcano/pull model drives one tokio task per
+    // root output partition, so N input partitions bundled into a task need
+    // N vcores of concurrent execution. Collapse: the plan's root has a
+    // single output partition, so only 1 thread is ever active for the
+    // whole pipeline no matter how many inputs the task packs — reserve
+    // one vcore and leave the rest for other stages' tasks on this executor.
+    let vcores_consumed = if is_collapse {
+        1
+    } else {
+        input_partition_ids.len() as u32
+    };
+    debug!(
+        "bind_one: job={} stage={} exec={} vcores={} max={} slice_len={} consumed={} partitions={:?} collapse={}",
+        job_id,
+        running_stage.stage_id,
+        budget.executor_id,
+        budget.vcores,
+        if max_partitions == usize::MAX {
+            -1i64
+        } else {
+            max_partitions as i64
+        },
+        input_partition_ids.len(),
+        vcores_consumed,
+        input_partition_ids,
+        is_collapse,
+    );
+    let executor_id = budget.executor_id.clone();
+    // task_id is the append-order slot in `task_infos` — since we're
+    // about to push, that's `task_infos.len()`. `(job_id, stage_id,
+    // task_id)` is globally unique.
+    let task_id = running_stage.task_infos.len();
+    let task_attempt = input_partition_ids
+        .iter()
+        .map(|pid| running_stage.task_failure_numbers[*pid])
+        .max()
+        .unwrap_or(0);
+    let mut task_info = create_task_info(executor_id.clone(), task_id);
+    task_info.global_input_partition_ids = input_partition_ids.clone();
+    task_info.vcores_consumed = vcores_consumed;
+    running_stage.task_infos.push(task_info);
+    let key = TaskKey {
+        job_id: job_id.clone(),
+        stage_id: running_stage.stage_id,
+        task_id,
+    };
+    let task_desc = TaskDescription {
+        session_id: session_id.to_string(),
+        key,
+        stage_attempt_num: running_stage.stage_attempt_num,
+        task_attempt,
+        global_input_partition_ids: input_partition_ids,
+        vcores_consumed,
+        plan: running_stage.plan.clone(),
+        session_config: running_stage.session_config.clone(),
+    };
+    budget.vcores -= vcores_consumed;
+    Some((executor_id, task_desc))
+}
+
 pub(crate) async fn bind_task_bias(
-    mut slots: Vec<&mut AvailableTaskSlots>,
+    mut budgets: Vec<&mut AvailableVcores>,
     running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
-    let total_slots = slots.iter().fold(0, |acc, s| acc + s.slots);
-    if total_slots == 0 {
-        debug!("Not enough available executor slots for task running!!!");
+    if budgets.iter().all(|b| b.vcores == 0) {
+        debug!("No executor vcores available for task binding");
         return schedulable_tasks;
     }
 
-    // Sort the slots by descending order
-    slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
+    // Bias: give each stage the biggest exec available. Sort descending
+    // so bind_one keeps packing tasks onto the largest executor until its
+    // vcore budget is drained.
+    budgets.sort_by(|a, b| Ord::cmp(&b.vcores, &a.vcores));
 
-    let mut idx_slot = 0usize;
-    let mut slot = &mut slots[idx_slot];
+    let mut idx = 0usize;
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!("Job {job_id} is not in running status and will be skipped");
@@ -380,9 +536,7 @@ pub(crate) async fn bind_task_bias(
         let mut graph = job_info.execution_graph.write().await;
         let session_id = graph.session_id().to_string();
         let mut black_list = vec![];
-        while let Some((running_stage, task_id_gen)) =
-            graph.fetch_running_stage(&black_list)
-        {
+        while let Some(running_stage) = graph.fetch_running_stage(&black_list) {
             if if_skip(running_stage.plan.clone()) {
                 debug!(
                     "Will skip stage {}/{} for bias task binding",
@@ -391,46 +545,17 @@ pub(crate) async fn bind_task_bias(
                 black_list.push(running_stage.stage_id);
                 continue;
             }
-            // We are sure that it will at least bind one task by going through the following logic.
-            // It will not go into a dead loop.
-            let runnable_tasks = running_stage
-                .task_infos
-                .iter_mut()
-                .enumerate()
-                .filter(|(_partition, info)| info.is_none())
-                .take(total_slots as usize)
-                .collect::<Vec<_>>();
-            for (partition_id, task_info) in runnable_tasks {
-                // Assign [`slot`] with a slot available slot number larger than 0
-                while slot.slots == 0 {
-                    idx_slot += 1;
-                    if idx_slot >= slots.len() {
-                        return schedulable_tasks;
-                    }
-                    slot = &mut slots[idx_slot];
+            while idx < budgets.len() {
+                while idx < budgets.len() && budgets[idx].vcores == 0 {
+                    idx += 1;
                 }
-                let executor_id = slot.executor_id.clone();
-                let task_id = *task_id_gen;
-                *task_id_gen += 1;
-                *task_info = Some(create_task_info(executor_id.clone(), task_id));
-
-                let partition = PartitionId {
-                    job_id: job_id.clone(),
-                    stage_id: running_stage.stage_id,
-                    partition_id,
-                };
-                let task_desc = TaskDescription {
-                    session_id: session_id.clone(),
-                    partition,
-                    stage_attempt_num: running_stage.stage_attempt_num,
-                    task_id,
-                    task_attempt: running_stage.task_failure_numbers[partition_id],
-                    plan: running_stage.plan.clone(),
-                    session_config: running_stage.session_config.clone(),
-                };
-                schedulable_tasks.push((executor_id, task_desc));
-
-                slot.slots -= 1;
+                if idx >= budgets.len() {
+                    return schedulable_tasks;
+                }
+                match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
+                    Some(bound) => schedulable_tasks.push(bound),
+                    None => break, // stage's pending is drained
+                }
             }
         }
     }
@@ -439,23 +564,23 @@ pub(crate) async fn bind_task_bias(
 }
 
 pub(crate) async fn bind_task_round_robin(
-    mut slots: Vec<&mut AvailableTaskSlots>,
+    mut budgets: Vec<&mut AvailableVcores>,
     running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
-    let mut total_slots = slots.iter().fold(0, |acc, s| acc + s.slots);
-    if total_slots == 0 {
-        debug!("Not enough available executor slots for task running!!!");
+    if budgets.iter().all(|b| b.vcores == 0) {
+        debug!("No executor vcores available for task binding");
         return schedulable_tasks;
     }
-    debug!("Total slot number is {total_slots}");
 
-    // Sort the slots by descending order
-    slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
+    // Round-robin across execs so multiple running stages each get one
+    // exec per rotation. Order by vcores desc so the largest exec goes
+    // first in the rotation.
+    budgets.sort_by(|a, b| Ord::cmp(&b.vcores, &a.vcores));
 
-    let mut idx_slot = 0usize;
+    let mut idx = 0usize;
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!("Job {job_id} is not in running status and will be skipped");
@@ -464,9 +589,7 @@ pub(crate) async fn bind_task_round_robin(
         let mut graph = job_info.execution_graph.write().await;
         let session_id = graph.session_id().to_string();
         let mut black_list = vec![];
-        while let Some((running_stage, task_id_gen)) =
-            graph.fetch_running_stage(&black_list)
-        {
+        while let Some(running_stage) = graph.fetch_running_stage(&black_list) {
             if if_skip(running_stage.plan.clone()) {
                 debug!(
                     "Will skip stage {}/{} for round robin task binding",
@@ -475,52 +598,21 @@ pub(crate) async fn bind_task_round_robin(
                 black_list.push(running_stage.stage_id);
                 continue;
             }
-            // We are sure that it will at least bind one task by going through the following logic.
-            // It will not go into a dead loop.
-            let runnable_tasks = running_stage
-                .task_infos
-                .iter_mut()
-                .enumerate()
-                .filter(|(_partition, info)| info.is_none())
-                .take(total_slots as usize)
-                .collect::<Vec<_>>();
-            for (partition_id, task_info) in runnable_tasks {
-                // Move to the index which has available slots
-                if idx_slot >= slots.len() {
-                    idx_slot = 0;
+            loop {
+                let mut scanned = 0usize;
+                while budgets[idx].vcores == 0 {
+                    idx = (idx + 1) % budgets.len();
+                    scanned += 1;
+                    if scanned >= budgets.len() {
+                        return schedulable_tasks;
+                    }
                 }
-                if slots[idx_slot].slots == 0 {
-                    idx_slot = 0;
-                }
-                // Since the slots is a vector with descending order, and the total available slots is larger than 0,
-                // we are sure the available slot number at idx_slot is larger than 1
-                let slot = &mut slots[idx_slot];
-                let executor_id = slot.executor_id.clone();
-                let task_id = *task_id_gen;
-                *task_id_gen += 1;
-                *task_info = Some(create_task_info(executor_id.clone(), task_id));
-
-                let partition = PartitionId {
-                    job_id: job_id.to_owned(),
-                    stage_id: running_stage.stage_id,
-                    partition_id,
-                };
-                let task_desc = TaskDescription {
-                    session_id: session_id.clone(),
-                    partition,
-                    stage_attempt_num: running_stage.stage_attempt_num,
-                    task_id,
-                    task_attempt: running_stage.task_failure_numbers[partition_id],
-                    plan: running_stage.plan.clone(),
-                    session_config: running_stage.session_config.clone(),
-                };
-                schedulable_tasks.push((executor_id, task_desc));
-
-                idx_slot += 1;
-                slot.slots -= 1;
-                total_slots -= 1;
-                if total_slots == 0 {
-                    return schedulable_tasks;
+                match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
+                    Some(bound) => {
+                        schedulable_tasks.push(bound);
+                        idx = (idx + 1) % budgets.len();
+                    }
+                    None => break, // stage's pending is drained
                 }
             }
         }
@@ -544,7 +636,7 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     ///
     /// # Parameters
     ///
-    /// * `slots` - vector of available executor slots, there may not be available slots
+    /// * `budgets` - per-executor free-vcore budgets (may be empty)
     /// * `running_jobs` - (JobId -> JobInfoCache) cache must contain only running jobs
     ///
     /// # Returns
@@ -553,7 +645,7 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     ///
     async fn bind_tasks(
         &self,
-        mut slots: Vec<&mut AvailableTaskSlots>,
+        mut budgets: Vec<&mut AvailableVcores>,
         running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     ) -> datafusion::error::Result<Vec<BoundTask>>;
 
@@ -568,7 +660,7 @@ mod test {
 
     use ballista_core::JobId;
     use ballista_core::error::Result;
-    use ballista_core::serde::protobuf::AvailableTaskSlots;
+    use ballista_core::serde::protobuf::AvailableVcores;
     use ballista_core::serde::scheduler::{
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     };
@@ -578,48 +670,55 @@ mod test {
     use crate::state::task_manager::JobInfoCache;
     use crate::test_utils::{
         mock_completed_task, revive_graph_and_complete_next_stage,
-        test_aggregation_plan_with_job_id,
+        test_aggregation_plan_with_config,
     };
+    use ballista_core::config::BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK;
+    use ballista_core::extension::SessionConfigExt;
+    use datafusion::prelude::SessionConfig;
 
     #[tokio::test]
     async fn test_bind_task_bias() -> Result<()> {
         let num_partition = 8usize;
         let active_jobs = mock_active_jobs(num_partition).await?;
-        let mut available_slots = mock_available_slots();
-        let available_slots_ref: Vec<&mut AvailableTaskSlots> =
-            available_slots.iter_mut().collect();
+        let mut budgets = mock_budgets();
+        let budgets_ref: Vec<&mut AvailableVcores> = budgets.iter_mut().collect();
         let bound_tasks =
-            bind_task_bias(available_slots_ref, Arc::new(active_jobs), |_| false).await;
-        assert_eq!(9, bound_tasks.len());
+            bind_task_bias(budgets_ref, Arc::new(active_jobs), |_| false).await;
+        // 9 total pending partitions (job_a: 2, job_b: 7) — verify all were
+        // covered. Task count is emergent under multi-partition binding.
+        assert_eq!(9, total_partitions_covered(&bound_tasks));
 
         let result = get_result(bound_tasks);
 
+        // Multi-partition-task binding: each bind consumes slice.len() vcores,
+        // so an executor with leftover vcores keeps taking work under the bias
+        // policy (largest exec stays hot). Distribution depends on HashMap
+        // iteration order across jobs.
         let mut expected = Vec::new();
         {
+            // job_a iterated first: exec_3(7) takes job_a's 2 partitions
+            // (exec_3 now has 5 vcores left), then bias keeps exec_3 hot so
+            // it takes 5 of job_b's 7, and exec_2(5) takes the remaining 2.
             let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
-
             let mut entry_a = HashMap::new();
             entry_a.insert("executor_3".to_string(), 2);
             let mut entry_b = HashMap::new();
             entry_b.insert("executor_3".to_string(), 5);
             entry_b.insert("executor_2".to_string(), 2);
-
             expected0.insert("job_a".into(), entry_a);
             expected0.insert("job_b".into(), entry_b);
-
             expected.push(expected0);
         }
         {
+            // job_b iterated first: exec_3(7) takes job_b's full 7 partitions,
+            // then exec_2(5) takes job_a's 2.
             let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
-
             let mut entry_b = HashMap::new();
             entry_b.insert("executor_3".to_string(), 7);
             let mut entry_a = HashMap::new();
             entry_a.insert("executor_2".to_string(), 2);
-
             expected0.insert("job_a".into(), entry_a);
             expected0.insert("job_b".into(), entry_b);
-
             expected.push(expected0);
         }
 
@@ -635,47 +734,44 @@ mod test {
     async fn test_bind_task_round_robin() -> Result<()> {
         let num_partition = 8usize;
         let active_jobs = mock_active_jobs(num_partition).await?;
-        let mut available_slots = mock_available_slots();
-        let available_slots_ref: Vec<&mut AvailableTaskSlots> =
-            available_slots.iter_mut().collect();
+        let mut budgets = mock_budgets();
+        let budgets_ref: Vec<&mut AvailableVcores> = budgets.iter_mut().collect();
         let bound_tasks =
-            bind_task_round_robin(available_slots_ref, Arc::new(active_jobs), |_| false)
-                .await;
-        assert_eq!(9, bound_tasks.len());
+            bind_task_round_robin(budgets_ref, Arc::new(active_jobs), |_| false).await;
+        // 9 total pending partitions (job_a: 2, job_b: 7) — verify all were
+        // covered. Task count is emergent under multi-partition binding.
+        assert_eq!(9, total_partitions_covered(&bound_tasks));
 
         let result = get_result(bound_tasks);
 
+        // Multi-partition-task binding: same shape as bias variant under this
+        // mock — each executor consumes its full vcore budget in one task per
+        // (job, stage) and round-robin's idx rotation gives the same
+        // ordering. Two variants depending on job HashMap iteration order.
         let mut expected: Vec<HashMap<JobId, HashMap<String, usize>>> = Vec::new();
         {
+            // job_a iterated first: exec_3(7) takes job_a's 2 partitions,
+            // then exec_2(5) + exec_1(3) split job_b's 7 as 5/2.
             let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
-
             let mut entry_a = HashMap::new();
-            entry_a.insert("executor_3".to_string(), 1);
-            entry_a.insert("executor_2".to_string(), 1);
+            entry_a.insert("executor_3".to_string(), 2);
             let mut entry_b = HashMap::new();
-            entry_b.insert("executor_1".to_string(), 3);
-            entry_b.insert("executor_3".to_string(), 2);
-            entry_b.insert("executor_2".to_string(), 2);
-
+            entry_b.insert("executor_2".to_string(), 5);
+            entry_b.insert("executor_1".to_string(), 2);
             expected0.insert("job_a".into(), entry_a);
             expected0.insert("job_b".into(), entry_b);
-
             expected.push(expected0);
         }
         {
+            // job_b iterated first: exec_3(7) takes job_b's full 7,
+            // then exec_2(5) takes job_a's 2.
             let mut expected0: HashMap<JobId, HashMap<String, usize>> = HashMap::new();
-
             let mut entry_b = HashMap::new();
-            entry_b.insert("executor_3".to_string(), 3);
-            entry_b.insert("executor_2".to_string(), 2);
-            entry_b.insert("executor_1".to_string(), 2);
+            entry_b.insert("executor_3".to_string(), 7);
             let mut entry_a = HashMap::new();
-            entry_a.insert("executor_2".to_string(), 1);
-            entry_a.insert("executor_1".to_string(), 1);
-
+            entry_a.insert("executor_2".to_string(), 2);
             expected0.insert("job_a".into(), entry_a);
             expected0.insert("job_b".into(), entry_b);
-
             expected.push(expected0);
         }
 
@@ -687,18 +783,33 @@ mod test {
         Ok(())
     }
 
+    /// Sum partitions covered per (job, executor). Under multi-partition
+    /// tasks one task covers a slice of partitions rather than exactly one,
+    /// so counting bound tasks would understate the distribution. Summing
+    /// `global_input_partition_ids.len()` preserves the "N partitions distributed as
+    /// X/Y/Z across executors" invariant the assertions actually care about.
     fn get_result(bound_tasks: Vec<BoundTask>) -> HashMap<JobId, HashMap<String, usize>> {
         let mut result = HashMap::new();
 
         for bound_task in bound_tasks {
             let entry = result
-                .entry(bound_task.1.partition.job_id)
+                .entry(bound_task.1.key.job_id)
                 .or_insert_with(HashMap::new);
             let n = entry.entry(bound_task.0).or_insert_with(|| 0);
-            *n += 1;
+            *n += bound_task.1.global_input_partition_ids.len();
         }
 
         result
+    }
+
+    /// Total partitions covered across every bound task — the multi-partition
+    /// analogue of "how many tasks did we bind" for tests that used to assert
+    /// on `bound_tasks.len()`.
+    fn total_partitions_covered(bound_tasks: &[BoundTask]) -> usize {
+        bound_tasks
+            .iter()
+            .map(|(_, task)| task.global_input_partition_ids.len())
+            .sum()
     }
 
     async fn mock_active_jobs(
@@ -726,14 +837,28 @@ mod test {
         num_target_partitions: usize,
         num_pending_task: usize,
     ) -> Result<StaticExecutionGraph> {
-        let mut graph =
-            test_aggregation_plan_with_job_id(num_target_partitions, job_id).await;
+        // These tests validate the *multi-partition* binding path: expected
+        // task distributions include slice sizes up to 7. That requires an
+        // unbounded `max_partitions_per_task`. Since `bc7a4eda` flipped the
+        // default to 1 (single-partition-per-task, matching master's
+        // pre-branch behaviour), we override it back here so the mock
+        // exercises the branch feature these tests are *for*.
+        let session_config = Arc::new(
+            SessionConfig::new_with_ballista()
+                .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "0"),
+        );
+        let mut graph = test_aggregation_plan_with_config(
+            num_target_partitions,
+            job_id,
+            session_config,
+        )
+        .await;
         let executor = ExecutorMetadata {
             id: "executor_0".to_string(),
             host: "localhost".to_string(),
             port: 50051,
             grpc_port: 50052,
-            specification: ExecutorSpecification::default().with_task_slots(32),
+            specification: ExecutorSpecification::default().with_vcores(32),
             os_info: ExecutorOperatingSystemSpecification::default(),
         };
 
@@ -750,19 +875,19 @@ mod test {
         Ok(graph)
     }
 
-    fn mock_available_slots() -> Vec<AvailableTaskSlots> {
+    fn mock_budgets() -> Vec<AvailableVcores> {
         vec![
-            AvailableTaskSlots {
+            AvailableVcores {
                 executor_id: "executor_1".to_string(),
-                slots: 3,
+                vcores: 3,
             },
-            AvailableTaskSlots {
+            AvailableVcores {
                 executor_id: "executor_2".to_string(),
-                slots: 5,
+                vcores: 5,
             },
-            AvailableTaskSlots {
+            AvailableVcores {
                 executor_id: "executor_3".to_string(),
-                slots: 7,
+                vcores: 7,
             },
         ]
     }

@@ -165,6 +165,28 @@ cd $ARROW_HOME/benchmarks
 cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 --query 1 --path $(pwd)/data --format tbl
 ```
 
+## Recording and comparing results
+
+Pass `--output <dir>` (works for both the `ballista` and `datafusion` benchmark
+subcommands) to write a machine-readable summary to `<dir>/tpch-<start_time>.json`.
+Each run records the benchmark and DataFusion versions, CPU count, the full CLI
+arguments (so the configuration is self-describing), and per-query per-iteration
+elapsed times and row counts.
+
+The summary is rewritten after **every query**, atomically, so a run that is
+killed part way through (for example an out-of-memory `SIGKILL` at a large scale
+factor) still leaves the results collected so far on disk. A query that fails is
+recorded with an `error` message and its completed iterations, and the run
+continues to the remaining queries instead of aborting; the process still exits
+non-zero if any query failed.
+
+Compare two summary files query-by-query — fastest iteration per side, delta,
+delta percent, suite totals, and row-count agreement:
+
+```bash
+cargo run --release --bin tpch compare baseline.json candidate.json
+```
+
 ## Running the Ballista Benchmarks on docker-compose
 
 The `docker-compose.yml` at the repo root brings up one scheduler and two

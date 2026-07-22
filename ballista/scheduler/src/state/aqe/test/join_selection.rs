@@ -19,6 +19,7 @@ use crate::{
     assert_plan,
     state::aqe::{planner::AdaptivePlanner, test::mock_partitions_with_statistics},
 };
+use ballista_core::extension::SessionConfigExt;
 use datafusion::{
     arrow::{
         array::{Int32Array, RecordBatch},
@@ -85,6 +86,10 @@ fn make_ctx_without_collect_left(prefer_hash_join: bool) -> SessionContext {
             "datafusion.optimizer.hash_join_single_partition_threshold_rows",
             0,
         )
+        // AQE join selection reads the broadcast cutoff from Ballista's own
+        // config; a byte threshold of 0 disables CollectLeft promotion, keeping
+        // these joins repartitioned.
+        .with_ballista_broadcast_join_threshold_bytes(0)
         .with_target_partitions(4)
         .with_round_robin_repartition(false);
     let state = SessionStateBuilder::new_with_default_features()

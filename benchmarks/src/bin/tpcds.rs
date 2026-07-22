@@ -62,25 +62,8 @@ const TABLES: &[&str] = &[
 /// under the default (static) planner; this list reflects that configuration.
 /// Remove an entry as the underlying cause is fixed.
 const SKIP: &[(usize, &str)] = &[
-    // Distributed execution diverges from single-process DataFusion on the same
-    // data (confirmed reproducible; DataFusion is correct under both join modes).
-    // Neither query uses a set operation; the root cause is unexplained.
-    // See https://github.com/apache/datafusion-ballista/issues/2046
-    (
-        4,
-        "distributed result diverges from DataFusion (issue #2046)",
-    ),
-    (
-        78,
-        "distributed LIMIT drops rows vs DataFusion (issue #2046)",
-    ),
     // Non-deterministic: LIMIT/ORDER BY ties without a total order make the
     // result vary run-to-run in both engines, so a row-by-row diff is unstable.
-    (2, "non-deterministic (ORDER BY ties; varies run-to-run)"),
-    (
-        5,
-        "non-deterministic (ORDER BY channel ties; varies run-to-run)",
-    ),
     (31, "non-deterministic (ORDER BY ties; varies run-to-run)"),
     (
         71,

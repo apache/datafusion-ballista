@@ -56,7 +56,7 @@ use datafusion::{
 };
 use futures::future::join_all;
 use rand::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::ops::Div;
 use std::{
     fs::{self, File},
@@ -79,6 +79,12 @@ struct BallistaBenchmarkOpt {
     /// Query number (1-22). If not specified, runs all queries.
     #[structopt(short, long)]
     query: Option<usize>,
+
+    /// Query numbers to skip when running the whole suite. Can be specified
+    /// multiple times, e.g. `--skip 18 --skip 21`. Ignored when `--query` is
+    /// given.
+    #[structopt(long = "skip", number_of_values = 1)]
+    skip: Vec<usize>,
 
     /// Activate debug mode to see query results
     #[structopt(short, long)]
@@ -127,7 +133,7 @@ struct BallistaBenchmarkOpt {
 
     /// Configuration overrides in key=value format.
     /// Can be specified multiple times, e.g.
-    /// -c ballista.shuffle.sort_based.enabled=true
+    /// -c ballista.shuffle.sort_based.batch_size=8192
     /// -c datafusion.execution.target_partitions=16
     #[structopt(short = "c", long = "config", number_of_values = 1)]
     config_overrides: Vec<String>,
@@ -143,6 +149,12 @@ struct DataFusionBenchmarkOpt {
     /// Query number (1-22). If not specified, runs all queries.
     #[structopt(short, long)]
     query: Option<usize>,
+
+    /// Query numbers to skip when running the whole suite. Can be specified
+    /// multiple times, e.g. `--skip 18 --skip 21`. Ignored when `--query` is
+    /// given.
+    #[structopt(long = "skip", number_of_values = 1)]
+    skip: Vec<usize>,
 
     /// Activate debug mode to see query results
     #[structopt(short, long)]
@@ -267,11 +279,24 @@ enum LoadtestOpt {
 }
 
 #[derive(Debug, StructOpt)]
+struct CompareOpt {
+    /// Baseline result JSON (written by a benchmark run's `--output` directory).
+    #[structopt(parse(from_os_str))]
+    baseline: PathBuf,
+
+    /// Candidate result JSON to compare against the baseline.
+    #[structopt(parse(from_os_str))]
+    candidate: PathBuf,
+}
+
+#[derive(Debug, StructOpt)]
 #[structopt(name = "TPC-H", about = "TPC-H Benchmarks.")]
 enum TpchOpt {
     Benchmark(BenchmarkSubCommandOpt),
     Convert(ConvertOpt),
     Loadtest(LoadtestOpt),
+    /// Compare two benchmark result JSON files query-by-query.
+    Compare(CompareOpt),
 }
 
 const TABLES: &[&str] = &[
@@ -295,7 +320,50 @@ async fn main() -> Result<()> {
         TpchOpt::Loadtest(BallistaLoadtest(opt)) => {
             loadtest_ballista(opt).await.map(|_| ())
         }
+        TpchOpt::Compare(opt) => run_compare(opt),
     }
+}
+
+/// Resolves which TPC-H queries a benchmark run should execute.
+///
+/// A `--query` selects exactly that one and `--skip` is ignored, so asking for a
+/// query explicitly always runs it. Otherwise the full 1..=22 suite runs minus
+/// any `--skip` entries. Skip values outside 1..=22 are reported rather than
+/// silently ignored, since a typo would otherwise look like it took effect.
+fn select_queries(query: Option<usize>, skip: &[usize]) -> Result<Vec<usize>> {
+    if let Some(q) = query {
+        return Ok(vec![q]);
+    }
+
+    if let Some(bad) = skip.iter().find(|q| !(1..=22).contains(*q)) {
+        return Err(DataFusionError::Execution(format!(
+            "--skip {bad} is not a TPC-H query number (expected 1-22)"
+        )));
+    }
+
+    let selected: Vec<usize> = (1..=22).filter(|q| !skip.contains(q)).collect();
+    if selected.is_empty() {
+        return Err(DataFusionError::Execution(
+            "--skip excluded every query; nothing to run".to_string(),
+        ));
+    }
+
+    if !skip.is_empty() {
+        let mut skipped: Vec<usize> = skip.to_vec();
+        skipped.sort_unstable();
+        skipped.dedup();
+        println!(
+            "Skipping {} of 22 queries: {}",
+            skipped.len(),
+            skipped
+                .iter()
+                .map(|q| q.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    Ok(selected)
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -343,68 +411,130 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     }
 
     // Determine which queries to run
-    let query_numbers: Vec<usize> = opt
-        .query
-        .map(|q| vec![q])
-        .unwrap_or_else(|| (1..=22).collect());
+    let query_numbers = select_queries(opt.query, &opt.skip)?;
 
     let mut benchmark_run = BenchmarkRun::new();
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
     let mut total_elapsed = 0.0;
 
-    for query in query_numbers {
-        let mut query_run = QueryRun::new(query);
-        let mut secs = vec![];
+    let mut any_failed = false;
 
-        // run benchmark
+    for query in query_numbers {
         let sqls = get_query_sql(query)?;
         if opt.debug {
             println!("Query {query}:\n{sqls:?}");
         }
-        for i in 0..opt.iterations {
-            let start = Instant::now();
-            // Execute each SQL statement sequentially (required for queries like q15
-            // that create views and then reference them), keeping the result of
-            // the answer statement, not a trailing DROP VIEW.
-            result = execute_query_capturing_answer(&ctx, &sqls, opt.debug).await?;
-            let elapsed = start.elapsed().as_secs_f64();
-            if opt.debug {
-                pretty::print_batches(&result)?;
+        let mut query_run = QueryRun::new(query);
+        match run_local_query(
+            &ctx,
+            query,
+            &sqls,
+            opt.iterations,
+            opt.debug,
+            &mut query_run,
+        )
+        .await
+        {
+            Ok(batches) => {
+                result = batches;
+                accumulate_total(query, &query_run, opt.iterations, &mut total_elapsed);
             }
-            secs.push(elapsed);
-            let row_count = result.iter().map(|b| b.num_rows()).sum();
-            if opt.iterations == 1 {
-                println!(
-                    "Query {} took {:.3} s and returned {} rows",
-                    query, elapsed, row_count
-                );
-            } else {
-                println!(
-                    "Query {} iteration {} took {:.3} s and returned {} rows",
-                    query, i, elapsed, row_count
-                );
+            Err(e) => {
+                eprintln!("Query {query} failed: {e}");
+                query_run.error = Some(e.to_string());
+                any_failed = true;
             }
-            query_run.add_result(elapsed, row_count);
         }
-
-        if opt.iterations > 1 {
-            let avg = secs.iter().sum::<f64>() / secs.len() as f64;
-            println!("Query {} avg time: {:.3} s", query, avg);
-            total_elapsed += avg;
-        } else {
-            total_elapsed += secs.iter().sum::<f64>();
-        }
-
         benchmark_run.add_query_run(query_run);
+        // Persist after every query so a hard kill mid-suite still leaves the
+        // results collected so far on disk.
+        persist_summary(&benchmark_run, opt.output_path.as_deref())?;
     }
 
     println!("Total time: {total_elapsed:.3} s");
-
-    if let Some(path) = &opt.output_path {
-        write_summary_json(&benchmark_run, path)?;
+    if let Some(path) = persist_summary(&benchmark_run, opt.output_path.as_deref())? {
+        println!("Summary written to {}", path.display());
     }
 
+    if any_failed {
+        return Err(DataFusionError::Execution(
+            "one or more queries failed; see the summary for details".to_string(),
+        ));
+    }
     Ok(result)
+}
+
+/// Run one query `iterations` times against a local DataFusion context, pushing
+/// each iteration's timing into `query_run`, and return the answer batches from
+/// the last iteration. On error, `query_run` already holds whatever iterations
+/// completed before the failure.
+async fn run_local_query(
+    ctx: &SessionContext,
+    query: usize,
+    sqls: &[String],
+    iterations: usize,
+    debug: bool,
+    query_run: &mut QueryRun,
+) -> Result<Vec<RecordBatch>> {
+    let mut result = vec![];
+    for i in 0..iterations {
+        let start = Instant::now();
+        // Execute each SQL statement sequentially (required for queries like q15
+        // that create views and then reference them), keeping the result of the
+        // answer statement, not a trailing DROP VIEW.
+        result = execute_query_capturing_answer(ctx, sqls, debug).await?;
+        let elapsed = start.elapsed().as_secs_f64();
+        if debug {
+            pretty::print_batches(&result)?;
+        }
+        let row_count = result.iter().map(|b| b.num_rows()).sum();
+        print_iteration(query, i, iterations, elapsed, row_count);
+        query_run.add_result(elapsed, row_count);
+    }
+    Ok(result)
+}
+
+fn print_iteration(
+    query: usize,
+    iteration: usize,
+    iterations: usize,
+    elapsed: f64,
+    row_count: usize,
+) {
+    if iterations == 1 {
+        println!("Query {query} took {elapsed:.3} s and returned {row_count} rows");
+    } else {
+        println!(
+            "Query {query} iteration {iteration} took {elapsed:.3} s and returned {row_count} rows"
+        );
+    }
+}
+
+/// Add a completed query's contribution to the running suite total: the average
+/// iteration time when repeating, else the single run.
+fn accumulate_total(
+    query: usize,
+    query_run: &QueryRun,
+    iterations: usize,
+    total: &mut f64,
+) {
+    let secs: Vec<f64> = query_run.iterations.iter().map(|r| r.elapsed).collect();
+    if secs.is_empty() {
+        return;
+    }
+    if iterations > 1 {
+        let avg = secs.iter().sum::<f64>() / secs.len() as f64;
+        println!("Query {query} avg time: {avg:.3} s");
+        *total += avg;
+    } else {
+        *total += secs.iter().sum::<f64>();
+    }
+}
+
+/// Write the run summary to `dir` if one was configured; a no-op otherwise.
+/// Returns the written path when it wrote one.
+fn persist_summary(run: &BenchmarkRun, dir: Option<&Path>) -> Result<Option<PathBuf>> {
+    dir.map(|d| write_summary_json(run, d)).transpose()
 }
 
 async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
@@ -417,10 +547,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     );
 
     // Determine which queries to run
-    let query_numbers: Vec<usize> = opt
-        .query
-        .map(|q| vec![q])
-        .unwrap_or_else(|| (1..=22).collect());
+    let query_numbers = select_queries(opt.query, &opt.skip)?;
 
     let oracle_ctx = if opt.verify {
         let cfg = SessionConfig::new()
@@ -442,135 +569,282 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     let mut benchmark_run = BenchmarkRun::new();
     let mut total_elapsed = 0.0;
 
+    let mut any_failed = false;
+
     for query in query_numbers {
-        let mut query_run = QueryRun::new(query);
-
-        let mut config = session_config_with_s3_support()
-            .with_target_partitions(opt.partitions)
-            .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
-            .with_batch_size(opt.batch_size)
-            .with_collect_statistics(true);
-
-        for kv in &opt.config_overrides {
-            if let Some((key, value)) = kv.split_once('=') {
-                if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
-                    println!("Warning: could not set config '{}': {}", kv, e);
-                }
-            } else {
-                println!(
-                    "Warning: ignoring invalid config override '{}'. \
-                     Expected format: key=value",
-                    kv
-                );
-            }
-        }
-
-        let state = session_state_with_s3_support(config)?;
-        let ctx = SessionContext::remote_with_state(&address, state).await?;
-
-        // register tables with Ballista context
-        let path = opt.path.as_str();
-        let file_format = opt.file_format.as_str();
-
-        register_tables(path, file_format, &ctx, opt.debug).await?;
-
-        let mut secs = vec![];
-
-        // run benchmark
         let sqls = get_query_sql(query)?;
         if opt.debug {
             println!("Running benchmark with query {}:\n {:?}", query, sqls);
         }
-        let mut batches = vec![];
-        let answer_idx = answer_statement_index(&sqls);
-        for i in 0..opt.iterations {
-            let start = Instant::now();
-            for (idx, sql) in sqls.iter().enumerate() {
-                let df = ctx
-                    .sql(sql)
-                    .await
-                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
-                    .unwrap();
-                let plan = df.clone().into_optimized_plan()?;
-                if opt.debug {
-                    println!("=== Optimized logical plan ===\n{plan:?}\n");
-                }
-                let collected = df
-                    .collect()
-                    .await
-                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
-                    .unwrap();
-                if idx == answer_idx {
-                    batches = collected;
-                }
+        let mut query_run = QueryRun::new(query);
+        match run_ballista_query(
+            &address,
+            &opt,
+            oracle_ctx.as_ref(),
+            query,
+            &sqls,
+            &mut query_run,
+        )
+        .await
+        {
+            Ok(()) => {
+                accumulate_total(query, &query_run, opt.iterations, &mut total_elapsed);
             }
-            let elapsed = start.elapsed().as_secs_f64();
-            secs.push(elapsed);
-            let row_count = batches.iter().map(|b| b.num_rows()).sum();
-            if opt.iterations == 1 {
-                println!(
-                    "Query {} took {:.3} s and returned {} rows",
-                    query, elapsed, row_count
-                );
-            } else {
-                println!(
-                    "Query {} iteration {} took {:.3} s and returned {} rows",
-                    query, i, elapsed, row_count
-                );
-            }
-            query_run.add_result(elapsed, row_count);
-            if opt.debug {
-                pretty::print_batches(&batches)?;
-            }
-
-            if let Some(expected_results_path) = opt.expected_results.as_ref() {
-                let expected = get_expected_results(query, expected_results_path).await?;
-                compare_results(&expected, &batches)?;
+            Err(e) => {
+                eprintln!("Query {query} failed: {e}");
+                query_run.error = Some(e.to_string());
+                any_failed = true;
             }
         }
-
-        if let Some(oracle_ctx) = &oracle_ctx {
-            let expected =
-                execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug).await?;
-            compare_results(&expected, &batches).map_err(|e| {
-                DataFusionError::Execution(format!(
-                    "query {query} verification failed: {e}"
-                ))
-            })?;
-            println!("Query {query} verified against DataFusion: OK");
-        }
-
-        if opt.iterations > 1 {
-            let avg = secs.iter().sum::<f64>() / secs.len() as f64;
-            println!("Query {} avg time: {:.3} s", query, avg);
-            total_elapsed += avg;
-        } else {
-            total_elapsed += secs.iter().sum::<f64>();
-        }
-
         benchmark_run.add_query_run(query_run);
+        // Persist after every query so a hard kill mid-suite still leaves the
+        // results collected so far on disk.
+        persist_summary(&benchmark_run, opt.output_path.as_deref())?;
     }
 
     println!("Total time: {total_elapsed:.3} s");
-
-    if let Some(path) = &opt.output_path {
-        write_summary_json(&benchmark_run, path)?;
+    if let Some(path) = persist_summary(&benchmark_run, opt.output_path.as_deref())? {
+        println!("Summary written to {}", path.display());
     }
 
+    if any_failed {
+        return Err(DataFusionError::Execution(
+            "one or more queries failed; see the summary for details".to_string(),
+        ));
+    }
     Ok(())
 }
 
-fn write_summary_json(benchmark_run: &BenchmarkRun, path: &Path) -> Result<()> {
+/// Run one query `iterations` times against the Ballista cluster at `address`,
+/// pushing each iteration's timing into `query_run`. A fresh session is built
+/// per query so config overrides and the job name apply per query. When
+/// `oracle_ctx` is set, the answer is verified against local DataFusion. On
+/// error, `query_run` holds whatever iterations completed before the failure.
+async fn run_ballista_query(
+    address: &str,
+    opt: &BallistaBenchmarkOpt,
+    oracle_ctx: Option<&SessionContext>,
+    query: usize,
+    sqls: &[String],
+    query_run: &mut QueryRun,
+) -> Result<()> {
+    let mut config = session_config_with_s3_support()
+        .with_target_partitions(opt.partitions)
+        .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
+        .with_batch_size(opt.batch_size)
+        .with_collect_statistics(true);
+
+    for kv in &opt.config_overrides {
+        if let Some((key, value)) = kv.split_once('=') {
+            if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
+                println!("Warning: could not set config '{}': {}", kv, e);
+            }
+        } else {
+            println!(
+                "Warning: ignoring invalid config override '{}'. \
+                 Expected format: key=value",
+                kv
+            );
+        }
+    }
+
+    let state = session_state_with_s3_support(config)?;
+    let ctx = SessionContext::remote_with_state(address, state).await?;
+    register_tables(opt.path.as_str(), opt.file_format.as_str(), &ctx, opt.debug).await?;
+
+    let answer_idx = answer_statement_index(sqls);
+    let mut batches = vec![];
+    for i in 0..opt.iterations {
+        let start = Instant::now();
+        for (idx, sql) in sqls.iter().enumerate() {
+            let df = ctx
+                .sql(sql)
+                .await
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
+            let plan = df.clone().into_optimized_plan()?;
+            if opt.debug {
+                println!("=== Optimized logical plan ===\n{plan:?}\n");
+            }
+            let collected = df
+                .collect()
+                .await
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
+            if idx == answer_idx {
+                batches = collected;
+            }
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        let row_count = batches.iter().map(|b| b.num_rows()).sum();
+        print_iteration(query, i, opt.iterations, elapsed, row_count);
+        query_run.add_result(elapsed, row_count);
+        if opt.debug {
+            pretty::print_batches(&batches)?;
+        }
+
+        if let Some(expected_results_path) = opt.expected_results.as_ref() {
+            let expected = get_expected_results(query, expected_results_path).await?;
+            compare_results(&expected, &batches)?;
+        }
+    }
+
+    if let Some(oracle_ctx) = oracle_ctx {
+        let expected =
+            execute_query_capturing_answer(oracle_ctx, sqls, opt.debug).await?;
+        compare_results(&expected, &batches).map_err(|e| {
+            DataFusionError::Execution(format!("query {query} verification failed: {e}"))
+        })?;
+        println!("Query {query} verified against DataFusion: OK");
+    }
+    Ok(())
+}
+
+/// Write (or overwrite) the run summary as `tpch-<start_time>.json` in `dir`.
+///
+/// The write is atomic — a temp file is written then renamed over the target —
+/// so callers can persist after every query without risking a truncated file if
+/// the process is killed (e.g. an OOM SIGKILL) mid-write. Returns the final path.
+fn write_summary_json(benchmark_run: &BenchmarkRun, dir: &Path) -> Result<PathBuf> {
     let json =
         serde_json::to_string_pretty(&benchmark_run).expect("summary is serializable");
-    let filename = format!("tpch-{}.json", benchmark_run.start_time);
-    let path = path.join(filename);
+    let final_path = dir.join(format!("tpch-{}.json", benchmark_run.start_time));
+    let tmp_path = dir.join(format!("tpch-{}.json.tmp", benchmark_run.start_time));
+    {
+        let mut file = File::create(&tmp_path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp_path, &final_path)?;
+    Ok(final_path)
+}
+
+/// Per-query comparison of two benchmark runs, keyed by query number. A side is
+/// `None` when that run has no completed iteration for the query (absent or
+/// failed).
+struct QueryComparison {
+    query: usize,
+    baseline: Option<QueryStat>,
+    candidate: Option<QueryStat>,
+}
+
+/// The comparable summary of one query in one run: its fastest iteration and the
+/// row count it returned.
+#[derive(Clone, Copy)]
+struct QueryStat {
+    min_elapsed: f64,
+    row_count: Option<usize>,
+}
+
+fn query_stat(run: &QueryRun) -> Option<QueryStat> {
+    run.min_elapsed().map(|min_elapsed| QueryStat {
+        min_elapsed,
+        row_count: run.row_count(),
+    })
+}
+
+/// Join two runs' query results by query number (union, ascending). The metric
+/// per side is the fastest iteration, matching how benchmark totals are read.
+fn compare_benchmark_runs(
+    baseline: &BenchmarkRun,
+    candidate: &BenchmarkRun,
+) -> Vec<QueryComparison> {
+    let mut queries: Vec<usize> = baseline
+        .queries
+        .iter()
+        .chain(candidate.queries.iter())
+        .map(|q| q.query)
+        .collect();
+    queries.sort_unstable();
+    queries.dedup();
+
+    let stat_of = |run: &BenchmarkRun, query: usize| -> Option<QueryStat> {
+        run.queries
+            .iter()
+            .find(|q| q.query == query)
+            .and_then(query_stat)
+    };
+
+    queries
+        .into_iter()
+        .map(|query| QueryComparison {
+            query,
+            baseline: stat_of(baseline, query),
+            candidate: stat_of(candidate, query),
+        })
+        .collect()
+}
+
+fn read_benchmark_run(path: &Path) -> Result<BenchmarkRun> {
+    let bytes = fs::read(path).map_err(|e| {
+        DataFusionError::Execution(format!("could not read {}: {e}", path.display()))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        DataFusionError::Execution(format!("could not parse {}: {e}", path.display()))
+    })
+}
+
+fn run_compare(opt: CompareOpt) -> Result<()> {
+    let baseline = read_benchmark_run(&opt.baseline)?;
+    let candidate = read_benchmark_run(&opt.candidate)?;
+    let comparisons = compare_benchmark_runs(&baseline, &candidate);
+
     println!(
-        "Writing summary file to {}",
-        path.as_os_str().to_str().unwrap()
+        "{:>5}  {:>12}  {:>12}  {:>11}  {:>8}  rows",
+        "query", "baseline(s)", "candidate(s)", "delta(s)", "delta%"
     );
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
+
+    let (mut base_total, mut cand_total) = (0.0_f64, 0.0_f64);
+    for c in &comparisons {
+        let cell = |s: Option<QueryStat>| {
+            s.map(|s| format!("{:.3}", s.min_elapsed))
+                .unwrap_or_else(|| "FAIL".to_string())
+        };
+        let (delta, pct) = match (c.baseline, c.candidate) {
+            (Some(b), Some(cnd)) => {
+                base_total += b.min_elapsed;
+                cand_total += cnd.min_elapsed;
+                let d = cnd.min_elapsed - b.min_elapsed;
+                (
+                    format!("{d:+.3}"),
+                    format!("{:+.1}%", 100.0 * d / b.min_elapsed),
+                )
+            }
+            _ => ("-".to_string(), "-".to_string()),
+        };
+        let rows = match (
+            c.baseline.and_then(|s| s.row_count),
+            c.candidate.and_then(|s| s.row_count),
+        ) {
+            (Some(b), Some(cnd)) if b == cnd => format!("{b}"),
+            (Some(b), Some(cnd)) => format!("{b}/{cnd} MISMATCH"),
+            (Some(b), None) => format!("{b}/-"),
+            (None, Some(cnd)) => format!("-/{cnd}"),
+            (None, None) => "-".to_string(),
+        };
+        println!(
+            "{:>5}  {:>12}  {:>12}  {:>11}  {:>8}  {}",
+            c.query,
+            cell(c.baseline),
+            cell(c.candidate),
+            delta,
+            pct,
+            rows
+        );
+    }
+
+    let total_delta = cand_total - base_total;
+    let total_pct = if base_total > 0.0 {
+        format!("{:+.1}%", 100.0 * total_delta / base_total)
+    } else {
+        "-".to_string()
+    };
+    println!(
+        "{:>5}  {:>12.3}  {:>12.3}  {:>11}  {:>8}  (queries completed by both)",
+        "Σ",
+        base_total,
+        cand_total,
+        format!("{total_delta:+.3}"),
+        total_pct
+    );
     Ok(())
 }
 
@@ -1104,12 +1378,17 @@ pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
     schema.finish()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct QueryRun {
     /// query number
     query: usize,
     /// list of individual run times and row counts
     iterations: Vec<QueryResult>,
+    /// Set when the query did not run all iterations to completion. The message
+    /// captures why; `iterations` then holds only the iterations that finished
+    /// before the failure (possibly none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 impl QueryRun {
@@ -1117,15 +1396,30 @@ impl QueryRun {
         Self {
             query,
             iterations: vec![],
+            error: None,
         }
     }
 
     fn add_result(&mut self, elapsed: f64, row_count: usize) {
         self.iterations.push(QueryResult { elapsed, row_count })
     }
+
+    /// Fastest completed iteration in seconds, or `None` if no iteration
+    /// finished (e.g. the query failed before completing one).
+    fn min_elapsed(&self) -> Option<f64> {
+        self.iterations
+            .iter()
+            .map(|r| r.elapsed)
+            .min_by(|a, b| a.total_cmp(b))
+    }
+
+    /// Row count from the first completed iteration.
+    fn row_count(&self) -> Option<usize> {
+        self.iterations.first().map(|r| r.row_count)
+    }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct BenchmarkRun {
     /// Benchmark crate version
     benchmark_version: String,
@@ -1369,7 +1663,7 @@ fn string_schema(schema: Schema) -> Schema {
     )
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct QueryResult {
     elapsed: f64,
     row_count: usize,
@@ -1380,6 +1674,157 @@ mod tests {
     use super::*;
     use std::env;
     use std::sync::Arc;
+
+    #[test]
+    fn select_queries_runs_whole_suite_by_default() {
+        assert_eq!(
+            select_queries(None, &[]).unwrap(),
+            (1..=22).collect::<Vec<_>>()
+        );
+    }
+
+    // The motivating case: run the full suite but leave out the query that
+    // exhausts the memory pool, without having to drive 21 single-query jobs.
+    #[test]
+    fn select_queries_omits_skipped() {
+        let selected = select_queries(None, &[18]).unwrap();
+        assert_eq!(selected.len(), 21);
+        assert!(!selected.contains(&18));
+        assert!(selected.contains(&17) && selected.contains(&19));
+    }
+
+    #[test]
+    fn select_queries_omits_several_skipped() {
+        let selected = select_queries(None, &[18, 21, 5]).unwrap();
+        assert_eq!(selected.len(), 19);
+        for q in [5, 18, 21] {
+            assert!(!selected.contains(&q), "query {q} should have been skipped");
+        }
+    }
+
+    // An explicit --query is a direct instruction, so it wins over --skip rather
+    // than silently producing an empty run.
+    #[test]
+    fn select_queries_prefers_explicit_query_over_skip() {
+        assert_eq!(select_queries(Some(18), &[18]).unwrap(), vec![18]);
+    }
+
+    // A repeated skip must not change the outcome.
+    #[test]
+    fn select_queries_tolerates_duplicate_skips() {
+        assert_eq!(select_queries(None, &[18, 18]).unwrap().len(), 21);
+    }
+
+    // A typo like `--skip 42` would otherwise look like it took effect.
+    #[test]
+    fn select_queries_rejects_out_of_range_skip() {
+        for bad in [0usize, 23, 100] {
+            assert!(
+                select_queries(None, &[bad]).is_err(),
+                "--skip {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn select_queries_rejects_skipping_everything() {
+        assert!(select_queries(None, &(1..=22).collect::<Vec<_>>()).is_err());
+    }
+
+    fn run_with(queries: Vec<QueryRun>) -> BenchmarkRun {
+        BenchmarkRun {
+            benchmark_version: "test".to_string(),
+            datafusion_version: "test".to_string(),
+            num_cpus: 1,
+            start_time: 0,
+            arguments: vec![],
+            queries,
+        }
+    }
+
+    fn query_run_with(query: usize, times: &[f64], rows: usize) -> QueryRun {
+        let mut qr = QueryRun::new(query);
+        for &t in times {
+            qr.add_result(t, rows);
+        }
+        qr
+    }
+
+    #[test]
+    fn min_elapsed_picks_fastest_iteration() {
+        let qr = query_run_with(1, &[3.0, 1.5, 2.0], 4);
+        assert_eq!(qr.min_elapsed(), Some(1.5));
+        assert_eq!(qr.row_count(), Some(4));
+    }
+
+    #[test]
+    fn min_elapsed_is_none_without_iterations() {
+        let qr = QueryRun::new(7);
+        assert_eq!(qr.min_elapsed(), None);
+        assert_eq!(qr.row_count(), None);
+    }
+
+    #[test]
+    fn success_run_omits_error_and_roundtrips() {
+        let qr = query_run_with(1, &[1.0], 4);
+        let json = serde_json::to_string(&qr).unwrap();
+        assert!(
+            !json.contains("error"),
+            "success run should omit error: {json}"
+        );
+        let back: QueryRun = serde_json::from_str(&json).unwrap();
+        assert!(back.error.is_none());
+        assert_eq!(back.iterations.len(), 1);
+    }
+
+    #[test]
+    fn failed_run_keeps_partial_iterations_and_error() {
+        let mut qr = query_run_with(5, &[2.0], 3); // one iteration completed
+        qr.error = Some("boom".to_string());
+        let json = serde_json::to_string(&qr).unwrap();
+        let back: QueryRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.error.as_deref(), Some("boom"));
+        assert_eq!(back.min_elapsed(), Some(2.0)); // partial iteration preserved
+    }
+
+    #[test]
+    fn compare_unions_queries_uses_min_and_tracks_rows() {
+        let baseline = run_with(vec![
+            query_run_with(1, &[10.0, 12.0], 4),
+            query_run_with(2, &[100.0], 100),
+            query_run_with(3, &[50.0], 10),
+        ]);
+        let candidate = run_with(vec![
+            query_run_with(1, &[9.0, 11.0], 4), // faster, rows match
+            query_run_with(2, &[120.0], 101),   // slower, rows differ
+            // q3 absent in candidate
+            query_run_with(4, &[5.0], 1), // only in candidate
+        ]);
+
+        let cmp = compare_benchmark_runs(&baseline, &candidate);
+        assert_eq!(
+            cmp.iter().map(|c| c.query).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+
+        assert_eq!(cmp[0].baseline.unwrap().min_elapsed, 10.0);
+        assert_eq!(cmp[0].candidate.unwrap().min_elapsed, 9.0);
+
+        assert_eq!(cmp[1].baseline.unwrap().row_count, Some(100));
+        assert_eq!(cmp[1].candidate.unwrap().row_count, Some(101));
+
+        assert!(cmp[2].baseline.is_some() && cmp[2].candidate.is_none());
+        assert!(cmp[3].baseline.is_none() && cmp[3].candidate.is_some());
+    }
+
+    #[test]
+    fn failed_query_yields_no_comparable_stat() {
+        let mut qr = QueryRun::new(9);
+        qr.error = Some("failed before any iteration".to_string());
+        let run = run_with(vec![qr]);
+        let cmp = compare_benchmark_runs(&run, &run);
+        assert!(cmp[0].baseline.is_none());
+    }
 
     #[tokio::test]
     async fn q1() -> Result<()> {
@@ -1713,6 +2158,7 @@ mod tests {
             // run the query to compute actual results of the query
             let opt = DataFusionBenchmarkOpt {
                 query: Some(n),
+                skip: vec![],
                 debug: false,
                 iterations: 1,
                 partitions: 2,
