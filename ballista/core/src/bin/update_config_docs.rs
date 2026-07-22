@@ -37,9 +37,11 @@ struct Setting {
 }
 
 /// Escapes text for use inside a markdown table cell. A raw pipe would
-/// terminate the cell early and corrupt the table.
+/// terminate the cell early, and a raw newline (or carriage return) would
+/// split the cell across rows; both are collapsed so the table can't be
+/// corrupted by a description that happens to contain either.
 fn escape_cell(text: &str) -> String {
-    text.replace('|', r"\|")
+    text.replace(['\r', '\n'], " ").replace('|', r"\|")
 }
 
 /// Flattens a registry entry into the four cells of a docs table row.
@@ -490,6 +492,14 @@ mod tests {
     }
 
     #[test]
+    fn escape_cell_collapses_newlines() {
+        // A raw newline would split the cell across markdown table rows.
+        assert_eq!(escape_cell("a\nb"), "a b");
+        assert_eq!(escape_cell("a\r\nb"), "a  b");
+        assert_eq!(escape_cell("a\rb"), "a b");
+    }
+
+    #[test]
     fn setting_cells_escapes_pipes_in_descriptions() {
         // No registered description contains a pipe today. Assert that
         // invariant directly, so this fails loudly if one is ever added
@@ -501,6 +511,25 @@ mod tests {
                 "unescaped pipe in description of {}: {description}",
                 entry.name()
             );
+        }
+    }
+
+    #[test]
+    fn setting_cells_never_contain_a_newline() {
+        // All descriptions are single-line today (they use Rust `\` line
+        // continuations), but nothing in the registry's types prevents a
+        // future multi-line description from emitting a literal newline
+        // mid-row, which would silently corrupt the table. Assert the
+        // invariant directly, so this fails loudly the day one is added
+        // without going through escape_cell.
+        for entry in BallistaConfig::valid_entries().values() {
+            for cell in setting_cells(entry) {
+                assert!(
+                    !cell.contains('\n') && !cell.contains('\r'),
+                    "raw newline in a cell of {}: {cell:?}",
+                    entry.name()
+                );
+            }
         }
     }
 
