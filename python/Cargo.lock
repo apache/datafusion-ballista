@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "ballista"
-version = "54.0.0"
+version = "54.1.0"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-core"
-version = "54.0.0"
+version = "54.1.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-executor"
-version = "54.0.0"
+version = "54.1.0"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-scheduler"
-version = "54.0.0"
+version = "54.1.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -3123,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "pyballista"
-version = "54.0.0"
+version = "54.1.0"
 dependencies = [
  "async-trait",
  "ballista",
