@@ -21,12 +21,6 @@
 //! Run via `./dev/update_config_docs.sh`. Pass `--check` to report drift
 //! without writing, which is what CI does.
 
-// `main` is still an `unimplemented!()` stub, so nothing below is reachable
-// from it yet. Using `expect` instead of `allow` ensures this attribute
-// becomes a hard error once `main` is wired up and items become reachable,
-// forcing cleanup rather than silently suppressing lint findings forever.
-#![expect(dead_code)]
-
 use ballista_core::config::{BallistaConfig, ConfigEntry};
 
 /// Column headers for every generated table.
