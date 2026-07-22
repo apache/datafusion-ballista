@@ -312,6 +312,11 @@ fn run(check: bool) -> Result<(), String> {
             if !check {
                 fs::write(file, updated)
                     .map_err(|e| format!("failed to write {}: {e}", file.display()))?;
+                // Reported immediately, rather than batched after the loop, so
+                // that a later orphan-key error (which returns before that
+                // batched report) can never leave the caller unaware that
+                // files were already rewritten on disk.
+                println!("updated {}", file.display());
             }
         }
     }
@@ -346,11 +351,9 @@ fn run(check: bool) -> Result<(), String> {
         println!("configuration tables are up to date");
     } else if stale.is_empty() {
         println!("configuration tables already up to date");
-    } else {
-        for file in &stale {
-            println!("updated {}", file.display());
-        }
     }
+    // Else: the "updated {path}" lines were already printed inline above, as
+    // each file was written.
 
     Ok(())
 }
