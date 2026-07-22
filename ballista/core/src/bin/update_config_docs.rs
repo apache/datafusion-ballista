@@ -125,6 +125,15 @@ const END: &str = "<!-- END GENERATED CONFIG REFERENCE -->";
 /// neither could pass.
 const PRETTIER_IGNORE: &str = "<!-- prettier-ignore -->";
 
+/// Returns whether `line` opens or closes a fenced code block, i.e. its
+/// trimmed content starts with a ``` or ~~~ fence delimiter. Fences are
+/// recognised regardless of indentation, since a fenced block nested inside
+/// a list item is still a fence as far as markdown rendering is concerned.
+fn is_fence_delimiter(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 /// Extracts the key prefixes selected by a `BEGIN` marker line. An empty
 /// result means the region selects every key.
 fn parse_prefixes(line: &str) -> Result<Vec<String>, String> {
@@ -157,18 +166,29 @@ fn splice(content: &str, settings: &[Setting]) -> Result<(String, Vec<String>), 
     let mut out = String::with_capacity(content.len());
     let mut rendered: Vec<String> = Vec::new();
     let mut lines = content.lines();
+    // Whether the line currently being scanned is inside a fenced code
+    // block. Markers only trimmed of trailing whitespace (never leading) so
+    // that a marker must start at column 0 to be live; combined with the
+    // fence tracking, this keeps a marker shown as a syntax example -
+    // fenced, or indented inside a list item - from being mistaken for a
+    // real one and silently overwritten or closed early.
+    let mut in_fence = false;
 
     while let Some(line) = lines.next() {
-        let trimmed = line.trim();
+        let trimmed = line.trim_end();
 
-        if trimmed == END {
+        if is_fence_delimiter(line) {
+            in_fence = !in_fence;
+        }
+
+        if !in_fence && trimmed == END {
             return Err(format!("found `{END}` with no matching BEGIN marker"));
         }
 
         out.push_str(line);
         out.push('\n');
 
-        if !trimmed.starts_with(BEGIN) {
+        if in_fence || !trimmed.starts_with(BEGIN) {
             continue;
         }
 
@@ -177,13 +197,22 @@ fn splice(content: &str, settings: &[Setting]) -> Result<(String, Vec<String>), 
         // Discard the old body.
         let mut closed = false;
         for inner in lines.by_ref() {
-            let inner = inner.trim();
-            if inner.starts_with(BEGIN) {
+            let inner_trimmed = inner.trim_end();
+
+            if is_fence_delimiter(inner) {
+                in_fence = !in_fence;
+            }
+
+            if in_fence {
+                continue;
+            }
+
+            if inner_trimmed.starts_with(BEGIN) {
                 return Err(format!(
                     "nested BEGIN marker inside the region opened by `{trimmed}`"
                 ));
             }
-            if inner == END {
+            if inner_trimmed == END {
                 closed = true;
                 break;
             }
@@ -453,6 +482,91 @@ mod tests {
         assert!(
             out.contains("## Testing"),
             "prose between regions lost:\n{out}"
+        );
+    }
+
+    #[test]
+    fn splice_ignores_marker_pair_inside_fenced_code_block() {
+        // A marker pair shown as a syntax example inside a fenced code block
+        // must not be mistaken for a live region: there is nothing to
+        // render into, so the fenced block passes through untouched and no
+        // keys are reported.
+        let content = doc("```\n\
+             <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n\
+             ```\n");
+
+        let (out, keys) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert!(
+            keys.is_empty(),
+            "fenced markers must not be treated as live: {keys:?}"
+        );
+        assert_eq!(out, content, "fenced block must be left untouched");
+    }
+
+    #[test]
+    fn splice_ignores_indented_begin_marker() {
+        // A BEGIN marker that does not start at column 0 - e.g. indented
+        // inside a list item as a syntax example - is not live. With no
+        // live BEGIN to match it, the following unindented END is an
+        // orphan.
+        let content = doc(
+            "  <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let err = splice(&content, &settings()).expect_err("must fail");
+
+        assert!(err.contains("no matching BEGIN"), "got: {err}");
+    }
+
+    #[test]
+    fn splice_handles_live_region_alongside_fenced_marker_example() {
+        // A fenced block documenting the marker syntax elsewhere in the
+        // same file must not interfere with a genuine, unindented live
+        // region.
+        let content = doc("Example syntax:\n\n\
+             ```\n\
+             <!-- BEGIN GENERATED CONFIG REFERENCE prefix=... -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n\
+             ```\n\n\
+             <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n");
+
+        let (out, keys) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert_eq!(keys, vec!["ballista.testing.one".to_string()]);
+        assert!(out.contains("| ballista.testing.one |"), "got:\n{out}");
+        assert!(
+            out.contains("<!-- BEGIN GENERATED CONFIG REFERENCE prefix=... -->"),
+            "fenced example must survive untouched:\n{out}"
+        );
+    }
+
+    #[test]
+    fn splice_fenced_end_does_not_close_a_live_region_early() {
+        // The region-body-consuming inner loop must also track fence state:
+        // an END shown inside a fenced example within a live region must
+        // not close that region early.
+        let content = doc(
+            "<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.testing. -->\n\
+             Example of the closing marker:\n\n\
+             ```\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n\
+             ```\n\n\
+             <!-- END GENERATED CONFIG REFERENCE -->\n",
+        );
+
+        let (out, keys) = splice(&content, &settings()).expect("splice succeeds");
+
+        assert_eq!(keys, vec!["ballista.testing.one".to_string()]);
+        assert!(out.contains("| ballista.testing.one |"), "got:\n{out}");
+        // The old body, including the fenced example, was discarded along
+        // with the rest of the stale region.
+        assert!(
+            !out.contains("Example of the closing marker"),
+            "got:\n{out}"
         );
     }
 
