@@ -19,6 +19,9 @@
 
 # Configuration
 
+> [!NOTE]
+> The configuration tables below are generated from the `ConfigEntry` definitions in `ballista/core/src/config.rs`. Anything between a pair of generated config reference markers is overwritten the next time the docs are regenerated, so do not hand-edit it. To change a setting's description, type, or default, edit the corresponding `ConfigEntry` in `ballista/core/src/config.rs`, then run `./dev/update_config_docs.sh` and commit the regenerated file. Prose outside the generated sections is hand-written and safe to edit normally.
+
 ## Ballista Configuration Settings
 
 Configuring Ballista is quite similar to configuring DataFusion. Most settings are identical, with only a few configurations specific to Ballista.
