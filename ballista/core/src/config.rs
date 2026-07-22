@@ -294,13 +294,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::Boolean,
                          Some(false.to_string())),
         ConfigEntry::new(BALLISTA_PROPAGATE_EMPTY_ENABLED.to_string(),
-                        "Configuration key to enable AQE propagate empty exec rule. \
-                        This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)".to_string(),
+                        "Enables the AQE propagate-empty-relation rule. Injects EmptyExec \
+                        into the plan when a join input is known to be empty (e.g. during \
+                        joins), allowing downstream work to be skipped.".to_string(),
                         DataType::Boolean,
                         Some(true.to_string())),
         ConfigEntry::new(
             BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
-            "Target post-coalesce partition byte size in bytes. Mirrors Spark's \
+            "Target post-coalesce partition size in bytes. Mirrors Spark's \
              advisoryPartitionSizeInBytes."
                 .to_string(),
             DataType::UInt64,
