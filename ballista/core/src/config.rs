@@ -103,7 +103,8 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
 
 /// Configuration key to enable broadcasting a small build side of a
 /// `SortMergeJoinExec` by converting it to a `CollectLeft` hash join in the
-/// static distributed planner. Enabled by default.
+/// static distributed planner. Disabled by default: the conversion can
+/// produce incorrect results, so it is opt-in only.
 pub const BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED: &str =
     "ballista.optimizer.broadcast_sort_merge_join_enabled";
 
@@ -243,9 +244,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED.to_string(),
                          "Broadcast a small build side of a SortMergeJoinExec by converting it \
                           to a CollectLeft hash join in the static distributed planner. \
-                          The build side must also fit under broadcast_join_threshold_bytes.".to_string(),
+                          The build side must also fit under broadcast_join_threshold_bytes. \
+                          Disabled by default: the conversion can produce incorrect results.".to_string(),
                          DataType::Boolean,
-                         Some(true.to_string())),
+                         Some(false.to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -570,7 +572,8 @@ impl BallistaConfig {
 
     /// Returns whether broadcasting a small build side of a `SortMergeJoinExec`
     /// (by converting it to a `CollectLeft` hash join) is enabled in the static
-    /// distributed planner.
+    /// distributed planner. Off unless explicitly opted into, because the
+    /// conversion can produce incorrect results.
     pub fn broadcast_sort_merge_join_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_BROADCAST_SORT_MERGE_JOIN_ENABLED)
     }
@@ -821,9 +824,11 @@ mod tests {
         Ok(())
     }
 
+    /// The conversion can produce incorrect results, so it must stay off
+    /// unless a user explicitly opts in.
     #[test]
-    fn broadcast_sort_merge_join_enabled_by_default() {
+    fn broadcast_sort_merge_join_disabled_by_default() {
         let config = BallistaConfig::default();
-        assert!(config.broadcast_sort_merge_join_enabled());
+        assert!(!config.broadcast_sort_merge_join_enabled());
     }
 }
