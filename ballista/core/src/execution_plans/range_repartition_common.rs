@@ -40,7 +40,9 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{Array, Float64Array, RecordBatch, UInt32Array};
 use datafusion::arrow::compute::take_arrays;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{Result, internal_datafusion_err};
+use datafusion::error::DataFusionError;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::sorts::sort::SortExec;
@@ -277,6 +279,42 @@ pub(super) async fn broadcast_error(
             None => Err(internal_datafusion_err!("{}", message)),
         };
         let _ = sender.send(payload).await;
+    }
+}
+
+/// Await a scatter task and turn every terminal state into something the K
+/// downstream consumers can observe. Modelled on DataFusion's
+/// `RepartitionExec::wait_for_task`.
+///
+/// Without this, a panic in a scatter task closes its senders with no data
+/// sent — every output partition sees a clean EOF and the overall task
+/// reports success while silently dropping all remaining rows. Here every
+/// terminal state (panic, DFError, clean end) becomes an explicit signal
+/// on every output channel.
+pub(super) async fn wait_for_task(
+    input_task: SpawnedTask<Result<()>>,
+    senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
+) {
+    match input_task.join().await {
+        Err(join_err) => {
+            let ctx = if join_err.is_panic() {
+                "scatter task panicked"
+            } else {
+                "scatter task cancelled"
+            };
+            broadcast_error(
+                &senders,
+                DataFusionError::Context(
+                    ctx.to_string(),
+                    Box::new(DataFusionError::External(Box::new(join_err))),
+                ),
+            )
+            .await;
+        }
+        Ok(Err(err)) => broadcast_error(&senders, err).await,
+        Ok(Ok(())) => {
+            // Drop the senders — receivers see clean EOF.
+        }
     }
 }
 

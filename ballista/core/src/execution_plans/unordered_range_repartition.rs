@@ -72,13 +72,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, OrderingRequirements, Partitioning,
     PhysicalExpr, PhysicalSortExpr,
 };
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::execution_plan::{
+    CardinalityEffect, EvaluationType, SchedulingType,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -89,7 +92,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::execution_plans::range_repartition_common::{
-    broadcast_error, discover_cuts, split_batch_by_range,
+    discover_cuts, split_batch_by_range, wait_for_task,
 };
 
 /// Per-output-partition channel capacity. Small = tight backpressure; the
@@ -124,6 +127,12 @@ struct DispatchState {
     /// K slots. Each holds `Some(receiver)` after setup, `None` once its
     /// output partition has been consumed.
     receivers: Vec<Option<mpsc::Receiver<Result<RecordBatch>>>>,
+    /// P wait-tasks (one per input partition). Each awaits its scatter task
+    /// and turns panic/error/clean-end into an explicit signal on every
+    /// output channel. `SpawnedTask` aborts its inner tokio task on drop, so
+    /// holding these here ties the background work's lifetime to this exec's
+    /// — dropping the exec cancels all scatter work.
+    _drop_helper: Vec<SpawnedTask<()>>,
     initialized: bool,
 }
 
@@ -160,14 +169,24 @@ impl UnorderedRangeRepartitionExec {
                 routing.expr
             );
         }
-        let properties = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(schema),
-            Partitioning::UnknownPartitioning(output_partitions),
-            input.pipeline_behavior(),
-            input.boundedness(),
-        ));
+        let properties = Arc::new(
+            PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(output_partitions),
+                input.pipeline_behavior(),
+                input.boundedness(),
+            )
+            // Scatter tasks eagerly drive their inputs the moment `execute()`
+            // is first called (not on-demand from downstream polls), and their
+            // per-output channels are the yield points the scheduler needs to
+            // trade CPU across tasks — same combination DataFusion's
+            // RepartitionExec uses.
+            .with_evaluation_type(EvaluationType::Eager)
+            .with_scheduling_type(SchedulingType::Cooperative),
+        );
         let state = Arc::new(Mutex::new(DispatchState {
             receivers: Vec::new(),
+            _drop_helper: Vec::new(),
             initialized: false,
         }));
         Ok(Self {
@@ -308,26 +327,36 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
             let input_partitions = self.input.output_partitioning().partition_count();
             let routing_expr = self.order_by[0].expr.clone(); // TODO: KLL for multi-column?
+            let mut drop_helper = Vec::with_capacity(input_partitions);
             for input_partition in 0..input_partitions {
                 let child = self.input.clone();
-                let senders = senders.clone();
+                let scatter_senders = senders.clone();
                 let cuts_cell = cuts_cell.clone();
                 let routing_expr = routing_expr.clone();
                 let ctx = ctx.clone();
                 let output_partitions = self.output_partitions;
-                tokio::spawn(async move {
+                let input_task = SpawnedTask::spawn(async move {
                     scatter_input_partition(
                         child,
                         input_partition,
                         ctx,
                         routing_expr,
-                        senders,
+                        scatter_senders,
                         cuts_cell,
                         output_partitions,
                     )
-                    .await;
+                    .await
                 });
+                // A separate task awaits the scatter and surfaces panic /
+                // error / clean-end onto every output channel. Without this
+                // layer, a scatter panic drops its senders silently and
+                // downstream sees a spurious EOF.
+                let wait_senders = senders.clone();
+                drop_helper.push(SpawnedTask::spawn(async move {
+                    wait_for_task(input_task, wait_senders).await
+                }));
             }
+            state._drop_helper = drop_helper;
         }
         let Some(slot) = state.receivers.get_mut(partition) else {
             return internal_err!(
@@ -357,6 +386,12 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
 /// Every batch — including the first — is then dispatched via
 /// `split_batch_by_range`, which handles the degenerate empty-cuts case
 /// (all rows to partition 0) transparently.
+///
+/// Errors are surfaced by returning `Err(..)`; the wrapping `wait_for_task`
+/// broadcasts them to every output channel so downstream consumers observe
+/// a failure rather than a silent EOF. Panics inside the body — including
+/// panics from `split_batch_by_range` or the discovery walker — do the same
+/// via the JoinError path.
 async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,
@@ -365,29 +400,17 @@ async fn scatter_input_partition(
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
     cuts_cell: Arc<OnceLock<Vec<f64>>>,
     output_partitions: usize,
-) {
-    let mut stream = match child.execute(input_partition, ctx) {
-        Ok(s) => s,
-        Err(err) => {
-            broadcast_error(&senders, err).await;
-            return;
-        }
-    };
+) -> Result<()> {
+    let mut stream = child.execute(input_partition, ctx)?;
     while let Some(batch_result) = stream.next().await {
         // Every downstream consumer dropped its receiver — DRR itself was
         // dropped, or every output partition had a `LIMIT` above and hit it.
         // Either way, no one's listening; stop reading input so this scatter
         // task exits promptly (drops its `stream`, which propagates upstream).
         if senders.iter().all(|s| s.is_closed()) {
-            return;
+            return Ok(());
         }
-        let batch = match batch_result {
-            Ok(b) => b,
-            Err(err) => {
-                broadcast_error(&senders, err).await;
-                return;
-            }
-        };
+        let batch = batch_result?;
         let cuts = cuts_cell.get_or_init(|| {
             discover_cuts(&child, routing_expr.as_ref(), output_partitions)
         });
@@ -398,28 +421,21 @@ async fn scatter_input_partition(
         // `Arc<RecordBatch>` broadcast + receiver-side filter would skip
         // the scatter-side allocations at the cost of duplicating the
         // filter work K times. Worth measuring under skew.
-        match split_batch_by_range(&batch, &routing_expr, cuts) {
-            Ok(splits) => {
-                for (output, sub) in splits.into_iter().enumerate() {
-                    if sub.num_rows() == 0 {
-                        continue;
-                    }
-                    // `send().await` is where the backpressure lives:
-                    // suspends when the channel is at capacity, which
-                    // suspends this scatter task, which suspends its
-                    // input read → propagates upstream. Errors mean the
-                    // downstream dropped its receiver; keep forwarding
-                    // to the other outputs.
-                    let _ = senders[output].send(Ok(sub)).await;
-                }
+        let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        for (output, sub) in splits.into_iter().enumerate() {
+            if sub.num_rows() == 0 {
+                continue;
             }
-            Err(err) => {
-                broadcast_error(&senders, err).await;
-                return;
-            }
+            // `send().await` is where the backpressure lives: suspends
+            // when the channel is at capacity, which suspends this scatter
+            // task, which suspends its input read → propagates upstream.
+            // Errors mean the downstream dropped its receiver; keep
+            // forwarding to the other outputs.
+            let _ = senders[output].send(Ok(sub)).await;
         }
     }
     // All senders drop with this task → receivers see EOF.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -855,5 +871,112 @@ mod tests {
             err.to_string().contains("execute(0) called twice"),
             "error should name the invariant, got: {err}"
         );
+    }
+
+    /// A panic inside the scatter task's polling of the child stream must
+    /// surface to every output partition as an `Err(..)` — not a silent EOF.
+    /// The wrapping wait-task converts `JoinError` on panic into a
+    /// `DataFusionError::Context("scatter task panicked", ..)` broadcast
+    /// across all K senders.
+    #[tokio::test]
+    async fn scatter_task_panic_surfaces_as_error() {
+        let schema = schema_v2_id();
+        let source: Arc<dyn ExecutionPlan> = Arc::new(PanickingSourceExec::new(&schema));
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(
+            UnorderedRangeRepartitionExec::try_new(source, vec![asc(&schema, "v2")], 3)
+                .unwrap(),
+        );
+        let ctx = session();
+        let output_partitions = exec.output_partitioning().partition_count();
+        let streams: Vec<_> = (0..output_partitions)
+            .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
+            .collect();
+        let mut saw_panic_err = false;
+        for stream in streams {
+            let results: Vec<Result<RecordBatch>> =
+                <_ as futures::stream::StreamExt>::collect(stream).await;
+            for r in results {
+                if let Err(err) = r
+                    && err.to_string().contains("panicked")
+                {
+                    saw_panic_err = true;
+                }
+            }
+        }
+        assert!(
+            saw_panic_err,
+            "at least one output partition must surface the scatter panic \
+             as an Err — otherwise consumers see a spurious clean EOF"
+        );
+    }
+
+    /// Test-only source: its stream panics on the first poll. Used to
+    /// exercise the wait-task's JoinError → broadcast-error path.
+    #[derive(Debug)]
+    struct PanickingSourceExec {
+        schema: SchemaRef,
+        properties: Arc<PlanProperties>,
+    }
+
+    impl PanickingSourceExec {
+        fn new(schema: &Arc<Schema>) -> Self {
+            let properties = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema.clone()),
+                Partitioning::UnknownPartitioning(1),
+                datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+                datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+            ));
+            Self {
+                schema: schema.clone(),
+                properties,
+            }
+        }
+    }
+
+    impl DisplayAs for PanickingSourceExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "PanickingSourceExec")
+        }
+    }
+
+    impl ExecutionPlan for PanickingSourceExec {
+        fn name(&self) -> &str {
+            "PanickingSourceExec"
+        }
+
+        fn schema(&self) -> SchemaRef {
+            self.schema.clone()
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(self)
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _ctx: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            let stream = futures::stream::once(async {
+                panic!("PanickingSourceExec stream boom");
+                #[allow(unreachable_code)]
+                Ok(RecordBatch::new_empty(Arc::new(Schema::empty())))
+            });
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema.clone(),
+                stream,
+            )))
+        }
     }
 }
