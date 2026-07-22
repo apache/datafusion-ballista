@@ -20,4 +20,4 @@
 # Regenerate the marker-delimited configuration tables in docs/source from the
 # ballista-core config registry. Pass --check to report drift without writing.
 set -e
-cargo run -p ballista-core --bin update_config_docs -- "$@"
+cargo run --profile ci -p ballista-core --bin update_config_docs -- "$@"
