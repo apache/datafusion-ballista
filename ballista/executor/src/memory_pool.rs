@@ -18,14 +18,14 @@
 //! Peak-usage tracking wrapper around a [`MemoryPool`].
 //!
 //! [`TrackedMemoryPool`] wraps another [`MemoryPool`] and records the highest
-//! `reserved()` value it ever observed. It logs one `tracing` event on
-//! construction and one on drop, so a task's peak memory pool usage is
-//! visible in executor logs without any additional plumbing.
+//! `reserved()` value it ever observed. It logs one line on construction and
+//! one on drop, so a task's peak memory pool usage is visible in executor
+//! logs without any additional plumbing.
 //!
 //! Ballista builds one [`FairSpillPool`] per task (via
 //! [`memory_pool_policy`](crate::executor_process::ExecutorProcessConfig)),
 //! so wrapping the per-task pool gives per-task peak-memory logs. Correlate
-//! events by the `pool_id` field.
+//! the two log lines by matching `pool_id`.
 //!
 //! [`FairSpillPool`]: datafusion::execution::memory_pool::FairSpillPool
 
@@ -37,16 +37,16 @@ use datafusion::error::Result;
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
 };
-use tracing::info;
+use log::info;
 
 /// Monotonic pool identifier. Wraps around after `usize::MAX` pools, which is
 /// a non-concern in practice.
 static POOL_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// Log target used for construction and drop events. Filter with
-/// `RUST_LOG=ballista_executor::memory_pool=info` (or `=debug`) to see only
-/// these events, or leave at the default `ballista=info` since the executor
-/// crate is `ballista_executor`.
+/// `RUST_LOG=ballista_executor::memory_pool=info` to see only these events,
+/// or leave at the default `ballista=info` — this crate is `ballista_executor`
+/// so it inherits the `ballista=*` filter.
 const LOG_TARGET: &str = "ballista_executor::memory_pool";
 
 /// A [`MemoryPool`] wrapper that records peak `reserved()` bytes and logs
@@ -69,9 +69,9 @@ impl TrackedMemoryPool {
         let id = POOL_ID.fetch_add(1, Ordering::Relaxed);
         info!(
             target: LOG_TARGET,
-            pool_id = id,
-            limit_bytes = memory_limit_bytes(inner.memory_limit()),
-            "memory pool created",
+            "memory pool created pool_id={} limit_bytes={}",
+            id,
+            memory_limit_bytes(inner.memory_limit()),
         );
         Self {
             inner,
@@ -183,10 +183,10 @@ impl Drop for TrackedMemoryPool {
     fn drop(&mut self) {
         info!(
             target: LOG_TARGET,
-            pool_id = self.id,
-            peak_bytes = self.peak.load(Ordering::Relaxed),
-            limit_bytes = memory_limit_bytes(self.inner.memory_limit()),
-            "memory pool dropped",
+            "memory pool dropped pool_id={} peak_bytes={} limit_bytes={}",
+            self.id,
+            self.peak.load(Ordering::Relaxed),
+            memory_limit_bytes(self.inner.memory_limit()),
         );
     }
 }
