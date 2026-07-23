@@ -78,6 +78,33 @@ use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
 
+/// Default fraction of the detected memory limit handed to the pool when
+/// `--memory-pool-fraction` is not set. The `FairSpillPool` only bounds memory
+/// operators register with it, so the remaining budget absorbs untracked
+/// overhead (in-flight Arrow batches, shuffle writer buffers, fragmentation).
+pub(crate) const DEFAULT_MEMORY_POOL_FRACTION: f64 = 0.70;
+
+/// How the operator interpreted `--memory-pool-size`.
+#[derive(Debug, PartialEq)]
+enum MemoryBudget {
+    /// Flag unset: auto-size to `fraction` of detected host/cgroup memory.
+    Auto { fraction: f64 },
+    /// `--memory-pool-size 0`: run DataFusion's unbounded pool.
+    Unbounded,
+    /// `--memory-pool-size N`: bound the pool to exactly `N` bytes.
+    Bytes(u64),
+}
+
+/// Classify the raw CLI value into a [`MemoryBudget`]. `fraction` is only used
+/// for the auto path.
+fn memory_budget_from_cli(opt: Option<u64>, fraction: f64) -> MemoryBudget {
+    match opt {
+        None => MemoryBudget::Auto { fraction },
+        Some(0) => MemoryBudget::Unbounded,
+        Some(n) => MemoryBudget::Bytes(n),
+    }
+}
+
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
 /// `total_bytes / vcores`. The base env's disk manager, cache manager,
@@ -1150,5 +1177,15 @@ mod memory_pool_tests {
         let base = Arc::new(RuntimeEnv::default());
         let env = identity_pool_policy()(base.clone(), &SessionConfig::new()).unwrap();
         assert!(Arc::ptr_eq(&env, &base));
+    }
+
+    #[test]
+    fn budget_from_cli_classifies_none_zero_and_positive() {
+        assert_eq!(
+            memory_budget_from_cli(None, 0.7),
+            MemoryBudget::Auto { fraction: 0.7 }
+        );
+        assert_eq!(memory_budget_from_cli(Some(0), 0.7), MemoryBudget::Unbounded);
+        assert_eq!(memory_budget_from_cli(Some(1024), 0.7), MemoryBudget::Bytes(1024));
     }
 }
