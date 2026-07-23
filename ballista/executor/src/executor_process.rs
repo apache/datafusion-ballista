@@ -293,6 +293,9 @@ pub struct ExecutorProcessConfig {
     /// `memory_pool_size / vcores`. When `None`, no pool is
     /// installed and DataFusion falls back to its unbounded default.
     pub memory_pool_size: Option<u64>,
+    /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
+    /// auto memory pool when `memory_pool_size` is `None`.
+    pub memory_pool_fraction: f64,
     /// Maximum number of sessions whose shared base runtime env is retained on
     /// the executor (LRU). Sharing reuses object-store clients and the Parquet
     /// footer cache across a session's tasks and queries. `0` disables caching
@@ -360,6 +363,7 @@ impl Default for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
+            memory_pool_fraction: DEFAULT_MEMORY_POOL_FRACTION,
             session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
@@ -444,16 +448,41 @@ pub async fn start_executor_process(
             })
         });
 
-    let pool_policy: MemoryPoolPolicy = if let Some(total) = opt.memory_pool_size {
-        let policy = memory_pool_policy(total, vcores)?;
-        let per_vcore = total / vcores as u64;
-        info!(
-            "Memory pool: total {total} bytes split into {vcores} tasks ({per_vcore} bytes each)"
-        );
-        policy
-    } else {
-        identity_pool_policy()
-    };
+    let fraction = opt.memory_pool_fraction;
+    let pool_policy: MemoryPoolPolicy =
+        match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
+            ResolvedPool::Bounded { bytes, source } => {
+                let per_vcore = bytes / vcores as u64;
+                let source_desc = match source {
+                    PoolSource::Configured => {
+                        "configured via --memory-pool-size".to_string()
+                    }
+                    PoolSource::AutoCgroup => {
+                        format!("auto: {:.0}% of cgroup memory limit", fraction * 100.0)
+                    }
+                    PoolSource::AutoHost => {
+                        format!("auto: {:.0}% of host memory", fraction * 100.0)
+                    }
+                };
+                info!(
+                    "Executor memory pool: {bytes} bytes ({source_desc}), \
+                     split across {vcores} vcores ({per_vcore} bytes/vcore)"
+                );
+                memory_pool_policy(bytes, vcores)?
+            }
+            ResolvedPool::Unbounded(reason) => {
+                match reason {
+                    UnboundedReason::Explicit => {
+                        info!("Executor memory pool: unbounded (--memory-pool-size 0)")
+                    }
+                    UnboundedReason::Undetected => warn!(
+                        "Executor memory pool: unbounded (could not detect host or \
+                         cgroup memory limit; set --memory-pool-size to enable spilling)"
+                    ),
+                }
+                identity_pool_policy()
+            }
+        };
 
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`

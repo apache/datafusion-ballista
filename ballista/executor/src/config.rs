@@ -42,6 +42,21 @@ fn parse_memory_pool_size(s: &str) -> Result<u64, String> {
         .map_err(|e| format!("invalid byte size '{s}': {e}"))
 }
 
+/// Parse and validate the `--memory-pool-fraction` value, which must be in
+/// the range `(0.0, 1.0]`.
+fn parse_memory_pool_fraction(s: &str) -> Result<f64, String> {
+    let f = s
+        .parse::<f64>()
+        .map_err(|e| format!("invalid fraction '{s}': {e}"))?;
+    if f > 0.0 && f <= 1.0 {
+        Ok(f)
+    } else {
+        Err(format!(
+            "memory pool fraction must be in (0.0, 1.0], got {f}"
+        ))
+    }
+}
+
 /// Command-line arguments for configuring a Ballista executor.
 ///
 /// This struct is parsed from command-line arguments using clap and contains
@@ -176,15 +191,26 @@ pub struct Config {
         help = "Metric collection policy of this executor instance"
     )]
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
-    /// Optional total memory budget for the executor. Accepts human-readable
-    /// values like "8GB", "512MiB", or a plain byte count. When set, each
-    /// per-vcore FairSpillPool gets `memory_pool_size / vcores`.
+    /// Total memory budget for the executor. When unset, defaults to
+    /// `--memory-pool-fraction` of the detected host/cgroup memory limit. `0`
+    /// disables the pool (unbounded, no spilling). Accepts human-readable values
+    /// like "8GB", "512MiB", or a plain byte count. Split evenly across vcores.
     #[arg(
         long,
         value_parser = parse_memory_pool_size,
-        help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Split evenly across vcores."
+        help = "Total executor memory budget (e.g. \"8GB\"). Unset = fraction of detected memory; 0 = unbounded. Split across vcores."
     )]
     pub memory_pool_size: Option<u64>,
+    /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
+    /// auto memory pool when `--memory-pool-size` is unset. Ignored when
+    /// `--memory-pool-size` is given.
+    #[arg(
+        long,
+        default_value_t = crate::executor_process::DEFAULT_MEMORY_POOL_FRACTION,
+        value_parser = parse_memory_pool_fraction,
+        help = "Fraction (0-1] of detected memory for the auto pool. Default 0.70. Ignored if --memory-pool-size is set."
+    )]
+    pub memory_pool_fraction: f64,
     /// Maximum number of sessions whose shared runtime state (object-store
     /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
     /// disables caching.
@@ -240,6 +266,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
             metric_collection_policy: opt.metric_collection_policy,
             memory_pool_size: opt.memory_pool_size,
+            memory_pool_fraction: opt.memory_pool_fraction,
             session_runtime_cache_capacity: opt.session_runtime_cache_capacity,
             override_execution_engine: None,
             override_function_registry: None,
@@ -256,7 +283,17 @@ impl TryFrom<Config> for ExecutorProcessConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_memory_pool_fraction;
     use super::parse_memory_pool_size;
+
+    #[test]
+    fn parse_fraction_accepts_valid_and_rejects_out_of_range() {
+        assert_eq!(parse_memory_pool_fraction("0.7").unwrap(), 0.7);
+        assert_eq!(parse_memory_pool_fraction("1.0").unwrap(), 1.0);
+        assert!(parse_memory_pool_fraction("0").is_err()); // must be > 0
+        assert!(parse_memory_pool_fraction("1.5").is_err()); // must be <= 1
+        assert!(parse_memory_pool_fraction("banana").is_err());
+    }
 
     #[test]
     fn parse_decimal_suffix() {
