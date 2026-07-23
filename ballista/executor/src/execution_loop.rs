@@ -49,6 +49,13 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
 
+/// Maximum time the poll loop waits for a free vcore before polling the
+/// scheduler anyway. `poll_work` doubles as the executor's heartbeat under
+/// pull-based scheduling, so a fully-busy executor must keep polling (reporting
+/// zero free vcores) or the scheduler times it out and resets its tasks. Kept
+/// well below the scheduler's executor timeout.
+const HEARTBEAT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Main execution loop that polls the scheduler for available tasks.
 ///
 /// Runs indefinitely, periodically asking the scheduler for work. When tasks
@@ -114,13 +121,28 @@ where
         DedicatedExecutor::new("task_runner", executor_specification.vcores as usize);
 
     loop {
-        // Wait for a vcore permit before asking for new work.
-        let permit = free_vcores
-            .acquire()
-            .await
-            .map_err(|_| BallistaError::Internal("vcore semaphore closed".to_string()))?;
-        // Make the vcore available again for the actual bind below.
-        drop(permit);
+        // Wait for a vcore permit before asking for new work, but cap the wait
+        // so a fully-busy executor still polls the scheduler periodically.
+        // `poll_work` is the executor's ONLY heartbeat under pull-based
+        // scheduling (the scheduler records a heartbeat on every poll). If every
+        // vcore is held by a task running longer than the scheduler's executor
+        // timeout, blocking here indefinitely stops heartbeats, so the scheduler
+        // wrongly marks this healthy-but-busy executor dead and resets its
+        // in-flight tasks. On timeout we poll anyway below, reporting
+        // `num_free_vcores: 0`, so liveness no longer depends on vcore
+        // availability.
+        match tokio::time::timeout(HEARTBEAT_POLL_INTERVAL, free_vcores.acquire()).await {
+            // A vcore is free; release it so the bind below can claim it.
+            Ok(Ok(permit)) => drop(permit),
+            // Semaphore closed (executor shutting down).
+            Ok(Err(_)) => {
+                return Err(BallistaError::Internal(
+                    "vcore semaphore closed".to_string(),
+                ));
+            }
+            // No free vcore within the interval; poll anyway to stay alive.
+            Err(_) => {}
+        }
 
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
