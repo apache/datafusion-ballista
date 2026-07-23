@@ -32,7 +32,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use log::{error, info, warn};
-use sysinfo::{Disks, System};
+use sysinfo::{Disks, MemoryRefreshKind, System};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
 use tokio::signal;
@@ -158,6 +158,51 @@ fn resolve_pool(
             let bytes = (base as f64 * fraction) as u64;
             ResolvedPool::Bounded { bytes, source }
         }
+    }
+}
+
+/// Read the cgroup memory limit in bytes, or `None` if unlimited/absent.
+/// Tries cgroup v2 (`<root>/memory.max`) then v1
+/// (`<root>/memory/memory.limit_in_bytes`). A v1 "unlimited" sentinel (a value
+/// near `u64::MAX`) is returned as-is; callers clamp it with `min(host, _)`.
+fn read_cgroup_memory_limit(cgroup_root: &Path) -> Option<u64> {
+    // cgroup v2
+    if let Ok(s) = std::fs::read_to_string(cgroup_root.join("memory.max")) {
+        let s = s.trim();
+        if s == "max" {
+            return None;
+        }
+        if let Ok(v) = s.parse::<u64>() {
+            return Some(v);
+        }
+    }
+    // cgroup v1
+    if let Ok(s) =
+        std::fs::read_to_string(cgroup_root.join("memory").join("memory.limit_in_bytes"))
+        && let Ok(v) = s.trim().parse::<u64>()
+    {
+        return Some(v);
+    }
+    None
+}
+
+/// Total host memory in bytes via `sysinfo`, or `None` if unreadable.
+fn read_host_total_memory() -> Option<u64> {
+    let mut system = System::new_all();
+    system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+    let total = system.total_memory();
+    (total > 0).then_some(total)
+}
+
+/// Resolve the pool decision, reading host/cgroup limits only when auto-sizing.
+fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
+    match budget {
+        MemoryBudget::Auto { fraction } => resolve_pool(
+            MemoryBudget::Auto { fraction },
+            read_host_total_memory(),
+            read_cgroup_memory_limit(Path::new("/sys/fs/cgroup")),
+        ),
+        other => resolve_pool(other, None, None),
     }
 }
 
@@ -1351,5 +1396,43 @@ mod memory_pool_tests {
             resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, None, None),
             ResolvedPool::Unbounded(UnboundedReason::Undetected)
         );
+    }
+
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn cgroup_v2_reads_numeric_limit() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("memory.max"), "8589934592").unwrap();
+        assert_eq!(
+            read_cgroup_memory_limit(dir.path()),
+            Some(8 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn cgroup_v2_max_means_unlimited() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("memory.max"), "max\n").unwrap();
+        assert_eq!(read_cgroup_memory_limit(dir.path()), None);
+    }
+
+    #[test]
+    fn cgroup_v1_reads_numeric_limit() {
+        let dir = tempdir().unwrap();
+        let v1 = dir.path().join("memory");
+        fs::create_dir_all(&v1).unwrap();
+        fs::write(v1.join("memory.limit_in_bytes"), "8589934592\n").unwrap();
+        assert_eq!(
+            read_cgroup_memory_limit(dir.path()),
+            Some(8 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn cgroup_absent_returns_none() {
+        let dir = tempdir().unwrap();
+        assert_eq!(read_cgroup_memory_limit(dir.path()), None);
     }
 }
