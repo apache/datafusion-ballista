@@ -24,32 +24,32 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 ## Versions under test
 
-| Engine   | Version                                                                                                                          |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Engine   | Version                                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Ballista | [`696ca29b`](https://github.com/apache/datafusion-ballista/commit/696ca29b3c1fe3013238822b7f5d8cdb918fdaa3) (`main`, 2026-07-23), Cargo pkg `54.0.0`, DataFusion `54.1.0` |
-| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                            |
+| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                     |
 
 ## Environment
 
 - **Cluster:** Kubernetes on AWS (`us-west-2`); one driver/scheduler pod and
   32 executor pods for each engine, launched on the same node pool.
 - **Executor pod (Ballista):** x86_64, 8 vCPU, 32 GiB memory.
-- **Executor pod (Spark):**    x86_64, 8 vCPU, 64 GiB + 10 GiB overhead.
+- **Executor pod (Spark):** x86_64, 8 vCPU, 64 GiB + 10 GiB overhead.
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
   ~512 MiB row groups, one directory per table.
 
 ## Ballista configuration
 
-| Flag / config key                                             | Value          |
-| ------------------------------------------------------------- | -------------- |
-| `--concurrent-tasks`                                          | `8`            |
-| `--memory-pool-size` (bytes; ≈70 % of the 32 GiB container)   | `24051816858`  |
-| `datafusion.execution.target_partitions`                      | `256`          |
-| `datafusion.execution.collect_statistics`                     | `true`         |
-| `datafusion.execution.listing_table_factory_infer_partitions` | `false`        |
-| `datafusion.catalog.information_schema`                       | `true`         |
-| `ballista.planner.adaptive.enabled`                           | `true` (AQE)   |
-| `ballista.shuffle.sort_based.memory_limit_per_task_bytes`     | `0`            |
+| Flag / config key                                             | Value         |
+| ------------------------------------------------------------- | ------------- |
+| `--concurrent-tasks`                                          | `8`           |
+| `--memory-pool-size` (bytes; ≈70 % of the 32 GiB container)   | `24051816858` |
+| `datafusion.execution.target_partitions`                      | `256`         |
+| `datafusion.execution.collect_statistics`                     | `true`        |
+| `datafusion.execution.listing_table_factory_infer_partitions` | `false`       |
+| `datafusion.catalog.information_schema`                       | `true`        |
+| `ballista.planner.adaptive.enabled`                           | `true` (AQE)  |
+| `ballista.shuffle.sort_based.memory_limit_per_task_bytes`     | `0`           |
 
 `datafusion.optimizer.prefer_hash_join` is left at its default; under AQE the
 join strategy is selected at runtime by `DelayJoinSelectionRule` /
@@ -60,19 +60,19 @@ join strategy is selected at runtime by `DelayJoinSelectionRule` /
 
 Vanilla Spark 3.4 — no Comet plugin, stock `SortShuffleManager`.
 
-| Key                                | Value                                       |
-| ---------------------------------- | ------------------------------------------- |
-| `spark.executor.instances`         | `32`                                        |
-| `spark.executor.cores`             | `16` (task parallelism per executor)        |
-| `spark.kubernetes.executor.limit.cores` / `.request.cores` | `8` (physical vCPU) |
-| `spark.executor.memory`            | `64G`                                       |
-| `spark.executor.memoryOverhead`    | `10G`                                       |
-| `spark.memory.fraction`            | `0.6`                                       |
-| `spark.memory.storageFraction`     | `0.2`                                       |
-| `spark.sql.shuffle.partitions`     | `512`                                       |
-| `spark.sql.broadcastTimeout`       | `900`                                       |
-| `spark.serializer`                 | `KryoSerializer`                            |
-| `spark.io.compression.codec`       | `zstd`                                      |
+| Key                                                        | Value                                |
+| ---------------------------------------------------------- | ------------------------------------ |
+| `spark.executor.instances`                                 | `32`                                 |
+| `spark.executor.cores`                                     | `16` (task parallelism per executor) |
+| `spark.kubernetes.executor.limit.cores` / `.request.cores` | `8` (physical vCPU)                  |
+| `spark.executor.memory`                                    | `64G`                                |
+| `spark.executor.memoryOverhead`                            | `10G`                                |
+| `spark.memory.fraction`                                    | `0.6`                                |
+| `spark.memory.storageFraction`                             | `0.2`                                |
+| `spark.sql.shuffle.partitions`                             | `512`                                |
+| `spark.sql.broadcastTimeout`                               | `900`                                |
+| `spark.serializer`                                         | `KryoSerializer`                     |
+| `spark.io.compression.codec`                               | `zstd`                               |
 
 Spark AQE is left at its Spark 3.4 defaults. Shuffle spills to a `gp3`-backed
 per-executor volume (`spark.kubernetes.executor.volumes...spark-local-dir-1`).
@@ -95,31 +95,31 @@ The SQLBench-H phrasing of the 22 TPC-H queries from
 mean of 3 iterations (cold iteration dropped by the harness). `FAIL` = query
 did not complete on this Ballista configuration.
 
-| Query | Ballista (s) | Spark 3.4 (s) |
-| ----: | -----------: | ------------: |
-|     1 |        19.55 |         67.58 |
-|     2 |        32.84 |         29.80 |
-|     3 |        40.52 |         25.13 |
-|     4 |        27.98 |         21.19 |
-|     5 |       202.84 |         54.12 |
-|     6 |        12.25 |          1.23 |
-|     7 |       253.60 |         19.57 |
-|     8 |       281.02 |         48.60 |
-|     9 |       323.02 |         69.38 |
-|    10 |        66.71 |         35.92 |
-|    11 |        29.76 |         30.88 |
-|    12 |        23.74 |         10.78 |
-|    13 |        15.46 |         20.45 |
-|    14 |        25.53 |          7.00 |
-|    15 |        24.83 |         23.75 |
-|    16 |        16.25 |         23.41 |
-|    17 |       161.60 |         82.30 |
-|    18 |       399.72 |        129.40 |
-|    19 |        23.43 |         11.26 |
-|    20 |     **FAIL** |         19.22 |
-|    21 |     **FAIL** |        101.53 |
-|    22 |     **FAIL** |         12.71 |
-| **Total (Q1–Q19)** | **1980.65** | **711.85** |
+|              Query | Ballista (s) | Spark 3.4 (s) |
+| -----------------: | -----------: | ------------: |
+|                  1 |        19.55 |         67.58 |
+|                  2 |        32.84 |         29.80 |
+|                  3 |        40.52 |         25.13 |
+|                  4 |        27.98 |         21.19 |
+|                  5 |       202.84 |         54.12 |
+|                  6 |        12.25 |          1.23 |
+|                  7 |       253.60 |         19.57 |
+|                  8 |       281.02 |         48.60 |
+|                  9 |       323.02 |         69.38 |
+|                 10 |        66.71 |         35.92 |
+|                 11 |        29.76 |         30.88 |
+|                 12 |        23.74 |         10.78 |
+|                 13 |        15.46 |         20.45 |
+|                 14 |        25.53 |          7.00 |
+|                 15 |        24.83 |         23.75 |
+|                 16 |        16.25 |         23.41 |
+|                 17 |       161.60 |         82.30 |
+|                 18 |       399.72 |        129.40 |
+|                 19 |        23.43 |         11.26 |
+|                 20 |     **FAIL** |         19.22 |
+|                 21 |     **FAIL** |        101.53 |
+|                 22 |     **FAIL** |         12.71 |
+| **Total (Q1–Q19)** |  **1980.65** |    **711.85** |
 
 The total row sums Q1–Q19 only, because Ballista has no time for Q20–Q22 at
 this commit.
