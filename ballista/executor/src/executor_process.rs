@@ -105,6 +105,62 @@ fn memory_budget_from_cli(opt: Option<u64>, fraction: f64) -> MemoryBudget {
     }
 }
 
+/// Where an auto/explicit pool size came from (for logging).
+#[derive(Debug, PartialEq, Eq)]
+enum PoolSource {
+    /// Explicit `--memory-pool-size N`.
+    Configured,
+    /// Auto: fraction of the cgroup memory limit.
+    AutoCgroup,
+    /// Auto: fraction of host memory.
+    AutoHost,
+}
+
+/// Why the executor is running without a bounded pool (for logging).
+#[derive(Debug, PartialEq, Eq)]
+enum UnboundedReason {
+    /// User asked for it via `--memory-pool-size 0`.
+    Explicit,
+    /// Neither host nor cgroup memory could be detected.
+    Undetected,
+}
+
+/// The resolved pool decision: a concrete byte budget or unbounded.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolvedPool {
+    Bounded { bytes: u64, source: PoolSource },
+    Unbounded(UnboundedReason),
+}
+
+/// Pure resolver: turn the budget plus detected limits into a decision.
+/// `host_total` and `cgroup_limit` are only consulted for [`MemoryBudget::Auto`].
+fn resolve_pool(
+    budget: MemoryBudget,
+    host_total: Option<u64>,
+    cgroup_limit: Option<u64>,
+) -> ResolvedPool {
+    match budget {
+        MemoryBudget::Unbounded => ResolvedPool::Unbounded(UnboundedReason::Explicit),
+        MemoryBudget::Bytes(n) => ResolvedPool::Bounded {
+            bytes: n,
+            source: PoolSource::Configured,
+        },
+        MemoryBudget::Auto { fraction } => {
+            let (base, source) = match (host_total, cgroup_limit) {
+                (Some(h), Some(c)) if c <= h => (c, PoolSource::AutoCgroup),
+                (Some(h), Some(_)) => (h, PoolSource::AutoHost),
+                (Some(h), None) => (h, PoolSource::AutoHost),
+                (None, Some(c)) => (c, PoolSource::AutoCgroup),
+                (None, None) => {
+                    return ResolvedPool::Unbounded(UnboundedReason::Undetected);
+                }
+            };
+            let bytes = (base as f64 * fraction) as u64;
+            ResolvedPool::Bounded { bytes, source }
+        }
+    }
+}
+
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
 /// `total_bytes / vcores`. The base env's disk manager, cache manager,
@@ -1185,7 +1241,115 @@ mod memory_pool_tests {
             memory_budget_from_cli(None, 0.7),
             MemoryBudget::Auto { fraction: 0.7 }
         );
-        assert_eq!(memory_budget_from_cli(Some(0), 0.7), MemoryBudget::Unbounded);
-        assert_eq!(memory_budget_from_cli(Some(1024), 0.7), MemoryBudget::Bytes(1024));
+        assert_eq!(
+            memory_budget_from_cli(Some(0), 0.7),
+            MemoryBudget::Unbounded
+        );
+        assert_eq!(
+            memory_budget_from_cli(Some(1024), 0.7),
+            MemoryBudget::Bytes(1024)
+        );
+    }
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn resolve_explicit_bytes_ignores_detection() {
+        assert_eq!(
+            resolve_pool(MemoryBudget::Bytes(4 * GB), Some(32 * GB), Some(8 * GB)),
+            ResolvedPool::Bounded {
+                bytes: 4 * GB,
+                source: PoolSource::Configured
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_unbounded_is_explicit() {
+        assert_eq!(
+            resolve_pool(MemoryBudget::Unbounded, Some(32 * GB), None),
+            ResolvedPool::Unbounded(UnboundedReason::Explicit)
+        );
+    }
+
+    #[test]
+    fn resolve_auto_prefers_cgroup_when_smaller() {
+        let expected = ((8 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(
+                MemoryBudget::Auto { fraction: 0.70 },
+                Some(32 * GB),
+                Some(8 * GB)
+            ),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoCgroup
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_honors_custom_fraction() {
+        let expected = ((8 * GB) as f64 * 0.50) as u64;
+        assert_eq!(
+            resolve_pool(
+                MemoryBudget::Auto { fraction: 0.50 },
+                Some(32 * GB),
+                Some(8 * GB)
+            ),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoCgroup
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_falls_back_to_host_when_cgroup_unlimited_sentinel() {
+        // cgroup v1 "unlimited" reports a value larger than host; min() picks host.
+        let expected = ((32 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(
+                MemoryBudget::Auto { fraction: 0.70 },
+                Some(32 * GB),
+                Some(u64::MAX)
+            ),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoHost
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_host_only() {
+        let expected = ((32 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, Some(32 * GB), None),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoHost
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_cgroup_only() {
+        let expected = ((8 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, None, Some(8 * GB)),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoCgroup
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_undetected_is_unbounded() {
+        assert_eq!(
+            resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, None, None),
+            ResolvedPool::Unbounded(UnboundedReason::Undetected)
+        );
     }
 }
