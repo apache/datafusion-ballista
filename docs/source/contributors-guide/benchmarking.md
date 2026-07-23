@@ -33,7 +33,7 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 - **Cluster:** Kubernetes on AWS (`us-west-2`); one driver/scheduler pod and
   32 executor pods for each engine, launched on the same node pool.
-- **Executor pod (Ballista):** x86_64, 8 vCPU, 32 GiB memory.
+- **Executor pod (Ballista):** x86_64, 8 vCPU, 64 GiB memory.
 - **Executor pod (Spark):** x86_64, 8 vCPU, 64 GiB + 10 GiB overhead.
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
   ~512 MiB row groups, one directory per table.
@@ -43,7 +43,7 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 | Flag / config key                                             | Value         |
 | ------------------------------------------------------------- | ------------- |
 | `--concurrent-tasks`                                          | `8`           |
-| `--memory-pool-size` (bytes; ≈70 % of the 32 GiB container)   | `24051816858` |
+| `--memory-pool-size` (bytes; ≈70 % of the 64 GiB container)   | `48103633715` |
 | `datafusion.execution.target_partitions`                      | `256`         |
 | `datafusion.execution.collect_statistics`                     | `true`        |
 | `datafusion.execution.listing_table_factory_infer_partitions` | `false`       |
@@ -97,31 +97,31 @@ did not complete on this Ballista configuration.
 
 |              Query | Ballista (s) | Spark 3.4 (s) |
 | -----------------: | -----------: | ------------: |
-|                  1 |        19.55 |         67.58 |
-|                  2 |        32.84 |         29.80 |
-|                  3 |        40.52 |         25.13 |
-|                  4 |        27.98 |         21.19 |
-|                  5 |       202.84 |         54.12 |
-|                  6 |        12.25 |          1.23 |
-|                  7 |       253.60 |         19.57 |
-|                  8 |       281.02 |         48.60 |
-|                  9 |       323.02 |         69.38 |
-|                 10 |        66.71 |         35.92 |
-|                 11 |        29.76 |         30.88 |
-|                 12 |        23.74 |         10.78 |
-|                 13 |        15.46 |         20.45 |
-|                 14 |        25.53 |          7.00 |
-|                 15 |        24.83 |         23.75 |
-|                 16 |        16.25 |         23.41 |
-|                 17 |       161.60 |         82.30 |
-|                 18 |       399.72 |        129.40 |
-|                 19 |        23.43 |         11.26 |
+|                  1 |        20.02 |         67.58 |
+|                  2 |        31.95 |         29.80 |
+|                  3 |        33.34 |         25.13 |
+|                  4 |        22.54 |         21.19 |
+|                  5 |        82.06 |         54.12 |
+|                  6 |        12.64 |          1.23 |
+|                  7 |        84.35 |         19.57 |
+|                  8 |       160.63 |         48.60 |
+|                  9 |       171.09 |         69.38 |
+|                 10 |        71.04 |         35.92 |
+|                 11 |        23.31 |         30.88 |
+|                 12 |        24.36 |         10.78 |
+|                 13 |        13.38 |         20.45 |
+|                 14 |        19.98 |          7.00 |
+|                 15 |        24.00 |         23.75 |
+|                 16 |        17.27 |         23.41 |
+|                 17 |        56.36 |         82.30 |
+|                 18 |     **FAIL** |        129.40 |
+|                 19 |     **FAIL** |         11.26 |
 |                 20 |     **FAIL** |         19.22 |
 |                 21 |     **FAIL** |        101.53 |
 |                 22 |     **FAIL** |         12.71 |
-| **Total (Q1–Q19)** |  **1980.65** |    **711.85** |
+| **Total (Q1–Q17)** |   **868.32** |    **571.09** |
 
-The total row sums Q1–Q19 only, because Ballista has no time for Q20–Q22 at
+The total row sums Q1–Q17 only, because Ballista has no time for Q18–Q22 at
 this commit.
 
 ## Reproducing
@@ -136,7 +136,7 @@ ballista-executor \
   --bind-host 0.0.0.0 --bind-port 50051 \
   --scheduler-host <scheduler> --scheduler-port 50050 \
   --concurrent-tasks 8 \
-  --memory-pool-size 24051816858
+  --memory-pool-size 48103633715
 ```
 
 Run all 22 queries:
