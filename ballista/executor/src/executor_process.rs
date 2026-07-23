@@ -70,6 +70,7 @@ use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
+use crate::memory_pool::TrackedMemoryPool;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
 use crate::runtime_cache::{
@@ -106,7 +107,10 @@ fn memory_pool_policy(
             // single-vcore share it uses; a 4-partition task gets 4×,
             // matching the parallelism DataFusion will actually drive.
             let size = per_vcore.saturating_mul(vcores_consumed.max(1) as usize);
-            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(size));
+            // Wrap the per-task FairSpillPool in TrackedMemoryPool so peak
+            // usage is logged when the task's RuntimeEnv drops.
+            let inner: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(size));
+            let pool: Arc<dyn MemoryPool> = Arc::new(TrackedMemoryPool::new(inner));
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(pool)
                 .build_arc()
