@@ -77,6 +77,13 @@ Vanilla Spark 3.4 — no Comet plugin, stock `SortShuffleManager`.
 Spark AQE is left at its Spark 3.4 defaults. Shuffle spills to a `gp3`-backed
 per-executor volume (`spark.kubernetes.executor.volumes...spark-local-dir-1`).
 
+Note that `spark.executor.cores=16` is Spark's **task parallelism** setting,
+not a CPU allocation — each executor pod is given only **8 physical vCPU**
+via `spark.kubernetes.executor.limit.cores` / `.request.cores`, so Spark
+schedules 16 concurrent tasks onto 8 physical cores (2× oversubscription).
+The matching Ballista executor runs `--concurrent-tasks=8` on the same
+8 physical vCPU (1:1).
+
 ## Queries
 
 The SQLBench-H phrasing of the 22 TPC-H queries from
