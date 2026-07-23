@@ -65,10 +65,18 @@ decreasing the vcore count may help.
 
 ## Configuring Executor Memory Pool
 
-By default the executor uses DataFusion's unbounded memory pool, so spillable
-operators (sort, hash join, hash aggregate) grow until the host runs out of
-memory. To bound executor memory and let those operators spill to disk under
-pressure, pass `--memory-pool-size` when starting the executor:
+By default the executor auto-sizes a bounded memory pool from the detected
+host or cgroup memory limit, so spillable operators (sort, hash join, hash
+aggregate) spill to disk under pressure instead of growing until the host
+runs out of memory. The pool is sized to `--memory-pool-fraction` (default
+`0.70`, i.e. 70%) of the detected limit, so headroom is left for untracked
+overhead such as in-flight Arrow batches, shuffle writer buffers, and
+fragmentation. When running under a cgroup-limited container (the common
+Kubernetes/Docker case), the cgroup limit is used in preference to host
+memory when it is the tighter of the two.
+
+To use a specific budget instead of auto-detection, pass `--memory-pool-size`
+when starting the executor:
 
 ```sh
 ballista-executor --memory-pool-size 8GB --vcores 8
@@ -76,20 +84,27 @@ ballista-executor --memory-pool-size 8GB --vcores 8
 
 The argument accepts human-readable sizes (`8GB`, `512MiB`) or a plain byte
 count. SI suffixes (`KB`/`MB`/`GB`) are powers of 10; IEC suffixes
-(`KiB`/`MiB`/`GiB`) are powers of 2.
+(`KiB`/`MiB`/`GiB`) are powers of 2. Pass `--memory-pool-size 0` to opt out of
+the pool entirely and run DataFusion's unbounded pool, matching the executor's
+pre-auto-sizing behavior.
 
-The total budget is divided equally across the executor's vcores: each task
-receives its own `FairSpillPool` of size `memory_pool_size / vcores`.
-With `--memory-pool-size 8GB --vcores 8`, every task sees a 1 GB
-pool, fully isolated from other tasks. Idle slots do not lend their share to
-busy ones, which keeps task memory predictable at the cost of some unused
-capacity when the executor is under-utilized.
+Whether the budget comes from auto-detection or `--memory-pool-size`, it is
+divided equally across the executor's vcores: each task receives its own
+`FairSpillPool` of size `memory_pool_size / vcores`. With
+`--memory-pool-size 8GB --vcores 8`, every task sees a 1 GB pool, fully
+isolated from other tasks. Idle slots do not lend their share to busy ones,
+which keeps task memory predictable at the cost of some unused capacity when
+the executor is under-utilized.
 
 The executor refuses to start if the per-task share would round to zero (i.e.
 `memory_pool_size < vcores`).
 
-When `--memory-pool-size` is not set, the executor behaves as before with no
-memory pool installed.
+Use `--memory-pool-fraction` to tune how much of the detected memory limit
+the auto-sized pool uses; it accepts a value in `(0.0, 1.0]` and defaults to
+`0.70`. It is ignored when `--memory-pool-size` is set.
+
+Because operators spill to disk rather than fail, make sure the executor's
+`--work-dir` has enough scratch space to absorb spills under memory pressure.
 
 ## Join Strategy
 

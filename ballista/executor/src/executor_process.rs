@@ -200,6 +200,11 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
         MemoryBudget::Auto { fraction } => resolve_pool(
             MemoryBudget::Auto { fraction },
             read_host_total_memory(),
+            // Fixed cgroup root: assumes a cgroup-namespaced container (the
+            // default for modern k8s/Docker), where this path *is* the
+            // container's own limit. In a non-namespaced setup the real limit
+            // may live under a sub-slice instead, in which case this reads
+            // the host's root limit and we fall back to host memory below.
             read_cgroup_memory_limit(Path::new("/sys/fs/cgroup")),
         ),
         other => resolve_pool(other, None, None),
@@ -465,8 +470,10 @@ pub async fn start_executor_process(
                     }
                 };
                 info!(
-                    "Executor memory pool: {bytes} bytes ({source_desc}), \
-                     split across {vcores} vcores ({per_vcore} bytes/vcore)"
+                    "Executor memory pool: {} ({source_desc}), \
+                     split across {vcores} vcores ({}/vcore)",
+                    bytesize::ByteSize::b(bytes),
+                    bytesize::ByteSize::b(per_vcore),
                 );
                 memory_pool_policy(bytes, vcores)?
             }
