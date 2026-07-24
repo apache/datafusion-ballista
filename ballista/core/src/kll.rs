@@ -54,6 +54,17 @@
 //! uses a fixed `k` at every level; the paper's refinement of
 //! geometrically-shrinking level sizes is not implemented here.
 //!
+//! # Ownership
+//!
+//! Callers hand fully-owned items to `KllSketch::insert`. For the Arrow
+//! use case this means materializing each input `Row<'_>` into an
+//! `OwnedRow` up front — one small heap allocation per input row, most of
+//! which are eventually discarded by cascading compactions. A future
+//! optimization can defer materialization: hold borrowed `Row<'_>` in
+//! level 0 within a single batch, compact intra-batch, and only own the
+//! survivors that promote to level 1. That would trade the current
+//! per-item API for a batch-oriented one (e.g. `absorb_rows(&Rows)`).
+//!
 //! # Reference
 //!
 //! Karnin, Lang, Liberty. *Optimal Quantile Approximation in Streams.*
