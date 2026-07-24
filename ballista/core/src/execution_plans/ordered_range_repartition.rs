@@ -77,13 +77,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, LexOrdering, OrderingRequirements, Partitioning,
     PhysicalExpr, PhysicalSortExpr,
 };
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::execution_plan::{
+    CardinalityEffect, EvaluationType, SchedulingType,
+};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -96,7 +99,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::execution_plans::range_repartition_common::{
-    broadcast_error, discover_cuts, split_batch_by_range,
+    discover_cuts, guarded_scatter, split_batch_by_range,
 };
 
 /// Per-output-partition channel capacity, per input source. Matches the
@@ -130,6 +133,13 @@ struct DispatchState {
     /// (via `StreamingMerge`) across N sorted sub-streams — one per input
     /// source, filtered to the output's value range on the scatter side.
     merged_streams: Vec<Option<SendableRecordBatchStream>>,
+    /// N scatter tasks (one per input partition). Each runs its scatter
+    /// body inside `guarded_scatter`, which converts panic/error/clean-end
+    /// into an explicit signal on every output channel. `SpawnedTask`
+    /// aborts its inner tokio task on drop, so holding these here ties the
+    /// background work's lifetime to this exec's — dropping the exec
+    /// cancels all scatter work.
+    _drop_helper: Vec<SpawnedTask<()>>,
     initialized: bool,
 }
 
@@ -196,14 +206,24 @@ impl OrderedRangeRepartitionExec {
                 )
             })?],
         );
-        let properties = Arc::new(PlanProperties::new(
-            eq_properties,
-            Partitioning::UnknownPartitioning(output_partitions),
-            input.pipeline_behavior(),
-            input.boundedness(),
-        ));
+        let properties = Arc::new(
+            PlanProperties::new(
+                eq_properties,
+                Partitioning::UnknownPartitioning(output_partitions),
+                input.pipeline_behavior(),
+                input.boundedness(),
+            )
+            // Scatter tasks eagerly drive their inputs the moment `execute()`
+            // is first called (not on-demand from downstream polls), and their
+            // per-output channels are the yield points the scheduler needs to
+            // trade CPU across tasks — same combination DataFusion's
+            // RepartitionExec uses.
+            .with_evaluation_type(EvaluationType::Eager)
+            .with_scheduling_type(SchedulingType::Cooperative),
+        );
         let state = Arc::new(Mutex::new(DispatchState {
             merged_streams: Vec::new(),
+            _drop_helper: Vec::new(),
             initialized: false,
         }));
         Ok(Self {
@@ -398,25 +418,37 @@ impl OrderedRangeRepartitionExec {
         // wins the `OnceLock::get_or_init` race.
         let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
         let routing_expr = self.order_by[0].expr.clone();
+        let mut drop_helper = Vec::with_capacity(input_partitions);
         for (input_partition, senders) in senders_per_input.into_iter().enumerate() {
             let child = self.input.clone();
             let cuts_cell = cuts_cell.clone();
             let routing_expr = routing_expr.clone();
             let ctx = ctx.clone();
             let output_partitions = self.output_partitions;
-            tokio::spawn(async move {
+            // Move senders into an `Arc<[_]>` so scatter and guard can share
+            // the same slice — scatter uses them to forward sub-batches;
+            // guard uses them to broadcast panics/errors.
+            let scatter_senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> =
+                senders.into();
+            let guard_senders = scatter_senders.clone();
+            // `guarded_scatter` wraps the body in `catch_unwind`: a panic
+            // inside `scatter_input_partition` (or anything it calls) becomes
+            // a broadcast error rather than a silent sender-drop that
+            // downstream would misread as clean EOF.
+            drop_helper.push(SpawnedTask::spawn(guarded_scatter(
                 scatter_input_partition(
                     child,
                     input_partition,
                     ctx,
                     routing_expr,
-                    senders,
+                    scatter_senders,
                     cuts_cell,
                     output_partitions,
-                )
-                .await;
-            });
+                ),
+                guard_senders,
+            )));
         }
+        state._drop_helper = drop_helper;
 
         // Build one `StreamingMerge` per output partition. Each merges N
         // sub-streams (from each input source's channel to this output)
@@ -474,30 +506,18 @@ async fn scatter_input_partition(
     input_partition: usize,
     ctx: Arc<TaskContext>,
     routing_expr: Arc<dyn PhysicalExpr>,
-    senders: Vec<mpsc::Sender<Result<RecordBatch>>>,
+    senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
     cuts_cell: Arc<OnceLock<Vec<f64>>>,
     output_partitions: usize,
-) {
-    let mut stream = match child.execute(input_partition, ctx) {
-        Ok(s) => s,
-        Err(err) => {
-            broadcast_error(&senders, err).await;
-            return;
-        }
-    };
+) -> Result<()> {
+    let mut stream = child.execute(input_partition, ctx)?;
     while let Some(batch_result) = stream.next().await {
         // Every downstream merger dropped its receiver — no one's listening.
         // Stop reading so the input stream drops and backpressure propagates.
         if senders.iter().all(|s| s.is_closed()) {
-            return;
+            return Ok(());
         }
-        let batch = match batch_result {
-            Ok(b) => b,
-            Err(err) => {
-                broadcast_error(&senders, err).await;
-                return;
-            }
-        };
+        let batch = batch_result?;
         let cuts = cuts_cell.get_or_init(|| {
             discover_cuts(&child, routing_expr.as_ref(), output_partitions)
         });
@@ -508,28 +528,22 @@ async fn scatter_input_partition(
         //   2. Send zero-copy `batch.slice(start, len)` instead of
         //      `take_arrays`-materialised sub-batches. Arc bumps replace
         //      allocations under skew.
-        match split_batch_by_range(&batch, &routing_expr, cuts) {
-            Ok(splits) => {
-                for (output, sub) in splits.into_iter().enumerate() {
-                    if sub.num_rows() == 0 {
-                        continue;
-                    }
-                    // `send().await` provides backpressure: full channel
-                    // suspends this task → suspends input read → propagates
-                    // upstream. Error on send means downstream dropped its
-                    // receiver; keep forwarding to other outputs.
-                    let _ = senders[output].send(Ok(sub)).await;
-                }
+        let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        for (output, sub) in splits.into_iter().enumerate() {
+            if sub.num_rows() == 0 {
+                continue;
             }
-            Err(err) => {
-                broadcast_error(&senders, err).await;
-                return;
-            }
+            // `send().await` provides backpressure: full channel suspends
+            // this task → suspends input read → propagates upstream. Error
+            // on send means downstream dropped its receiver; keep forwarding
+            // to other outputs.
+            let _ = senders[output].send(Ok(sub)).await;
         }
     }
     // Senders drop with this task → each output's merger sees EOF on that
     // sub-stream. When all N sub-streams for output p reach EOF, the merger
     // emits its final rows and returns None.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -850,6 +864,68 @@ mod tests {
         assert!(
             err.to_string().contains("execute(0) called twice"),
             "got: {err}"
+        );
+    }
+
+    /// A panic inside the scatter task's polling of the child stream must
+    /// surface to every output partition as an `Err(..)` — not a silent EOF.
+    /// `guarded_scatter`'s `catch_unwind` wraps the panic into a
+    /// `DataFusionError` broadcast across all K senders, and the payload
+    /// downcast preserves the original panic message.
+    #[tokio::test]
+    async fn scatter_task_panic_surfaces_as_error() {
+        use crate::execution_plans::range_repartition_common::test_util::{
+            PanickingSourceExec, SYNTHETIC_PANIC_MESSAGE,
+        };
+        let schema = schema_v2_id();
+        // `OrderedRangeRepartitionExec::try_new` requires the child to
+        // declare an ordering; give the panic source one on `v2`.
+        let source: Arc<dyn ExecutionPlan> = Arc::new(
+            PanickingSourceExec::with_ordering(&schema, vec![asc(&schema, "v2")]),
+        );
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(
+            OrderedRangeRepartitionExec::try_new(source, vec![asc(&schema, "v2")], 3)
+                .unwrap(),
+        );
+        let ctx = session();
+        let output_partitions = exec.output_partitioning().partition_count();
+        let streams: Vec<_> = (0..output_partitions)
+            .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
+            .collect();
+        let mut outputs_with_err = 0;
+        let mut outputs_carrying_original_message = 0;
+        for stream in streams {
+            let results: Vec<Result<RecordBatch>> =
+                <_ as futures::stream::StreamExt>::collect(stream).await;
+            let mut err_seen = false;
+            let mut msg_seen = false;
+            for r in results {
+                if let Err(err) = r {
+                    let text = err.to_string();
+                    if text.contains("panicked") {
+                        err_seen = true;
+                    }
+                    if text.contains(SYNTHETIC_PANIC_MESSAGE) {
+                        msg_seen = true;
+                    }
+                }
+            }
+            if err_seen {
+                outputs_with_err += 1;
+            }
+            if msg_seen {
+                outputs_carrying_original_message += 1;
+            }
+        }
+        // Every output partition must see the panic — not a spurious EOF —
+        // and the original panic message must survive the payload downcast.
+        assert_eq!(
+            outputs_with_err, output_partitions,
+            "all output partitions must surface the scatter panic as Err"
+        );
+        assert_eq!(
+            outputs_carrying_original_message, output_partitions,
+            "original panic message must survive catch_unwind payload extraction"
         );
     }
 }
