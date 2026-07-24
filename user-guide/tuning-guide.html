@@ -477,26 +477,39 @@ decreasing the vcore count may help.</p>
 </section>
 <section id="configuring-executor-memory-pool">
 <h2>Configuring Executor Memory Pool<a class="headerlink" href="#configuring-executor-memory-pool" title="Link to this heading">#</a></h2>
-<p>By default the executor uses DataFusion’s unbounded memory pool, so spillable
-operators (sort, hash join, hash aggregate) grow until the host runs out of
-memory. To bound executor memory and let those operators spill to disk under
-pressure, pass <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> when starting the executor:</p>
+<p>By default the executor auto-sizes a bounded memory pool from the detected
+host or cgroup memory limit, so spillable operators (sort, hash join, hash
+aggregate) spill to disk under pressure instead of growing until the host
+runs out of memory. The pool is sized to <code class="docutils literal notranslate"><span class="pre">--memory-pool-fraction</span></code> (default
+<code class="docutils literal notranslate"><span class="pre">0.70</span></code>, i.e. 70%) of the detected limit, so headroom is left for untracked
+overhead such as in-flight Arrow batches, shuffle writer buffers, and
+fragmentation. When running under a cgroup-limited container (the common
+Kubernetes/Docker case), the cgroup limit is used in preference to host
+memory when it is the tighter of the two.</p>
+<p>To use a specific budget instead of auto-detection, pass <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code>
+when starting the executor:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>ballista-executor<span class="w"> </span>--memory-pool-size<span class="w"> </span>8GB<span class="w"> </span>--vcores<span class="w"> </span><span class="m">8</span>
 </pre></div>
 </div>
 <p>The argument accepts human-readable sizes (<code class="docutils literal notranslate"><span class="pre">8GB</span></code>, <code class="docutils literal notranslate"><span class="pre">512MiB</span></code>) or a plain byte
 count. SI suffixes (<code class="docutils literal notranslate"><span class="pre">KB</span></code>/<code class="docutils literal notranslate"><span class="pre">MB</span></code>/<code class="docutils literal notranslate"><span class="pre">GB</span></code>) are powers of 10; IEC suffixes
-(<code class="docutils literal notranslate"><span class="pre">KiB</span></code>/<code class="docutils literal notranslate"><span class="pre">MiB</span></code>/<code class="docutils literal notranslate"><span class="pre">GiB</span></code>) are powers of 2.</p>
-<p>The total budget is divided equally across the executor’s vcores: each task
-receives its own <code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> of size <code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">/</span> <span class="pre">vcores</span></code>.
-With <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">8GB</span> <span class="pre">--vcores</span> <span class="pre">8</span></code>, every task sees a 1 GB
-pool, fully isolated from other tasks. Idle slots do not lend their share to
-busy ones, which keeps task memory predictable at the cost of some unused
-capacity when the executor is under-utilized.</p>
+(<code class="docutils literal notranslate"><span class="pre">KiB</span></code>/<code class="docutils literal notranslate"><span class="pre">MiB</span></code>/<code class="docutils literal notranslate"><span class="pre">GiB</span></code>) are powers of 2. Pass <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">0</span></code> to opt out of
+the pool entirely and run DataFusion’s unbounded pool, matching the executor’s
+pre-auto-sizing behavior.</p>
+<p>Whether the budget comes from auto-detection or <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code>, it is
+divided equally across the executor’s vcores: each task receives its own
+<code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> of size <code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">/</span> <span class="pre">vcores</span></code>. With
+<code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">8GB</span> <span class="pre">--vcores</span> <span class="pre">8</span></code>, every task sees a 1 GB pool, fully
+isolated from other tasks. Idle slots do not lend their share to busy ones,
+which keeps task memory predictable at the cost of some unused capacity when
+the executor is under-utilized.</p>
 <p>The executor refuses to start if the per-task share would round to zero (i.e.
 <code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">&lt;</span> <span class="pre">vcores</span></code>).</p>
-<p>When <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> is not set, the executor behaves as before with no
-memory pool installed.</p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--memory-pool-fraction</span></code> to tune how much of the detected memory limit
+the auto-sized pool uses; it accepts a value in <code class="docutils literal notranslate"><span class="pre">(0.0,</span> <span class="pre">1.0]</span></code> and defaults to
+<code class="docutils literal notranslate"><span class="pre">0.70</span></code>. It is ignored when <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> is set.</p>
+<p>Because operators spill to disk rather than fail, make sure the executor’s
+<code class="docutils literal notranslate"><span class="pre">--work-dir</span></code> has enough scratch space to absorb spills under memory pressure.</p>
 </section>
 <section id="join-strategy">
 <h2>Join Strategy<a class="headerlink" href="#join-strategy" title="Link to this heading">#</a></h2>
