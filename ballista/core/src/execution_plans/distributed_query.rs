@@ -48,7 +48,7 @@ use datafusion_proto::logical_plan::{
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -592,7 +592,7 @@ async fn execute_query_pull(
                                 remove_stage_ids: vec![],
                             };
                             if let Err(e) = cleanup_client.clean_job_data(params).await {
-                                debug!("client-side job data cleanup RPC failed: {e:?}");
+                                warn!("client-side job data cleanup RPC failed: {e:?}");
                             }
                         });
                     })))
@@ -783,7 +783,7 @@ async fn execute_query_push(
                                 remove_stage_ids: vec![],
                             };
                             if let Err(e) = cleanup_client.clean_job_data(params).await {
-                                debug!("client-side job data cleanup RPC failed: {e:?}");
+                                warn!("client-side job data cleanup RPC failed: {e:?}");
                             }
                         });
                     })))

@@ -45,8 +45,6 @@
 //! somewhere under that root, and it's the only thing that will ever be
 //! written there.
 
-mod common;
-
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod client_side_cleanup_tests {
