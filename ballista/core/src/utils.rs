@@ -107,7 +107,7 @@ impl Default for GrpcClientConfig {
             tcp_keepalive_seconds: 3600,
             http2_keepalive_interval_seconds: 300,
             use_tls: false,
-            max_message_size: 16 * 1024 * 1024,
+            max_message_size: 128 * 1024 * 1024,
             io_retries_times: 3,
             io_retry_wait_time_ms: 3000,
             initial_connection_window_size: 67108864,
