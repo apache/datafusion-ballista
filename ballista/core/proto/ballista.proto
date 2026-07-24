@@ -51,7 +51,60 @@ message BallistaPhysicalPlanNode {
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
     ChaosExecNode chaos_exec = 5;
+    RuntimeStatsExecNode runtime_stats = 6;
+    BufferExecNode buffer = 7;
+    UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
   }
+}
+
+// Runtime-stats tap. Passes batches through unmodified while accumulating:
+//   * per-partition row counts (always)
+//   * a quantile sketch over the first ORDER BY expression's Float64 values
+//     (only when order_by is non-empty)
+// Downstream operators inside the same Ballista task read the stats via a
+// child-tree walk. The child plan is plumbed by the framework as `inputs[0]`.
+message RuntimeStatsExecNode {
+  // Optional lexicographic ORDER BY. Empty means row-count-only mode
+  // (no sketch allocated). When non-empty, the first entry drives the
+  // sketch and the rest are preserved for downstream operators
+  // (SortExec, BoundedWindowAggExec) that need the full ordering.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+}
+
+// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
+// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
+// centroid_means..., centroid_weights....
+message QuantileSketchState {
+  repeated datafusion_common.ScalarValue state = 1;
+}
+
+// Flow-control operator with an operator-mode enum. The child plan is
+// plumbed by the framework as `inputs[0]` during decode.
+message BufferExecNode {
+  BufferMode mode = 1;
+}
+
+enum BufferMode {
+  // Buffers input while a MemoryReservation grows against the runtime's
+  // MemoryPool; the dam breaks when `try_grow` refuses further allocation.
+  BUFFER_MODE_DAM = 0;
+  // Future modes: PASS_THROUGH, BUFFER_ALL, SPILL_ON_PRESSURE, ...
+  // Add here as they land in Rust.
+}
+
+// Value-range router over unordered inputs. Reads P input partitions with
+// no sort assumption, evaluates the first ORDER BY expression per row, and
+// routes each row to one of K output partitions using cuts discovered at
+// runtime from a sibling RuntimeStatsExec's quantile sketch. The child
+// plan is plumbed by the framework as `inputs[0]`.
+message UnorderedRangeRepartitionExecNode {
+  // Lexicographic ORDER BY carried through from the wrapping window
+  // operator. Routing keys off the first entry today; the full ordering is
+  // preserved so downstream operators (SortExec, BWAG) that need it keep
+  // working.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+  // K — number of output partitions. Must be ≥ 2.
+  uint32 output_partitions = 2;
 }
 
 message ChaosExecNode {
@@ -77,6 +130,11 @@ message SortShuffleWriterExecNode {
   datafusion.PhysicalHashRepartition output_partitioning = 4;
   // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;
+  // Per-task buffered-bytes budget at which the writer spills its in-memory
+  // batches to disk. A value of 0 disables the per-task budget so spilling is
+  // driven solely by runtime memory-pool pressure. Optional so a plan produced
+  // before this field existed decodes to the built-in default rather than 0.
+  optional uint64 memory_limit_per_task_bytes = 9;
 }
 
 message UnresolvedShuffleExecNode {
@@ -132,7 +190,6 @@ message ExecutionGraph {
   uint64 output_partitions = 5;
   repeated PartitionLocation output_locations = 6;
   string scheduler_id = 7;
-  uint32 task_id_gen = 8;
   repeated StageAttempts failed_attempts = 9;
   string job_name = 10;
   uint64 start_time = 11;
@@ -289,10 +346,30 @@ message PartitionId {
   uint32 partition_id = 4;
 }
 
+// Within-stage task identity (paired with job_id + stage_id on the parent
+// MultiTaskDefinition). One task processes a slice of partitions;
+// `task_id` names the task within the stage (it's the task's append-order
+// slot in `RunningStage.task_infos`, so (job_id, stage_id, task_id) is
+// globally unique). `global_output_partition_ids` gives the concrete
+// global partition ids the task's restricted plan is covering. Writers
+// use these to name shuffle files with global identity (via
+// `create_shuffle_path`) so downstream reads have a stable, canonical
+// address regardless of how the scheduler split the work.
 message TaskId {
   uint32 task_id = 1;
   uint32 task_attempt_num = 2;
-  uint32 partition_id = 3;
+  // Global partition ids covered by this task, in slice order. Position i in
+  // the restricted plan corresponds to `global_output_partition_ids[i]` globally.
+  // `[packed=false]` keeps the single-partition case wire-compatible with the
+  // legacy `uint32 partition_id = 3` field: one element writes as a single
+  // varint at tag 3, exactly matching the old scalar encoding.
+  repeated uint32 global_output_partition_ids = 3 [packed=false];
+  // Vcores this task consumed from the executor's budget at bind time.
+  // The executor uses this to size the task's memory pool proportionally
+  // (`pool = total_memory * vcores_consumed / total_vcores`), so a
+  // multi-partition task claiming N vcores gets N/total of the executor's
+  // memory budget rather than a single per-vcore share.
+  uint32 vcores_consumed = 5;
 }
 
 message PartitionStats {
@@ -359,6 +436,10 @@ message OperatorMetric {
     NamedRatio ratio = 14;
     uint64 output_batches = 15;
   }
+  // Local partition index within the reporting task's plan (0..slice_len-1).
+  // The scheduler maps this to a global partition id via the task's
+  // `global_input_partition_ids` when folding metrics into stage metrics.
+  optional uint32 partition = 16;
 }
 
 // Used by scheduler
@@ -381,6 +462,11 @@ message ExecutorRegistration {
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
   ExecutorOperatingSystemSpecification os_info = 6;
+  // Wire-protocol version this executor was built against. The scheduler
+  // rejects heartbeats/registrations whose version does not match its own
+  // compiled-in BALLISTA_PROTOCOL_VERSION. Old executors that predate this
+  // field default to 0, which is never a valid scheduler version.
+  uint32 ballista_protocol_version = 7;
 }
 
 message ExecutorHeartbeat {
@@ -419,9 +505,14 @@ message ExecutorSpecification {
   repeated ExecutorResource resources = 1;
 }
 
+// Virtual cores this executor has been assigned at runtime — analogous to
+// YARN vcores (yarn.nodemanager.resource.cpu-vcores) or Spark's
+// spark.executor.cores. Not physical `nproc`: may over- or under-subscribe.
+// One task per executor drives this many DataFusion partitions in parallel
+// through one plan-Arc.
 message ExecutorResource {
   oneof resource {
-    uint32 task_slots = 1;
+    uint32 vcores = 1;
   }
 }
 
@@ -437,13 +528,16 @@ message ExecutorOperatingSystemSpecification {
   uint64 open_files_limit = 9;
 }
 
-message AvailableTaskSlots {
+// One instance per executor. Tracks free vcores for scheduler-side task
+// binding. See ExecutorResource for the vcore definition (YARN vcores or
+// Spark's spark.executor.cores).
+message AvailableVcores {
   string executor_id = 1;
-  uint32 slots = 2;
-    }
+  uint32 vcores = 2;
+}
 
-message ExecutorTaskSlots {
-  repeated AvailableTaskSlots task_slots = 1;
+message ExecutorVcores {
+  repeated AvailableVcores vcores = 1;
 }
 
 message ExecutorData {
@@ -518,11 +612,14 @@ message ShuffleWritePartition {
 }
 
 message TaskStatus {
+  // Task's append-order slot in `RunningStage.task_infos`; (job_id,
+  // stage_id, task_id) is globally unique. Under the multi-partition-task
+  // model one task processes a partition slice, so this names the task,
+  // not a single partition.
   uint32 task_id = 1;
   string job_id = 2;
   uint32 stage_id = 3;
   uint32 stage_attempt_num = 4;
-  uint32 partition_id = 5;
   uint64 launch_time = 6;
   uint64 start_exec_time = 7;
   uint64 end_exec_time = 8;
@@ -536,22 +633,35 @@ message TaskStatus {
 
 message PollWorkParams {
   ExecutorRegistration metadata = 1;
-  uint32 num_free_slots = 2;
+  uint32 num_free_vcores = 2;
   // All tasks must be reported until they reach the failed or completed state
   repeated TaskStatus task_status = 3;
 }
 
+// Pull-based single-task dispatch. One task processes a slice of
+// partitions; `task_id` names the task within the stage (its append-order
+// slot in `RunningStage.task_infos`), `global_output_partition_ids` gives
+// the concrete global partition ids it covers. The task's plan is
+// scheduler-side shrink-restricted so its leaves report `slice.len()`
+// partitions; the writer uses `global_output_partition_ids` to attach
+// global identity to shuffle files (except in cases where the plan itself
+// resets partitioning: the writer walks its child plan to detect
+// SortPreservingMergeExec or RepartitionExec::Hash and picks the right
+// global mapping).
 message TaskDefinition {
   uint32 task_id = 1;
   uint32 task_attempt_num = 2;
   string job_id = 3;
   uint32 stage_id = 4;
   uint32 stage_attempt_num = 5;
-  uint32 partition_id = 6;
   bytes plan = 7;
   string session_id = 9;
   uint64 launch_time = 10;
   repeated KeyValuePair props = 11;
+  // Global partition ids covered by this task, in slice order.
+  repeated uint32 global_output_partition_ids = 12;
+  // Vcores this task consumed at bind time — see TaskId.vcores_consumed.
+  uint32 vcores_consumed = 13;
 }
 
 // A set of tasks in the same stage
@@ -630,6 +740,11 @@ message ExecuteQueryParams {
   oneof query {
     bytes logical_plan = 1;
     bytes substrait_plan = 6;
+    // An already-built physical plan, serialized with the scheduler's
+    // physical extension codec. Lets clients bypass logical-plan creation
+    // on the scheduler, e.g. for plans containing custom operators that
+    // have no logical-plan representation.
+    bytes physical_plan = 7;
   }
   // reserved after removing deprecated `sql` query type.
   reserved 2;
@@ -778,6 +893,9 @@ message CancelJobResult {
 
 message CleanJobDataParams {
   string job_id = 1;
+  // Specific stage ids to remove within the job dir.
+  // Empty means remove the whole job dir (legacy behavior).
+  repeated uint32 remove_stage_ids = 2;
 }
 
 message CleanJobDataResult {
@@ -815,16 +933,20 @@ message CancelTasksResult {
 
 message RemoveJobDataParams {
   string job_id = 1;
+  // Specific stage ids to remove within the job dir.
+  // Empty means remove the whole job dir (legacy behavior).
+  repeated uint32 remove_stage_ids = 2;
 }
 
 message RemoveJobDataResult {
 }
 
 message RunningTaskInfo {
+  // Per-stage append-order slot; (job_id, stage_id, task_id) is globally
+  // unique (see TaskStatus).
   uint32 task_id = 1;
   string job_id = 2;
   uint32 stage_id = 3;
-  uint32 partition_id = 4;;
 }
 
 service SchedulerGrpc {

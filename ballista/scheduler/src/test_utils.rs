@@ -294,19 +294,13 @@ pub fn default_task_runner() -> impl TaskRunner {
             })
             .collect();
 
-        for TaskId {
-            task_id,
-            partition_id,
-            ..
-        } in task.task_ids
-        {
+        for TaskId { task_id, .. } in task.task_ids {
             let timestamp = timestamp_millis();
             statuses.push(TaskStatus {
                 task_id,
                 job_id: task.job_id.clone(),
                 stage_id: task.stage_id,
                 stage_attempt_num: task.stage_attempt_num,
-                partition_id,
                 launch_time: timestamp,
                 start_exec_time: timestamp,
                 end_exec_time: timestamp,
@@ -325,7 +319,7 @@ pub fn default_task_runner() -> impl TaskRunner {
 #[derive(Clone)]
 struct VirtualExecutor {
     executor_id: String,
-    task_slots: usize,
+    vcores: usize,
     runner: Arc<dyn TaskRunner>,
 }
 
@@ -399,14 +393,14 @@ impl SchedulerTest {
         config: SchedulerConfig,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         num_executors: usize,
-        task_slots_per_executor: usize,
+        vcores_per_executor: usize,
         runner: Option<Arc<dyn TaskRunner>>,
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
-        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
+        let session_config = if num_executors > 0 && vcores_per_executor > 0 {
             SessionConfig::new_with_ballista()
-                .with_target_partitions(num_executors * task_slots_per_executor)
+                .with_target_partitions(num_executors * vcores_per_executor)
         } else {
             SessionConfig::new_with_ballista()
         };
@@ -418,7 +412,7 @@ impl SchedulerTest {
                 let id = format!("virtual-executor-{i}");
                 let executor = VirtualExecutor {
                     executor_id: id.clone(),
-                    task_slots: task_slots_per_executor,
+                    vcores: vcores_per_executor,
                     runner: runner.clone(),
                 };
                 (id, executor)
@@ -443,21 +437,21 @@ impl SchedulerTest {
             );
         scheduler.init().await?;
 
-        for (executor_id, VirtualExecutor { task_slots, .. }) in executors {
+        for (executor_id, VirtualExecutor { vcores, .. }) in executors {
             let metadata = ExecutorMetadata {
                 id: executor_id.clone(),
                 host: String::default(),
                 port: 0,
                 grpc_port: 0,
                 specification: ExecutorSpecification::default()
-                    .with_task_slots(task_slots as u32),
+                    .with_vcores(vcores as u32),
                 os_info: ExecutorOperatingSystemSpecification::default(),
             };
 
             let executor_data = ExecutorData {
                 executor_id,
-                total_task_slots: task_slots as u32,
-                available_task_slots: task_slots as u32,
+                total_vcores: vcores as u32,
+                available_vcores: vcores as u32,
             };
 
             scheduler
@@ -842,11 +836,7 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
         .values()
         .map(|stage| {
             if let ExecutionStage::Running(stage) = stage {
-                stage
-                    .task_infos
-                    .iter()
-                    .filter(|info| info.is_none())
-                    .count()
+                stage.available_tasks()
             } else {
                 0
             }
@@ -875,6 +865,23 @@ pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
 pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
     job_id: &JobId,
+) -> StaticExecutionGraph {
+    test_aggregation_plan_with_config(
+        partition,
+        job_id,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .await
+}
+
+/// Same as `test_aggregation_plan_with_job_id`, but the caller supplies the
+/// Ballista `SessionConfig` used by the resulting graph. Use this when a test
+/// needs to override a scheduler-side knob (e.g. `max_partitions_per_task`)
+/// that changes how `bind_one` shapes tasks.
+pub async fn test_aggregation_plan_with_config(
+    partition: usize,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
 ) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -912,7 +919,7 @@ pub async fn test_aggregation_plan_with_job_id(
         "session",
         plan,
         0,
-        Arc::new(SessionConfig::new_with_ballista()),
+        session_config,
         &mut planner,
         None,
     )
@@ -1167,7 +1174,7 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
         host: "localhost2".to_string(),
         port: 8080,
         grpc_port: 9090,
-        specification: ExecutorSpecification::default().with_task_slots(1),
+        specification: ExecutorSpecification::default().with_vcores(1),
         os_info: ExecutorOperatingSystemSpecification::default(),
     }
 }
@@ -1191,11 +1198,10 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
 
     // Complete the task
     protobuf::TaskStatus {
-        task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone().into(),
-        stage_id: task.partition.stage_id as u32,
+        task_id: task.key.task_id as u32,
+        job_id: task.key.job_id.clone().into(),
+        stage_id: task.key.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
-        partition_id: task.partition.partition_id as u32,
         launch_time: 0,
         start_exec_time: 0,
         end_exec_time: 0,
@@ -1226,11 +1232,10 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
 
     // Fail the task
     protobuf::TaskStatus {
-        task_id: task.task_id as u32,
-        job_id: task.partition.job_id.clone().into(),
-        stage_id: task.partition.stage_id as u32,
+        task_id: task.key.task_id as u32,
+        job_id: task.key.job_id.clone().into(),
+        stage_id: task.key.stage_id as u32,
         stage_attempt_num: task.stage_attempt_num as u32,
-        partition_id: task.partition.partition_id as u32,
         launch_time: 0,
         start_exec_time: 0,
         end_exec_time: 0,

@@ -38,6 +38,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   pull_request:
     paths:
       - "ballista/**"
@@ -53,6 +55,8 @@ on:
       - ".github/actions/setup-windows-builder/**"
       - ".github/actions/setup-rust-runtime/**"
       - ".github/workflows/rust.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -63,12 +67,12 @@ jobs:
     name: cargo check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: cargo check
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
@@ -82,13 +86,13 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -102,10 +106,10 @@ jobs:
     needs: build-lib
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
 
@@ -115,13 +119,13 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -135,13 +139,13 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -155,13 +159,13 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run tests
         shell: bash
         run: |
@@ -177,12 +181,12 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Verify that benchmark queries return expected results
         run: |
           cargo test --package ballista-benchmarks --profile release-nonlto --features=ci --locked -- --test-threads=1
@@ -191,13 +195,13 @@ jobs:
     name: Lint
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run
         run: ci/scripts/rust_fmt.sh
 
@@ -209,12 +213,12 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
 
@@ -226,16 +230,16 @@ jobs:
       # "1" means line tables only, which is useful for panic tracebacks.
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Install cargo-tomlfmt
-        uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
         with:
           tool: cargo-tomlfmt@0.2.1
 
@@ -251,6 +255,40 @@ jobs:
               exit 1
           fi
 
+  datafusion-proto-sync-check:
+    name: Check vendored DataFusion proto is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Check vendored DataFusion proto matches pinned crate
+        run: ci/scripts/rust_proto_check.sh
+
+  config-docs-check:
+    name: Check generated config docs are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - name: Check generated config docs match the config registry
+        run: ci/scripts/rust_config_docs_check.sh
+
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:
@@ -261,7 +299,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v7.0.0
+#     - uses: actions/checkout@v7.0.1
 #       with:
 #         submodules: true
 #     - name: Cache Cargo

@@ -33,6 +33,7 @@ use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::ChildStats;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -214,8 +215,16 @@ impl ExecutionPlan for ChaosExec {
         self.input.metrics()
     }
 
-    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
-        args.compute_child_statistics(&self.input, args.partition())
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 
     fn supports_limit_pushdown(&self) -> bool {

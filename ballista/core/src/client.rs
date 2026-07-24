@@ -62,6 +62,7 @@ pub struct BallistaClient {
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
+    #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         host: &str,
         port: u16,
@@ -70,6 +71,8 @@ impl BallistaClient {
         customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
         io_retries_times: u8,
         io_retry_wait_time_ms: u64,
+        initial_connection_window_size: u32,
+        initial_stream_window_size: u32,
     ) -> BResult<Self> {
         let scheme = if use_tls { "https" } else { "http" };
 
@@ -82,6 +85,15 @@ impl BallistaClient {
                     "Error creating endpoint to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
             })?;
+
+        if initial_connection_window_size > 0 {
+            endpoint = endpoint
+                .initial_connection_window_size(Some(initial_connection_window_size));
+        }
+        if initial_stream_window_size > 0 {
+            endpoint =
+                endpoint.initial_stream_window_size(Some(initial_stream_window_size));
+        }
 
         if let Some(customize) = customize_endpoint {
             endpoint = customize

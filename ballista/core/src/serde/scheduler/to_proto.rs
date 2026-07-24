@@ -124,103 +124,93 @@ pub fn hash_partitioning_to_proto(
     }
 }
 
-impl TryInto<protobuf::OperatorMetric> for &MetricValue {
+impl TryInto<operator_metric::Metric> for &MetricValue {
     type Error = BallistaError;
 
-    fn try_into(self) -> Result<protobuf::OperatorMetric, Self::Error> {
+    fn try_into(self) -> Result<operator_metric::Metric, Self::Error> {
         match self {
-            MetricValue::OutputRows(count) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::OutputRows(count.value() as u64)),
-            }),
-            MetricValue::ElapsedCompute(time) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::ElapseTime(time.value() as u64)),
-            }),
-            MetricValue::SpillCount(count) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::SpillCount(count.value() as u64)),
-            }),
-            MetricValue::SpilledBytes(count) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::SpilledBytes(count.value() as u64)),
-            }),
-            MetricValue::SpilledRows(count) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::SpilledRows(count.value() as u64)),
-            }),
-            MetricValue::CurrentMemoryUsage(gauge) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::CurrentMemoryUsage(
-                    gauge.value() as u64
-                )),
-            }),
-            MetricValue::Count { name, count } => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::Count(NamedCount {
+            MetricValue::OutputRows(count) => {
+                Ok(operator_metric::Metric::OutputRows(count.value() as u64))
+            }
+            MetricValue::ElapsedCompute(time) => {
+                Ok(operator_metric::Metric::ElapseTime(time.value() as u64))
+            }
+            MetricValue::SpillCount(count) => {
+                Ok(operator_metric::Metric::SpillCount(count.value() as u64))
+            }
+            MetricValue::SpilledBytes(count) => {
+                Ok(operator_metric::Metric::SpilledBytes(count.value() as u64))
+            }
+            MetricValue::SpilledRows(count) => {
+                Ok(operator_metric::Metric::SpilledRows(count.value() as u64))
+            }
+            MetricValue::CurrentMemoryUsage(gauge) => Ok(
+                operator_metric::Metric::CurrentMemoryUsage(gauge.value() as u64),
+            ),
+            MetricValue::Count { name, count } => {
+                Ok(operator_metric::Metric::Count(NamedCount {
                     name: name.to_string(),
                     value: count.value() as u64,
-                })),
-            }),
-            MetricValue::Gauge { name, gauge } => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::Gauge(NamedGauge {
+                }))
+            }
+            MetricValue::Gauge { name, gauge } => {
+                Ok(operator_metric::Metric::Gauge(NamedGauge {
                     name: name.to_string(),
                     value: gauge.value() as u64,
-                })),
-            }),
-            MetricValue::PeakMemoryUsage { name, gauge } => {
-                Ok(protobuf::OperatorMetric {
-                    metric: Some(operator_metric::Metric::Gauge(NamedGauge {
-                        name: name.to_string(),
-                        value: gauge.value() as u64,
-                    })),
-                })
+                }))
             }
-            MetricValue::Time { name, time } => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::Time(NamedTime {
+            MetricValue::PeakMemoryUsage { name, gauge } => {
+                Ok(operator_metric::Metric::Gauge(NamedGauge {
+                    name: name.to_string(),
+                    value: gauge.value() as u64,
+                }))
+            }
+            MetricValue::Time { name, time } => {
+                Ok(operator_metric::Metric::Time(NamedTime {
                     name: name.to_string(),
                     value: time.value() as u64,
-                })),
-            }),
-            MetricValue::StartTimestamp(timestamp) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::StartTimestamp(
+                }))
+            }
+            MetricValue::StartTimestamp(timestamp) => {
+                Ok(operator_metric::Metric::StartTimestamp(
                     timestamp
                         .value()
                         .and_then(|m| m.timestamp_nanos_opt())
                         .unwrap_or(0),
-                )),
-            }),
-            MetricValue::EndTimestamp(timestamp) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::EndTimestamp(
+                ))
+            }
+            MetricValue::EndTimestamp(timestamp) => {
+                Ok(operator_metric::Metric::EndTimestamp(
                     timestamp
                         .value()
                         .and_then(|m| m.timestamp_nanos_opt())
                         .unwrap_or(0),
-                )),
-            }),
-            MetricValue::OutputBytes(count) => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::OutputBytes(count.value() as u64)),
-            }),
+                ))
+            }
+            MetricValue::OutputBytes(count) => {
+                Ok(operator_metric::Metric::OutputBytes(count.value() as u64))
+            }
             MetricValue::PruningMetrics {
                 name,
                 pruning_metrics,
-            } => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::PruningMetrics(
-                    NamedPruningMetrics {
-                        name: name.to_string(),
-                        pruned: pruning_metrics.pruned() as u64,
-                        matched: pruning_metrics.matched() as u64,
-                    },
-                )),
-            }),
+            } => Ok(operator_metric::Metric::PruningMetrics(
+                NamedPruningMetrics {
+                    name: name.to_string(),
+                    pruned: pruning_metrics.pruned() as u64,
+                    matched: pruning_metrics.matched() as u64,
+                },
+            )),
             MetricValue::Ratio {
                 name,
                 ratio_metrics,
-            } => Ok(protobuf::OperatorMetric {
-                metric: Some(operator_metric::Metric::Ratio(NamedRatio {
-                    name: name.to_string(),
-                    part: ratio_metrics.part() as u64,
-                    total: ratio_metrics.total() as u64,
-                })),
-            }),
-            MetricValue::OutputBatches(count) => Ok(protobuf::OperatorMetric {
-                metric: Some(
-                    operator_metric::Metric::OutputBatches(count.value() as u64),
-                ),
-            }),
+            } => Ok(operator_metric::Metric::Ratio(NamedRatio {
+                name: name.to_string(),
+                part: ratio_metrics.part() as u64,
+                total: ratio_metrics.total() as u64,
+            })),
+            MetricValue::OutputBatches(count) => {
+                Ok(operator_metric::Metric::OutputBatches(count.value() as u64))
+            }
             // at the moment there there is no way to serialize custom metrics
             // thus at the moment we can't support it
             MetricValue::Custom { .. } => Err(BallistaError::General(String::from(
@@ -236,7 +226,13 @@ impl TryInto<protobuf::OperatorMetricsSet> for MetricsSet {
     fn try_into(self) -> Result<protobuf::OperatorMetricsSet, Self::Error> {
         let metrics = self
             .iter()
-            .map(|m| m.value().try_into())
+            .map(|m| {
+                let metric: operator_metric::Metric = m.value().try_into()?;
+                Ok(protobuf::OperatorMetric {
+                    metric: Some(metric),
+                    partition: m.partition().map(|p| p as u32),
+                })
+            })
             .collect::<Result<Vec<_>, BallistaError>>()?;
         Ok(protobuf::OperatorMetricsSet { metrics })
     }
@@ -260,12 +256,10 @@ impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
 impl Into<protobuf::ExecutorSpecification> for ExecutorSpecification {
     fn into(self) -> protobuf::ExecutorSpecification {
         protobuf::ExecutorSpecification {
-            resources: vec![protobuf::executor_resource::Resource::TaskSlots(
-                self.task_slots,
-            )]
-            .into_iter()
-            .map(|r| protobuf::ExecutorResource { resource: Some(r) })
-            .collect(),
+            resources: vec![protobuf::executor_resource::Resource::Vcores(self.vcores)]
+                .into_iter()
+                .map(|r| protobuf::ExecutorResource { resource: Some(r) })
+                .collect(),
         }
     }
 }
@@ -300,11 +294,9 @@ impl Into<protobuf::ExecutorData> for ExecutorData {
         protobuf::ExecutorData {
             executor_id: self.executor_id,
             resources: vec![ExecutorResourcePair {
-                total: protobuf::executor_resource::Resource::TaskSlots(
-                    self.total_task_slots,
-                ),
-                available: protobuf::executor_resource::Resource::TaskSlots(
-                    self.available_task_slots,
+                total: protobuf::executor_resource::Resource::Vcores(self.total_vcores),
+                available: protobuf::executor_resource::Resource::Vcores(
+                    self.available_vcores,
                 ),
             }]
             .into_iter()

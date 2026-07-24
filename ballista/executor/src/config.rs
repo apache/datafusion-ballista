@@ -42,6 +42,21 @@ fn parse_memory_pool_size(s: &str) -> Result<u64, String> {
         .map_err(|e| format!("invalid byte size '{s}': {e}"))
 }
 
+/// Parse and validate the `--memory-pool-fraction` value, which must be in
+/// the range `(0.0, 1.0]`.
+fn parse_memory_pool_fraction(s: &str) -> Result<f64, String> {
+    let f = s
+        .parse::<f64>()
+        .map_err(|e| format!("invalid fraction '{s}': {e}"))?;
+    if f > 0.0 && f <= 1.0 {
+        Ok(f)
+    } else {
+        Err(format!(
+            "memory pool fraction must be in (0.0, 1.0], got {f}"
+        ))
+    }
+}
+
 /// Command-line arguments for configuring a Ballista executor.
 ///
 /// This struct is parsed from command-line arguments using clap and contains
@@ -71,6 +86,13 @@ pub struct Config {
     /// Port for the executor's gRPC service (used for task management).
     #[arg(long, default_value_t = 50052, help = "Grpc service bind port.")]
     pub bind_grpc_port: u16,
+    /// Port for the executor's HTTP health server (/healthz and /readyz).
+    #[arg(
+        long,
+        default_value_t = 50053,
+        help = "HTTP port for the executor's Kubernetes health probes (/healthz and /readyz)."
+    )]
+    pub bind_health_port: u16,
     /// Timeout in seconds for establishing connection to scheduler (0 = fail immediately).
     #[arg(
         long,
@@ -81,14 +103,28 @@ pub struct Config {
     /// Directory for storing temporary shuffle data and IPC files.
     #[arg(long, help = "Directory for temporary IPC files")]
     pub work_dir: Option<String>,
-    /// Maximum number of concurrent tasks this executor can run (0 = use all CPU cores).
+    /// Number of virtual cores (vcores) this executor advertises to the scheduler
+    /// (0 = use all physical CPU cores). One task per executor drives this many
+    /// DataFusion partitions in parallel through one plan-Arc. Analogous to YARN
+    /// vcores (`yarn.nodemanager.resource.cpu-vcores`) or Spark's
+    /// `spark.executor.cores`.
     #[arg(
         short = 'c',
         long,
         default_value_t = 0,
-        help = "Max concurrent tasks (defaults to all available cores if left as zero)."
+        help = "Virtual cores advertised to the scheduler (defaults to physical CPU count if zero)."
     )]
-    pub concurrent_tasks: usize,
+    pub vcores: usize,
+    /// Deprecated alias for `--vcores`. Retained for one release to keep
+    /// in-place cluster upgrades working; will be removed in the next
+    /// major release.
+    #[arg(
+        long = "concurrent-tasks",
+        hide = true,
+        conflicts_with = "vcores",
+        help = "[deprecated] renamed to --vcores"
+    )]
+    pub concurrent_tasks: Option<usize>,
     /// Task scheduling policy: pull-staged (executor polls) or push-staged (scheduler pushes).
     #[arg(short = 's', long, default_value_t = ballista_core::config::TaskSchedulingPolicy::default(), help = "The task scheduling policy used by scheduler. Configuration must match with scheduler configured policy.")]
     pub task_scheduling_policy: ballista_core::config::TaskSchedulingPolicy,
@@ -162,20 +198,41 @@ pub struct Config {
         help = "Metric collection policy of this executor instance"
     )]
     pub metric_collection_policy: ExecutorMetricCollectionPolicy,
-    /// Optional total memory budget for the executor. Accepts human-readable
-    /// values like "8GB", "512MiB", or a plain byte count. When set, every
-    /// task gets a FairSpillPool of size `memory_pool_size / concurrent_tasks`.
+    /// Total memory budget for the executor. When unset, defaults to
+    /// `--memory-pool-fraction` of the detected host/cgroup memory limit. `0`
+    /// disables the pool (unbounded, no spilling). Accepts human-readable values
+    /// like "8GB", "512MiB", or a plain byte count. Split evenly across vcores.
     #[arg(
         long,
         value_parser = parse_memory_pool_size,
-        help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share."
+        help = "Total executor memory budget (e.g. \"8GB\"). Unset = fraction of detected memory; 0 = unbounded. Split across vcores."
     )]
     pub memory_pool_size: Option<u64>,
-    /// Number of seconds established client connection should be cached if not used (0 means no cache)
+    /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
+    /// auto memory pool when `--memory-pool-size` is unset. Ignored when
+    /// `--memory-pool-size` is given.
     #[arg(
         long,
-        default_value_t = 0,
-        help = "Number of seconds established client connection should be cached if not used (0 means no cache, connection will be disposed)."
+        default_value_t = crate::executor_process::DEFAULT_MEMORY_POOL_FRACTION,
+        value_parser = parse_memory_pool_fraction,
+        help = "Fraction (0-1] of detected memory for the auto pool. Default 0.70. Ignored if --memory-pool-size is set."
+    )]
+    pub memory_pool_fraction: f64,
+    /// Maximum number of sessions whose shared runtime state (object-store
+    /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
+    /// disables caching.
+    #[arg(
+        long,
+        default_value_t = 16,
+        help = "Max number of sessions whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). 0 disables caching."
+    )]
+    pub session_runtime_cache_capacity: usize,
+    /// Number of seconds an established client connection is cached while idle
+    /// (0 disables the cache, so every shuffle fetch opens a new connection)
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "Number of seconds established client connection should be cached if not used (0 means no cache, connection will be disposed; a shuffle-heavy query can then exhaust the host's ephemeral ports)."
     )]
     pub client_ttl: u64,
 }
@@ -184,6 +241,15 @@ impl TryFrom<Config> for ExecutorProcessConfig {
     type Error = BallistaError;
 
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
+        let vcores = match opt.concurrent_tasks {
+            Some(value) => {
+                eprintln!(
+                    "warning: --concurrent-tasks is deprecated; use --vcores instead"
+                );
+                value
+            }
+            None => opt.vcores,
+        };
         Ok(ExecutorProcessConfig {
             special_mod_log_level: opt.log_level_setting,
             external_host: opt.external_host,
@@ -193,7 +259,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
-            concurrent_tasks: opt.concurrent_tasks,
+            vcores,
             task_scheduling_policy: opt.task_scheduling_policy,
             work_dir: opt.work_dir,
             log_dir: opt.log_dir,
@@ -207,6 +273,8 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
             metric_collection_policy: opt.metric_collection_policy,
             memory_pool_size: opt.memory_pool_size,
+            memory_pool_fraction: opt.memory_pool_fraction,
+            session_runtime_cache_capacity: opt.session_runtime_cache_capacity,
             override_execution_engine: None,
             override_function_registry: None,
             override_config_producer: None,
@@ -216,13 +284,24 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_arrow_flight_service: None,
             override_create_grpc_client_endpoint: None,
             client_ttl: opt.client_ttl,
+            health: crate::health::ExecutorHealth::new(),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::parse_memory_pool_fraction;
     use super::parse_memory_pool_size;
+
+    #[test]
+    fn parse_fraction_accepts_valid_and_rejects_out_of_range() {
+        assert_eq!(parse_memory_pool_fraction("0.7").unwrap(), 0.7);
+        assert_eq!(parse_memory_pool_fraction("1.0").unwrap(), 1.0);
+        assert!(parse_memory_pool_fraction("0").is_err()); // must be > 0
+        assert!(parse_memory_pool_fraction("1.5").is_err()); // must be <= 1
+        assert!(parse_memory_pool_fraction("banana").is_err());
+    }
 
     #[test]
     fn parse_decimal_suffix() {
@@ -245,5 +324,21 @@ mod tests {
     fn parse_rejects_invalid() {
         assert!(parse_memory_pool_size("banana").is_err());
         assert!(parse_memory_pool_size("").is_err());
+    }
+
+    /// The client pool is what keeps shuffle fetches from opening a fresh TCP
+    /// connection each time; with it off, one shuffle-heavy query can exhaust
+    /// the host's ephemeral ports and take the executor down with it. Pin the
+    /// default on so it cannot regress to the disabled state unnoticed.
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn client_pool_is_enabled_by_default() {
+        use clap::Parser;
+        let opt = super::Config::parse_from(["ballista-executor"]);
+        assert!(
+            opt.client_ttl > 0,
+            "client_ttl must default to a pooling value, got {}",
+            opt.client_ttl
+        );
     }
 }

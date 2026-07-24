@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista_core::config::BallistaConfig;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::StatisticsArgs;
 use datafusion::{
     catalog::memory::DataSourceExec,
@@ -111,8 +112,8 @@ impl SelectJoinRule {
         // Get the left and right table's total bytes
         // If both the left and right tables contain total_byte_size statistics,
         // use `total_byte_size` to determine `should_swap_join_order`, else use `num_rows`
-        let left_stats = left.statistics_with_args(&StatisticsArgs::new())?;
-        let right_stats = right.statistics_with_args(&StatisticsArgs::new())?;
+        let left_stats = StatisticsContext::new().compute(left, &StatisticsArgs::new())?;
+        let right_stats = StatisticsContext::new().compute(right, &StatisticsArgs::new())?;
         // First compare `total_byte_size` of left and right side,
         // if information in this field is insufficient fallback to the `num_rows`
         match (

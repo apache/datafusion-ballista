@@ -116,3 +116,4 @@ CLAUDE.md
 .worktrees/
 # ignore insta captures
 *-snap
+.local/

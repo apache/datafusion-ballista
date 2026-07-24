@@ -17,15 +17,19 @@
 
 /// Test if stages can be added or removed
 mod alter_stages;
+/// Broadcast-threshold decisions over declared statistics
+mod broadcast_thresholds;
 /// Functional tests for the CoalescePartitionsRule end-to-end through the planner
 mod coalesce_rule;
+/// Job-failure lifecycle tests for the adaptive graph
+mod job_failure;
 /// covers join selection tests
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// A table whose statistics are declared rather than measured
+mod stats_table;
 
-use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
-use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
@@ -52,7 +56,7 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
+            specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
         // next few properties are needed
@@ -77,7 +81,7 @@ pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLoca
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
+            specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
         // next few properties are needed
@@ -125,20 +129,6 @@ pub(crate) fn mock_context() -> SessionContext {
         // because dynamic filters cannot cross stage boundaries; mirror that
         // here so join-input swaps during AQE re-optimization are legal.
         .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false);
-
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
-
-    SessionContext::new_with_state(state)
-}
-
-pub(crate) fn mock_context_sort_shuffle() -> SessionContext {
-    let config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
-        .with_target_partitions(2)
-        .with_round_robin_repartition(false);
 
     let state = SessionStateBuilder::new()
         .with_config(config)

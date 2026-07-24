@@ -35,6 +35,8 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/web-tui.yml"
       - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   pull_request:
     paths:
       - "ballista/**"
@@ -44,6 +46,8 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/web-tui.yml"
       - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
   workflow_dispatch:
 
 jobs:
@@ -51,25 +55,25 @@ jobs:
     name: Build Web TUI WASM32 application
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: "stable"
-          targets: "wasm32-unknown-unknown"
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
       - name: Install Trunk
-        uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
         with:
           tool: trunk@0.21.14
 
       - name: Install cargo-get
-        uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
         with:
           tool: cargo-get@1.4.0
 

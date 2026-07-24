@@ -32,12 +32,13 @@ clap = { version = "4.5", features = ["derive", "cargo"] }
 
 # DataFusion crates are pinned to a git rev of apache/datafusion main rather than
 # a crates.io release. Bump this rev to advance to newer DataFusion commits.
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion.git", rev = "b79d3965b7a2c29853e83def04656408d9d7ee7f" }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
+datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
+datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
+datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion.git", rev = "efa84e8309ced6614e62d1607899c47ed0b6b08a" }
 
 insta = "1.47"
 itertools = "0.15"

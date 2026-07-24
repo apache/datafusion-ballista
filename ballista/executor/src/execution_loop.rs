@@ -23,7 +23,7 @@
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::remove_job_dir;
+use crate::executor_process::remove_job_data;
 use crate::{TaskExecutionTimes, as_task_status};
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
@@ -33,7 +33,7 @@ use ballista_core::serde::protobuf::{
     PollWorkParams, PollWorkResult, TaskDefinition, TaskStatus,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
+use ballista_core::serde::scheduler::{ExecutorSpecification, TaskKey};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -44,23 +44,53 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
 
+/// Maximum time the poll loop waits for a free vcore before polling the
+/// scheduler anyway. `poll_work` doubles as the executor's heartbeat under
+/// pull-based scheduling, so a fully-busy executor must keep polling (reporting
+/// zero free vcores) or the scheduler times it out and resets its tasks. Kept
+/// well below the scheduler's executor timeout.
+const HEARTBEAT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Main execution loop that polls the scheduler for available tasks.
 ///
-/// This function runs indefinitely, periodically asking the scheduler for
-/// work. When tasks are received, they are executed on a dedicated thread
-/// pool and results are reported back to the scheduler.
+/// Runs indefinitely, periodically asking the scheduler for work. When tasks
+/// are received they are executed concurrently and results are reported back
+/// to the scheduler.
 ///
-/// The loop respects the executor's concurrent task limit via a semaphore,
-/// ensuring no more than the configured number of tasks run simultaneously.
+/// Concurrency is bounded by a semaphore. Pass `free_vcores` to supply your
+/// own semaphore — useful for sharing a single concurrency limit across
+/// multiple poll loops or for observing executor load from outside.
+/// Pass `None` to have the loop create a semaphore sized to the executor's
+/// configured vcore count.
+///
+/// **Shared semaphores**: when one semaphore is shared across loops that
+/// connect to different schedulers, each scheduler independently sees the
+/// current free capacity and may dispatch up to that many tasks. The semaphore
+/// still caps total concurrent execution — tasks that cannot run immediately
+/// wait for capacity — but both schedulers may over-commit relative to what
+/// the semaphore can actually admit at once. This is intentional: the
+/// semaphore acts as an execution throttle, not a reservation system.
+///
+/// **Semaphore sizing**: if the provided semaphore allows more concurrent
+/// tasks than the executor's thread pool has threads, excess admitted tasks
+/// will queue behind running ones. The caller is responsible for sizing the
+/// semaphore appropriately for their thread pool.
+///
+/// # Panics
+///
+/// Panics on startup if `free_vcores` is a semaphore with zero permits,
+/// which would cause the loop to deadlock immediately.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    free_vcores: Option<Arc<Semaphore>>,
+    health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
 where
     C: tonic::client::GrpcService<tonic::body::Body>,
@@ -75,21 +105,44 @@ where
         .unwrap()
         .clone()
         .into();
-    let available_task_slots =
-        Arc::new(Semaphore::new(executor_specification.task_slots as usize));
+    let free_vcores = free_vcores.unwrap_or_else(|| {
+        Arc::new(Semaphore::new(executor_specification.vcores as usize))
+    });
+    assert!(
+        free_vcores.available_permits() > 0,
+        "free_vcores semaphore must have at least one permit; passing a closed or zero-permit semaphore would deadlock the poll loop"
+    );
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
     info!("Starting poll work loop with scheduler");
 
     let dedicated_executor =
-        DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
+        DedicatedExecutor::new("task_runner", executor_specification.vcores as usize);
 
     loop {
-        // Wait for task slots to be available before asking for new work
-        let permit = available_task_slots.acquire().await.unwrap();
-        // Make the slot available again
-        drop(permit);
+        // Wait for a vcore permit before asking for new work, but cap the wait
+        // so a fully-busy executor still polls the scheduler periodically.
+        // `poll_work` is the executor's ONLY heartbeat under pull-based
+        // scheduling (the scheduler records a heartbeat on every poll). If every
+        // vcore is held by a task running longer than the scheduler's executor
+        // timeout, blocking here indefinitely stops heartbeats, so the scheduler
+        // wrongly marks this healthy-but-busy executor dead and resets its
+        // in-flight tasks. On timeout we poll anyway below, reporting
+        // `num_free_vcores: 0`, so liveness no longer depends on vcore
+        // availability.
+        match tokio::time::timeout(HEARTBEAT_POLL_INTERVAL, free_vcores.acquire()).await {
+            // A vcore is free; release it so the bind below can claim it.
+            Ok(Ok(permit)) => drop(permit),
+            // Semaphore closed (executor shutting down).
+            Ok(Err(_)) => {
+                return Err(BallistaError::Internal(
+                    "vcore semaphore closed".to_string(),
+                ));
+            }
+            // No free vcore within the interval; poll anyway to stay alive.
+            Err(_) => {}
+        }
 
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
@@ -102,13 +155,14 @@ where
             scheduler
                 .poll_work(PollWorkParams {
                     metadata: Some(executor.metadata.clone()),
-                    num_free_slots: available_task_slots.available_permits() as u32,
+                    num_free_vcores: free_vcores.available_permits() as u32,
                     task_status,
                 })
                 .await;
 
         match poll_work_result {
             Ok(result) => {
+                health.mark_heartbeat_ok();
                 let PollWorkResult {
                     tasks,
                     jobs_to_clean,
@@ -119,12 +173,15 @@ where
                 for cleanup in jobs_to_clean {
                     let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
+                    let remove_stage_ids = cleanup.remove_stage_ids.clone();
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
                     // Failures here do not affect task execution and are only logged.
                     tokio::spawn(async move {
-                        if let Err(e) = remove_job_dir(&work_dir, &job_id).await {
-                            error!("failed to remove job dir {job_id}: {e}");
+                        if let Err(e) =
+                            remove_job_data(&work_dir, &job_id, &remove_stage_ids).await
+                        {
+                            error!("failed to remove job data {job_id}: {e}");
                         }
                     });
                 }
@@ -132,9 +189,11 @@ where
                 for task in tasks {
                     let task_status_sender = task_status_sender.clone();
 
-                    // Acquire a permit/slot for the task
+                    // Acquire a vcore permit for the task.
                     let permit =
-                        available_task_slots.clone().acquire_owned().await.unwrap();
+                        free_vcores.clone().acquire_owned().await.map_err(|_| {
+                            BallistaError::Internal("vcore semaphore closed".to_string())
+                        })?;
 
                     let start_exec_time = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -158,14 +217,14 @@ where
                             // as scheduler expects notification.
                             //
 
-                            let partition_id = PartitionId {
+                            let task_key = TaskKey {
                                 job_id: task.job_id.clone().into(),
                                 stage_id: task.stage_id as usize,
-                                partition_id: task.partition_id as usize,
+                                task_id: task.task_id as usize,
                             };
 
                             warn!(
-                                "Executor failed to run task: {partition_id:?}, error: {e:?}"
+                                "Executor failed to run task: {task_key:?}, error: {e:?}"
                             );
 
                             let end_exec_time = SystemTime::now()
@@ -184,9 +243,8 @@ where
                             if let Err(error) = task_status_sender.send(as_task_status(
                                 Err(e),
                                 executor.metadata.id.clone(),
-                                task.task_id as usize,
                                 task.task_attempt_num as usize,
-                                partition_id,
+                                task_key,
                                 None,
                                 task_execution_times,
                             )) {
@@ -197,6 +255,7 @@ where
                 }
             }
             Err(error) => {
+                health.mark_heartbeat_failed();
                 warn!(
                     "Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {error}"
                 );
@@ -236,13 +295,12 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
-    let partition_id = task.partition_id;
     let start_exec_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
     let task_identity = format!(
-        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
+        "TID {job_id}/{stage_id}.{stage_attempt_num}/{task_id}.{task_attempt_num}"
     );
     info!("Received task: [{task_identity}]");
 
@@ -259,7 +317,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_higher_order_functions =
         executor.function_registry.higher_order_functions.clone();
 
-    let runtime = executor.produce_runtime(&session_config)?;
+    let runtime = executor.produce_runtime_for_session(
+        &task.session_id,
+        &session_config,
+        task.vcores_consumed,
+    )?;
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
@@ -278,25 +340,32 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             proto.try_into_physical_plan(&task_context, codec.physical_extension_codec())
         })?;
 
+    let global_output_partition_ids: Vec<usize> = task
+        .global_output_partition_ids
+        .iter()
+        .map(|p| *p as usize)
+        .collect();
+
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
         job_id.clone(),
         stage_id as usize,
-        partition_id as usize,
+        task_id as usize,
+        global_output_partition_ids,
         plan,
         &executor.work_dir,
         task_context.session_config(),
     )?;
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
-        let part = PartitionId {
+        let key = TaskKey {
             job_id: job_id.clone(),
             stage_id: stage_id as usize,
-            partition_id: partition_id as usize,
+            task_id: task_id as usize,
         };
 
+        let task_start = Instant::now();
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
-            task_id as usize,
-            part.clone(),
+            key.clone(),
             query_stage_exec.clone(),
             task_context,
         ))
@@ -311,7 +380,10 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             }
         };
 
-        info!("Finished task : [{task_identity}]");
+        info!(
+            "Finished task : [{task_identity}] in {:?}",
+            task_start.elapsed()
+        );
         debug!("Task statistics: [{task_identity}] {execution_result:?}");
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
@@ -335,9 +407,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
-            task_id as usize,
             stage_attempt_num as usize,
-            part,
+            key,
             operator_metrics,
             task_execution_times,
         ));

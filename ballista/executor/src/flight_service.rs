@@ -143,7 +143,7 @@ impl FlightService for BallistaFlightService {
                     ));
                 }
 
-                // Standard hash-based shuffle - read the entire file
+                // Standard single-file shuffle output - read the entire file
                 let file = File::open(&path)
                     .map_err(|e| {
                         BallistaError::General(format!(

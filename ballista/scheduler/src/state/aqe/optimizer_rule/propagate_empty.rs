@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::ExchangeExec;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::JoinType;
 use datafusion::common::ScalarValue;
@@ -182,7 +183,7 @@ impl PropagateEmptyExecRule {
                 _ => Ok(Transformed::no(plan)),
             }
         } else if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
-            let stats = exchange.statistics_with_args(&StatisticsArgs::new())?;
+            let stats = StatisticsContext::new().compute(exchange, &StatisticsArgs::new())?;
             match stats.num_rows {
                 Precision::Exact(0) => empty_exec!(plan),
                 _ => Ok(Transformed::no(plan)),
@@ -241,7 +242,7 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
 /// Note that when we have [Precision::Absent] it means we know nothing about the value
 /// Hence we can't decide whether it is empty
 pub fn is_guaranteed_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    let Ok(stats) = plan.statistics_with_args(&StatisticsArgs::new()) else {
+    let Ok(stats) = StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new()) else {
         return false;
     };
 
@@ -256,7 +257,7 @@ pub fn is_guaranteed_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
 /// Returns true only when we have exact stats confirming the plan is non-empty.
 /// Precision::Absent means we know nothing — we cannot claim non-empty.
 pub fn is_guaranteed_non_empty(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    let Ok(stats) = plan.statistics_with_args(&StatisticsArgs::new()) else {
+    let Ok(stats) = StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new()) else {
         return false;
     };
 

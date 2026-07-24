@@ -155,13 +155,14 @@ impl DisplayAs for UnresolvedShuffleExec {
                 if self.broadcast {
                     write!(
                         f,
-                        "UnresolvedShuffleExec: broadcast=true, upstream_partitions: {}",
-                        self.upstream_partition_count,
+                        "UnresolvedShuffleExec: stage={}, broadcast=true, upstream_partitions: {}",
+                        self.stage_id, self.upstream_partition_count,
                     )
                 } else {
                     write!(
                         f,
-                        "UnresolvedShuffleExec: partitioning: {}",
+                        "UnresolvedShuffleExec: stage={}, partitioning: {}",
+                        self.stage_id,
                         self.properties().output_partitioning()
                     )?;
                     if let Some(c) = &self.coalesce {
@@ -264,6 +265,21 @@ mod tests {
         assert!(
             s.contains(", coalesce: 3 of 8"),
             "expected ', coalesce: 3 of 8' annotation; got: {s}"
+        );
+    }
+
+    #[test]
+    fn display_includes_stage_id() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let exec =
+            UnresolvedShuffleExec::new(3, schema, Partitioning::UnknownPartitioning(4));
+        let s = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).indent(false)
+        );
+        assert!(
+            s.contains("stage=3"),
+            "expected stage id in display, got: {s}"
         );
     }
 }

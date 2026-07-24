@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{MemoryRefreshKind, System};
 use tokio::sync::mpsc;
 
@@ -47,8 +47,8 @@ use ballista_core::serde::protobuf::{
     executor_metric, executor_status,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
+use ballista_core::serde::scheduler::TaskKey;
 
 use ballista_core::serde::scheduler::from_proto::{
     get_task_definition, get_task_definition_vec,
@@ -63,10 +63,18 @@ use tokio::task::JoinHandle;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::{ExecutorProcessConfig, remove_job_dir};
+use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
+use crate::health::ExecutorHealth;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskExecutionTimes, as_task_status};
+
+/// Number of consecutive heartbeat failures after which the executor
+/// initiates its own shutdown, letting k8s (or the operator) restart the
+/// pod. The typical trigger is a `FailedPrecondition` from a newer
+/// scheduler on a bumped `BALLISTA_PROTOCOL_VERSION`; a restart will keep
+/// crash-looping until the executor image is bumped to match.
+const HEARTBEAT_FAILURE_TERMINATION_THRESHOLD: u32 = 5;
 
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
@@ -101,8 +109,9 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
     shutdown_noti: &ShutdownNotifier,
+    health: ExecutorHealth,
 ) -> Result<ServerHandle, BallistaError> {
-    let channel_buf_size = executor.concurrent_tasks * 50;
+    let channel_buf_size = executor.vcores * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
     let (tx_task_status, rx_task_status) =
         mpsc::channel::<CuratorTaskStatus>(channel_buf_size);
@@ -120,6 +129,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         config.grpc_max_decoding_message_size as usize,
         config.override_create_grpc_client_endpoint.clone(),
         config.metric_collection_policy,
+        health,
     );
 
     // 1. Start executor grpc service
@@ -222,6 +232,8 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     /// Metric collection policy for this specifix executor
     metric_collection_policy: ExecutorMetricCollectionPolicy,
     override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Shared readiness signal reflected by the /readyz probe.
+    health: ExecutorHealth,
 }
 
 #[derive(Clone)]
@@ -251,6 +263,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         grpc_max_decoding_message_size: usize,
         override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
         metric_collection_policy: ExecutorMetricCollectionPolicy,
+        health: ExecutorHealth,
     ) -> Self {
         Self {
             _start_time: SystemTime::now()
@@ -266,6 +279,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             grpc_max_decoding_message_size,
             override_create_grpc_client_endpoint,
             metric_collection_policy,
+            health,
         }
     }
 
@@ -305,7 +319,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     /// 1. First Heartbeat to its registration scheduler, if successful then return; else go next.
     /// 2. Heartbeat to schedulers which has launching tasks to this executor until one succeeds
-    async fn heartbeat(&self) {
+    ///
+    /// Returns `true` iff any scheduler acknowledged the heartbeat.
+    async fn heartbeat(&self) -> bool {
         let status = if TERMINATING.load(Ordering::Acquire) {
             executor_status::Status::Terminating(String::default())
         } else {
@@ -326,7 +342,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .await
         {
             Ok(_) => {
-                return;
+                self.health.mark_heartbeat_ok();
+                return true;
             }
             Err(e) => {
                 warn!(
@@ -344,7 +361,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 .await
             {
                 Ok(_) => {
-                    break;
+                    self.health.mark_heartbeat_ok();
+                    return true;
                 }
                 Err(e) => {
                     warn!(
@@ -353,6 +371,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 }
             }
         }
+        self.health.mark_heartbeat_failed();
+        false
     }
     /// This method should not return Err. If task fails, a failure task status should be sent
     /// to the channel to notify the scheduler.
@@ -368,25 +388,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let job_id = task.job_id;
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
-        let partition_id = task.partition_id;
+        let global_output_partition_ids = task.global_output_partition_ids;
         let plan = task.plan;
 
-        let part = PartitionId {
+        let key = TaskKey {
             job_id: job_id.clone(),
             stage_id,
-            partition_id,
+            task_id,
         };
 
         let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
-            partition_id,
+            task_id,
+            global_output_partition_ids,
             plan,
             &self.executor.work_dir,
             &task.session_config,
         );
 
-        let runtime = self.executor.produce_runtime(&task.session_config);
+        let runtime = self.executor.produce_runtime_for_session(
+            &task.session_id,
+            &task.session_config,
+            task.vcores_consumed,
+        );
 
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {
@@ -407,16 +432,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
                 info!("Execute task  : [{task_identity}]");
 
+                let task_start = Instant::now();
                 let execution_result = self
                     .executor
-                    .execute_query_stage(
-                        task_id,
-                        part.clone(),
-                        exec.clone(),
-                        task_context,
-                    )
+                    .execute_query_stage(key.clone(), exec.clone(), task_context)
                     .await;
-                info!("Finished task : [{task_identity}]");
+                info!(
+                    "Finished task : [{task_identity}] in {:?}",
+                    task_start.elapsed()
+                );
                 debug!(
                     "Task [{task_identity}], execution statistics: {execution_result:?}"
                 );
@@ -442,9 +466,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 let task_status = as_task_status(
                     execution_result,
                     executor_id.clone(),
-                    task_id,
                     stage_attempt_num,
-                    part,
+                    key.clone(),
                     operator_metrics,
                     task_execution_times,
                 );
@@ -467,9 +490,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 let task_status = as_task_status(
                     Err(e),
                     self.executor.metadata.id.clone(),
-                    task_id,
                     stage_attempt_num,
-                    part,
+                    key.clone(),
                     None,
                     TaskExecutionTimes {
                         launch_time: task.launch_time,
@@ -628,11 +650,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Heartbeater<T, U>
         let executor_server = self.executor_server.clone();
         let mut heartbeat_shutdown = shutdown_noti.subscribe_for_shutdown();
         let heartbeat_complete = shutdown_noti.shutdown_complete_tx.clone();
+        let notify_shutdown = shutdown_noti.notify_shutdown.clone();
         tokio::spawn(async move {
             info!("Starting heartbeater to send heartbeat the scheduler periodically");
+            let mut consecutive_failures: u32 = 0;
             // As long as the shutdown notification has not been received
             while !heartbeat_shutdown.is_shutdown() {
-                executor_server.heartbeat().await;
+                if executor_server.heartbeat().await {
+                    consecutive_failures = 0;
+                } else {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= HEARTBEAT_FAILURE_TERMINATION_THRESHOLD {
+                        error!(
+                            "Heartbeat failed {consecutive_failures} consecutive times; \
+                             initiating executor shutdown. Check for scheduler outage \
+                             or BALLISTA_PROTOCOL_VERSION mismatch."
+                        );
+                        let _ = notify_shutdown.send(());
+                        drop(heartbeat_complete);
+                        return;
+                    }
+                }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(executor_heartbeat_interval_seconds)) => {},
                     _ = heartbeat_shutdown.recv() => {
@@ -760,10 +798,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
 
             // Use a dedicated executor for CPU bound tasks so that the main tokio
             // executor can still answer requests even when under load
-            let dedicated_executor = DedicatedExecutor::new(
-                "task_runner",
-                executor_server.executor.concurrent_tasks,
-            );
+            let dedicated_executor =
+                DedicatedExecutor::new("task_runner", executor_server.executor.vcores);
 
             // As long as the shutdown notification has not been received
             while !task_runner_shutdown.is_shutdown() {
@@ -777,15 +813,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 };
                 if let Some(curator_task) = maybe_task {
                     let task_identity = format!(
-                        "TID {} {}/{}.{}/{}.{}",
-                        &curator_task.task.task_id,
-                        &curator_task.task.job_id,
-                        &curator_task.task.stage_id,
-                        &curator_task.task.stage_attempt_num,
-                        &curator_task.task.partition_id,
-                        &curator_task.task.task_attempt_num,
+                        "TID {}/{}.{}/{}.{}",
+                        curator_task.task.job_id,
+                        curator_task.task.stage_id,
+                        curator_task.task.stage_attempt_num,
+                        curator_task.task.task_id,
+                        curator_task.task.task_attempt_num,
                     );
-                    debug!("Received task {:?}", &task_identity);
+                    debug!("Received task {:?}", task_identity);
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {
@@ -914,10 +949,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             if let Err(e) = self
                 .executor
                 .cancel_task(
-                    task.task_id as usize,
                     task.job_id.into(),
                     task.stage_id as usize,
-                    task.partition_id as usize,
+                    task.task_id as usize,
                 )
                 .await
             {
@@ -933,9 +967,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
-        let job_id = request.into_inner().job_id.into();
+        let params = request.into_inner();
+        let job_id = params.job_id.into();
 
-        remove_job_dir(&self.executor.work_dir, &job_id)
+        remove_job_data(&self.executor.work_dir, &job_id, &params.remove_stage_ids)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
