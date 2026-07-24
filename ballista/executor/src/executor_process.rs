@@ -32,7 +32,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use log::{error, info, warn};
-use sysinfo::{Disks, System};
+use sysinfo::{Disks, MemoryRefreshKind, System};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
 use tokio::signal;
@@ -79,6 +79,139 @@ use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
 use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
+
+/// Default fraction of the detected memory limit handed to the pool when
+/// `--memory-pool-fraction` is not set. The `FairSpillPool` only bounds memory
+/// operators register with it, so the remaining budget absorbs untracked
+/// overhead (in-flight Arrow batches, shuffle writer buffers, fragmentation).
+pub(crate) const DEFAULT_MEMORY_POOL_FRACTION: f64 = 0.70;
+
+/// How the operator interpreted `--memory-pool-size`.
+#[derive(Debug, PartialEq)]
+enum MemoryBudget {
+    /// Flag unset: auto-size to `fraction` of detected host/cgroup memory.
+    Auto { fraction: f64 },
+    /// `--memory-pool-size 0`: run DataFusion's unbounded pool.
+    Unbounded,
+    /// `--memory-pool-size N`: bound the pool to exactly `N` bytes.
+    Bytes(u64),
+}
+
+/// Classify the raw CLI value into a [`MemoryBudget`]. `fraction` is only used
+/// for the auto path.
+fn memory_budget_from_cli(opt: Option<u64>, fraction: f64) -> MemoryBudget {
+    match opt {
+        None => MemoryBudget::Auto { fraction },
+        Some(0) => MemoryBudget::Unbounded,
+        Some(n) => MemoryBudget::Bytes(n),
+    }
+}
+
+/// Where an auto/explicit pool size came from (for logging).
+#[derive(Debug, PartialEq, Eq)]
+enum PoolSource {
+    /// Explicit `--memory-pool-size N`.
+    Configured,
+    /// Auto: fraction of the cgroup memory limit.
+    AutoCgroup,
+    /// Auto: fraction of host memory.
+    AutoHost,
+}
+
+/// Why the executor is running without a bounded pool (for logging).
+#[derive(Debug, PartialEq, Eq)]
+enum UnboundedReason {
+    /// User asked for it via `--memory-pool-size 0`.
+    Explicit,
+    /// Neither host nor cgroup memory could be detected.
+    Undetected,
+}
+
+/// The resolved pool decision: a concrete byte budget or unbounded.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolvedPool {
+    Bounded { bytes: u64, source: PoolSource },
+    Unbounded(UnboundedReason),
+}
+
+/// Pure resolver: turn the budget plus detected limits into a decision.
+/// `host_total` and `cgroup_limit` are only consulted for [`MemoryBudget::Auto`].
+fn resolve_pool(
+    budget: MemoryBudget,
+    host_total: Option<u64>,
+    cgroup_limit: Option<u64>,
+) -> ResolvedPool {
+    match budget {
+        MemoryBudget::Unbounded => ResolvedPool::Unbounded(UnboundedReason::Explicit),
+        MemoryBudget::Bytes(n) => ResolvedPool::Bounded {
+            bytes: n,
+            source: PoolSource::Configured,
+        },
+        MemoryBudget::Auto { fraction } => {
+            let (base, source) = match (host_total, cgroup_limit) {
+                (Some(h), Some(c)) if c <= h => (c, PoolSource::AutoCgroup),
+                (Some(h), Some(_)) => (h, PoolSource::AutoHost),
+                (Some(h), None) => (h, PoolSource::AutoHost),
+                (None, Some(c)) => (c, PoolSource::AutoCgroup),
+                (None, None) => {
+                    return ResolvedPool::Unbounded(UnboundedReason::Undetected);
+                }
+            };
+            let bytes = (base as f64 * fraction) as u64;
+            ResolvedPool::Bounded { bytes, source }
+        }
+    }
+}
+
+/// Read the cgroup memory limit in bytes, or `None` if unlimited/absent.
+/// Tries cgroup v2 (`<root>/memory.max`) then v1
+/// (`<root>/memory/memory.limit_in_bytes`). A v1 "unlimited" sentinel (a value
+/// near `u64::MAX`) is returned as-is; callers clamp it with `min(host, _)`.
+fn read_cgroup_memory_limit(cgroup_root: &Path) -> Option<u64> {
+    // cgroup v2
+    if let Ok(s) = std::fs::read_to_string(cgroup_root.join("memory.max")) {
+        let s = s.trim();
+        if s == "max" {
+            return None;
+        }
+        if let Ok(v) = s.parse::<u64>() {
+            return Some(v);
+        }
+    }
+    // cgroup v1
+    if let Ok(s) =
+        std::fs::read_to_string(cgroup_root.join("memory").join("memory.limit_in_bytes"))
+        && let Ok(v) = s.trim().parse::<u64>()
+    {
+        return Some(v);
+    }
+    None
+}
+
+/// Total host memory in bytes via `sysinfo`, or `None` if unreadable.
+fn read_host_total_memory() -> Option<u64> {
+    let mut system = System::new_all();
+    system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+    let total = system.total_memory();
+    (total > 0).then_some(total)
+}
+
+/// Resolve the pool decision, reading host/cgroup limits only when auto-sizing.
+fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
+    match budget {
+        MemoryBudget::Auto { fraction } => resolve_pool(
+            MemoryBudget::Auto { fraction },
+            read_host_total_memory(),
+            // Fixed cgroup root: assumes a cgroup-namespaced container (the
+            // default for modern k8s/Docker), where this path *is* the
+            // container's own limit. In a non-namespaced setup the real limit
+            // may live under a sub-slice instead, in which case this reads
+            // the host's root limit and we fall back to host memory below.
+            read_cgroup_memory_limit(Path::new("/sys/fs/cgroup")),
+        ),
+        other => resolve_pool(other, None, None),
+    }
+}
 
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
@@ -173,6 +306,9 @@ pub struct ExecutorProcessConfig {
     /// `memory_pool_size / vcores`. When `None`, no pool is
     /// installed and DataFusion falls back to its unbounded default.
     pub memory_pool_size: Option<u64>,
+    /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
+    /// auto memory pool when `memory_pool_size` is `None`.
+    pub memory_pool_fraction: f64,
     /// Maximum number of sessions whose shared base runtime env is retained on
     /// the executor (LRU). Sharing reuses object-store clients and the Parquet
     /// footer cache across a session's tasks and queries. `0` disables caching
@@ -245,6 +381,7 @@ impl Default for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: 60,
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
+            memory_pool_fraction: DEFAULT_MEMORY_POOL_FRACTION,
             session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
@@ -330,16 +467,43 @@ pub async fn start_executor_process(
             })
         });
 
-    let pool_policy: MemoryPoolPolicy = if let Some(total) = opt.memory_pool_size {
-        let policy = memory_pool_policy(total, vcores)?;
-        let per_vcore = total / vcores as u64;
-        info!(
-            "Memory pool: total {total} bytes split into {vcores} tasks ({per_vcore} bytes each)"
-        );
-        policy
-    } else {
-        identity_pool_policy()
-    };
+    let fraction = opt.memory_pool_fraction;
+    let pool_policy: MemoryPoolPolicy =
+        match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
+            ResolvedPool::Bounded { bytes, source } => {
+                let per_vcore = bytes / vcores as u64;
+                let source_desc = match source {
+                    PoolSource::Configured => {
+                        "configured via --memory-pool-size".to_string()
+                    }
+                    PoolSource::AutoCgroup => {
+                        format!("auto: {:.0}% of cgroup memory limit", fraction * 100.0)
+                    }
+                    PoolSource::AutoHost => {
+                        format!("auto: {:.0}% of host memory", fraction * 100.0)
+                    }
+                };
+                info!(
+                    "Executor memory pool: {} ({source_desc}), \
+                     split across {vcores} vcores ({}/vcore)",
+                    bytesize::ByteSize::b(bytes),
+                    bytesize::ByteSize::b(per_vcore),
+                );
+                memory_pool_policy(bytes, vcores)?
+            }
+            ResolvedPool::Unbounded(reason) => {
+                match reason {
+                    UnboundedReason::Explicit => {
+                        info!("Executor memory pool: unbounded (--memory-pool-size 0)")
+                    }
+                    UnboundedReason::Undetected => warn!(
+                        "Executor memory pool: unbounded (could not detect host or \
+                         cgroup memory limit; set --memory-pool-size to enable spilling)"
+                    ),
+                }
+                identity_pool_policy()
+            }
+        };
 
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`
@@ -1183,5 +1347,161 @@ mod memory_pool_tests {
         let base = Arc::new(RuntimeEnv::default());
         let env = identity_pool_policy()(base.clone(), &SessionConfig::new(), 1).unwrap();
         assert!(Arc::ptr_eq(&env, &base));
+    }
+
+    #[test]
+    fn budget_from_cli_classifies_none_zero_and_positive() {
+        assert_eq!(
+            memory_budget_from_cli(None, 0.7),
+            MemoryBudget::Auto { fraction: 0.7 }
+        );
+        assert_eq!(
+            memory_budget_from_cli(Some(0), 0.7),
+            MemoryBudget::Unbounded
+        );
+        assert_eq!(
+            memory_budget_from_cli(Some(1024), 0.7),
+            MemoryBudget::Bytes(1024)
+        );
+    }
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn resolve_explicit_bytes_ignores_detection() {
+        assert_eq!(
+            resolve_pool(MemoryBudget::Bytes(4 * GB), Some(32 * GB), Some(8 * GB)),
+            ResolvedPool::Bounded {
+                bytes: 4 * GB,
+                source: PoolSource::Configured
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_unbounded_is_explicit() {
+        assert_eq!(
+            resolve_pool(MemoryBudget::Unbounded, Some(32 * GB), None),
+            ResolvedPool::Unbounded(UnboundedReason::Explicit)
+        );
+    }
+
+    #[test]
+    fn resolve_auto_prefers_cgroup_when_smaller() {
+        let expected = ((8 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(
+                MemoryBudget::Auto { fraction: 0.70 },
+                Some(32 * GB),
+                Some(8 * GB)
+            ),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoCgroup
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_honors_custom_fraction() {
+        let expected = ((8 * GB) as f64 * 0.50) as u64;
+        assert_eq!(
+            resolve_pool(
+                MemoryBudget::Auto { fraction: 0.50 },
+                Some(32 * GB),
+                Some(8 * GB)
+            ),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoCgroup
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_falls_back_to_host_when_cgroup_unlimited_sentinel() {
+        // cgroup v1 "unlimited" reports a value larger than host; min() picks host.
+        let expected = ((32 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(
+                MemoryBudget::Auto { fraction: 0.70 },
+                Some(32 * GB),
+                Some(u64::MAX)
+            ),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoHost
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_host_only() {
+        let expected = ((32 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, Some(32 * GB), None),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoHost
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_cgroup_only() {
+        let expected = ((8 * GB) as f64 * 0.70) as u64;
+        assert_eq!(
+            resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, None, Some(8 * GB)),
+            ResolvedPool::Bounded {
+                bytes: expected,
+                source: PoolSource::AutoCgroup
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_auto_undetected_is_unbounded() {
+        assert_eq!(
+            resolve_pool(MemoryBudget::Auto { fraction: 0.70 }, None, None),
+            ResolvedPool::Unbounded(UnboundedReason::Undetected)
+        );
+    }
+
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn cgroup_v2_reads_numeric_limit() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("memory.max"), "8589934592").unwrap();
+        assert_eq!(
+            read_cgroup_memory_limit(dir.path()),
+            Some(8 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn cgroup_v2_max_means_unlimited() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("memory.max"), "max\n").unwrap();
+        assert_eq!(read_cgroup_memory_limit(dir.path()), None);
+    }
+
+    #[test]
+    fn cgroup_v1_reads_numeric_limit() {
+        let dir = tempdir().unwrap();
+        let v1 = dir.path().join("memory");
+        fs::create_dir_all(&v1).unwrap();
+        fs::write(v1.join("memory.limit_in_bytes"), "8589934592\n").unwrap();
+        assert_eq!(
+            read_cgroup_memory_limit(dir.path()),
+            Some(8 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn cgroup_absent_returns_none() {
+        let dir = tempdir().unwrap();
+        assert_eq!(read_cgroup_memory_limit(dir.path()), None);
     }
 }
