@@ -59,31 +59,78 @@
 //! Karnin, Lang, Liberty. *Optimal Quantile Approximation in Streams.*
 //! FOCS 2016. <https://arxiv.org/abs/1603.05346>
 
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
+
 /// KLL quantile sketch, generic over `Ord` items.
 pub struct KllSketch<T: Ord> {
-    items: Vec<T>,
+    /// One buffer per level; `levels[h]` is the level-`h` compactor.
+    levels: Vec<Vec<T>>,
+    /// Max items each compactor holds before it must compact.
+    k: usize,
+    /// PRNG advanced once per compaction coin flip.
+    rng: StdRng,
 }
 
 impl<T: Ord> KllSketch<T> {
-    /// Construct an empty sketch.
-    pub fn new() -> Self {
-        Self { items: Vec::new() }
+    /// Construct an empty sketch with compactor capacity `k`, seeded from
+    /// OS entropy.
+    pub fn new(k: usize) -> Self {
+        Self::with_seed(k, rand::random::<u64>())
+    }
+
+    /// Construct an empty sketch with compactor capacity `k` and a fixed
+    /// PRNG seed. Intended for deterministic tests.
+    pub fn with_seed(k: usize, seed: u64) -> Self {
+        Self {
+            levels: vec![Vec::new()],
+            k,
+            rng: StdRng::seed_from_u64(seed),
+        }
     }
 
     /// Add one item to the sketch.
     pub fn insert(&mut self, x: T) {
-        self.items.push(x);
+        self.levels[0].push(x);
+        self.compact_from(0);
     }
 
-    /// Return the number of items in the sketch strictly less than `x`.
+    /// Return the estimated number of items strictly less than `x`.
+    ///
+    /// Sum over levels `h` of `2^h · | { y ∈ levels[h] : y < x } |`.
     pub fn rank(&self, x: &T) -> u64 {
-        self.items.iter().filter(|y| *y < x).count() as u64
+        self.levels
+            .iter()
+            .enumerate()
+            .map(|(h, level)| {
+                let weight = 1u64 << h;
+                let count = level.iter().filter(|y| *y < x).count() as u64;
+                weight * count
+            })
+            .sum()
     }
-}
 
-impl<T: Ord> Default for KllSketch<T> {
-    fn default() -> Self {
-        Self::new()
+    /// Walk up from level `h`, compacting every level that has filled to `k`.
+    fn compact_from(&mut self, mut h: usize) {
+        loop {
+            if h >= self.levels.len() || self.levels[h].len() < self.k {
+                return;
+            }
+            let mut buf = std::mem::take(&mut self.levels[h]);
+            buf.sort_unstable();
+            let start = self.rng.random::<bool>() as usize;
+            let promoted: Vec<T> = buf
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| i % 2 == start)
+                .map(|(_, x)| x)
+                .collect();
+            if h + 1 == self.levels.len() {
+                self.levels.push(Vec::new());
+            }
+            self.levels[h + 1].extend(promoted);
+            h += 1;
+        }
     }
 }
 
@@ -93,7 +140,7 @@ mod tests {
 
     #[test]
     fn rank_is_exact_below_capacity() {
-        let mut sketch: KllSketch<u32> = KllSketch::new();
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
         for x in [7, 3, 10, 1, 5, 8, 2, 6, 9, 4] {
             sketch.insert(x);
         }
@@ -115,7 +162,7 @@ mod tests {
             Arc::new(UInt32Array::from(vec![7u32, 3, 10, 1, 5, 8, 2, 6, 9, 4]));
         let rows = converter.convert_columns(&[stream]).unwrap();
 
-        let mut sketch: KllSketch<OwnedRow> = KllSketch::new();
+        let mut sketch: KllSketch<OwnedRow> = KllSketch::with_seed(1024, 42);
         for row in rows.iter() {
             sketch.insert(row.owned());
         }
@@ -154,7 +201,7 @@ mod tests {
         ]));
         let rows = converter.convert_columns(&[stream]).unwrap();
 
-        let mut sketch: KllSketch<OwnedRow> = KllSketch::new();
+        let mut sketch: KllSketch<OwnedRow> = KllSketch::with_seed(1024, 42);
         for row in rows.iter() {
             sketch.insert(row.owned());
         }
@@ -185,7 +232,7 @@ mod tests {
         let col_b: ArrayRef = Arc::new(UInt32Array::from(vec![10u32, 20, 5, 15, 1, 30]));
         let rows = converter.convert_columns(&[col_a, col_b]).unwrap();
 
-        let mut sketch: KllSketch<OwnedRow> = KllSketch::new();
+        let mut sketch: KllSketch<OwnedRow> = KllSketch::with_seed(1024, 42);
         for row in rows.iter() {
             sketch.insert(row.owned());
         }
@@ -203,5 +250,21 @@ mod tests {
         //   (2,  5)            — same a, smaller b
         // Excluded: (2, 15) same a but larger b; (3, *) larger a.
         assert_eq!(sketch.rank(&probe_row), 3);
+    }
+
+    #[test]
+    fn compaction_preserves_total_mass_and_below_min() {
+        // k=4 with 32 items forces the level-0 buffer to compact eight
+        // times and cascades up through several levels.
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(4, 42);
+        for x in 1u32..=32 {
+            sketch.insert(x);
+        }
+        // Every retained item is in [1, 32]. Probing above the max must
+        // sum every retained item's weight to exactly n = 32, regardless
+        // of which coin flips happened along the way.
+        assert_eq!(sketch.rank(&33), 32);
+        // Probing at the min: no retained item is strictly less than 1.
+        assert_eq!(sketch.rank(&1), 0);
     }
 }
