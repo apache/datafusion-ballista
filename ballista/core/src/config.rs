@@ -212,7 +212,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
-                         Some((16 * 1024 * 1024).to_string())),
+                         Some((128 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS.to_string(),
                          "Connection timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
@@ -934,8 +934,35 @@ mod tests {
     #[test]
     fn default_config() -> Result<()> {
         let config = BallistaConfig::default();
-        assert_eq!(16777216, config.grpc_client_max_message_size());
+        assert_eq!(134217728, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn cluster_config_plumbs_grpc_max_message_size() {
+        // Sanity check that setting `ballista.client.grpc_max_message_size`
+        // via `SessionConfig::options_mut().set(...)` — the path Python
+        // clients' `cluster_config` overrides use — actually reaches the
+        // reader consulted by `distributed_query`.
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        assert_eq!(
+            config.ballista_config().grpc_client_max_message_size(),
+            128 * 1024 * 1024,
+            "unexpected default (did the bump land?)",
+        );
+
+        let r = config
+            .options_mut()
+            .set("ballista.client.grpc_max_message_size", "67108864");
+        assert!(r.is_ok(), "set failed: {r:?}");
+
+        assert_eq!(
+            config.ballista_config().grpc_client_max_message_size(),
+            64 * 1024 * 1024,
+        );
     }
 
     // The default must stay non-zero: `0` disables the fit check, and since AQE
