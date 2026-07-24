@@ -38,7 +38,10 @@ pub use chaos_exec::ChaosExec;
 use datafusion::common::exec_err;
 pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
-pub use runtime_stats::{RuntimeStatsExec, sketch_from_proto, sketch_to_proto};
+pub use runtime_stats::{
+    RuntimeStatsExec, collect_reports as collect_runtime_stats_reports,
+    sketch_from_proto, sketch_to_proto,
+};
 pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;

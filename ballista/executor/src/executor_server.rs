@@ -451,6 +451,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .map(|m| m.try_into())
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
+                let runtime_stats = exec.collect_runtime_stats_reports();
                 let executor_id = &self.executor.metadata.id;
 
                 let end_exec_time = SystemTime::now()
@@ -469,6 +470,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     stage_attempt_num,
                     key.clone(),
                     operator_metrics,
+                    runtime_stats,
                     task_execution_times,
                 );
 
@@ -493,6 +495,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     stage_attempt_num,
                     key.clone(),
                     None,
+                    vec![],
                     TaskExecutionTimes {
                         launch_time: task.launch_time,
                         start_exec_time,

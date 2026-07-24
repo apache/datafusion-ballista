@@ -506,6 +506,94 @@ impl Drop for StreamState {
     }
 }
 
+/// Walk `plan` and collect one [`crate::serde::protobuf::RuntimeStatsReport`]
+/// per [`RuntimeStatsExec`] that remains valid at the plan's output.
+/// "Valid" means reachable through single-child chains of distribution-
+/// preserving operators only — see
+/// [`super::range_repartition_common::preserves_distribution`]. A stats-
+/// tap sitting *below* an [`super::UnorderedRangeRepartitionExec`] (or
+/// any distribution-changing operator) is excluded automatically because
+/// the walker stops at that boundary; its sketch describes data the
+/// repartitioner then routed away and is no longer meaningful at the
+/// plan's output.
+///
+/// Executors call this once per task at completion to package what to
+/// return to the scheduler.
+pub fn collect_reports(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<Vec<crate::serde::protobuf::RuntimeStatsReport>> {
+    use datafusion_proto::physical_plan::{
+        DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
+    };
+    let codec = DefaultPhysicalExtensionCodec {};
+    let converter = DefaultPhysicalProtoConverter {};
+    let mut found: Vec<&RuntimeStatsExec> = Vec::new();
+    collect_reachable_stats(plan, &mut found);
+    found
+        .into_iter()
+        .map(|stats| stats_to_report(stats, &codec, &converter))
+        .collect()
+}
+
+/// DFS `plan` through single-child chains only, descending through
+/// distribution-preserving nodes and past any [`RuntimeStatsExec`] found
+/// on the way. Stops at any branch, leaf, or non-whitelisted node.
+/// Similar in shape to `range_repartition_common::find_runtime_stats`
+/// but collects *all* reachable stats rather than returning the first
+/// match keyed to a specific routing expression.
+fn collect_reachable_stats<'a>(
+    plan: &'a Arc<dyn ExecutionPlan>,
+    out: &mut Vec<&'a RuntimeStatsExec>,
+) {
+    if let Some(stats) = plan.downcast_ref::<RuntimeStatsExec>() {
+        out.push(stats);
+        // Continue descending — a plan could conceivably chain multiple
+        // stats-taps; `preserves_distribution` still guards the recursion.
+    } else if !super::range_repartition_common::preserves_distribution(plan.as_ref()) {
+        return;
+    }
+    let children = plan.children();
+    let [only_child] = children.as_slice() else {
+        return;
+    };
+    collect_reachable_stats(only_child, out);
+}
+
+fn stats_to_report(
+    stats: &RuntimeStatsExec,
+    codec: &dyn datafusion_proto::physical_plan::PhysicalExtensionCodec,
+    converter: &datafusion_proto::physical_plan::DefaultPhysicalProtoConverter,
+) -> Result<crate::serde::protobuf::RuntimeStatsReport> {
+    use datafusion_proto::physical_plan::to_proto::serialize_physical_sort_exprs;
+    let order_by = match stats.order_by() {
+        Some(order_by) => {
+            serialize_physical_sort_exprs(order_by.iter().cloned(), codec, converter)?
+        }
+        None => Vec::new(),
+    };
+    // Iterate every partition slot the operator holds. Slots the task
+    // didn't touch have row_count = 0 and an empty sketch; we still emit
+    // them so the scheduler sees a shape-consistent view.
+    let partition_count = stats.partition_count();
+    let mut partitions = Vec::with_capacity(partition_count);
+    for partition_id in 0..partition_count {
+        let row_count = stats.row_count(partition_id)? as u64;
+        let sketch = match stats.quantile_sketch(partition_id)? {
+            Some(sk) if sk.count() > 0.0 => Some(sketch_to_proto(&sk)?),
+            _ => None,
+        };
+        partitions.push(crate::serde::protobuf::RuntimeStatsPartitionEntry {
+            partition_id: partition_id as u32,
+            row_count,
+            sketch,
+        });
+    }
+    Ok(crate::serde::protobuf::RuntimeStatsReport {
+        order_by,
+        partitions,
+    })
+}
+
 /// Serialize a T-Digest to the on-wire
 /// [`crate::serde::protobuf::QuantileSketchState`].
 ///
@@ -730,5 +818,176 @@ mod stream_tests {
             "row-count-only mode must not allocate a sketch"
         );
         assert!(stats.merged_quantile_sketch().unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod collect_tests {
+    //! Walker behavior: which `RuntimeStatsExec`s does `collect_reports`
+    //! see through the whitelist, and what do the emitted reports look
+    //! like once the plan has been drained?
+
+    use super::*;
+    use crate::execution_plans::BufferExec;
+    use crate::execution_plans::buffer::BufferMode;
+    use datafusion::arrow::array::Float64Array;
+    use datafusion::arrow::compute::SortOptions;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::common;
+    use datafusion::physical_plan::expressions::col;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion::prelude::SessionContext;
+
+    fn schema_v() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
+    }
+
+    fn v_batch(schema: &Arc<Schema>, v: Vec<f64>) -> RecordBatch {
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Float64Array::from(v))])
+            .unwrap()
+    }
+
+    fn v_input(schema: Arc<Schema>) -> Arc<dyn ExecutionPlan> {
+        let b1 = v_batch(&schema, vec![1.0, 3.0, 5.0]);
+        let b2 = v_batch(&schema, vec![2.0, 4.0]);
+        let memory =
+            Arc::new(MemorySourceConfig::try_new(&[vec![b1, b2]], schema, None).unwrap());
+        Arc::new(DataSourceExec::new(memory))
+    }
+
+    fn sort_expr_on_v(schema: &Arc<Schema>) -> PhysicalSortExpr {
+        PhysicalSortExpr {
+            expr: col("v", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        }
+    }
+
+    /// Stats sit at plan root, sketching mode: `collect_reports` returns
+    /// exactly one report whose partition entry carries the observed
+    /// row_count and a populated sketch that survives the on-wire round-
+    /// trip via `sketch_from_proto`.
+    #[tokio::test]
+    async fn collect_reports_finds_stats_and_ships_sketch() {
+        let schema = schema_v();
+        let input = v_input(schema.clone());
+        let stats = Arc::new(
+            RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
+                .unwrap(),
+        );
+
+        // Drive the stream so counters and the sketch actually fill.
+        let ctx = SessionContext::new().task_ctx();
+        let stream = stats.clone().execute(0, ctx).unwrap();
+        let _ = common::collect(stream).await.unwrap();
+
+        let plan: Arc<dyn ExecutionPlan> = stats;
+        let reports = collect_reports(&plan).expect("collect_reports must succeed");
+        let [report] = reports.as_slice() else {
+            panic!(
+                "expected exactly one report, got {} (order_by tags: {:?})",
+                reports.len(),
+                reports.iter().map(|r| r.order_by.len()).collect::<Vec<_>>()
+            );
+        };
+        assert_eq!(report.order_by.len(), 1, "one sort expr encoded");
+        let [entry] = report.partitions.as_slice() else {
+            panic!(
+                "expected one partition entry, got {}",
+                report.partitions.len()
+            );
+        };
+        assert_eq!(entry.partition_id, 0);
+        assert_eq!(entry.row_count, 5);
+        let proto_sketch = entry.sketch.as_ref().expect("sketch present in wire");
+        let round_tripped = sketch_from_proto(proto_sketch).unwrap();
+        assert_eq!(round_tripped.count(), 5.0);
+        assert_eq!(round_tripped.min(), 1.0);
+        assert_eq!(round_tripped.max(), 5.0);
+    }
+
+    /// Row-count-only mode: report emitted, but its partition entry
+    /// carries no sketch.
+    #[tokio::test]
+    async fn collect_reports_row_count_only_emits_report_without_sketch() {
+        let schema = schema_v();
+        let input = v_input(schema.clone());
+        let stats = Arc::new(RuntimeStatsExec::try_new(input, None).unwrap());
+
+        let ctx = SessionContext::new().task_ctx();
+        let stream = stats.clone().execute(0, ctx).unwrap();
+        let _ = common::collect(stream).await.unwrap();
+
+        let plan: Arc<dyn ExecutionPlan> = stats;
+        let reports = collect_reports(&plan).unwrap();
+        let [report] = reports.as_slice() else {
+            panic!("expected one report, got {}", reports.len());
+        };
+        assert!(report.order_by.is_empty());
+        assert_eq!(report.partitions.len(), 1);
+        assert!(
+            report.partitions[0].sketch.is_none(),
+            "no sketch in row-count-only mode"
+        );
+        assert_eq!(report.partitions[0].row_count, 5);
+    }
+
+    /// Whitelisted intermediary (`BufferExec` in Dam mode) between plan
+    /// root and the stats-tap: walker still descends to it.
+    #[tokio::test]
+    async fn collect_reports_descends_through_whitelisted_op() {
+        let schema = schema_v();
+        let input = v_input(schema.clone());
+        let stats = Arc::new(
+            RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
+                .unwrap(),
+        );
+        let buffer: Arc<dyn ExecutionPlan> =
+            Arc::new(BufferExec::try_new(stats, BufferMode::Dam).unwrap());
+
+        // Drain via the outer plan so counters fill.
+        let ctx = SessionContext::new().task_ctx();
+        let stream = buffer.clone().execute(0, ctx).unwrap();
+        let _ = common::collect(stream).await.unwrap();
+
+        let reports = collect_reports(&buffer).unwrap();
+        assert_eq!(reports.len(), 1, "buffer must not block the walker");
+        assert_eq!(reports[0].partitions[0].row_count, 5);
+    }
+
+    /// A `SortExec` with `preserve_partitioning=false` collapses N→1;
+    /// the whitelist excludes that variant explicitly. The walker
+    /// stops at the collapse and doesn't reach the stats below.
+    #[tokio::test]
+    async fn collect_reports_stops_at_sort_that_collapses_partitions() {
+        let schema = schema_v();
+        let input = v_input(schema.clone());
+        let stats: Arc<dyn ExecutionPlan> = Arc::new(
+            RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
+                .unwrap(),
+        );
+        // Default SortExec has preserve_partitioning=false — the
+        // whitelist path we're testing rejects it.
+        let sort = SortExec::new(
+            LexOrdering::new(vec![sort_expr_on_v(&schema)]).unwrap(),
+            stats,
+        );
+        assert!(
+            !sort.preserve_partitioning(),
+            "test fixture assumes N→1 sort"
+        );
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(sort);
+        let reports = collect_reports(&plan).unwrap();
+        assert!(
+            reports.is_empty(),
+            "N→1 sort must block the walker; got {} reports",
+            reports.len()
+        );
     }
 }

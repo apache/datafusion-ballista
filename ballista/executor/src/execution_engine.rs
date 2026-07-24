@@ -86,6 +86,18 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
 
     /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
+
+    /// Collect runtime-stats reports for every `RuntimeStatsExec` still
+    /// valid at the plan's output (walked through the distribution-
+    /// preserving whitelist). Called at task completion; whatever comes
+    /// back rides along in the task's `SuccessfulTask` message to the
+    /// scheduler. Default returns empty — implementers with real plans
+    /// override to walk their operator tree.
+    fn collect_runtime_stats_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
+        Vec::new()
+    }
 }
 
 /// Default execution engine using DataFusion's ShuffleWriterExec.
@@ -288,6 +300,31 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 utils::collect_plan_metrics(writer)
             }
             ShuffleWriterVariant::Sort(writer) => utils::collect_plan_metrics(writer),
+        }
+    }
+
+    fn collect_runtime_stats_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
+        // Walk from the shuffle writer's plan through the whitelist. If
+        // no `RuntimeStatsExec` sits within reach, we return an empty
+        // Vec — the majority of plans (anything not on the parallel-
+        // window path today). Serialization errors are logged and the
+        // report dropped rather than failing the task; the task's data
+        // was already produced correctly, telemetry loss shouldn't tank
+        // the query.
+        let plan: Arc<dyn ExecutionPlan> = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Sort(writer) => Arc::new(writer.clone()),
+        };
+        match ballista_core::execution_plans::collect_runtime_stats_reports(&plan) {
+            Ok(reports) => reports,
+            Err(e) => {
+                log::warn!(
+                    "collect_runtime_stats_reports failed, task will report empty stats: {e}"
+                );
+                Vec::new()
+            }
         }
     }
 }

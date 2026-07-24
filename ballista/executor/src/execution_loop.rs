@@ -246,6 +246,7 @@ where
                                 task.task_attempt_num as usize,
                                 task_key,
                                 None,
+                                vec![],
                                 task_execution_times,
                             )) {
                                 warn!("failed to send task status: {error:?}");
@@ -392,6 +393,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .map(|m| m.try_into())
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
+        let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
 
         let end_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -410,6 +412,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             stage_attempt_num as usize,
             key,
             operator_metrics,
+            runtime_stats,
             task_execution_times,
         ));
 
