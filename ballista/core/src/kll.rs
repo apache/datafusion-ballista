@@ -155,6 +155,50 @@ impl<T: Ord> KllSketch<T> {
             .sum()
     }
 
+    /// Return the item at the `q`-quantile of the sketched stream, where
+    /// `q ∈ [0, 1]` is clamped to that range. Returns `None` if the sketch
+    /// is empty.
+    ///
+    /// Semantics: the smallest retained item `x` whose cumulative weight
+    /// (from the smallest item up to and including `x`) is at least
+    /// `q · total_weight`. Non-interpolated — the returned reference is
+    /// always to an item actually present in the sketch, which is the
+    /// shape the scheduler wants for partition-boundary picking.
+    pub fn quantile(&self, q: f64) -> Option<&T> {
+        let q = q.clamp(0.0, 1.0);
+        let total_weight: u64 = self
+            .levels
+            .iter()
+            .enumerate()
+            .map(|(h, level)| (1u64 << h) * level.len() as u64)
+            .sum();
+        if total_weight == 0 {
+            return None;
+        }
+        let mut pairs: Vec<(&T, u64)> = self
+            .levels
+            .iter()
+            .enumerate()
+            .flat_map(|(h, level)| {
+                let weight = 1u64 << h;
+                level.iter().map(move |item| (item, weight))
+            })
+            .collect();
+        pairs.sort_by_key(|(item, _)| *item);
+
+        let target = (q * total_weight as f64) as u64;
+        let mut cumulative = 0u64;
+        for (item, weight) in &pairs {
+            cumulative += weight;
+            if cumulative >= target {
+                return Some(*item);
+            }
+        }
+        // total_weight > 0 and q ≤ 1 ⇒ cumulative reaches total_weight ≥ target
+        // on the final iteration, so the loop always returns.
+        unreachable!("quantile: threshold not reached despite non-empty sketch")
+    }
+
     /// Compact until every level fits within its (dynamically shrinking)
     /// capacity. Adding a new top level shrinks the effective capacity of
     /// every existing level, so a merge or a promotion may leave more
@@ -340,6 +384,59 @@ mod tests {
         assert_eq!(sketch.rank(&33), 32);
         // Probing at the min: no retained item is strictly less than 1.
         assert_eq!(sketch.rank(&1), 0);
+    }
+
+    #[test]
+    fn quantile_on_empty_returns_none() {
+        let sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        assert_eq!(sketch.quantile(0.5), None);
+    }
+
+    #[test]
+    fn quantile_range_and_rank_roundtrip_under_compactions() {
+        // n >> k forces cascading compactions; items now sit at multiple
+        // levels with weights 1, 2, 4, ... — the multi-level branch of
+        // quantile's cumulative-weight walk.
+        let n = 10_000u32;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(64, 42);
+        for x in 1..=n {
+            sketch.insert(x);
+        }
+        // Every returned quantile is a retained item, which was inserted,
+        // so it must lie in [1, n].
+        for &q in &[0.0, 0.25, 0.5, 0.75, 1.0] {
+            let item = sketch.quantile(q).expect("non-empty sketch");
+            assert!(
+                *item >= 1 && *item <= n,
+                "quantile({q}) = {item} outside [1, {n}]"
+            );
+        }
+        // rank(quantile(q)) should track q · n within KLL's error bound.
+        // For k = 64 the normalized error ε ≈ 1.854/√k ≈ 0.23, so ±0.25·n
+        // is a comfortable slack for a deterministic seed.
+        let slack = (n as f64 * 0.25) as u64;
+        for &q in &[0.25, 0.5, 0.75] {
+            let item = sketch.quantile(q).expect("non-empty");
+            let observed = sketch.rank(item);
+            let expected = (q * n as f64) as u64;
+            assert!(
+                observed.abs_diff(expected) <= slack,
+                "quantile({q}) = {item} → rank = {observed}, expected ~{expected} ±{slack}"
+            );
+        }
+    }
+
+    #[test]
+    fn quantile_is_exact_below_capacity() {
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        // n < k = 1024 → no compactions; every item stays at level 0 weight 1.
+        for x in 1u32..=100 {
+            sketch.insert(x);
+        }
+        // Smallest item where cumulative weight ≥ q · n.
+        assert_eq!(sketch.quantile(0.0), Some(&1));
+        assert_eq!(sketch.quantile(0.5), Some(&50));
+        assert_eq!(sketch.quantile(1.0), Some(&100));
     }
 
     #[test]
