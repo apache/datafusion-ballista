@@ -39,6 +39,8 @@ pub mod executor_server;
 pub mod flight_service;
 /// HTTP server for Kubernetes-style /healthz and /readyz probes.
 pub mod health;
+/// Peak-usage tracking wrapper around a [`datafusion::execution::memory_pool::MemoryPool`].
+pub mod memory_pool;
 /// Metrics collection for executor runtime statistics.
 pub mod metrics;
 /// Session-scoped cache of shared executor runtime environments.
