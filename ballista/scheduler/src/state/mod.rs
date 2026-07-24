@@ -18,6 +18,7 @@
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
+use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -36,6 +37,7 @@ use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tonic::Code;
 
 mod aqe;
 mod distributed_explain;
@@ -191,7 +193,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         tokio::spawn(async move {
             let mut if_revive = false;
             match state.launch_tasks(schedulable_tasks).await {
-                Ok(unassigned_executor_slots) => {
+                Ok((unassigned_executor_slots, failed_jobs)) => {
                     if !unassigned_executor_slots.is_empty() {
                         if let Err(e) = state
                             .executor_manager
@@ -201,6 +203,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             error!("Fail to unbind tasks: {e}");
                         }
                         if_revive = true;
+                    }
+                    for job in failed_jobs {
+                        if let Err(e) = sender
+                            .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                                job_id: job,
+                                fail_message: "task serialization failed by executor"
+                                    .to_string(),
+                                queued_at: timestamp_millis(),
+                                failed_at: timestamp_millis(),
+                            })
+                            .await
+                        {
+                            error!("Fail to post JobRunningFailed: {e:?}");
+                        }
                     }
                 }
                 Err(e) => {
@@ -260,7 +276,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     async fn launch_tasks(
         &self,
         bound_tasks: Vec<BoundTask>,
-    ) -> Result<Vec<ExecutorSlot>> {
+    ) -> Result<(Vec<ExecutorSlot>, Vec<JobId>)> {
         // Put tasks to the same executor together
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
         let mut executor_stage_assignments: HashMap<
@@ -284,7 +300,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 executor_stage_assignments.insert(executor_id, executor_stage_tasks);
             }
         }
-
         let mut join_handles = vec![];
         for (executor_id, tasks) in executor_stage_assignments.into_iter() {
             let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
@@ -293,6 +308,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
             let state = self.clone();
             let join_handle = tokio::spawn(async move {
+                let mut failed_jobs: Vec<JobId> = Vec::new();
+                let job_ids: Vec<JobId> = tasks
+                    .iter()
+                    .flatten()
+                    .map(|t| t.key.job_id.clone())
+                    .collect();
                 let success = match state
                     .executor_manager
                     .get_executor_metadata(&executor_id)
@@ -304,12 +325,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             .launch_multi_task(&executor, tasks, &state.executor_manager)
                             .await
                         {
-                            let err_msg = format!("Failed to launch new task: {e}");
-                            error!("{}", err_msg.clone());
+                            let is_task_rejected = matches!(&e,BallistaError::GrpcError(status)
+                                if status.code() == Code::InvalidArgument);
+                            failed_jobs = if is_task_rejected {
+                                job_ids
+                            } else {
+                                let err_msg = format!("Failed to launch new task: {e}");
+                                error!("{}", err_msg.clone());
 
-                            // It's OK to remove executor aggressively,
-                            // since if the executor is in healthy state, it will be registered again.
-                            state.remove_executor(&executor_id, Some(err_msg)).await;
+                                // It's OK to remove executor aggressively,
+                                // since if the executor is in healthy state, it will be registered again.
+                                state.remove_executor(&executor_id, Some(err_msg)).await;
+                                Vec::new()
+                            };
 
                             false
                         } else {
@@ -324,27 +352,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     }
                 };
                 if success {
-                    vec![]
+                    (vec![], vec![])
                 } else {
-                    vec![(executor_id.clone(), n_tasks as u32)]
+                    (vec![(executor_id.clone(), n_tasks as u32)], failed_jobs)
                 }
             });
             join_handles.push(join_handle);
         }
 
-        let unassigned_executor_slots =
-            futures::future::join_all(join_handles)
-                .await
-                .into_iter()
-                .collect::<std::result::Result<
-                    Vec<Vec<ExecutorSlot>>,
-                    tokio::task::JoinError,
-                >>()?;
-
-        Ok(unassigned_executor_slots
+        let results = futures::future::join_all(join_handles)
+            .await
             .into_iter()
-            .flatten()
-            .collect::<Vec<ExecutorSlot>>())
+            .collect::<std::result::Result<
+            Vec<(Vec<ExecutorSlot>, Vec<JobId>)>,
+            tokio::task::JoinError,
+        >>()?;
+
+        let mut unassigned_executor_slots = Vec::new();
+        let mut failed_jobs = Vec::new();
+        for (slots, jobs) in results {
+            unassigned_executor_slots.extend(slots);
+            failed_jobs.extend(jobs);
+        }
+
+        Ok((unassigned_executor_slots, failed_jobs))
     }
 
     pub(crate) async fn update_task_statuses(

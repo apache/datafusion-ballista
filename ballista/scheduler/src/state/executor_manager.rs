@@ -417,12 +417,7 @@ impl ExecutorManager {
                 multi_tasks,
                 scheduler_id,
             })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {executor_id}: {e:?}"
-                ))
-            })?;
+            .await?;
 
         Ok(())
     }
