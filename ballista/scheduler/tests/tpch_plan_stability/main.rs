@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::stats::Precision;
+use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 use datafusion::prelude::SessionContext;
 
 use stats_table::TpchStatsTable;
@@ -45,7 +46,9 @@ async fn stats_table_reports_injected_rows() {
         .await
         .unwrap();
 
-    let stats = plan.partition_statistics(None).unwrap();
+    let stats = StatisticsContext::new()
+        .compute(plan.as_ref(), &StatisticsArgs::new())
+        .unwrap();
     assert_eq!(stats.num_rows, Precision::Inexact(12_345));
 }
 

@@ -167,8 +167,8 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
     }
     if plan.is::<HashJoinExec>() || plan.is::<NestedLoopJoinExec>() {
         return plan
-            .required_input_distribution()
-            .into_iter()
+            .input_distribution_requirements()
+            .per_child_distributions()
             .map(|d| matches!(d, Distribution::SinglePartition))
             .collect();
     }
@@ -232,6 +232,13 @@ fn select_output_partitions(
             Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
             Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(kept.len()),
             Partitioning::UnknownPartitioning(_) => {
+                Partitioning::UnknownPartitioning(kept.len())
+            }
+            Partitioning::Range(_) => {
+                // Range-partitioned shuffle output is not yet produced by
+                // Ballista's writers, so we should never encounter it on the
+                // reader side. Fall back to Unknown to keep the type
+                // exhaustive without inventing new range boundaries.
                 Partitioning::UnknownPartitioning(kept.len())
             }
         };

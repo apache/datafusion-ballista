@@ -1203,7 +1203,7 @@ async fn get_table(
     path: &str,
     table: &str,
     table_format: &str,
-    target_partitions: usize,
+    _target_partitions: usize,
 ) -> Result<Arc<dyn TableProvider>> {
     let (format, path, extension, schema): (
         Arc<dyn FileFormat>,
@@ -1255,14 +1255,7 @@ async fn get_table(
         }
     };
 
-    let options = ListingOptions {
-        format,
-        file_extension: extension.to_owned(),
-        target_partitions,
-        collect_stat: true,
-        table_partition_cols: vec![],
-        file_sort_order: vec![],
-    };
+    let options = ListingOptions::new(format).with_file_extension(extension.to_owned());
 
     let url = ListingTableUrl::parse(path)?;
     let config = ListingTableConfig::new(url).with_listing_options(options);

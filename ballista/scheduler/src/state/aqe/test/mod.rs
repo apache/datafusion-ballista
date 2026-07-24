@@ -124,7 +124,11 @@ pub(crate) fn mock_memory_table() -> Arc<dyn TableProvider> {
 pub(crate) fn mock_context() -> SessionContext {
     let config = SessionConfig::new()
         .with_target_partitions(2)
-        .with_round_robin_repartition(false);
+        .with_round_robin_repartition(false)
+        // Ballista disables dynamic filter pushdown in its session defaults
+        // because dynamic filters cannot cross stage boundaries; mirror that
+        // here so join-input swaps during AQE re-optimization are legal.
+        .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false);
 
     let state = SessionStateBuilder::new()
         .with_config(config)
