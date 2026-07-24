@@ -36,7 +36,8 @@ use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedJob, ShuffleWritePartition, job_status};
 use ballista_core::serde::protobuf::{
-    FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
+    FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, SuccessfulTask,
+    TaskStatus,
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::{
@@ -47,6 +48,8 @@ use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
+use ballista_core::execution_plans::log_merged_runtime_stats;
+
 use crate::state::execution_stage::RunningStage;
 pub(crate) use crate::state::execution_stage::{
     ExecutionStage, ResolvedStage, StageOutput, TaskInfo, UnresolvedStage,
@@ -950,12 +953,15 @@ impl ExecutionGraph for StaticExecutionGraph {
                             running_stage
                                 .update_task_metrics(task_id, operator_metrics)?;
 
+                            let SuccessfulTask {
+                                partitions,
+                                runtime_stats,
+                                ..
+                            } = successful_task;
+                            running_stage.append_runtime_stats_reports(runtime_stats);
+
                             locations.append(&mut partition_to_location(
-                                &job_id,
-                                task_id,
-                                stage_id,
-                                executor,
-                                successful_task.partitions,
+                                &job_id, task_id, stage_id, executor, partitions,
                             ));
                         } else {
                             warn!(
@@ -978,6 +984,11 @@ impl ExecutionGraph for StaticExecutionGraph {
                                 stage_metrics,
                             );
                         }
+                        log_merged_runtime_stats(
+                            job_id.as_str(),
+                            stage_id,
+                            &running_stage.runtime_stats_reports,
+                        );
                     }
 
                     let output_links = running_stage.output_links.clone();
