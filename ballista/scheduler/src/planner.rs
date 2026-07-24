@@ -32,7 +32,6 @@ use ballista_core::{
     },
     serde::scheduler::PartitionLocation,
 };
-use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
@@ -45,6 +44,7 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
@@ -364,7 +364,9 @@ impl DefaultDistributedPlanner {
         let right = hash_join.right();
 
         fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
-            let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new()) else {
+            let Ok(stats) =
+                StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+            else {
                 debug!(
                     "broadcast check: partition_statistics returned error for {}",
                     plan.name()

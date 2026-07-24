@@ -1114,10 +1114,18 @@ mod test {
 
             let codec = BallistaPhysicalExtensionCodec::default();
             let mut buf: Vec<u8> = vec![];
-            codec.try_encode(Arc::new(original_exec), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+            codec
+                .try_encode(
+                    Arc::new(original_exec),
+                    &mut buf,
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .unwrap();
 
             let ctx = SessionContext::new().task_ctx();
-            let decoded_plan = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+            let decoded_plan = codec
+                .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+                .unwrap();
             let decoded_exec = decoded_plan
                 .downcast_ref::<SortShuffleWriterExec>()
                 .expect("Expected SortShuffleWriterExec");
@@ -1205,10 +1213,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+        let decoded = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded = decoded
             .downcast_ref::<SortShuffleWriterExec>()
             .expect("Expected SortShuffleWriterExec");
@@ -1612,10 +1628,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded = decoded_plan
             .downcast_ref::<RuntimeStatsExec>()
@@ -1658,10 +1682,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded = decoded_plan
             .downcast_ref::<RuntimeStatsExec>()
             .expect("Expected RuntimeStatsExec");
@@ -1769,10 +1801,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded = decoded_plan
             .downcast_ref::<BufferExec>()
             .expect("Expected BufferExec");
@@ -1810,10 +1850,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded = decoded_plan
             .downcast_ref::<UnorderedRangeRepartitionExec>()
@@ -1863,10 +1911,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf, &DefaultPhysicalProtoConverter {}).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {}).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded = decoded_plan
             .downcast_ref::<UnorderedRangeRepartitionExec>()

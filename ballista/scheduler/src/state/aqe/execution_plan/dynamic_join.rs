@@ -16,8 +16,8 @@
 // under the License.
 
 use ballista_core::config::BallistaConfig;
-use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::{
     arrow::compute::SortOptions,
     arrow::datatypes::{DataType, Schema},
@@ -293,8 +293,10 @@ impl DynamicJoinSelectionExec {
                 PartitionMode::Partitioned
             };
 
-        let stats_left = StatisticsContext::new().compute(self.left.as_ref(), &StatisticsArgs::new())?;
-        let stats_right = StatisticsContext::new().compute(self.right.as_ref(), &StatisticsArgs::new())?;
+        let stats_left = StatisticsContext::new()
+            .compute(self.left.as_ref(), &StatisticsArgs::new())?;
+        let stats_right = StatisticsContext::new()
+            .compute(self.right.as_ref(), &StatisticsArgs::new())?;
 
         let action = match (&self.selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
@@ -407,7 +409,8 @@ impl DynamicJoinSelectionExec {
     ) -> bool {
         // Currently we do not trust the 0 value from stats, due to stats collection might have bug
         // TODO check the logic in datasource::get_statistics_with_limit()
-        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new()) else {
+        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+        else {
             return false;
         };
 

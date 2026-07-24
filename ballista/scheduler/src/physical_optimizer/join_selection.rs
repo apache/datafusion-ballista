@@ -32,10 +32,10 @@
 //
 use std::sync::Arc;
 
-use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::error::Result;
 use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::StatisticsContext;
 
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{JoinSide, JoinType, internal_err};

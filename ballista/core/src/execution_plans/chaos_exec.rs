@@ -33,9 +33,9 @@ use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::StatisticsArgs;
-use datafusion::physical_plan::statistics::ChildStats;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::statistics::ChildStats;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
