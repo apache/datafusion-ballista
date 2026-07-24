@@ -52,6 +52,7 @@ use log::{debug, error, info};
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
@@ -792,6 +793,56 @@ fn get_client_host_port(
         }
     }
 }
+
+/// Boxed one-shot cleanup action run when a [`JobCleanupGuard`] is dropped.
+type JobCleanupFn = Box<dyn FnOnce() + Send>;
+
+/// Runs a best-effort cleanup action exactly once when dropped.
+///
+/// Constructed with `Some(closure)` when client-side cleanup is enabled, or via
+/// [`JobCleanupGuard::disabled`] (no closure) when it is turned off. Dropping the
+/// guard takes the closure and invokes it; a disabled guard does nothing.
+struct JobCleanupGuard {
+    cleanup: Option<JobCleanupFn>,
+}
+
+impl JobCleanupGuard {
+    fn new(cleanup: Option<JobCleanupFn>) -> Self {
+        Self { cleanup }
+    }
+
+    fn disabled() -> Self {
+        Self { cleanup: None }
+    }
+}
+
+impl Drop for JobCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+/// Wraps a result stream so that when the consumer finishes or abandons it, the
+/// owned [`JobCleanupGuard`] is dropped and fires its cleanup action. Polling is
+/// delegated verbatim to the inner stream.
+struct GuardedStream {
+    inner: Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>,
+    _guard: JobCleanupGuard,
+}
+
+impl Stream for GuardedStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_partition(
     location: PartitionLocation,
@@ -849,7 +900,7 @@ mod test {
     use crate::JobId;
     use crate::config::BallistaConfig;
     use crate::execution_plans::distributed_query::{
-        DistributedQueryExec, get_client_host_port,
+        DistributedQueryExec, GuardedStream, JobCleanupGuard, get_client_host_port,
     };
     use crate::serde::protobuf::ExecutorMetadata;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
@@ -929,5 +980,83 @@ mod test {
             .unwrap();
 
         assert_eq!(new_exec.job_id(), Some(JobId::new("job-123")));
+    }
+
+    #[test]
+    fn job_cleanup_guard_fires_once_on_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let guard = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        drop(guard);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn job_cleanup_guard_disabled_does_not_fire() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        // Simulate the production "disabled" branch: no closure is built.
+        let _c = c; // the counter is intentionally never wired to a closure
+        let guard = JobCleanupGuard::disabled();
+        drop(guard);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn guarded_stream_fires_after_full_consumption() {
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let guard = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        let inner = futures::stream::iter(vec![]);
+        let mut s = GuardedStream {
+            inner: Box::pin(inner),
+            _guard: guard,
+        };
+        while s.next().await.is_some() {}
+        assert_eq!(count.load(Ordering::SeqCst), 0, "must not fire before drop");
+        drop(s);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "fires on drop after consumption"
+        );
+    }
+
+    #[tokio::test]
+    async fn guarded_stream_fires_on_early_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let guard = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        let inner = futures::stream::iter(vec![Ok(
+            datafusion::arrow::array::RecordBatch::new_empty(std::sync::Arc::new(
+                datafusion::arrow::datatypes::Schema::empty(),
+            )),
+        )]);
+        let s = GuardedStream {
+            inner: Box::pin(inner),
+            _guard: guard,
+        };
+        // Drop without consuming a single item.
+        drop(s);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
