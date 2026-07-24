@@ -1001,13 +1001,23 @@ mod test {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        // A disabled guard must hold no cleanup action...
+        let guard = JobCleanupGuard::disabled();
+        assert!(
+            guard.cleanup.is_none(),
+            "disabled guard must hold no cleanup action"
+        );
+        drop(guard); // ...and dropping it must not panic or fire anything.
+
+        // Contrast: an enabled guard built the same way production gates it DOES fire,
+        // proving the counter wiring is real and the disabled case is a genuine no-op.
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
-        // Simulate the production "disabled" branch: no closure is built.
-        let _c = c; // the counter is intentionally never wired to a closure
-        let guard = JobCleanupGuard::disabled();
-        drop(guard);
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        let enabled = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        drop(enabled);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
