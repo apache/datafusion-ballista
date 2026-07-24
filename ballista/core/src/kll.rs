@@ -39,4 +39,30 @@ mod tests {
         // 4 items strictly less than 5: {1, 2, 3, 4}
         assert_eq!(sketch.rank(&5), 4);
     }
+
+    #[test]
+    fn rank_is_exact_below_capacity_with_owned_rows() {
+        use datafusion::arrow::array::{ArrayRef, UInt32Array};
+        use datafusion::arrow::datatypes::DataType;
+        use datafusion::arrow::row::{OwnedRow, RowConverter, SortField};
+        use std::sync::Arc;
+
+        let converter =
+            RowConverter::new(vec![SortField::new(DataType::UInt32)]).unwrap();
+
+        let stream: ArrayRef =
+            Arc::new(UInt32Array::from(vec![7u32, 3, 10, 1, 5, 8, 2, 6, 9, 4]));
+        let rows = converter.convert_columns(&[stream]).unwrap();
+
+        let mut sketch: KllSketch<OwnedRow> = KllSketch::new();
+        for row in rows.iter() {
+            sketch.insert(row.owned());
+        }
+
+        let probe: ArrayRef = Arc::new(UInt32Array::from(vec![5u32]));
+        let probe_row = converter.convert_columns(&[probe]).unwrap().row(0).owned();
+
+        // Same assertion as the u32 test: 4 items strictly less than 5.
+        assert_eq!(sketch.rank(&probe_row), 4);
+    }
 }
