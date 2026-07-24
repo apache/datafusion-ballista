@@ -1,4 +1,65 @@
-/// KLL quantile sketch (Karnin-Lang-Liberty), generic over `Ord` items.
+//! KLL quantile sketch — bounded-memory data structure that answers
+//! rank/quantile queries over a stream of `Ord` items with provable error.
+//!
+//! # Why this sketch
+//!
+//! Ballista's scheduler picks global partition boundaries from runtime
+//! statistics gathered by executors (see
+//! [`crate::execution_plans::RuntimeStatsExec`]). To generalize those
+//! boundaries beyond a single numeric column, the sketch must accept
+//! multi-column, potentially nullable sort keys with per-column ASC/DESC
+//! direction — the full `ORDER BY` grammar. This sketch is generic over
+//! `T: Ord`, which composes with `arrow::row::OwnedRow` to cover that
+//! case: the row encoding carries column count, null policy, and per-column
+//! direction, leaving the sketch itself dtype-agnostic.
+//!
+//! # Data layout
+//!
+//! The sketch is a stack of *compactors*, one buffer per level:
+//!
+//! ```text
+//! level 2:  [ · · · · ]   each item has weight 4
+//! level 1:  [ · · · · ]   each item has weight 2
+//! level 0:  [ · · · · ]   each item has weight 1 (new items land here)
+//! ```
+//!
+//! An item at level `h` represents `2^h` items from the input stream.
+//! New items always enter level 0 with weight 1.
+//!
+//! # Compaction
+//!
+//! When a level-`h` compactor fills to capacity `k`, it:
+//!
+//! 1. Sorts its contents.
+//! 2. Flips a fair coin.
+//! 3. Keeps either the odd-indexed items (heads) or even-indexed items
+//!    (tails), discarding the other half.
+//! 4. Promotes the surviving `k/2` items to level `h+1`, creating that
+//!    level if needed.
+//! 5. Empties itself.
+//!
+//! The coin flip is what makes the sketch unbiased: the expected error
+//! introduced per compaction is zero.
+//!
+//! # Rank
+//!
+//! ```text
+//! rank(x)  =  Σ over levels h of  2^h · | { y ∈ level_h : y < x } |
+//! ```
+//!
+//! # Parameters
+//!
+//! `k` is the compactor capacity. Larger `k` uses more memory and yields
+//! smaller error, roughly `O(1/k · sqrt(log(n/k)))`. This implementation
+//! uses a fixed `k` at every level; the paper's refinement of
+//! geometrically-shrinking level sizes is not implemented here.
+//!
+//! # Reference
+//!
+//! Karnin, Lang, Liberty. *Optimal Quantile Approximation in Streams.*
+//! FOCS 2016. <https://arxiv.org/abs/1603.05346>
+
+/// KLL quantile sketch, generic over `Ord` items.
 pub struct KllSketch<T: Ord> {
     items: Vec<T>,
 }
