@@ -21,9 +21,9 @@ use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
+    CleanJobDataParams, ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult,
+    KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
+    job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
@@ -429,6 +429,9 @@ async fn execute_query_pull(
     let use_tls = session_config.ballista_use_tls();
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
+    let client_side_cleanup = session_config
+        .ballista_config()
+        .client_side_cleanup_enabled();
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -577,7 +580,29 @@ async fn execute_query_pull(
                     futures::stream::once(f).try_flatten()
                 });
 
-                break Ok(futures::stream::iter(streams).flatten());
+                let result_stream = futures::stream::iter(streams).flatten();
+                let guard = if client_side_cleanup {
+                    let handle = tokio::runtime::Handle::current();
+                    let mut cleanup_client = scheduler.clone();
+                    let cleanup_job_id = job_id.clone();
+                    JobCleanupGuard::new(Some(Box::new(move || {
+                        handle.spawn(async move {
+                            let params = CleanJobDataParams {
+                                job_id: cleanup_job_id.into_inner(),
+                                remove_stage_ids: vec![],
+                            };
+                            if let Err(e) = cleanup_client.clean_job_data(params).await {
+                                debug!("client-side job data cleanup RPC failed: {e:?}");
+                            }
+                        });
+                    })))
+                } else {
+                    JobCleanupGuard::disabled()
+                };
+                break Ok(GuardedStream {
+                    inner: Box::pin(result_stream),
+                    _guard: guard,
+                });
             }
         };
     }
@@ -602,6 +627,9 @@ async fn execute_query_push(
     let use_tls = session_config.ballista_use_tls();
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
+    let client_side_cleanup = session_config
+        .ballista_config()
+        .client_side_cleanup_enabled();
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -743,7 +771,29 @@ async fn execute_query_push(
                     futures::stream::once(f).try_flatten()
                 });
 
-                break Ok(futures::stream::iter(streams).flatten());
+                let result_stream = futures::stream::iter(streams).flatten();
+                let guard = if client_side_cleanup {
+                    let handle = tokio::runtime::Handle::current();
+                    let mut cleanup_client = scheduler.clone();
+                    let cleanup_job_id = job_id.clone();
+                    JobCleanupGuard::new(Some(Box::new(move || {
+                        handle.spawn(async move {
+                            let params = CleanJobDataParams {
+                                job_id: cleanup_job_id.into_inner(),
+                                remove_stage_ids: vec![],
+                            };
+                            if let Err(e) = cleanup_client.clean_job_data(params).await {
+                                debug!("client-side job data cleanup RPC failed: {e:?}");
+                            }
+                        });
+                    })))
+                } else {
+                    JobCleanupGuard::disabled()
+                };
+                break Ok(GuardedStream {
+                    inner: Box::pin(result_stream),
+                    _guard: guard,
+                });
             }
         };
     }
