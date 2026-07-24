@@ -416,8 +416,13 @@
 <ul class="simple">
 <li><p><strong>Cluster:</strong> Kubernetes on AWS (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>); one driver/scheduler pod and
 32 executor pods for each engine, launched on the same node pool.</p></li>
-<li><p><strong>Executor pod (Ballista):</strong> x86_64, 8 vCPU, 64 GiB memory.</p></li>
-<li><p><strong>Executor pod (Spark):</strong> x86_64, 8 vCPU, 64 GiB + 10 GiB overhead.</p></li>
+<li><p><strong>K8s worker nodes:</strong> <code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> (96 vCPU, 768 GiB memory, 40 Gbps EBS
+bandwidth, EBS-only — no local instance-store).</p></li>
+<li><p><strong>Executor pod (Ballista):</strong> x86_64, 8 vCPU, 64 GiB memory, plus a
+dedicated 1000 GiB <code class="docutils literal notranslate"><span class="pre">gp3</span></code> EBS PVC mounted at <code class="docutils literal notranslate"><span class="pre">/data</span></code> for the executor’s
+shuffle work-dir (see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>).</p></li>
+<li><p><strong>Executor pod (Spark):</strong> x86_64, 8 vCPU, 64 GiB + 10 GiB overhead, plus a
+dedicated <code class="docutils literal notranslate"><span class="pre">gp3</span></code> PVC via <code class="docutils literal notranslate"><span class="pre">spark-local-dir-1</span></code>.</p></li>
 <li><p><strong>Client pod (Ballista):</strong> the Python benchmark runner submits SQL to
 Ballista via <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> and collects results locally.
 Requires 64 GiB memory limit to complete the full 22-query suite —
@@ -426,6 +431,26 @@ executor cluster is healthy.</p></li>
 <li><p><strong>Data:</strong> TPC-H SF1000 Parquet on S3 (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>), ZSTD compression,
 ~512 MiB row groups, one directory per table.</p></li>
 </ul>
+</section>
+<section id="executor-storage">
+<h2>Executor storage<a class="headerlink" href="#executor-storage" title="Link to this heading">#</a></h2>
+<p>Each Ballista executor pod is attached to a <strong>fresh 1000 GiB <code class="docutils literal notranslate"><span class="pre">gp3</span></code> EBS
+volume</strong> (generic-ephemeral PVC, <code class="docutils literal notranslate"><span class="pre">storageClassName:</span> <span class="pre">gp3</span></code>), mounted at
+<code class="docutils literal notranslate"><span class="pre">/data</span></code>, and the executor is launched with <code class="docutils literal notranslate"><span class="pre">--work-dir</span> <span class="pre">/data</span></code>. All shuffle
+temp files land on this dedicated volume.</p>
+<p>Without it, <code class="docutils literal notranslate"><span class="pre">--work-dir</span></code> defaults to a random directory under <code class="docutils literal notranslate"><span class="pre">/tmp</span></code> on the
+container overlay filesystem, i.e. onto the node’s root EBS volume, which
+is shared with container images, <code class="docutils literal notranslate"><span class="pre">kubelet</span></code>, and every other pod on the
+same node. On <code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> that shared bandwidth becomes the binding
+constraint under sustained shuffle-write pressure — <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">ANALYZE</span></code>
+observed Q8’s <code class="docutils literal notranslate"><span class="pre">SortShuffleWriter.write_time</span></code> inflate ~5× on the second
+run of a suite compared to a fresh cluster, despite the same 313 GB of
+shuffle output and zero spilling, because Q1–Q7’s dirty pages force
+synchronous flushes to EBS at cap. Attaching a dedicated PVC removes that
+contention and brings in-suite per-query times in line with the standalone
+number.</p>
+<p>Spark on the same cluster has always used this pattern via
+<code class="docutils literal notranslate"><span class="pre">spark.kubernetes.executor.volumes.persistentVolumeClaim.spark-local-dir-1</span></code>.</p>
 </section>
 <section id="ballista-configuration">
 <h2>Ballista configuration<a class="headerlink" href="#ballista-configuration" title="Link to this heading">#</a></h2>
@@ -442,22 +467,31 @@ executor cluster is healthy.</p></li>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> (bytes; ≈70 % of the 64 GiB container)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">48103633715</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.target_partitions</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--work-dir</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/data</span></code> (dedicated gp3 PVC — see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--grpc-server-max-decoding-message-size</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">134217728</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--grpc-server-max-encoding-message-size</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">134217728</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.target_partitions</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">256</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.collect_statistics</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.collect_statistics</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.listing_table_factory_infer_partitions</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.listing_table_factory_infer_partitions</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.catalog.information_schema</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.catalog.information_schema</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code> (AQE)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 </tr>
 </tbody>
@@ -467,6 +501,9 @@ executor cluster is healthy.</p></li>
 join strategy is selected at runtime by <code class="docutils literal notranslate"><span class="pre">DelayJoinSelectionRule</span></code> /
 <code class="docutils literal notranslate"><span class="pre">DynamicJoinSelectionExec</span></code> from runtime statistics and the broadcast /
 <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code> thresholds.</p>
+<p>The gRPC message-size ceiling is raised from the 16 MiB default to 128 MiB;
+some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
+<code class="docutils literal notranslate"><span class="pre">OutOfRange</span></code> errors otherwise.</p>
 </section>
 <section id="spark-configuration-highlights">
 <h2>Spark configuration (highlights)<a class="headerlink" href="#spark-configuration-highlights" title="Link to this heading">#</a></h2>
@@ -531,7 +568,8 @@ The matching Ballista executor runs <code class="docutils literal notranslate"><
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
 <p><strong>Times in seconds; lower is better.</strong> Ballista: single iteration. Spark:
-mean of 3 iterations (cold iteration dropped by the harness).</p>
+mean of 3 iterations (cold iteration dropped by the harness). <code class="docutils literal notranslate"><span class="pre">FAIL</span></code> = query
+did not complete on this Ballista configuration.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
@@ -541,102 +579,110 @@ mean of 3 iterations (cold iteration dropped by the harness).</p>
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>21.16</p></td>
+<td class="text-right"><p>21.71</p></td>
 <td class="text-right"><p>67.58</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>32.37</p></td>
+<td class="text-right"><p>26.73</p></td>
 <td class="text-right"><p>29.80</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>32.69</p></td>
+<td class="text-right"><p>34.77</p></td>
 <td class="text-right"><p>25.13</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>27.75</p></td>
+<td class="text-right"><p>20.73</p></td>
 <td class="text-right"><p>21.19</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>49.37</p></td>
+<td class="text-right"><p>42.26</p></td>
 <td class="text-right"><p>54.12</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>16.17</p></td>
+<td class="text-right"><p>13.78</p></td>
 <td class="text-right"><p>1.23</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>48.24</p></td>
+<td class="text-right"><p>47.17</p></td>
 <td class="text-right"><p>19.57</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>189.30</p></td>
+<td class="text-right"><p>45.74</p></td>
 <td class="text-right"><p>48.60</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>154.88</p></td>
+<td class="text-right"><p>67.27</p></td>
 <td class="text-right"><p>69.38</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>67.72</p></td>
+<td class="text-right"><p>52.99</p></td>
 <td class="text-right"><p>35.92</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p>26.72</p></td>
+<td class="text-right"><p><strong>FAIL</strong></p></td>
 <td class="text-right"><p>30.88</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>24.46</p></td>
+<td class="text-right"><p>25.97</p></td>
 <td class="text-right"><p>10.78</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>18.36</p></td>
+<td class="text-right"><p>15.30</p></td>
 <td class="text-right"><p>20.45</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>19.93</p></td>
+<td class="text-right"><p>21.13</p></td>
 <td class="text-right"><p>7.00</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>27.56</p></td>
+<td class="text-right"><p>27.30</p></td>
 <td class="text-right"><p>23.75</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>18.03</p></td>
+<td class="text-right"><p>17.38</p></td>
 <td class="text-right"><p>23.41</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>60.46</p></td>
+<td class="text-right"><p>47.29</p></td>
 <td class="text-right"><p>82.30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>282.79</p></td>
+<td class="text-right"><p>78.32</p></td>
 <td class="text-right"><p>129.40</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>23.28</p></td>
+<td class="text-right"><p>18.71</p></td>
 <td class="text-right"><p>11.26</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>88.93</p></td>
+<td class="text-right"><p>97.13</p></td>
 <td class="text-right"><p>19.22</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p>110.87</p></td>
+<td class="text-right"><p><strong>FAIL</strong></p></td>
 <td class="text-right"><p>101.53</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p>12.17</p></td>
+<td class="text-right"><p><strong>FAIL</strong></p></td>
 <td class="text-right"><p>12.71</p></td>
 </tr>
-<tr class="row-even"><td class="text-right"><p><strong>Total (Q1–Q22)</strong></p></td>
-<td class="text-right"><p><strong>1353.21</strong></p></td>
-<td class="text-right"><p><strong>845.21</strong></p></td>
+<tr class="row-even"><td class="text-right"><p><strong>Total (comparable subset, 19Q)</strong></p></td>
+<td class="text-right"><p><strong>721.68</strong></p></td>
+<td class="text-right"><p><strong>700.09</strong></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Row counts agree across engines for every query. Ballista completed the
-full 22-query suite in a single continuous run.</p>
+<p>The total row sums Q1–Q10, Q12–Q20 — the queries that completed on both
+engines. Q11, Q21, Q22 currently fail on Ballista with an <code class="docutils literal notranslate"><span class="pre">OutOfRange</span></code>
+error (<code class="docutils literal notranslate"><span class="pre">decoded</span> <span class="pre">message</span> <span class="pre">length</span> <span class="pre">too</span> <span class="pre">large</span></code>); their physical plans encode
+above the client’s default 16 MiB gRPC ceiling. Bumping the ceiling to
+128 MiB via <code class="docutils literal notranslate"><span class="pre">ballista.client.grpc_max_message_size</span></code> on the client side is
+still under investigation — the scheduler and executor sides accept the
+raised limit (see <a class="reference internal" href="#ballista-configuration"><span class="xref myst">Ballista configuration</span></a>) but
+the client-submission channel is separate and continues to enforce 16 MiB
+in the current release.</p>
+<p>Row counts agree across engines for every query Ballista returned.</p>
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
@@ -648,9 +694,14 @@ client. Executor sizing on each node:</p>
 <span class="w">  </span>--bind-host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50051</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--scheduler-host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--scheduler-port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--concurrent-tasks<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--memory-pool-size<span class="w"> </span><span class="m">48103633715</span>
+<span class="w">  </span>--memory-pool-size<span class="w"> </span><span class="m">48103633715</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--work-dir<span class="w"> </span>/data<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--grpc-server-max-decoding-message-size<span class="w"> </span><span class="m">134217728</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--grpc-server-max-encoding-message-size<span class="w"> </span><span class="m">134217728</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">/data</span></code> should be a dedicated volume (e.g. a <code class="docutils literal notranslate"><span class="pre">gp3</span></code> PVC) sized for the
+suite’s shuffle output — see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>.</p>
 <p>Run all 22 queries:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>tpch<span class="w"> </span>benchmark<span class="w"> </span>ballista<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
@@ -749,6 +800,7 @@ open issues found by benchmarking: <a class="reference external" href="https://g
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#versions-under-test">Versions under test</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment">Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#executor-storage">Executor storage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-configuration">Ballista configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-configuration-highlights">Spark configuration (highlights)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#queries">Queries</a></li>

@@ -33,8 +33,13 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 - **Cluster:** Kubernetes on AWS (`us-west-2`); one driver/scheduler pod and
   32 executor pods for each engine, launched on the same node pool.
-- **Executor pod (Ballista):** x86_64, 8 vCPU, 64 GiB memory.
-- **Executor pod (Spark):** x86_64, 8 vCPU, 64 GiB + 10 GiB overhead.
+- **K8s worker nodes:** `r6i.24xlarge` (96 vCPU, 768 GiB memory, 40 Gbps EBS
+  bandwidth, EBS-only — no local instance-store).
+- **Executor pod (Ballista):** x86_64, 8 vCPU, 64 GiB memory, plus a
+  dedicated 1000 GiB `gp3` EBS PVC mounted at `/data` for the executor's
+  shuffle work-dir (see [Executor storage](#executor-storage)).
+- **Executor pod (Spark):** x86_64, 8 vCPU, 64 GiB + 10 GiB overhead, plus a
+  dedicated `gp3` PVC via `spark-local-dir-1`.
 - **Client pod (Ballista):** the Python benchmark runner submits SQL to
   Ballista via `BallistaSessionContext` and collects results locally.
   Requires 64 GiB memory limit to complete the full 22-query suite —
@@ -43,23 +48,52 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
   ~512 MiB row groups, one directory per table.
 
+## Executor storage
+
+Each Ballista executor pod is attached to a **fresh 1000 GiB `gp3` EBS
+volume** (generic-ephemeral PVC, `storageClassName: gp3`), mounted at
+`/data`, and the executor is launched with `--work-dir /data`. All shuffle
+temp files land on this dedicated volume.
+
+Without it, `--work-dir` defaults to a random directory under `/tmp` on the
+container overlay filesystem, i.e. onto the node's root EBS volume, which
+is shared with container images, `kubelet`, and every other pod on the
+same node. On `r6i.24xlarge` that shared bandwidth becomes the binding
+constraint under sustained shuffle-write pressure — `EXPLAIN ANALYZE`
+observed Q8's `SortShuffleWriter.write_time` inflate ~5× on the second
+run of a suite compared to a fresh cluster, despite the same 313 GB of
+shuffle output and zero spilling, because Q1–Q7's dirty pages force
+synchronous flushes to EBS at cap. Attaching a dedicated PVC removes that
+contention and brings in-suite per-query times in line with the standalone
+number.
+
+Spark on the same cluster has always used this pattern via
+`spark.kubernetes.executor.volumes.persistentVolumeClaim.spark-local-dir-1`.
+
 ## Ballista configuration
 
-| Flag / config key                                             | Value         |
-| ------------------------------------------------------------- | ------------- |
-| `--concurrent-tasks`                                          | `8`           |
-| `--memory-pool-size` (bytes; ≈70 % of the 64 GiB container)   | `48103633715` |
-| `datafusion.execution.target_partitions`                      | `256`         |
-| `datafusion.execution.collect_statistics`                     | `true`        |
-| `datafusion.execution.listing_table_factory_infer_partitions` | `false`       |
-| `datafusion.catalog.information_schema`                       | `true`        |
-| `ballista.planner.adaptive.enabled`                           | `true` (AQE)  |
-| `ballista.shuffle.sort_based.memory_limit_per_task_bytes`     | `0`           |
+| Flag / config key                                             | Value                                                                   |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `--concurrent-tasks`                                          | `8`                                                                     |
+| `--memory-pool-size` (bytes; ≈70 % of the 64 GiB container)   | `48103633715`                                                           |
+| `--work-dir`                                                  | `/data` (dedicated gp3 PVC — see [Executor storage](#executor-storage)) |
+| `--grpc-server-max-decoding-message-size`                     | `134217728`                                                             |
+| `--grpc-server-max-encoding-message-size`                     | `134217728`                                                             |
+| `datafusion.execution.target_partitions`                      | `256`                                                                   |
+| `datafusion.execution.collect_statistics`                     | `true`                                                                  |
+| `datafusion.execution.listing_table_factory_infer_partitions` | `false`                                                                 |
+| `datafusion.catalog.information_schema`                       | `true`                                                                  |
+| `ballista.planner.adaptive.enabled`                           | `true` (AQE)                                                            |
+| `ballista.shuffle.sort_based.memory_limit_per_task_bytes`     | `0`                                                                     |
 
 `datafusion.optimizer.prefer_hash_join` is left at its default; under AQE the
 join strategy is selected at runtime by `DelayJoinSelectionRule` /
 `DynamicJoinSelectionExec` from runtime statistics and the broadcast /
 `ballista.optimizer.hash_join_max_build_partition_bytes` thresholds.
+
+The gRPC message-size ceiling is raised from the 16 MiB default to 128 MiB;
+some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
+`OutOfRange` errors otherwise.
 
 ## Spark configuration (highlights)
 
@@ -97,36 +131,46 @@ The SQLBench-H phrasing of the 22 TPC-H queries from
 ## Results
 
 **Times in seconds; lower is better.** Ballista: single iteration. Spark:
-mean of 3 iterations (cold iteration dropped by the harness).
+mean of 3 iterations (cold iteration dropped by the harness). `FAIL` = query
+did not complete on this Ballista configuration.
 
-|              Query | Ballista (s) | Spark 3.4 (s) |
-| -----------------: | -----------: | ------------: |
-|                  1 |        21.16 |         67.58 |
-|                  2 |        32.37 |         29.80 |
-|                  3 |        32.69 |         25.13 |
-|                  4 |        27.75 |         21.19 |
-|                  5 |        49.37 |         54.12 |
-|                  6 |        16.17 |          1.23 |
-|                  7 |        48.24 |         19.57 |
-|                  8 |       189.30 |         48.60 |
-|                  9 |       154.88 |         69.38 |
-|                 10 |        67.72 |         35.92 |
-|                 11 |        26.72 |         30.88 |
-|                 12 |        24.46 |         10.78 |
-|                 13 |        18.36 |         20.45 |
-|                 14 |        19.93 |          7.00 |
-|                 15 |        27.56 |         23.75 |
-|                 16 |        18.03 |         23.41 |
-|                 17 |        60.46 |         82.30 |
-|                 18 |       282.79 |        129.40 |
-|                 19 |        23.28 |         11.26 |
-|                 20 |        88.93 |         19.22 |
-|                 21 |       110.87 |        101.53 |
-|                 22 |        12.17 |         12.71 |
-| **Total (Q1–Q22)** |  **1353.21** |    **845.21** |
+|                              Query | Ballista (s) | Spark 3.4 (s) |
+| ---------------------------------: | -----------: | ------------: |
+|                                  1 |        21.71 |         67.58 |
+|                                  2 |        26.73 |         29.80 |
+|                                  3 |        34.77 |         25.13 |
+|                                  4 |        20.73 |         21.19 |
+|                                  5 |        42.26 |         54.12 |
+|                                  6 |        13.78 |          1.23 |
+|                                  7 |        47.17 |         19.57 |
+|                                  8 |        45.74 |         48.60 |
+|                                  9 |        67.27 |         69.38 |
+|                                 10 |        52.99 |         35.92 |
+|                                 11 |     **FAIL** |         30.88 |
+|                                 12 |        25.97 |         10.78 |
+|                                 13 |        15.30 |         20.45 |
+|                                 14 |        21.13 |          7.00 |
+|                                 15 |        27.30 |         23.75 |
+|                                 16 |        17.38 |         23.41 |
+|                                 17 |        47.29 |         82.30 |
+|                                 18 |        78.32 |        129.40 |
+|                                 19 |        18.71 |         11.26 |
+|                                 20 |        97.13 |         19.22 |
+|                                 21 |     **FAIL** |        101.53 |
+|                                 22 |     **FAIL** |         12.71 |
+| **Total (comparable subset, 19Q)** |   **721.68** |    **700.09** |
 
-Row counts agree across engines for every query. Ballista completed the
-full 22-query suite in a single continuous run.
+The total row sums Q1–Q10, Q12–Q20 — the queries that completed on both
+engines. Q11, Q21, Q22 currently fail on Ballista with an `OutOfRange`
+error (`decoded message length too large`); their physical plans encode
+above the client's default 16 MiB gRPC ceiling. Bumping the ceiling to
+128 MiB via `ballista.client.grpc_max_message_size` on the client side is
+still under investigation — the scheduler and executor sides accept the
+raised limit (see [Ballista configuration](#ballista-configuration)) but
+the client-submission channel is separate and continues to enforce 16 MiB
+in the current release.
+
+Row counts agree across engines for every query Ballista returned.
 
 ## Reproducing
 
@@ -140,8 +184,14 @@ ballista-executor \
   --bind-host 0.0.0.0 --bind-port 50051 \
   --scheduler-host <scheduler> --scheduler-port 50050 \
   --concurrent-tasks 8 \
-  --memory-pool-size 48103633715
+  --memory-pool-size 48103633715 \
+  --work-dir /data \
+  --grpc-server-max-decoding-message-size 134217728 \
+  --grpc-server-max-encoding-message-size 134217728
 ```
+
+`/data` should be a dedicated volume (e.g. a `gp3` PVC) sized for the
+suite's shuffle output — see [Executor storage](#executor-storage).
 
 Run all 22 queries:
 
