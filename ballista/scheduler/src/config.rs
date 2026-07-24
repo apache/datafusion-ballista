@@ -159,6 +159,16 @@ pub struct Config {
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// Maximum size of messages sent by the scheduler's outbound gRPC clients
+    /// (e.g. task assignment to executors). Should be at least as large as the
+    /// executor's `--grpc-server-max-decoding-message-size` for those RPCs to
+    /// succeed with big encoded plans.
+    #[arg(
+        long,
+        default_value_t = 134217728,
+        help = "The maximum size of a message sent by the scheduler's outbound gRPC clients (in bytes)."
+    )]
+    pub grpc_client_max_message_size: u32,
     /// Timeout in seconds before marking an executor as dead.
     #[arg(
         long,
@@ -256,6 +266,8 @@ pub struct SchedulerConfig {
     pub grpc_server_max_decoding_message_size: u32,
     /// The maximum size of an encoded message at the grpc server side.
     pub grpc_server_max_encoding_message_size: u32,
+    /// The maximum size of a message sent by the scheduler's outbound gRPC clients.
+    pub grpc_client_max_message_size: u32,
     /// The executor timeout in seconds. It should be longer than executor's heartbeat intervals.
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
@@ -307,6 +319,7 @@ impl Default for SchedulerConfig {
             scheduler_event_expected_processing_duration: 0,
             grpc_server_max_decoding_message_size: 134217728,
             grpc_server_max_encoding_message_size: 134217728,
+            grpc_client_max_message_size: 134217728,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
             override_config_producer: None,
@@ -426,6 +439,12 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the maximum message size for the scheduler's outbound gRPC clients.
+    pub fn with_grpc_client_max_message_size(mut self, value: u32) -> Self {
+        self.grpc_client_max_message_size = value;
+        self
+    }
+
     /// Sets a custom config producer.
     pub fn with_override_config_producer(
         mut self,
@@ -539,6 +558,7 @@ impl TryFrom<Config> for SchedulerConfig {
                 .grpc_server_max_decoding_message_size,
             grpc_server_max_encoding_message_size: opt
                 .grpc_server_max_encoding_message_size,
+            grpc_client_max_message_size: opt.grpc_client_max_message_size,
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,

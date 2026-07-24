@@ -79,13 +79,22 @@ impl ExecutorManager {
         cluster_state: Arc<dyn ClusterState>,
         config: Arc<SchedulerConfig>,
     ) -> Self {
+        // Prefer an explicit override_config_producer if the embedder wired one,
+        // so a full BallistaConfig (with all its grpc-client knobs) still takes
+        // precedence. Otherwise, use `default()` but override
+        // `max_message_size` from the scheduler's `grpc_client_max_message_size`
+        // CLI flag so users can raise the ceiling for outbound task-assignment
+        // RPCs without having to write a config-producer in Rust.
         let grpc_client_config =
             if let Some(config_producer) = &config.override_config_producer {
                 let session_config = config_producer();
                 let ballista_config = session_config.ballista_config();
                 GrpcClientConfig::from(&ballista_config)
             } else {
-                GrpcClientConfig::default()
+                GrpcClientConfig {
+                    max_message_size: config.grpc_client_max_message_size as usize,
+                    ..GrpcClientConfig::default()
+                }
             };
         Self {
             cluster_state,
