@@ -1201,4 +1201,227 @@ mod tests {
     fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
         assert_eq!(super::job_elapsed_ms(500, 100), 0);
     }
+
+    mod get_webtui {
+        use super::*;
+        use crate::config::SchedulerConfig;
+        use crate::metrics::default_metrics_collector;
+        use crate::test_utils::test_cluster_context;
+        use axum::response::IntoResponse;
+        use ballista_core::serde::BallistaCodec;
+        use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+        fn test_scheduler(
+            config: SchedulerConfig,
+        ) -> Arc<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+            let server = SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+            Arc::new(server)
+        }
+
+        fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+            let mut map = HeaderMap::new();
+            for (k, v) in pairs {
+                map.insert(
+                    http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                    v.parse().unwrap(),
+                );
+            }
+            map
+        }
+
+        fn location_of(result: Result<Redirect, (StatusCode, String)>) -> String {
+            let response = result.expect("handler should not error").into_response();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            response
+                .headers()
+                .get("location")
+                .expect("redirect response must have a location header")
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+
+        #[tokio::test]
+        async fn defaults_to_config_external_host_and_bind_port() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(HashMap::new()), State(scheduler))
+                    .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("ballista_scheduler_url=http://localhost:50050"),
+                "unexpected location: {location}"
+            );
+            assert!(
+                location
+                    .starts_with("https://nightlies.apache.org/datafusion/ballista/tui/")
+            );
+        }
+
+        #[tokio::test]
+        async fn uses_custom_external_host_and_bind_port_from_config() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "scheduler.example.com".into(),
+                bind_port: 8080,
+                ..Default::default()
+            });
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(HashMap::new()), State(scheduler))
+                    .await;
+
+            let location = location_of(result);
+            assert!(
+                location
+                    .contains("ballista_scheduler_url=http://scheduler.example.com:8080"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn x_forwarded_headers_take_precedence_over_config() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "internal-host".into(),
+                bind_port: 50050,
+                ..Default::default()
+            });
+
+            let result = get_webtui(
+                headers(&[
+                    ("x-forwarded-proto", "https"),
+                    ("x-forwarded-host", "public-host.example.com"),
+                    ("x-forwarded-port", "443"),
+                ]),
+                Query(HashMap::new()),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains(
+                    "ballista_scheduler_url=https://public-host.example.com:443"
+                ),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn partial_forwarded_headers_fall_back_to_config_for_the_rest() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "internal-host".into(),
+                bind_port: 50050,
+                ..Default::default()
+            });
+
+            let result = get_webtui(
+                headers(&[("x-forwarded-proto", "https")]),
+                Query(HashMap::new()),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("ballista_scheduler_url=https://internal-host:50050"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn malformed_forwarded_port_falls_back_to_config_bind_port() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "internal-host".into(),
+                bind_port: 50050,
+                ..Default::default()
+            });
+
+            let result = get_webtui(
+                headers(&[
+                    ("x-forwarded-proto", "https"),
+                    ("x-forwarded-port", "not-a-port"),
+                ]),
+                Query(HashMap::new()),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("ballista_scheduler_url=https://internal-host:50050"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn explicit_ballista_scheduler_url_param_takes_precedence() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let mut params = HashMap::new();
+            params.insert(
+                "ballista_scheduler_url".to_string(),
+                "https://override.example.com:1234".to_string(),
+            );
+
+            let result = get_webtui(
+                headers(&[("x-forwarded-host", "should-be-ignored.example.com")]),
+                Query(params),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location
+                    .contains("ballista_scheduler_url=https://override.example.com:1234"),
+                "unexpected location: {location}"
+            );
+            assert!(
+                !location.contains("should-be-ignored"),
+                "explicit ballista_scheduler_url must not be overridden: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn additional_query_params_are_forwarded() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let mut params = HashMap::new();
+            params.insert("foo".to_string(), "bar".to_string());
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(params), State(scheduler)).await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("&foo=bar"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn query_param_values_are_url_escaped() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let mut params = HashMap::new();
+            params.insert("weird".to_string(), "a#b c".to_string());
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(params), State(scheduler)).await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("&weird=a%23b%20c"),
+                "unexpected location: {location}"
+            );
+        }
+    }
 }
