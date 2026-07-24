@@ -550,6 +550,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
         for status in task_status {
             trace!("Task Update\n{status:?}");
+            log_runtime_stats_arrival(executor, &status);
             let job_id = status.job_id.clone();
             let job_task_statuses = job_updates.entry(job_id).or_default();
             job_task_statuses.push(status);
@@ -996,6 +997,49 @@ impl From<&ExecutionGraphBox> for JobOverview {
             num_stages: value.stage_count(),
             completed_stages,
         }
+    }
+}
+
+/// Log any `RuntimeStatsReport`s that arrived with this task status. For
+/// now this is proof-of-life for the wire — the reports flow from
+/// executor to scheduler and land here observably. The per-stage
+/// accumulator + merged-quantile-cut logging comes in a follow-up commit;
+/// this hook is what verifies the plumbing works against a live cluster.
+fn log_runtime_stats_arrival(
+    executor: &ExecutorMetadata,
+    status: &ballista_core::serde::protobuf::TaskStatus,
+) {
+    use ballista_core::serde::protobuf::task_status::Status;
+    let Some(Status::Successful(successful)) = status.status.as_ref() else {
+        return;
+    };
+    if successful.runtime_stats.is_empty() {
+        return;
+    }
+    for (report_idx, report) in successful.runtime_stats.iter().enumerate() {
+        let non_empty_partitions =
+            report.partitions.iter().filter(|p| p.row_count > 0).count();
+        let total_rows: u64 = report.partitions.iter().map(|p| p.row_count).sum();
+        let sketch_count = report
+            .partitions
+            .iter()
+            .filter(|p| p.sketch.is_some())
+            .count();
+        debug!(
+            "RuntimeStats arrival: executor={} job={} stage={} task={} \
+             report[{}] order_by_len={} partitions={} non_empty={} \
+             total_rows={} sketches={}",
+            executor.id,
+            status.job_id,
+            status.stage_id,
+            status.task_id,
+            report_idx,
+            report.order_by.len(),
+            report.partitions.len(),
+            non_empty_partitions,
+            total_rows,
+            sketch_count,
+        );
     }
 }
 

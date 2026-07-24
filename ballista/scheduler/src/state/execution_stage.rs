@@ -35,7 +35,8 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, SortShuffleWriterExec};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskKilled, TaskStatus,
+    FailedTask, OperatorMetricsSet, ResultLost, RuntimeStatsReport, SuccessfulTask,
+    TaskKilled, TaskStatus,
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
@@ -218,6 +219,10 @@ pub struct RunningStage {
     pub stage_metrics: Option<Vec<MetricsSet>>,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
+    /// `RuntimeStatsReport`s collected from every successful task in
+    /// this stage attempt. Merged and logged once the stage finalizes;
+    /// dropped when the stage transitions to Successful.
+    pub runtime_stats_reports: Vec<RuntimeStatsReport>,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -630,6 +635,7 @@ impl RunningStage {
             task_failure_numbers: vec![0; partitions],
             stage_metrics: None,
             session_config,
+            runtime_stats_reports: Vec::new(),
         }
     }
 
@@ -823,6 +829,17 @@ impl RunningStage {
             _ => {}
         }
         true
+    }
+
+    /// Accumulate the `RuntimeStatsReport`s a successful task shipped
+    /// back in its `SuccessfulTask` payload. Consumed at final-success
+    /// by [`log_merged_runtime_stats`]; each stage attempt starts with
+    /// an empty accumulator.
+    pub fn append_runtime_stats_reports(&mut self, reports: Vec<RuntimeStatsReport>) {
+        if reports.is_empty() {
+            return;
+        }
+        self.runtime_stats_reports.extend(reports);
     }
 
     /// update and upsert the task metrics to the stage metrics
@@ -1132,6 +1149,9 @@ impl SuccessfulStage {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis(),
+            // Fresh attempt: previous attempt's stats are irrelevant.
+            // Merged-cut logging fires per-attempt on final success.
+            runtime_stats_reports: Vec::new(),
         }
     }
 
@@ -1351,6 +1371,7 @@ mod tests {
             status: Some(task_status::Status::Successful(SuccessfulTask {
                 executor_id: "executor-1".to_string(),
                 partitions: vec![],
+                runtime_stats: vec![],
             })),
             metrics: vec![],
         }

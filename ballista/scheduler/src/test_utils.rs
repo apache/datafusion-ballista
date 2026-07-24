@@ -308,6 +308,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
+                    runtime_stats: vec![],
                 })),
             });
         }
@@ -1209,6 +1210,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
         status: Some(task_status::Status::Successful(protobuf::SuccessfulTask {
             executor_id: executor_id.to_owned(),
             partitions,
+            runtime_stats: vec![],
         })),
     }
 }
