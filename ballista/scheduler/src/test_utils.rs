@@ -533,6 +533,15 @@ impl SchedulerTest {
         Ok(())
     }
 
+    /// Subscribes to job state change events from the underlying scheduler.
+    pub fn subscribe_job_updates(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<
+        crate::scheduler_server::job_state_event::JobStateEvent,
+    > {
+        self.scheduler.subscribe_job_updates()
+    }
+
     /// Cancels a job by ID.
     pub async fn cancel(&self, job_id: &JobId) -> Result<()> {
         self.scheduler
