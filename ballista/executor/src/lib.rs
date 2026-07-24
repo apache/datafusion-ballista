@@ -131,6 +131,7 @@ pub fn as_task_status(
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
                     partitions,
+                    runtime_stats: vec![],
                 })),
             }
         }

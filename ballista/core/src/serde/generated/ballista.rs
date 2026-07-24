@@ -849,6 +849,49 @@ pub struct SuccessfulTask {
     /// so we might want to think about some refactoring of the task definitions
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<ShuffleWritePartition>,
+    /// Reports from `RuntimeStatsExec` operators in this task's plan that
+    /// are still valid at the plan's output (walked from the top through
+    /// distribution-preserving nodes only — see
+    /// `range_repartition_common::preserves_distribution`). Empty when the
+    /// plan has no such stats-taps. Currently reports one entry per
+    /// executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
+    /// to combine reports across tasks/executors.
+    #[prost(message, repeated, tag = "3")]
+    pub runtime_stats: ::prost::alloc::vec::Vec<RuntimeStatsReport>,
+}
+/// One report per `RuntimeStatsExec` in the executed plan.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeStatsReport {
+    /// What the operator was sampling. Empty = row-count-only mode. When
+    /// non-empty, the first entry identifies which routing expression this
+    /// sketch describes; the scheduler groups sketches by this tag to
+    /// combine samples across tasks that were sampling the same expression.
+    #[prost(message, repeated, tag = "1")]
+    pub order_by: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
+    /// Per-partition observations. Interpretation depends on the operator's
+    /// position in the plan — pre-repartition gets one entry per input
+    /// partition, post-repartition gets one per output sub-partition. The
+    /// scheduler groups by `order_by` tag and aggregates.
+    #[prost(message, repeated, tag = "2")]
+    pub partitions: ::prost::alloc::vec::Vec<RuntimeStatsPartitionEntry>,
+}
+/// One partition's observations from a `RuntimeStatsExec`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeStatsPartitionEntry {
+    #[prost(uint32, tag = "1")]
+    pub partition_id: u32,
+    #[prost(uint64, tag = "2")]
+    pub row_count: u64,
+    /// Present when the `RuntimeStatsExec` was in sketch mode AND this
+    /// partition observed at least one non-null routing value.
+    ///
+    /// TODO: `optional MinMaxState min_max` — for a lighter post-repartition
+    /// mode where the bin-packer just needs (min, max, count) per
+    /// sub-partition and a full T-Digest is overkill.
+    #[prost(message, optional, tag = "3")]
+    pub sketch: ::core::option::Option<QuantileSketchState>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}

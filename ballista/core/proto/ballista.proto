@@ -575,6 +575,40 @@ message SuccessfulTask {
   // TODO tasks are currently always shuffle writes but this will not always be the case
   // so we might want to think about some refactoring of the task definitions
   repeated ShuffleWritePartition partitions = 2;
+  // Reports from `RuntimeStatsExec` operators in this task's plan that
+  // are still valid at the plan's output (walked from the top through
+  // distribution-preserving nodes only — see
+  // `range_repartition_common::preserves_distribution`). Empty when the
+  // plan has no such stats-taps. Currently reports one entry per
+  // executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
+  // to combine reports across tasks/executors.
+  repeated RuntimeStatsReport runtime_stats = 3;
+}
+
+// One report per `RuntimeStatsExec` in the executed plan.
+message RuntimeStatsReport {
+  // What the operator was sampling. Empty = row-count-only mode. When
+  // non-empty, the first entry identifies which routing expression this
+  // sketch describes; the scheduler groups sketches by this tag to
+  // combine samples across tasks that were sampling the same expression.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+  // Per-partition observations. Interpretation depends on the operator's
+  // position in the plan — pre-repartition gets one entry per input
+  // partition, post-repartition gets one per output sub-partition. The
+  // scheduler groups by `order_by` tag and aggregates.
+  repeated RuntimeStatsPartitionEntry partitions = 2;
+}
+
+// One partition's observations from a `RuntimeStatsExec`.
+message RuntimeStatsPartitionEntry {
+  uint32 partition_id = 1;
+  uint64 row_count = 2;
+  // Present when the `RuntimeStatsExec` was in sketch mode AND this
+  // partition observed at least one non-null routing value.
+  optional QuantileSketchState sketch = 3;
+  // TODO: `optional MinMaxState min_max` — for a lighter post-repartition
+  // mode where the bin-packer just needs (min, max, count) per
+  // sub-partition and a full T-Digest is overkill.
 }
 
 message ExecutionError {

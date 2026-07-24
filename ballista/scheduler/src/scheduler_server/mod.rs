@@ -569,6 +569,7 @@ mod test {
                     status: Some(task_status::Status::Successful(SuccessfulTask {
                         executor_id: "executor-1".to_owned(),
                         partitions,
+                        runtime_stats: vec![],
                     })),
                 };
 
