@@ -102,27 +102,54 @@ mod client_side_cleanup_tests {
         populated[0].clone()
     }
 
+    /// RAII guard that restores the process `TMPDIR` (to whatever it was
+    /// before this test overrode it) when dropped -- including on unwind, if
+    /// `SessionContext::standalone[_with_state]()` were to panic instead of
+    /// returning an `Err`. A plain "set, await, restore" sequence would skip
+    /// the restore in that case, since unwinding jumps straight past it.
+    struct TmpdirGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for TmpdirGuard {
+        fn drop(&mut self) {
+            // SAFETY: single-threaded w.r.t. `TMPDIR` writes -- the two
+            // tests in this file are serialized by `CLUSTER_LOCK` (held for
+            // the guard's entire lifetime, see `start_standalone_under`),
+            // and this is the only code in this binary that touches
+            // `TMPDIR`.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("TMPDIR", value),
+                    None => std::env::remove_var("TMPDIR"),
+                }
+            }
+        }
+    }
+
     /// Starts a standalone cluster with its temp-file root pinned to `root`
     /// for the duration of startup, so the executor's work dir path (chosen
     /// once, at startup) ends up under `root` where we can find it later.
-    /// `TMPDIR` is restored immediately after startup completes -- the
-    /// executor keeps using its already-resolved absolute work dir path
-    /// regardless of `TMPDIR`'s value from then on, so this doesn't need to
-    /// stay set for the life of the test.
+    /// `TMPDIR` is restored (via [`TmpdirGuard`]) immediately after startup
+    /// completes -- the executor keeps using its already-resolved absolute
+    /// work dir path regardless of `TMPDIR`'s value from then on, so this
+    /// doesn't need to stay set for the life of the test.
     async fn start_standalone_under(
         root: &Path,
         config: Option<SessionConfig>,
     ) -> SessionContext {
         let _lock = CLUSTER_LOCK.lock().await;
 
-        let previous_tmpdir = std::env::var("TMPDIR").ok();
-        // SAFETY: `env::set_var`/`remove_var` are unsafe because mutating
-        // the environment races with other threads reading it. `CLUSTER_LOCK`
-        // is held for this entire function, and this is the only place in
-        // this test binary that touches `TMPDIR`, so no such race exists.
+        let previous = std::env::var_os("TMPDIR");
+        // SAFETY: see `TmpdirGuard::drop`.
         unsafe {
             std::env::set_var("TMPDIR", root);
         }
+        // Constructed *after* the set above and *before* the panic-capable
+        // `.await` below, so it's guaranteed to run the restore on every
+        // exit path -- normal return, `Err`, or panic/unwind -- once it
+        // drops at the end of this scope.
+        let tmpdir_guard = TmpdirGuard { previous };
 
         let result = match config {
             Some(config) => {
@@ -135,13 +162,7 @@ mod client_side_cleanup_tests {
             None => SessionContext::standalone().await,
         };
 
-        // SAFETY: see above.
-        unsafe {
-            match &previous_tmpdir {
-                Some(value) => std::env::set_var("TMPDIR", value),
-                None => std::env::remove_var("TMPDIR"),
-            }
-        }
+        drop(tmpdir_guard);
 
         result.expect("standalone cluster should start")
     }
