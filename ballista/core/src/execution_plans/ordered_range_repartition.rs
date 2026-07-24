@@ -17,7 +17,28 @@
 
 //! Value-range router over N locally-sorted overlapping input partitions.
 //! Redistributes them into K range-disjoint output partitions where each
-//! output is fully sorted on the routing expression.
+//! output is fully sorted on the routing expression. Concatenating the K
+//! outputs in order yields a globally-sorted stream.
+//!
+//! ```text
+//!    N sorted input                                              outputs (K = 4, each sorted)
+//!    partitions
+//!         ─┐                                                     ┌─▶ 0: sorted, key < c₁
+//!         ─┼──▶ RuntimeStatsExec ──▶ SortExec/preserve ──▶ OrderedRRE ─┼─▶ 1: sorted, c₁ ≤ key < c₂
+//!         ─┤    (T-Digest tap)      (per-partition sort)   (K = 4)    ├─▶ 2: sorted, c₂ ≤ key < c₃
+//!         ─┘                                                 │        └─▶ 3: sorted, c₃ ≤ key
+//!                     ▲                                      │
+//!                     └──────────── walker ◀─────────────────┘
+//!                                   (descends past sort-preserving
+//!                                    nodes, matches on routing expr,
+//!                                    reads K−1 quantile cuts)
+//!
+//!    Inside OrderedRRE: N × K channels + K k-way merges.
+//!    Each of N scatter tasks splits its sorted input by the K-1 cuts
+//!    (K sub-batches per batch) and forwards each sub-batch to its output's
+//!    sender. Each of K outputs runs a `StreamingMerge` across the N
+//!    sub-streams targeting it → the output stream is sorted.
+//! ```
 //!
 //! # Contrast with `UnorderedRangeRepartitionExec`
 //!
@@ -56,11 +77,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
-use datafusion::common::{Result, internal_datafusion_err, internal_err};
+use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
-    EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr,
+    Distribution, EquivalenceProperties, LexOrdering, OrderingRequirements, Partitioning,
+    PhysicalExpr, PhysicalSortExpr,
 };
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -133,6 +156,14 @@ impl OrderedRangeRepartitionExec {
                 "OrderedRangeRepartitionExec routing expression `{}` must be Float64, got {:?}",
                 routing.expr,
                 routing_type
+            );
+        }
+        // TODO: fixed by KLL — a NULL-aware sketch lifts this restriction and
+        // lets `split_batch_by_range` honor SortOptions::nulls_first properly.
+        if routing.expr.nullable(&schema)? {
+            return internal_err!(
+                "OrderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
+                routing.expr
             );
         }
         // Input MUST claim to be sorted on our routing expression — otherwise
@@ -237,6 +268,50 @@ impl ExecutionPlan for OrderedRangeRepartitionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// Input distribution is irrelevant — the operator re-routes every row
+    /// by value range regardless of how the child organized them.
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        vec![Distribution::UnspecifiedDistribution]
+    }
+
+    /// The child MUST be sorted on the routing expression (and the full
+    /// `order_by` lex): the per-output `StreamingMerge` assumes each of its N
+    /// sub-streams is locally sorted. `try_new` also enforces this, but
+    /// declaring it here lets the optimizer see the requirement and avoid
+    /// inserting a redundant `SortExec` above us.
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
+        let Some(lex) = LexOrdering::new(self.order_by.clone()) else {
+            return vec![None];
+        };
+        vec![Some(OrderingRequirements::new(lex.into()))]
+    }
+
+    /// Each output partition is a k-way merge across N sorted sub-streams
+    /// pre-filtered to that output's value range. The relative order within
+    /// each output faithfully preserves the child's sort — that's the whole
+    /// point (contrast the Unordered variant, which returns `false`).
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true]
+    }
+
+    /// Extra input repartitioning above us buys nothing — we already read
+    /// all N input partitions concurrently and scatter them to K outputs.
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    /// Row count is preserved but redistributed across K new output
+    /// partitions; per-partition breakdown depends on the runtime sketch,
+    /// which isn't known at plan time.
+    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
+        Ok(Arc::new(Statistics::new_unknown(&self.schema())))
+    }
+
+    /// Every input row is emitted exactly once. Overrides default `Unknown`.
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
     }
 
     fn with_new_children(
@@ -609,6 +684,24 @@ mod tests {
         assert!(
             err.to_string().contains("child plan claims no ordering"),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_nullable_routing_key() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, true), // nullable
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let err = OrderedRangeRepartitionExec::try_new(
+            empty_input(&schema),
+            vec![asc(&schema, "v2")],
+            3,
+        )
+        .expect_err("nullable routing key must be rejected");
+        assert!(
+            err.to_string().contains("must be non-nullable"),
+            "error should name the nullability constraint, got: {err}"
         );
     }
 
