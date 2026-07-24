@@ -484,6 +484,78 @@ mod tests {
     }
 
     #[test]
+    fn merge_grows_stack_when_other_is_taller() {
+        // Small sketch → shallow stack; large sketch → deep stack.
+        // Merging the large into the small forces every iteration past
+        // small.levels.len() to hit the `push(Vec::new())` branch.
+        let mut small: KllSketch<u32> = KllSketch::with_seed(8, 42);
+        for x in 1u32..=4 {
+            small.insert(x);
+        }
+        let mut large: KllSketch<u32> = KllSketch::with_seed(8, 7);
+        for x in 5u32..=2000 {
+            large.insert(x);
+        }
+        let small_h = small.levels.len();
+        let large_h = large.levels.len();
+        assert!(
+            small_h < large_h,
+            "test setup expects small stack shorter: got small={small_h}, large={large_h}"
+        );
+
+        small.merge(large);
+
+        // The stack must have grown to at least the taller sketch's height —
+        // otherwise items promoted above small's original top would be lost.
+        assert!(
+            small.levels.len() >= large_h,
+            "post-merge stack {} shorter than pre-merge large.levels.len {large_h}",
+            small.levels.len()
+        );
+        // Mass and extreme invariants: nothing lost, extremes span both streams.
+        assert_eq!(small.rank(&2001), 2000);
+        assert_eq!(small.rank(&1), 0);
+        assert_eq!(small.quantile(0.0), Some(&1));
+        assert_eq!(small.quantile(1.0), Some(&2000));
+    }
+
+    #[test]
+    fn merge_preserves_upper_levels_when_other_is_shorter() {
+        // Reverse orientation: large sketch absorbs a small one. The merge
+        // loop terminates before reaching self's upper levels, so those
+        // levels must survive intact — a gross drop would show up as lost
+        // mass at the high end.
+        let mut large: KllSketch<u32> = KllSketch::with_seed(8, 42);
+        for x in 1u32..=2000 {
+            large.insert(x);
+        }
+        let mut small: KllSketch<u32> = KllSketch::with_seed(8, 7);
+        for x in 2001u32..=2004 {
+            small.insert(x);
+        }
+        let large_h = large.levels.len();
+        let small_h = small.levels.len();
+        assert!(
+            small_h < large_h,
+            "test setup expects small stack shorter: got small={small_h}, large={large_h}"
+        );
+
+        large.merge(small);
+
+        // Stack cannot shrink — the upper levels of `large` are untouched
+        // by the extend loop, and compact_all can only push higher, not lower.
+        assert!(
+            large.levels.len() >= large_h,
+            "post-merge stack {} shorter than pre-merge large.levels.len {large_h}",
+            large.levels.len()
+        );
+        assert_eq!(large.rank(&2005), 2004);
+        assert_eq!(large.rank(&1), 0);
+        assert_eq!(large.quantile(0.0), Some(&1));
+        assert_eq!(large.quantile(1.0), Some(&2004));
+    }
+
+    #[test]
     fn merge_preserves_mass_and_extremes() {
         // Two disjoint streams into two sketches; merge one into the other
         // and verify the standard invariants across the combined sketch.
