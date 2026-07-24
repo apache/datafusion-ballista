@@ -110,6 +110,16 @@ except ImportError:
 
 from .extension import BallistaSessionContext, DistributedDataFrame
 
+# Flags accepted by the ``%%sql`` cell magic, kept as constants so the parser
+# and its error messages share a single source of truth.
+LIMIT_FLAG = "--limit"
+NO_DISPLAY_FLAG = "--no-display"
+
+# LIMIT applied when ``--limit`` is given without an explicit number
+# (e.g. ``%%sql --limit my_var``). ``--limit N`` overrides it; omitting
+# ``--limit`` entirely returns every row.
+DEFAULT_LIMIT = 50
+
 
 class BallistaConnectionError(Exception):
     """Raised when not connected to a Ballista cluster."""
@@ -221,6 +231,51 @@ class BallistaMagics(Magics):
                     "Currently not supporting the inserted file format"
                 )
 
+    @staticmethod
+    def _parse_cell_magic_args(line: str):
+        """Parse the argument line of a ``%%sql`` cell magic.
+
+        Recognises the ``--no-display`` and ``--limit`` flags. ``--limit`` may
+        be given bare (uses ``DEFAULT_LIMIT``) or with an explicit count
+        (``--limit 5``). The first non-flag token, if any, is the variable name
+        to store the result in.
+
+        Returns a ``(var_name, no_display, limit)`` tuple where ``limit`` is
+        ``None`` when ``--limit`` was not supplied. Raises ``ValueError`` for a
+        non-positive explicit ``--limit`` value.
+        """
+        tokens = line.strip().split()
+        var_name = None
+        no_display = False
+        limit = None
+
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token == NO_DISPLAY_FLAG:
+                no_display = True
+            elif token == LIMIT_FLAG:
+                # Bare --limit uses the default. A following integer overrides
+                # it; a following non-integer (e.g. the variable name) is left
+                # for the var-name branch, so `--limit my_var` is a default
+                # LIMIT stored in `my_var`.
+                limit = DEFAULT_LIMIT
+                if i + 1 < len(tokens):
+                    try:
+                        explicit = int(tokens[i + 1])
+                    except ValueError:
+                        explicit = None
+                    if explicit is not None:
+                        if explicit < 1:
+                            raise ValueError(f"{LIMIT_FLAG} must be a positive integer")
+                        limit = explicit
+                        i += 1  # consume the number token
+            elif not token.startswith("--") and var_name is None:
+                var_name = token
+            i += 1
+
+        return var_name, no_display, limit
+
     @line_cell_magic
     def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
         """
@@ -243,28 +298,46 @@ class BallistaMagics(Magics):
             LIMIT 5
 
         `my_result` will store the result of the SQL-query
+
+        The cell magic accepts two optional flags before the variable name:
+            --limit [N]    Add ``LIMIT`` to the query, bounding the rows that
+                           are computed and stored. ``--limit N`` uses N;
+                           a bare ``--limit`` uses the default (50). Omit it
+                           entirely to return every row (or whatever ``LIMIT``
+                           the query itself specifies).
+            --no-display   Run the query and store the result without
+                           displaying it.
         """
         if not cell:
             return self._execute_sql(line.strip()) if line.strip() else None
         else:
-            var_name = None
             query = cell.strip()
             if not query:
                 return None
 
-            args = line.strip().split()
-            i = 0
-            while i < len(args):
-                if not args[i].startswith("--"):
-                    var_name = args[i]
-                i += 1
+            try:
+                var_name, no_display, limit = self._parse_cell_magic_args(line)
+            except ValueError as e:
+                return str(e)
 
             result = self._execute_sql(query)
+            if result is None:
+                return None
 
-            # Store in user namespace if variable name provided
+            # --limit pushes a LIMIT into the query plan (not a display cap), so
+            # only N rows are computed, collected, and stored.
+            if limit is not None:
+                result = result.limit(limit)
+                self._last_result = result
+                if self.shell is not None and hasattr(self.shell, "user_ns"):
+                    self.shell.user_ns["_last_result"] = result
+
             if var_name and self.shell is not None:
                 self.shell.user_ns[var_name] = result
-            return result
+
+            # Returning the DataFrame lets IPython render it (datafusion's normal
+            # preview); --no-display stores it but suppresses that render.
+            return None if no_display else result
 
     def _connect(self, address: str) -> Optional[str]:
         """Connect to a Ballista cluster."""
@@ -487,8 +560,8 @@ Query:
 
     %%sql [options] [var]     - Execute multi-line SQL query
         Options:
-            --no-display      - Don't display results
-            --limit N         - Limit displayed rows (default: 50)
+            --no-display      - Run the query and store the result without displaying it
+            --limit [N]       - Add LIMIT to the query (N, or default 50 if bare)
         var                   - Store result in variable
 
 History:
