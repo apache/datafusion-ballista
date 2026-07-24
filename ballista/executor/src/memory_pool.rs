@@ -37,7 +37,7 @@ use datafusion::error::Result;
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
 };
-use log::info;
+use log::{info, warn};
 
 /// Monotonic pool identifier. Wraps around after `usize::MAX` pools, which is
 /// a non-concern in practice.
@@ -181,13 +181,29 @@ impl MemoryPool for TrackedMemoryPool {
 
 impl Drop for TrackedMemoryPool {
     fn drop(&mut self) {
-        info!(
-            target: LOG_TARGET,
-            "memory pool dropped pool_id={} peak_bytes={} limit_bytes={}",
-            self.id,
-            self.peak.load(Ordering::Relaxed),
-            memory_limit_bytes(self.inner.memory_limit()),
-        );
+        // `residual_bytes` should always be 0 at this point: `MemoryReservation`
+        // holds an `Arc<dyn MemoryPool>`, so the pool can only be dropped once
+        // every reservation has been released — and each release calls
+        // `shrink()`, which decrements `reserved`. A non-zero value here is an
+        // accounting anomaly (e.g. a reservation whose Drop bypassed
+        // `shrink()`), worth surfacing at WARN.
+        let peak = self.peak.load(Ordering::Relaxed);
+        let limit = memory_limit_bytes(self.inner.memory_limit());
+        let residual = self.inner.reserved();
+        if residual > 0 {
+            warn!(
+                target: LOG_TARGET,
+                "memory pool dropped with residual reservation \
+                 pool_id={} peak_bytes={} limit_bytes={} residual_bytes={}",
+                self.id, peak, limit, residual,
+            );
+        } else {
+            info!(
+                target: LOG_TARGET,
+                "memory pool dropped pool_id={} peak_bytes={} limit_bytes={} residual_bytes=0",
+                self.id, peak, limit,
+            );
+        }
     }
 }
 
@@ -247,5 +263,35 @@ mod tests {
         let inner: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(1024));
         let tracked = TrackedMemoryPool::new(inner);
         assert!(matches!(tracked.memory_limit(), MemoryLimit::Finite(1024)));
+    }
+
+    #[test]
+    fn reservations_dropped_leave_zero_reserved() {
+        // Reservations released via Drop should return every byte to the pool,
+        // so `reserved()` reads 0 by the time the pool's Drop would run.
+        let inner: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(1024));
+        let tracked = Arc::new(TrackedMemoryPool::new(inner));
+        let pool: Arc<dyn MemoryPool> = tracked.clone();
+
+        {
+            let r = reserve(&pool, "t", 300);
+            assert_eq!(tracked.reserved(), 300);
+            drop(r);
+        }
+        assert_eq!(tracked.reserved(), 0);
+    }
+
+    #[test]
+    fn forgotten_reservation_leaves_residual() {
+        // If a reservation is `mem::forget`'d, its Drop never runs and
+        // `shrink()` is never called — this is the anomaly the drop-time
+        // residual_bytes log surfaces.
+        let inner: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(1024));
+        let tracked = Arc::new(TrackedMemoryPool::new(inner));
+        let pool: Arc<dyn MemoryPool> = tracked.clone();
+
+        let r = reserve(&pool, "t", 300);
+        std::mem::forget(r);
+        assert_eq!(tracked.reserved(), 300);
     }
 }
