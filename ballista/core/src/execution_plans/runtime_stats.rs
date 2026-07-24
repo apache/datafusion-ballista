@@ -644,22 +644,23 @@ pub fn sketch_from_proto(
 }
 
 /// One group's merged view: sketches from every report sharing the same
-/// `order_by` wire tag combined, plus the `K-1` quantile cuts a
-/// globally-informed router would use for this group's `K` output
-/// partitions.
+/// `order_by` wire tag combined, plus the `partition_count - 1` quantile
+/// cuts a globally-informed router would use for `partition_count`
+/// output partitions.
 #[derive(Debug, Clone)]
 pub struct MergedRuntimeStats {
     /// How many `PhysicalSortExprNode`s were in the shared `order_by` tag.
     pub order_by_len: usize,
     /// Number of output partitions the router used (per-report
     /// `partitions.len()`, must agree across reports in the group).
-    pub k: usize,
+    pub partition_count: usize,
     /// Number of `RuntimeStatsReport`s contributing to this group.
     pub task_count: usize,
     /// Sum of `row_count` across every partition entry in the group.
     pub total_rows: u64,
-    /// `K-1` cut points at quantiles `i/K` on the merged T-Digest.
-    /// Empty when `K < 2` or no non-empty sketches were merged.
+    /// `partition_count - 1` cut points at quantiles `i/partition_count`
+    /// on the merged T-Digest. Empty when `partition_count < 2` or no
+    /// non-empty sketches were merged.
     pub cuts: Vec<f64>,
     /// Merged T-Digest's `min()` if at least one non-empty sketch
     /// contributed; `None` in row-count-only mode.
@@ -671,16 +672,20 @@ pub struct MergedRuntimeStats {
 
 /// Group `RuntimeStatsReport`s by `order_by` wire tag, merge the T-Digests
 /// within each group, and return one [`MergedRuntimeStats`] per group.
-/// Reports within a group with mismatched partition counts are skipped
-/// with a `warn!` — a planner invariant break.
+///
+/// Errors surface planner / wire invariants the caller can't quietly
+/// paper over: mismatched partition counts within a group (the planner
+/// gave two tasks in the same stage different plans), or a sketch that
+/// won't decode (wire corruption). The caller decides whether to log
+/// and drop, propagate to the user, or fail the stage.
 pub fn merge_reports(
     reports: &[crate::serde::protobuf::RuntimeStatsReport],
-) -> Vec<MergedRuntimeStats> {
+) -> Result<Vec<MergedRuntimeStats>> {
     use prost::Message;
     use std::collections::HashMap;
 
     if reports.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // Group by the bytes of the encoded `order_by`. Prost-encoding each
@@ -689,106 +694,128 @@ pub fn merge_reports(
     let mut groups: HashMap<Vec<u8>, Vec<&crate::serde::protobuf::RuntimeStatsReport>> =
         HashMap::new();
     for report in reports {
-        let mut key = Vec::new();
+        let mut group_key = Vec::new();
         for expr in &report.order_by {
-            expr.encode(&mut key)
+            expr.encode(&mut group_key)
                 .expect("Vec<u8> is an infallible sink for prost::Message::encode");
         }
-        groups.entry(key).or_default().push(report);
+        groups.entry(group_key).or_default().push(report);
     }
 
-    let mut out = Vec::with_capacity(groups.len());
+    let mut merged_groups = Vec::with_capacity(groups.len());
     for group in groups.into_values() {
-        let first = group[0];
-        let k = first.partitions.len();
-        let task_count = group.len();
+        merged_groups.push(merge_group(&group)?);
+    }
+    Ok(merged_groups)
+}
 
-        // Every task ran the same stage plan, so partition counts must
-        // agree. Mismatch = internal invariant break.
-        let mismatched = group
-            .iter()
-            .find(|r| r.partitions.len() != k)
-            .map(|r| r.partitions.len());
-        if let Some(other_k) = mismatched {
-            log::warn!(
+/// Merge one group of reports (all sharing the same `order_by` tag).
+/// Kept separate from `merge_reports` so the group iteration reads as a
+/// single fallible step per group.
+fn merge_group(
+    group: &[&crate::serde::protobuf::RuntimeStatsReport],
+) -> Result<MergedRuntimeStats> {
+    let [first, rest @ ..] = group else {
+        // `merge_reports` only builds groups from `HashMap::entry().push()`,
+        // so an empty group is unreachable. Surface as internal error
+        // rather than panicking.
+        return internal_err!(
+            "runtime stats merge: empty group — merge_reports invariant broken"
+        );
+    };
+    let partition_count = first.partitions.len();
+    let task_count = group.len();
+
+    // Every task ran the same stage plan, so partition counts must
+    // agree. Mismatch = internal invariant break.
+    for report in rest {
+        if report.partitions.len() != partition_count {
+            return internal_err!(
                 "runtime stats merge: order_by_len={} mismatched partition \
-                 counts across reports ({} vs {}), skipping group",
+                 counts across reports ({} vs {})",
                 first.order_by.len(),
-                k,
-                other_k,
+                partition_count,
+                report.partitions.len()
             );
-            continue;
         }
+    }
 
-        let mut total_rows: u64 = 0;
-        let mut sketches: Vec<TDigest> = Vec::new();
-        for report in &group {
-            for entry in &report.partitions {
-                total_rows = total_rows.saturating_add(entry.row_count);
-                if let Some(proto) = entry.sketch.as_ref() {
-                    match sketch_from_proto(proto) {
-                        Ok(sketch) if sketch.count() > 0.0 => sketches.push(sketch),
-                        Ok(_) => {}
-                        Err(e) => log::warn!(
-                            "runtime stats merge: sketch decode failed, \
-                             dropping entry: {e}"
-                        ),
-                    }
+    let mut total_rows: u64 = 0;
+    let mut sketches: Vec<TDigest> = Vec::new();
+    for report in group {
+        for entry in &report.partitions {
+            total_rows = total_rows.saturating_add(entry.row_count);
+            if let Some(proto_sketch) = entry.sketch.as_ref() {
+                let sketch = sketch_from_proto(proto_sketch)?;
+                if sketch.count() > 0.0 {
+                    sketches.push(sketch);
                 }
             }
         }
+    }
 
-        if sketches.is_empty() {
-            out.push(MergedRuntimeStats {
-                order_by_len: first.order_by.len(),
-                k,
-                task_count,
-                total_rows,
-                cuts: Vec::new(),
-                min: None,
-                max: None,
-            });
-            continue;
-        }
-
-        let merged = TDigest::merge_digests(sketches.iter());
-        let cuts: Vec<f64> = if k > 1 {
-            (1..k)
-                .map(|i| merged.estimate_quantile(i as f64 / k as f64))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        out.push(MergedRuntimeStats {
+    if sketches.is_empty() {
+        return Ok(MergedRuntimeStats {
             order_by_len: first.order_by.len(),
-            k,
+            partition_count,
             task_count,
             total_rows,
-            cuts,
-            min: Some(merged.min()),
-            max: Some(merged.max()),
+            cuts: Vec::new(),
+            min: None,
+            max: None,
         });
     }
-    out
+
+    let merged_sketch = TDigest::merge_digests(sketches.iter());
+    let cuts: Vec<f64> = if partition_count > 1 {
+        (1..partition_count)
+            .map(|cut_index| {
+                merged_sketch.estimate_quantile(cut_index as f64 / partition_count as f64)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(MergedRuntimeStats {
+        order_by_len: first.order_by.len(),
+        partition_count,
+        task_count,
+        total_rows,
+        cuts,
+        min: Some(merged_sketch.min()),
+        max: Some(merged_sketch.max()),
+    })
 }
 
 /// Merge `reports` and log each group's merged view at `debug!`
-/// (`RUST_LOG` promotes when needed). The scheduler calls this once per
-/// stage-attempt at final-success.
+/// (`RUST_LOG` promotes when needed). Any merge error is logged at
+/// `warn!` — the scheduler doesn't want telemetry loss to tank a query
+/// whose data was already produced correctly. The scheduler calls this
+/// once per stage-attempt at final-success.
 pub fn log_merged_runtime_stats(
     job_id: &str,
     stage_id: usize,
     reports: &[crate::serde::protobuf::RuntimeStatsReport],
 ) {
-    for merged in merge_reports(reports) {
+    let merged_groups = match merge_reports(reports) {
+        Ok(groups) => groups,
+        Err(err) => {
+            log::warn!(
+                "runtime stats merge failed for job={job_id} stage={stage_id}: {err}"
+            );
+            return;
+        }
+    };
+    for merged in merged_groups {
         match (merged.min, merged.max) {
             (Some(min), Some(max)) => log::debug!(
-                "merged runtime stats: job={} stage={} order_by_len={} K={} \
-                 task_count={} total_rows={} cuts={:?} min={} max={}",
+                "merged runtime stats: job={} stage={} order_by_len={} \
+                 partition_count={} task_count={} total_rows={} cuts={:?} \
+                 min={} max={}",
                 job_id,
                 stage_id,
                 merged.order_by_len,
-                merged.k,
+                merged.partition_count,
                 merged.task_count,
                 merged.total_rows,
                 merged.cuts,
@@ -796,12 +823,13 @@ pub fn log_merged_runtime_stats(
                 max,
             ),
             _ => log::debug!(
-                "merged runtime stats: job={} stage={} order_by_len={} K={} \
-                 task_count={} total_rows={} cuts=[] (no sketches)",
+                "merged runtime stats: job={} stage={} order_by_len={} \
+                 partition_count={} task_count={} total_rows={} cuts=[] \
+                 (no sketches)",
                 job_id,
                 stage_id,
                 merged.order_by_len,
-                merged.k,
+                merged.partition_count,
                 merged.task_count,
                 merged.total_rows,
             ),
@@ -1162,32 +1190,33 @@ mod collect_tests {
 mod merge_tests {
     //! Scheduler-side aggregation: given several `RuntimeStatsReport`s
     //! sharing an `order_by` tag, verify the merged view (total rows,
-    //! K-1 cuts, min/max) reflects the union of the underlying samples.
+    //! cuts, min/max) reflects the union of the underlying samples.
 
     use super::*;
     use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
     use datafusion_proto::protobuf::PhysicalSortExprNode;
 
     /// Build a report whose partition slots each carry a sketch made
-    /// from `values[k]` samples. Slot `k` in the resulting report has
-    /// `row_count = values[k].len()` and a sketch over those values.
+    /// from that slot's `values`. Slot `slot_id` in the resulting
+    /// report has `row_count = values[slot_id].len()` and a sketch
+    /// over those values.
     fn sketching_report(
         order_by: Vec<PhysicalSortExprNode>,
-        values: Vec<Vec<f64>>,
+        values_per_slot: Vec<Vec<f64>>,
     ) -> RuntimeStatsReport {
-        let partitions = values
+        let partitions = values_per_slot
             .into_iter()
             .enumerate()
-            .map(|(k, vs)| {
-                let row_count = vs.len() as u64;
-                let sketch = if vs.is_empty() {
+            .map(|(slot_id, slot_values)| {
+                let row_count = slot_values.len() as u64;
+                let sketch = if slot_values.is_empty() {
                     None
                 } else {
-                    let sketch = TDigest::new(100).merge_unsorted_f64(vs);
-                    Some(sketch_to_proto(&sketch).unwrap())
+                    let digest = TDigest::new(100).merge_unsorted_f64(slot_values);
+                    Some(sketch_to_proto(&digest).unwrap())
                 };
                 RuntimeStatsPartitionEntry {
-                    partition_id: k as u32,
+                    partition_id: slot_id as u32,
                     row_count,
                     sketch,
                 }
@@ -1199,119 +1228,150 @@ mod merge_tests {
         }
     }
 
+    fn only_group(reports: &[RuntimeStatsReport]) -> MergedRuntimeStats {
+        let mut groups = merge_reports(reports).expect("merge should succeed");
+        match groups.as_slice() {
+            [_] => groups.remove(0),
+            other => panic!("expected exactly one group, got {}", other.len()),
+        }
+    }
+
     /// Two reports over disjoint value ranges — merged sketch spans the
-    /// union, total_rows sums, and the K=2 midpoint cut falls between
-    /// the two ranges.
+    /// union, total_rows sums, and the partition_count=2 midpoint cut
+    /// falls between the two ranges.
     #[test]
     fn merge_reports_combines_disjoint_ranges() {
-        // Both reports share an empty `order_by` (row-count-only tag
-        // isn't tested here — we just need two reports grouped).
-        let r1 = sketching_report(vec![], vec![vec![1.0, 2.0, 3.0], vec![]]);
-        let r2 = sketching_report(vec![], vec![vec![], vec![10.0, 11.0, 12.0]]);
+        // Both reports share an empty `order_by` — we just need two
+        // reports that land in the same group.
+        let low_range = sketching_report(vec![], vec![vec![1.0, 2.0, 3.0], vec![]]);
+        let high_range = sketching_report(vec![], vec![vec![], vec![10.0, 11.0, 12.0]]);
 
-        let merged = merge_reports(&[r1, r2]);
-        let [group] = merged.as_slice() else {
-            panic!("expected one group, got {}", merged.len());
-        };
-        assert_eq!(group.k, 2, "both reports have partition count 2");
+        let group = only_group(&[low_range, high_range]);
+        assert_eq!(group.partition_count, 2);
         assert_eq!(group.task_count, 2);
         assert_eq!(group.total_rows, 6);
-        let midpoint = group.cuts[0];
+        let midpoint = match group.cuts.as_slice() {
+            [midpoint] => *midpoint,
+            other => panic!("expected exactly one cut, got {other:?}"),
+        };
         assert!(
             (3.0..=10.0).contains(&midpoint),
-            "K=2 midpoint cut should land between ranges (got {midpoint})"
+            "midpoint cut should land between ranges (got {midpoint})"
         );
         assert_eq!(group.min, Some(1.0));
         assert_eq!(group.max, Some(12.0));
     }
 
-    /// K=4 cuts on a uniform [0, 100) sample land roughly at quartiles.
-    /// This tests that `merge_reports` picks the right quantile indices
-    /// (`i/K` for `i in 1..K`).
+    /// partition_count=4 cuts on a uniform [0, 100) sample land roughly
+    /// at quartiles — verifies the quantile indices `i / partition_count`
+    /// for `i in 1..partition_count`.
     #[test]
-    fn merge_reports_k_of_4_produces_three_quartile_cuts() {
-        let uniform: Vec<f64> = (0..100).map(|i| i as f64).collect();
-        // Single report, K=4: each partition slot gets 25 uniform samples.
-        let per_slot = [
+    fn merge_reports_partition_count_of_four_produces_three_quartile_cuts() {
+        let uniform: Vec<f64> = (0..100).map(|value| value as f64).collect();
+        // Single report, partition_count=4: each slot gets 25 uniform
+        // samples.
+        let values_per_slot = vec![
             uniform[0..25].to_vec(),
             uniform[25..50].to_vec(),
             uniform[50..75].to_vec(),
             uniform[75..100].to_vec(),
         ];
-        let report = sketching_report(vec![], per_slot.to_vec());
+        let report = sketching_report(vec![], values_per_slot);
 
-        let merged = merge_reports(&[report]);
-        let [group] = merged.as_slice() else {
-            panic!("expected one group, got {}", merged.len());
+        let group = only_group(&[report]);
+        assert_eq!(group.partition_count, 4);
+        let (p25, p50, p75) = match group.cuts.as_slice() {
+            [p25, p50, p75] => (*p25, *p50, *p75),
+            other => panic!("expected 3 cuts, got {other:?}"),
         };
-        assert_eq!(group.k, 4);
-        assert_eq!(group.cuts.len(), 3);
         // Loose bounds — T-Digest quantile estimates aren't exact, but
         // must land in the expected quartile bands.
-        assert!(
-            (10.0..40.0).contains(&group.cuts[0]),
-            "p25 near 25, got {}",
-            group.cuts[0]
-        );
-        assert!(
-            (35.0..65.0).contains(&group.cuts[1]),
-            "p50 near 50, got {}",
-            group.cuts[1]
-        );
-        assert!(
-            (60.0..90.0).contains(&group.cuts[2]),
-            "p75 near 75, got {}",
-            group.cuts[2]
-        );
+        assert!((10.0..40.0).contains(&p25), "p25 near 25, got {p25}");
+        assert!((35.0..65.0).contains(&p50), "p50 near 50, got {p50}");
+        assert!((60.0..90.0).contains(&p75), "p75 near 75, got {p75}");
     }
 
     /// Row-count-only reports (no sketches) still produce a group with
     /// summed `total_rows` — just empty `cuts` and `None` min/max.
     #[test]
     fn merge_reports_row_count_only_emits_empty_cuts() {
-        let make = |rows: [u64; 2]| RuntimeStatsReport {
+        let make_report = |row_counts: [u64; 2]| RuntimeStatsReport {
             order_by: vec![],
             partitions: vec![
                 RuntimeStatsPartitionEntry {
                     partition_id: 0,
-                    row_count: rows[0],
+                    row_count: row_counts[0],
                     sketch: None,
                 },
                 RuntimeStatsPartitionEntry {
                     partition_id: 1,
-                    row_count: rows[1],
+                    row_count: row_counts[1],
                     sketch: None,
                 },
             ],
         };
-        let merged = merge_reports(&[make([100, 200]), make([300, 400])]);
-        let [group] = merged.as_slice() else {
-            panic!("expected one group, got {}", merged.len());
-        };
-        assert_eq!(group.k, 2);
+        let group = only_group(&[make_report([100, 200]), make_report([300, 400])]);
+        assert_eq!(group.partition_count, 2);
         assert_eq!(group.total_rows, 1000);
         assert!(group.cuts.is_empty());
         assert!(group.min.is_none());
         assert!(group.max.is_none());
     }
 
-    /// Mismatched partition counts within a group are surfaced as a
-    /// dropped group (surfaced with a warn! we don't assert on) rather
-    /// than a garbled merge.
+    /// Mismatched partition counts within a group surface as an error —
+    /// the caller (scheduler / slice-D consumer) sees the invariant
+    /// break rather than silently getting a partial merge.
     #[test]
-    fn merge_reports_skips_group_with_mismatched_partition_counts() {
-        let good = sketching_report(vec![], vec![vec![1.0], vec![2.0]]);
-        let bad = sketching_report(vec![], vec![vec![3.0]]);
-        let merged = merge_reports(&[good, bad]);
+    fn merge_reports_errors_on_mismatched_partition_counts() {
+        let two_partitions = sketching_report(vec![], vec![vec![1.0], vec![2.0]]);
+        let one_partition = sketching_report(vec![], vec![vec![3.0]]);
+        let err = merge_reports(&[two_partitions, one_partition])
+            .expect_err("mismatched partition counts must error");
+        let message = err.to_string();
         assert!(
-            merged.is_empty(),
-            "mismatched K within a group must skip the entire group"
+            message.contains("mismatched partition counts"),
+            "expected mismatch error, got: {message}"
+        );
+    }
+
+    /// A wire-corrupted sketch — one whose scalar-state length is wrong
+    /// — surfaces the underlying `sketch_from_proto` error rather than
+    /// getting silently dropped.
+    #[test]
+    fn merge_reports_propagates_sketch_decode_errors() {
+        use crate::serde::protobuf::QuantileSketchState;
+        use datafusion::common::ScalarValue;
+
+        // Six scalars is the valid shape; three is a corrupted wire.
+        let corrupt_sketch = QuantileSketchState {
+            state: (0..3)
+                .map(|_| {
+                    datafusion_proto_common::ScalarValue::try_from(&ScalarValue::Float64(
+                        Some(0.0),
+                    ))
+                    .unwrap()
+                })
+                .collect(),
+        };
+        let report = RuntimeStatsReport {
+            order_by: vec![],
+            partitions: vec![RuntimeStatsPartitionEntry {
+                partition_id: 0,
+                row_count: 1,
+                sketch: Some(corrupt_sketch),
+            }],
+        };
+        let err = merge_reports(&[report])
+            .expect_err("corrupt sketch must surface as an error");
+        assert!(
+            err.to_string().contains("expected 6 elements"),
+            "expected shape-error propagation, got: {err}"
         );
     }
 
     /// Empty input → empty output; ensures no panics or spurious groups.
     #[test]
     fn merge_reports_empty_input_is_empty_output() {
-        assert!(merge_reports(&[]).is_empty());
+        assert!(merge_reports(&[]).unwrap().is_empty());
     }
 }
