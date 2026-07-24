@@ -82,6 +82,11 @@ pub const BALLISTA_CLIENT_IO_RETRIES_TIMES: &str = "ballista.client.io_retries_t
 /// Wait time in milliseconds between IO retries in the Ballista client
 pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
+/// Configuration key controlling whether the client sends a best-effort
+/// `CleanJobData` RPC to the scheduler when it finishes consuming a job's
+/// results, so on-disk result data is reclaimed immediately rather than
+/// waiting for the scheduler's timed cleanup.
+pub const BALLISTA_JOB_CLIENT_SIDE_CLEANUP: &str = "ballista.job.client_side_cleanup";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
 /// Configuration key for sort shuffle target batch size in rows.
@@ -290,6 +295,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
                          Some(3000.to_string())),
+        ConfigEntry::new(BALLISTA_JOB_CLIENT_SIDE_CLEANUP.to_string(),
+                         "When enabled, the client sends a best-effort CleanJobData request \
+                          to the scheduler as soon as it finishes (or abandons) consuming a \
+                          job's results, reclaiming the job's on-disk result data on executors \
+                          immediately instead of waiting for the scheduler's timed cleanup. \
+                          The scheduler's timed cleanup remains as a safety net.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_COALESCE_ENABLED.to_string(),
                          "Enables the AQE coalesce-shuffle-partitions rule. \
                           Disabled by default — opt in when fewer/larger \
@@ -678,6 +691,12 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_PROPAGATE_EMPTY_ENABLED)
     }
 
+    /// Whether the client eagerly reclaims a finished job's on-disk data via
+    /// the scheduler's `CleanJobData` RPC. See [`BALLISTA_JOB_CLIENT_SIDE_CLEANUP`].
+    pub fn client_side_cleanup_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_JOB_CLIENT_SIDE_CLEANUP)
+    }
+
     /// Returns compression codec that will be used during write stage of shuffle
     pub fn shuffle_compression_codec(
         &self,
@@ -982,5 +1001,10 @@ mod tests {
             .get(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
             .expect("entry is registered");
         assert_eq!(batch_size.doc_default(), Some("8192"));
+    }
+
+    #[test]
+    fn client_side_cleanup_default_enabled() {
+        assert!(BallistaConfig::default().client_side_cleanup_enabled());
     }
 }

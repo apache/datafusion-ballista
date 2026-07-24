@@ -18,12 +18,14 @@
 use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
-use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::extension::{
+    BallistaConfigGrpcEndpoint, BallistaGrpcMetadataInterceptor, SessionConfigExt,
+};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
+    CleanJobDataParams, ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult,
+    KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
+    job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
@@ -48,12 +50,15 @@ use datafusion_proto::logical_plan::{
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::Channel;
 use url::Url;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
@@ -428,6 +433,9 @@ async fn execute_query_pull(
     let use_tls = session_config.ballista_use_tls();
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
+    let client_side_cleanup = session_config
+        .ballista_config()
+        .client_side_cleanup_enabled();
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -576,7 +584,13 @@ async fn execute_query_pull(
                     futures::stream::once(f).try_flatten()
                 });
 
-                break Ok(futures::stream::iter(streams).flatten());
+                let result_stream = futures::stream::iter(streams).flatten();
+                break Ok(guard_result_stream(
+                    result_stream,
+                    client_side_cleanup,
+                    &scheduler,
+                    &job_id,
+                ));
             }
         };
     }
@@ -601,6 +615,9 @@ async fn execute_query_push(
     let use_tls = session_config.ballista_use_tls();
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
+    let client_side_cleanup = session_config
+        .ballista_config()
+        .client_side_cleanup_enabled();
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -742,7 +759,13 @@ async fn execute_query_push(
                     futures::stream::once(f).try_flatten()
                 });
 
-                break Ok(futures::stream::iter(streams).flatten());
+                let result_stream = futures::stream::iter(streams).flatten();
+                break Ok(guard_result_stream(
+                    result_stream,
+                    client_side_cleanup,
+                    &scheduler,
+                    &job_id,
+                ));
             }
         };
     }
@@ -792,6 +815,100 @@ fn get_client_host_port(
         }
     }
 }
+
+/// Boxed one-shot cleanup action run when a [`JobCleanupGuard`] is dropped.
+type JobCleanupFn = Box<dyn FnOnce() + Send>;
+
+/// Runs a best-effort cleanup action exactly once when dropped.
+///
+/// Constructed with `Some(closure)` when client-side cleanup is enabled, or via
+/// [`JobCleanupGuard::disabled`] (no closure) when it is turned off. Dropping the
+/// guard takes the closure and invokes it; a disabled guard does nothing.
+struct JobCleanupGuard {
+    cleanup: Option<JobCleanupFn>,
+}
+
+impl JobCleanupGuard {
+    fn new(cleanup: Option<JobCleanupFn>) -> Self {
+        Self { cleanup }
+    }
+
+    fn disabled() -> Self {
+        Self { cleanup: None }
+    }
+}
+
+impl Drop for JobCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+/// Wraps a result stream so that when the consumer finishes or abandons it, the
+/// owned [`JobCleanupGuard`] is dropped and fires its cleanup action. Polling is
+/// delegated verbatim to the inner stream.
+struct GuardedStream {
+    inner: Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>,
+    _guard: JobCleanupGuard,
+}
+
+impl Stream for GuardedStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx)
+    }
+}
+
+/// Concrete scheduler-client type used on the query-execution path: a
+/// [`SchedulerGrpcClient`] over a [`Channel`] with the Ballista metadata
+/// interceptor applied.
+type BallistaSchedulerClient =
+    SchedulerGrpcClient<InterceptedService<Channel, BallistaGrpcMetadataInterceptor>>;
+
+/// Wraps a job's result stream so that, when the client finishes consuming (or
+/// drops) it, a best-effort `CleanJobData` RPC is fired at the scheduler to
+/// reclaim the job's on-disk data immediately instead of waiting for the
+/// scheduler's timed cleanup. When `client_side_cleanup` is false the stream is
+/// returned with a no-op guard. Shared by the pull and push query paths.
+fn guard_result_stream<S>(
+    result_stream: S,
+    client_side_cleanup: bool,
+    scheduler: &BallistaSchedulerClient,
+    job_id: &JobId,
+) -> GuardedStream
+where
+    S: Stream<Item = Result<RecordBatch>> + Send + 'static,
+{
+    let guard = if client_side_cleanup {
+        let handle = tokio::runtime::Handle::current();
+        let mut cleanup_client = scheduler.clone();
+        let cleanup_job_id = job_id.clone();
+        JobCleanupGuard::new(Some(Box::new(move || {
+            handle.spawn(async move {
+                let params = CleanJobDataParams {
+                    job_id: cleanup_job_id.into_inner(),
+                    remove_stage_ids: vec![],
+                };
+                if let Err(e) = cleanup_client.clean_job_data(params).await {
+                    warn!("client-side job data cleanup RPC failed: {e:?}");
+                }
+            });
+        })))
+    } else {
+        JobCleanupGuard::disabled()
+    };
+    GuardedStream {
+        inner: Box::pin(result_stream),
+        _guard: guard,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_partition(
     location: PartitionLocation,
@@ -849,7 +966,7 @@ mod test {
     use crate::JobId;
     use crate::config::BallistaConfig;
     use crate::execution_plans::distributed_query::{
-        DistributedQueryExec, get_client_host_port,
+        DistributedQueryExec, GuardedStream, JobCleanupGuard, get_client_host_port,
     };
     use crate::serde::protobuf::ExecutorMetadata;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
@@ -929,5 +1046,93 @@ mod test {
             .unwrap();
 
         assert_eq!(new_exec.job_id(), Some(JobId::new("job-123")));
+    }
+
+    #[test]
+    fn job_cleanup_guard_fires_once_on_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let guard = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        drop(guard);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn job_cleanup_guard_disabled_does_not_fire() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A disabled guard must hold no cleanup action...
+        let guard = JobCleanupGuard::disabled();
+        assert!(
+            guard.cleanup.is_none(),
+            "disabled guard must hold no cleanup action"
+        );
+        drop(guard); // ...and dropping it must not panic or fire anything.
+
+        // Contrast: an enabled guard built the same way production gates it DOES fire,
+        // proving the counter wiring is real and the disabled case is a genuine no-op.
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let enabled = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        drop(enabled);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn guarded_stream_fires_after_full_consumption() {
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let guard = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        let inner = futures::stream::iter(vec![]);
+        let mut s = GuardedStream {
+            inner: Box::pin(inner),
+            _guard: guard,
+        };
+        while s.next().await.is_some() {}
+        assert_eq!(count.load(Ordering::SeqCst), 0, "must not fire before drop");
+        drop(s);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "fires on drop after consumption"
+        );
+    }
+
+    #[tokio::test]
+    async fn guarded_stream_fires_on_early_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let guard = JobCleanupGuard::new(Some(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })));
+        let inner = futures::stream::iter(vec![Ok(
+            datafusion::arrow::array::RecordBatch::new_empty(std::sync::Arc::new(
+                datafusion::arrow::datatypes::Schema::empty(),
+            )),
+        )]);
+        let s = GuardedStream {
+            inner: Box::pin(inner),
+            _guard: guard,
+        };
+        // Drop without consuming a single item.
+        drop(s);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
