@@ -85,8 +85,12 @@ use rand::{RngExt, SeedableRng};
 /// matches Apache DataSketches' `DEFAULT_M`.
 const MIN_LEVEL_WIDTH: usize = 8;
 
-/// KLL quantile sketch, generic over `Ord` items.
-pub struct KllSketch<T: Ord> {
+/// KLL quantile sketch, generic over `Ord + Clone` items.
+///
+/// `Clone` is required so the true stream minimum and maximum can be
+/// tracked outside the compactor stack — compaction can otherwise coin-
+/// flip either extreme out, and the scheduler wants exact boundaries.
+pub struct KllSketch<T: Ord + Clone> {
     /// One buffer per level; `levels[h]` is the level-`h` compactor.
     levels: Vec<Vec<T>>,
     /// Nominal compactor capacity — the top level's capacity. Lower
@@ -94,6 +98,11 @@ pub struct KllSketch<T: Ord> {
     k: usize,
     /// PRNG advanced once per compaction coin flip.
     rng: StdRng,
+    /// True stream minimum, maintained outside the compactor stack so
+    /// `quantile(0.0)` stays exact regardless of coin-flip history.
+    min: Option<T>,
+    /// True stream maximum, tracked the same way for `quantile(1.0)`.
+    max: Option<T>,
 }
 
 /// Capacity of the level at `height` given the current stack of `num_levels`.
@@ -117,7 +126,7 @@ fn level_capacity(k: usize, num_levels: usize, height: usize) -> usize {
     raw.max(MIN_LEVEL_WIDTH)
 }
 
-impl<T: Ord> KllSketch<T> {
+impl<T: Ord + Clone> KllSketch<T> {
     /// Construct an empty sketch with top-level compactor capacity `k`,
     /// seeded from OS entropy.
     pub fn new(k: usize) -> Self {
@@ -131,11 +140,21 @@ impl<T: Ord> KllSketch<T> {
             levels: vec![Vec::new()],
             k,
             rng: StdRng::seed_from_u64(seed),
+            min: None,
+            max: None,
         }
     }
 
     /// Add one item to the sketch.
     pub fn insert(&mut self, x: T) {
+        // Track true stream extremes outside the compactor stack; a clone
+        // fires only when `x` is a new min or max, which is rare after warmup.
+        if self.min.as_ref().is_none_or(|m| x < *m) {
+            self.min = Some(x.clone());
+        }
+        if self.max.as_ref().is_none_or(|m| x > *m) {
+            self.max = Some(x.clone());
+        }
         self.levels[0].push(x);
         self.compact_all();
     }
@@ -166,6 +185,14 @@ impl<T: Ord> KllSketch<T> {
     /// shape the scheduler wants for partition-boundary picking.
     pub fn quantile(&self, q: f64) -> Option<&T> {
         let q = q.clamp(0.0, 1.0);
+        // Extreme quantiles bypass the compactor entirely so coin-flip
+        // history can't shift the stream's true min/max.
+        if q == 0.0 {
+            return self.min.as_ref();
+        }
+        if q == 1.0 {
+            return self.max.as_ref();
+        }
         let total_weight: u64 = self
             .levels
             .iter()
@@ -390,6 +417,20 @@ mod tests {
     fn quantile_on_empty_returns_none() {
         let sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
         assert_eq!(sketch.quantile(0.5), None);
+    }
+
+    #[test]
+    fn min_and_max_stay_exact_after_compactions() {
+        // Compactions can coin-flip the true extremes out of the compactor
+        // stack, so quantile(0)/quantile(1) drift from the stream's true
+        // min/max unless the sketch tracks them separately.
+        let n = 10_000u32;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(64, 42);
+        for x in 1..=n {
+            sketch.insert(x);
+        }
+        assert_eq!(sketch.quantile(0.0), Some(&1));
+        assert_eq!(sketch.quantile(1.0), Some(&n));
     }
 
     #[test]
