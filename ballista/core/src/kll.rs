@@ -104,4 +104,43 @@ mod tests {
         // 2 NULLs + {1, 2, 3, 4} = 6 items strictly less than Some(5).
         assert_eq!(sketch.rank(&probe_row), 6);
     }
+
+    #[test]
+    fn rank_over_two_column_keys() {
+        use datafusion::arrow::array::{ArrayRef, UInt32Array};
+        use datafusion::arrow::datatypes::DataType;
+        use datafusion::arrow::row::{OwnedRow, RowConverter, SortField};
+        use std::sync::Arc;
+
+        // Two ASC NULLS FIRST columns — lex (a, b).
+        let converter = RowConverter::new(vec![
+            SortField::new(DataType::UInt32),
+            SortField::new(DataType::UInt32),
+        ])
+        .unwrap();
+
+        // Stream of (a, b) pairs: (1,10) (1,20) (2,5) (2,15) (3,1) (3,30).
+        let col_a: ArrayRef = Arc::new(UInt32Array::from(vec![1u32, 1, 2, 2, 3, 3]));
+        let col_b: ArrayRef = Arc::new(UInt32Array::from(vec![10u32, 20, 5, 15, 1, 30]));
+        let rows = converter.convert_columns(&[col_a, col_b]).unwrap();
+
+        let mut sketch: KllSketch<OwnedRow> = KllSketch::new();
+        for row in rows.iter() {
+            sketch.insert(row.owned());
+        }
+
+        let probe_a: ArrayRef = Arc::new(UInt32Array::from(vec![2u32]));
+        let probe_b: ArrayRef = Arc::new(UInt32Array::from(vec![10u32]));
+        let probe_row = converter
+            .convert_columns(&[probe_a, probe_b])
+            .unwrap()
+            .row(0)
+            .owned();
+
+        // Items strictly less than (2, 10) under lex (a ASC, b ASC):
+        //   (1, 10), (1, 20)   — smaller a dominates
+        //   (2,  5)            — same a, smaller b
+        // Excluded: (2, 15) same a but larger b; (3, *) larger a.
+        assert_eq!(sketch.rank(&probe_row), 3);
+    }
 }
