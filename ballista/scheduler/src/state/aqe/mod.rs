@@ -1208,6 +1208,34 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         &self.stages
     }
 
+    /// The adaptive planner creates stages incrementally and never knows a
+    /// stage's consumers up front, so `output_links` is always empty here and
+    /// the default `output_links`-based implementation would classify every
+    /// stage as final (reclaiming nothing). Derive the final stage(s) from
+    /// `output_locations` instead: each `PartitionLocation` carries the
+    /// terminal stage that produced it, so everything else is intermediate.
+    ///
+    /// `output_locations` is only populated once the job has no more stages to
+    /// run. Until then it is empty and we reclaim nothing, which keeps the
+    /// "never delete a final stage" invariant.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        if self.output_locations.is_empty() {
+            return vec![];
+        }
+
+        let final_stage_ids: HashSet<usize> = self
+            .output_locations
+            .iter()
+            .map(|location| location.partition_id.stage_id)
+            .collect();
+
+        self.stages
+            .keys()
+            .filter(|stage_id| !final_stage_ids.contains(stage_id))
+            .map(|stage_id| *stage_id as u32)
+            .collect()
+    }
+
     fn stage_count(&self) -> usize {
         self.stages.len()
     }
