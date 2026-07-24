@@ -17,9 +17,9 @@
 # specific language governing permissions and limitations
 # under the License.
 set -e
-if ! command -v cargo-tomlfmt &> /dev/null; then
-    echo "Installing cargo-tomlfmt using cargo"
-    cargo install cargo-tomlfmt
+if ! command -v taplo &> /dev/null; then
+    echo "Installing taplo using cargo"
+    cargo install taplo-cli --locked
 fi
 
 ci/scripts/rust_fmt.sh

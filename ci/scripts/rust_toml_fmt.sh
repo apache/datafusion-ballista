@@ -17,5 +17,19 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -ex
-find . -mindepth 2 -name 'Cargo.toml' -exec cargo tomlfmt -k -p {} \;
+# Checks Cargo.toml formatting using taplo. The formatting rules live in
+# taplo.toml at the repository root.
+#
+# Usage:
+#   ci/scripts/rust_toml_fmt.sh            # check formatting (default, used in CI)
+#   ci/scripts/rust_toml_fmt.sh --write    # reformat files in place
+
+set -e
+
+if [ "${1:-}" = "--write" ]; then
+    taplo format
+else
+    # `taplo format --check` exits non-zero if any file is not correctly
+    # formatted. Run `ci/scripts/rust_toml_fmt.sh --write` to fix violations.
+    taplo format --check
+fi
