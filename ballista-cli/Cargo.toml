@@ -46,7 +46,7 @@ config = { version = "0.15.23", default-features = false, features = ["yaml"], o
 dirs = "6.0"
 dotparser = { version = "0.3.0", optional = true }
 futures = { version = "0.3.31", optional = true }
-percent-encoding = { version = "2.3.2", optional = true }
+url-escape = { workspace = true, optional = true }
 prometheus-parse = { version = "0.2", optional = true }
 ratatui = { version = "0.30.1", default-features = false, optional = true }
 reqwest = { version = "0.13.4", features = ["json"], optional = true }
@@ -87,14 +87,14 @@ cli = [
 
 tui = [
     "dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures",
-    "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
+    "dep:url-escape", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tracing-appender",
     "dep:tui-shimmer", "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
     "ratatui/layout-cache", "ratatui/underline-color", "ratatui/serde"
 ]
 
 web = [
-    "dep:chrono", "dep:config", "dep:critical-section", "dep:dotparser", "dep:futures", "dep:percent-encoding",
+    "dep:chrono", "dep:config", "dep:critical-section", "dep:dotparser", "dep:futures", "dep:url-escape",
     "dep:prometheus-parse", "dep:ratatui", "ratatui/serde", "dep:reqwest",
     "dep:serde", "dep:serde_json", "dep:tui-shimmer",
     "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",

@@ -17,6 +17,7 @@ use crate::state::execution_graph_dot::ExecutionGraphDot;
 use crate::state::execution_stage::TaskInfo;
 use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
 use axum::extract::Query;
+use axum::response::Redirect;
 use axum::{
     Json,
     extract::{Path, State},
@@ -46,8 +47,9 @@ use graphviz_rust::{
     exec,
     printer::PrinterContext,
 };
-use http::{StatusCode, header::CONTENT_TYPE};
+use http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -228,6 +230,58 @@ pub enum PlanFormat {
     Tree,
     /// ?plan_format=metrics => indent with aggregated metrics   
     Metrics,
+}
+
+/// A handler for GET requests to the root (`/`).
+/// It redirects to `https://nightlies.apache.org/datafusion/ballista/tui/<BALLISTA_VERSION>/`
+/// forwarding any query parameters
+pub async fn get_webtui<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    header_map: HeaderMap,
+    Query(mut params): Query<HashMap<String, String>>,
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+) -> Result<Redirect, (StatusCode, String)> {
+    const NIGHTLIES_URL: &str = "https://nightlies.apache.org/datafusion/ballista/tui";
+    let external_host = &data_server.state.config.external_host;
+    let bind_port = data_server.state.config.bind_port;
+
+    let ballista_scheduler_url =
+        params.remove("ballista_scheduler_url").unwrap_or_else(|| {
+            let proto = header_map
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("http");
+            let host = header_map
+                .get("x-forwarded-host")
+                .and_then(|hv| hv.to_str().ok())
+                .unwrap_or(external_host);
+            let port = header_map
+                .get("x-forwarded-port")
+                .and_then(|hv| hv.to_str().ok())
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(bind_port);
+            format!("{proto}://{host}:{port}")
+        });
+
+    let mut query_string = String::new();
+    query_string.push_str(&format!(
+        "ballista_scheduler_url={}",
+        url_escape::encode_query(&ballista_scheduler_url)
+    ));
+
+    for (k, v) in params.iter() {
+        query_string.push_str(&format!(
+            "&{}={}",
+            url_escape::encode_query(k),
+            url_escape::encode_query(v)
+        ));
+    }
+
+    let target = format!("{NIGHTLIES_URL}/{BALLISTA_VERSION}/?{query_string}");
+
+    Ok(Redirect::to(&target))
 }
 
 pub async fn get_scheduler_state<
@@ -549,7 +603,7 @@ pub async fn get_query_stages<
                         let metrics = running_stage.stage_metrics.as_deref().unwrap_or(&[]);
                         summary.stage_plan = Some(match plan_format {
                             PlanFormat::Default => displayable(running_stage.plan.as_ref()).indent(false).to_string(),
-                            PlanFormat::Tree    => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Tree => displayable(running_stage.plan.as_ref()).tree_render().to_string(),
                             PlanFormat::Metrics => format_stage_metrics(running_stage.plan.as_ref(), metrics),
                         });
                         summary.input_rows = running_stage
@@ -599,7 +653,7 @@ pub async fn get_query_stages<
                                     finish_time: info.finish_time as u64,
                                     input_rows,
                                     output_rows,
-                                    status: task_status
+                                    status: task_status,
                                 })
                             })
                             .collect();
@@ -607,7 +661,7 @@ pub async fn get_query_stages<
                     ExecutionStage::Successful(completed_stage) => {
                         summary.stage_plan = Some(match plan_format {
                             PlanFormat::Default => displayable(completed_stage.plan.as_ref()).indent(false).to_string(),
-                            PlanFormat::Tree    => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Tree => displayable(completed_stage.plan.as_ref()).tree_render().to_string(),
                             PlanFormat::Metrics => format_stage_metrics(completed_stage.plan.as_ref(), &completed_stage.stage_metrics),
                         });
                         summary.input_rows = get_combined_count(
@@ -648,7 +702,7 @@ pub async fn get_query_stages<
                                     finish_time: task_info.finish_time as u64,
                                     input_rows,
                                     output_rows,
-                                    status: task_status
+                                    status: task_status,
                                 })
                             })
                             .collect();
@@ -923,7 +977,7 @@ pub async fn get_job_dot_graph<
         })?
     {
         ExecutionGraphDot::generate(graph.as_ref())
-            .map_err(|e|  {
+            .map_err(|e| {
                 tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
                 SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
             })
@@ -968,10 +1022,10 @@ pub async fn get_job_svg_graph<
                 &mut PrinterContext::default(),
                 vec![CommandArg::Format(Format::Svg)],
             )
-            .map_err(|e| {
-                tracing::error!("Error occurred while getting job svg graph for job '{job_id}' reason: {e:?}");
-                SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
-            })?;
+                .map_err(|e| {
+                    tracing::error!("Error occurred while getting job svg graph for job '{job_id}' reason: {e:?}");
+                    SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+                })?;
 
             let svg = String::from_utf8_lossy(&result).to_string();
             Ok(Response::builder()
@@ -1146,5 +1200,228 @@ mod tests {
     #[test]
     fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
         assert_eq!(super::job_elapsed_ms(500, 100), 0);
+    }
+
+    mod get_webtui {
+        use super::*;
+        use crate::config::SchedulerConfig;
+        use crate::metrics::default_metrics_collector;
+        use crate::test_utils::test_cluster_context;
+        use axum::response::IntoResponse;
+        use ballista_core::serde::BallistaCodec;
+        use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+        fn test_scheduler(
+            config: SchedulerConfig,
+        ) -> Arc<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+            let server = SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+            Arc::new(server)
+        }
+
+        fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+            let mut map = HeaderMap::new();
+            for (k, v) in pairs {
+                map.insert(
+                    http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                    v.parse().unwrap(),
+                );
+            }
+            map
+        }
+
+        fn location_of(result: Result<Redirect, (StatusCode, String)>) -> String {
+            let response = result.expect("handler should not error").into_response();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            response
+                .headers()
+                .get("location")
+                .expect("redirect response must have a location header")
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+
+        #[tokio::test]
+        async fn defaults_to_config_external_host_and_bind_port() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(HashMap::new()), State(scheduler))
+                    .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("ballista_scheduler_url=http://localhost:50050"),
+                "unexpected location: {location}"
+            );
+            assert!(
+                location
+                    .starts_with("https://nightlies.apache.org/datafusion/ballista/tui/")
+            );
+        }
+
+        #[tokio::test]
+        async fn uses_custom_external_host_and_bind_port_from_config() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "scheduler.example.com".into(),
+                bind_port: 8080,
+                ..Default::default()
+            });
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(HashMap::new()), State(scheduler))
+                    .await;
+
+            let location = location_of(result);
+            assert!(
+                location
+                    .contains("ballista_scheduler_url=http://scheduler.example.com:8080"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn x_forwarded_headers_take_precedence_over_config() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "internal-host".into(),
+                bind_port: 50050,
+                ..Default::default()
+            });
+
+            let result = get_webtui(
+                headers(&[
+                    ("x-forwarded-proto", "https"),
+                    ("x-forwarded-host", "public-host.example.com"),
+                    ("x-forwarded-port", "443"),
+                ]),
+                Query(HashMap::new()),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains(
+                    "ballista_scheduler_url=https://public-host.example.com:443"
+                ),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn partial_forwarded_headers_fall_back_to_config_for_the_rest() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "internal-host".into(),
+                bind_port: 50050,
+                ..Default::default()
+            });
+
+            let result = get_webtui(
+                headers(&[("x-forwarded-proto", "https")]),
+                Query(HashMap::new()),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("ballista_scheduler_url=https://internal-host:50050"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn malformed_forwarded_port_falls_back_to_config_bind_port() {
+            let scheduler = test_scheduler(SchedulerConfig {
+                external_host: "internal-host".into(),
+                bind_port: 50050,
+                ..Default::default()
+            });
+
+            let result = get_webtui(
+                headers(&[
+                    ("x-forwarded-proto", "https"),
+                    ("x-forwarded-port", "not-a-port"),
+                ]),
+                Query(HashMap::new()),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("ballista_scheduler_url=https://internal-host:50050"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn explicit_ballista_scheduler_url_param_takes_precedence() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let mut params = HashMap::new();
+            params.insert(
+                "ballista_scheduler_url".to_string(),
+                "https://override.example.com:1234".to_string(),
+            );
+
+            let result = get_webtui(
+                headers(&[("x-forwarded-host", "should-be-ignored.example.com")]),
+                Query(params),
+                State(scheduler),
+            )
+            .await;
+
+            let location = location_of(result);
+            assert!(
+                location
+                    .contains("ballista_scheduler_url=https://override.example.com:1234"),
+                "unexpected location: {location}"
+            );
+            assert!(
+                !location.contains("should-be-ignored"),
+                "explicit ballista_scheduler_url must not be overridden: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn additional_query_params_are_forwarded() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let mut params = HashMap::new();
+            params.insert("foo".to_string(), "bar".to_string());
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(params), State(scheduler)).await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("&foo=bar"),
+                "unexpected location: {location}"
+            );
+        }
+
+        #[tokio::test]
+        async fn query_param_values_are_url_escaped() {
+            let scheduler = test_scheduler(SchedulerConfig::default());
+
+            let mut params = HashMap::new();
+            params.insert("weird".to_string(), "a#b c".to_string());
+
+            let result =
+                get_webtui(HeaderMap::new(), Query(params), State(scheduler)).await;
+
+            let location = location_of(result);
+            assert!(
+                location.contains("&weird=a%23b%20c"),
+                "unexpected location: {location}"
+            );
+        }
     }
 }

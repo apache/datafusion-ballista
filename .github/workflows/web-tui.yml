@@ -90,7 +90,7 @@ jobs:
             --no-default-features --features web
 
       - name: Deploy at nightlies.a.o
-        if: ${{ github.event == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
         run: |
           TUI_DIR="datafusion/ballista/tui/${{ steps.cargo_metadata.outputs.ballista_version }}"
           REMOTE_TARGET_DIR="${{ secrets.NIGHTLIES_RSYNC_PATH }}/${TUI_DIR}/"
@@ -101,7 +101,7 @@ jobs:
 
           ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }} ${{ secrets.NIGHTLIES_RSYNC_HOST }} "mkdir -p ${REMOTE_TARGET_DIR}"
 
-          rsync --times --compress --delete --verbose -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" ./target/web-tui/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
+          rsync --times --compress --delete --recursive --verbose -e "ssh -p ${{ secrets.NIGHTLIES_RSYNC_PORT }} -l ${{ secrets.NIGHTLIES_RSYNC_USER }}" ./target/web-tui/* ${{ secrets.NIGHTLIES_RSYNC_HOST }}:${REMOTE_TARGET_DIR}
 
       - name: Upload WASM32 application
         uses: actions/upload-artifact@v7

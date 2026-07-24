@@ -48,13 +48,26 @@ pub struct Config {
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
     /// Namespace for the ballista cluster.
-    #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join.")]
+    #[arg(
+        short = 'n',
+        long,
+        default_value_t = String::from("ballista"),
+        help = "Namespace for the ballista cluster that this executor will join."
+    )]
     pub namespace: String,
     /// Local host name or IP address to bind to.
-    #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to.")]
+    #[arg(
+        long,
+        default_value_t = String::from("0.0.0.0"),
+        help = "Local host name or IP address to bind to."
+    )]
     pub bind_host: String,
     /// External host name for executors to connect to.
-    #[arg(long, default_value_t = String::from("localhost"), help = "Host name or IP address so that executors can connect to this scheduler.")]
+    #[arg(
+        long,
+        default_value_t = String::from("localhost"),
+        help = "Host name or IP address so that executors can connect to this scheduler."
+    )]
     pub external_host: String,
     /// Port to bind the scheduler gRPC service.
     #[arg(
@@ -218,6 +231,14 @@ pub struct Config {
         help = "Comma-separated list of allowed methods for CORS. By default, GET, PATCH, and OPTIONS are allowed."
     )]
     pub cors_allowed_methods: String,
+    #[cfg(feature = "rest-api")]
+    /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
+    #[arg(
+        long,
+        default_value_t = String::from("/"),
+        help = "The HTTP path that will redirect to the WebTUI app at https://nightlies.apache.org."
+    )]
+    pub web_tui_route: String,
 }
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
@@ -287,6 +308,9 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
+    #[cfg(feature = "rest-api")]
+    /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
+    pub web_tui_route: String,
 }
 
 impl Default for SchedulerConfig {
@@ -324,6 +348,8 @@ impl Default for SchedulerConfig {
             cors_allowed_origins: String::default(),
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
+            #[cfg(feature = "rest-api")]
+            web_tui_route: String::from("/"),
         }
     }
 }
@@ -557,6 +583,8 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_origins: opt.cors_allowed_origins,
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
+            #[cfg(feature = "rest-api")]
+            web_tui_route: opt.web_tui_route,
         };
 
         Ok(config)
