@@ -71,6 +71,18 @@
 //! survivors that promote to level 1. That would trade the current
 //! per-item API for a batch-oriented one (e.g. `absorb_rows(&Rows)`).
 //!
+//! # Level order
+//!
+//! Levels carry no "sorted" invariant between operations. `rank` filters,
+//! `quantile` collects-then-sorts, and every compaction sorts before
+//! halving — so `merge` can simply extend same-height compactors without
+//! order concerns. That trades ~`log(k)` extra comparisons per amortized
+//! insert for a simpler shape. Apache DataSketches maintains per-level
+//! sortedness (with an `is_level_zero_sorted_` flag) to skip re-sorting at
+//! compact time and to merge two sketches via linear-time merge-sort
+//! rather than concatenate-and-resort — a legitimate follow-up if
+//! benchmarks demand it.
+//!
 //! # Reference
 //!
 //! Karnin, Lang, Liberty. *Optimal Quantile Approximation in Streams.*
@@ -143,6 +155,41 @@ impl<T: Ord + Clone> KllSketch<T> {
             min: None,
             max: None,
         }
+    }
+
+    /// Consume `other` and fold its content into `self`.
+    ///
+    /// Same-height compactors concatenate: items promoted to level `h` in
+    /// either sketch have weight `2^h`, so they combine at level `h` with
+    /// their weights preserved. The extend can leave several levels over
+    /// their (shrinking) capacities at once — the compaction driver walks
+    /// the full stack to normalize.
+    ///
+    /// Both sketches must have the same `k`. Mismatch is a caller bug and
+    /// is caught with `debug_assert!` — matching DataSketches semantics
+    /// would require tracking a min-of-observed-k, which is future work.
+    pub fn merge(&mut self, other: Self) {
+        debug_assert_eq!(self.k, other.k, "KllSketch::merge: sketches must share k");
+        // Fold extremes across both sketches. `Option::cmp` uses
+        // `None < Some(_)`, which is not what we want here.
+        self.min = match (self.min.take(), other.min) {
+            (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+            (a @ Some(_), None) => a,
+            (None, b) => b,
+        };
+        self.max = match (self.max.take(), other.max) {
+            (Some(a), Some(b)) => Some(if a >= b { a } else { b }),
+            (a @ Some(_), None) => a,
+            (None, b) => b,
+        };
+        // Extend same-height compactors, growing the stack as needed.
+        for (h, level) in other.levels.into_iter().enumerate() {
+            if h == self.levels.len() {
+                self.levels.push(Vec::new());
+            }
+            self.levels[h].extend(level);
+        }
+        self.compact_all();
     }
 
     /// Add one item to the sketch.
@@ -417,6 +464,27 @@ mod tests {
     fn quantile_on_empty_returns_none() {
         let sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
         assert_eq!(sketch.quantile(0.5), None);
+    }
+
+    #[test]
+    fn merge_preserves_mass_and_extremes() {
+        // Two disjoint streams into two sketches; merge one into the other
+        // and verify the standard invariants across the combined sketch.
+        let mut a: KllSketch<u32> = KllSketch::with_seed(8, 42);
+        for x in 1u32..=32 {
+            a.insert(x);
+        }
+        let mut b: KllSketch<u32> = KllSketch::with_seed(8, 7);
+        for x in 33u32..=64 {
+            b.insert(x);
+        }
+        a.merge(b);
+        // Combined mass = 64; nothing is < 1 or ≥ 65.
+        assert_eq!(a.rank(&65), 64);
+        assert_eq!(a.rank(&1), 0);
+        // Min/max span both sketches.
+        assert_eq!(a.quantile(0.0), Some(&1));
+        assert_eq!(a.quantile(1.0), Some(&64));
     }
 
     #[test]
