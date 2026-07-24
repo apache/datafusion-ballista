@@ -49,10 +49,16 @@
 //!
 //! # Parameters
 //!
-//! `k` is the compactor capacity. Larger `k` uses more memory and yields
-//! smaller error, roughly `O(1/k · sqrt(log(n/k)))`. This implementation
-//! uses a fixed `k` at every level; the paper's refinement of
-//! geometrically-shrinking level sizes is not implemented here.
+//! `k` is the top-level compactor capacity. Larger `k` uses more memory
+//! and yields smaller error, roughly `O(1/k · sqrt(log(n/k)))`.
+//!
+//! Per-level capacity shrinks geometrically down the stack — the top
+//! level always has capacity `k`, and each level below it has capacity
+//! `ceil(k · (2/3)^depth)` floored at `MIN_LEVEL_WIDTH`. Because the
+//! geometric sum converges, total retained items is bounded by `~3k`
+//! (plus floor slop) regardless of stream size — the space is **constant
+//! in n**, not `O(k · log(n/k))`. Matches Apache DataSketches'
+//! `level_capacity` in `kll_helper.hpp`.
 //!
 //! # Ownership
 //!
@@ -73,25 +79,53 @@
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
+/// Floor on per-level compactor capacity. Levels whose shrinking-`k`
+/// formula would drop below this stay at exactly this width — the paper's
+/// error bound depends on levels never getting arbitrarily small. `8`
+/// matches Apache DataSketches' `DEFAULT_M`.
+const MIN_LEVEL_WIDTH: usize = 8;
+
 /// KLL quantile sketch, generic over `Ord` items.
 pub struct KllSketch<T: Ord> {
     /// One buffer per level; `levels[h]` is the level-`h` compactor.
     levels: Vec<Vec<T>>,
-    /// Max items each compactor holds before it must compact.
+    /// Nominal compactor capacity — the top level's capacity. Lower
+    /// levels shrink geometrically toward `MIN_LEVEL_WIDTH`.
     k: usize,
     /// PRNG advanced once per compaction coin flip.
     rng: StdRng,
 }
 
+/// Capacity of the level at `height` given the current stack of `num_levels`.
+///
+/// Follows the KLL paper's geometric shape as implemented in Apache
+/// DataSketches: `depth = num_levels - height - 1`, and capacity is
+/// `ceil(k · (2/3)^depth)` floored at `MIN_LEVEL_WIDTH`. The top level
+/// (`depth = 0`) always has capacity `k`; each level below it is `2/3` the
+/// size of the one above.
+fn level_capacity(k: usize, num_levels: usize, height: usize) -> usize {
+    let depth = (num_levels - height - 1) as u32;
+    // ceil(k · (2/3)^depth) via integer fixed-point:
+    //   tmp    = floor(2k · 2^depth / 3^depth)
+    //   result = (tmp + 1) / 2                 (ceiling of half)
+    let two_k = 2u64 * (k as u64);
+    let numer = two_k
+        .checked_shl(depth)
+        .expect("KLL level depth exceeds u64 range");
+    let denom = 3u64.pow(depth);
+    let raw = ((numer / denom + 1) >> 1) as usize;
+    raw.max(MIN_LEVEL_WIDTH)
+}
+
 impl<T: Ord> KllSketch<T> {
-    /// Construct an empty sketch with compactor capacity `k`, seeded from
-    /// OS entropy.
+    /// Construct an empty sketch with top-level compactor capacity `k`,
+    /// seeded from OS entropy.
     pub fn new(k: usize) -> Self {
         Self::with_seed(k, rand::random::<u64>())
     }
 
-    /// Construct an empty sketch with compactor capacity `k` and a fixed
-    /// PRNG seed. Intended for deterministic tests.
+    /// Construct an empty sketch with top-level compactor capacity `k`
+    /// and a fixed PRNG seed. Intended for deterministic tests.
     pub fn with_seed(k: usize, seed: u64) -> Self {
         Self {
             levels: vec![Vec::new()],
@@ -103,7 +137,7 @@ impl<T: Ord> KllSketch<T> {
     /// Add one item to the sketch.
     pub fn insert(&mut self, x: T) {
         self.levels[0].push(x);
-        self.compact_from(0);
+        self.compact_all();
     }
 
     /// Return the estimated number of items strictly less than `x`.
@@ -121,26 +155,55 @@ impl<T: Ord> KllSketch<T> {
             .sum()
     }
 
-    /// Walk up from level `h`, compacting every level that has filled to `k`.
-    fn compact_from(&mut self, mut h: usize) {
+    /// Compact until every level fits within its (dynamically shrinking)
+    /// capacity. Adding a new top level shrinks the effective capacity of
+    /// every existing level, so a merge or a promotion may leave more
+    /// than one level over capacity at once — hence the fixed-point loop.
+    fn compact_all(&mut self) {
         loop {
-            if h >= self.levels.len() || self.levels[h].len() < self.k {
-                return;
+            let num_levels = self.levels.len();
+            let target = (0..num_levels)
+                .find(|&h| self.levels[h].len() >= level_capacity(self.k, num_levels, h));
+            match target {
+                None => return,
+                Some(h) => self.compact_level(h),
             }
-            let mut buf = std::mem::take(&mut self.levels[h]);
-            buf.sort_unstable();
-            let start = self.rng.random::<bool>() as usize;
-            let promoted: Vec<T> = buf
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| i % 2 == start)
-                .map(|(_, x)| x)
-                .collect();
-            if h + 1 == self.levels.len() {
-                self.levels.push(Vec::new());
-            }
-            self.levels[h + 1].extend(promoted);
-            h += 1;
+        }
+    }
+
+    /// Sort level `h`, coin-flip, promote every other item to level `h+1`.
+    ///
+    /// On odd-length levels the smallest item stays behind at level `h`
+    /// with its original weight — the algorithm requires an even-length
+    /// buffer for coin-flip halving, and keeping the odd one at the
+    /// current weight is what preserves the total-weight invariant across
+    /// compaction. Matches Apache DataSketches' `general_compress`
+    /// odd-pop handling.
+    fn compact_level(&mut self, h: usize) {
+        let level_len = self.levels[h].len();
+        if level_len < 2 {
+            return;
+        }
+        let mut buf = std::mem::take(&mut self.levels[h]);
+        buf.sort_unstable();
+        let leftover = if level_len % 2 == 1 {
+            Some(buf.remove(0))
+        } else {
+            None
+        };
+        let start = self.rng.random::<bool>() as usize;
+        let promoted: Vec<T> = buf
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == start)
+            .map(|(_, x)| x)
+            .collect();
+        if h + 1 == self.levels.len() {
+            self.levels.push(Vec::new());
+        }
+        self.levels[h + 1].extend(promoted);
+        if let Some(x) = leftover {
+            self.levels[h].push(x);
         }
     }
 }
@@ -276,6 +339,37 @@ mod tests {
         // of which coin flips happened along the way.
         assert_eq!(sketch.rank(&33), 32);
         // Probing at the min: no retained item is strictly less than 1.
+        assert_eq!(sketch.rank(&1), 0);
+    }
+
+    #[test]
+    fn shrinking_capacity_bounds_retained_items() {
+        // Insert n >> k so many cascades occur. Under shrinking-k, total
+        // retained items stays near 3k regardless of n; under fixed-k it
+        // would grow with num_levels.
+        let k = 64;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(k, 42);
+        for x in 1u32..=10_000 {
+            sketch.insert(x);
+        }
+        let retained: usize = sketch.levels.iter().map(|l| l.len()).sum();
+        let num_levels = sketch.levels.len();
+        let naive_bound = k * num_levels;
+        let shrinking_bound: usize = (0..num_levels)
+            .map(|h| level_capacity(k, num_levels, h))
+            .sum();
+        assert!(
+            shrinking_bound < naive_bound,
+            "shrinking bound {shrinking_bound} should be tighter than \
+             naive fixed-k bound {naive_bound} at num_levels={num_levels}"
+        );
+        assert!(
+            retained <= shrinking_bound,
+            "retained {retained} exceeds shrinking-capacity total \
+             {shrinking_bound} across {num_levels} levels"
+        );
+        // Mass invariants still hold across all the cascades.
+        assert_eq!(sketch.rank(&10_001), 10_000);
         assert_eq!(sketch.rank(&1), 0);
     }
 }
