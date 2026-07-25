@@ -26,8 +26,8 @@ edition = "2024"
 rust-version = "1.88.0"
 
 [workspace.dependencies]
-arrow = { version = "58.3", features = ["ipc_compression"] }
-arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
+arrow = { version = "58.4", features = ["ipc_compression"] }
+arrow-flight = { version = "58.4", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
 # Keep these as minor-version requirements rather than exact patch pins. The
