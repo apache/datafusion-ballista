@@ -132,7 +132,10 @@ impl ExchangeExec {
             plan_id,
             self.stage_id.clone(),
             self.shuffle_partitions.clone(),
-            self.coalesce.clone(),
+            // A broadcast exchange never coalesces: its reader flattens every
+            // upstream location into one partition. Start with an empty slot
+            // rather than inheriting a decision the new node cannot use.
+            Arc::new(Mutex::new(None)),
             true,
             self.inactive_stage,
         )
@@ -245,12 +248,16 @@ impl ExchangeExec {
         &self.input
     }
 
-    /// Attaches a `CoalescePlan` to this Exchange. The adapter consumes the
-    /// plan when converting Exchange → ShuffleReader: a Some value triggers
-    /// `try_new_coalesced` (K-partition reader); None uses `try_new`
-    /// (M-partition reader). Idempotent overwrite.
-    pub fn set_coalesce(&self, cp: Arc<CoalescePlan>) {
-        self.coalesce.lock().replace(cp);
+    /// Attaches or clears the `CoalescePlan` on this Exchange. The adapter
+    /// consumes the plan when converting Exchange → ShuffleReader: a `Some`
+    /// value triggers `try_new_coalesced` (K-partition reader); `None` uses
+    /// `try_new` (M-partition reader).
+    ///
+    /// `CoalescePartitionsRule` clears every leaf it collected before deciding
+    /// anything, so passing `None` is a normal part of a rule pass and not an
+    /// error path.
+    pub fn set_coalesce(&self, cp: Option<Arc<CoalescePlan>>) {
+        *self.coalesce.lock() = cp;
     }
 
     /// Returns the attached `CoalescePlan`, if `set_coalesce` was called.
@@ -419,5 +426,55 @@ impl ExecutionPlan for ExchangeExec {
             }
             None => Ok(Arc::new(Statistics::new_unknown(&schema))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::aqe::test::mock_schema;
+    use ballista_core::execution_plans::PartitionGroup;
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    fn a_plan() -> Arc<CoalescePlan> {
+        Arc::new(CoalescePlan {
+            upstream_partition_count: 4,
+            groups: vec![PartitionGroup {
+                upstream_indices: vec![0, 1, 2, 3],
+            }],
+        })
+    }
+
+    fn an_exchange() -> ExchangeExec {
+        ExchangeExec::new(
+            Arc::new(EmptyExec::new(mock_schema())),
+            Some(Partitioning::UnknownPartitioning(4)),
+            0,
+        )
+    }
+
+    #[test]
+    fn set_coalesce_none_clears_a_previous_decision() {
+        let exchange = an_exchange();
+        exchange.set_coalesce(Some(a_plan()));
+        assert!(exchange.coalesce().is_some());
+
+        exchange.set_coalesce(None);
+        assert!(exchange.coalesce().is_none());
+    }
+
+    #[test]
+    fn to_broadcast_does_not_carry_the_coalesce_decision_forward() {
+        // A broadcast reader flattens every upstream location into one
+        // partition, so a decision made while this exchange was a shuffle is
+        // meaningless afterwards and must not follow it across.
+        let exchange = an_exchange();
+        exchange.set_coalesce(Some(a_plan()));
+
+        let broadcast = exchange.to_broadcast(1);
+
+        assert!(broadcast.coalesce().is_none());
+        // The original is untouched: `to_broadcast` builds a new node.
+        assert!(exchange.coalesce().is_some());
     }
 }

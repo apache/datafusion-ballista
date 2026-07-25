@@ -302,7 +302,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
                 ex.plan_id,
                 ex.coalesce().as_ref().map(|cp| cp.groups.len()),
             );
-            ex.set_coalesce(cp.clone());
+            ex.set_coalesce(Some(cp.clone()));
         }
         Ok(plan)
     }
