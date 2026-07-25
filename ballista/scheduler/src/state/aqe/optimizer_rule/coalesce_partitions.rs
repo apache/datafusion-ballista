@@ -76,7 +76,7 @@
 //!   4. Bin-pack the summed sizes into `K` buckets near
 //!      `target_partition_bytes` (Spark's `advisoryPartitionSizeInBytes`,
 //!      64 MB by default) using `split_size_list_by_target_size`.
-//!   5. If `K >= M` or `K <= 1`, the rewrite is degenerate and is skipped.
+//!   5. If `K >= M`, the rewrite is not a reduction and is skipped.
 //!   6. Otherwise, attach a shared [`CoalescePlan`] (with `K` partition
 //!      groups) to every leaf `ExchangeExec` via `set_coalesce(..)`. The
 //!      adapter consumes that decision when it builds the downstream
@@ -123,6 +123,51 @@ use crate::state::aqe::coalesce::{
 };
 use crate::state::aqe::execution_plan::AdaptiveDatafusionExec;
 use crate::state::aqe::execution_plan::ExchangeExec;
+
+/// Sum an alignment group's per-upstream-partition byte counts element-wise.
+///
+/// `summed[i]` is the total downstream work for upstream index `i` across the
+/// whole group: for a partitioned join, the task reading group `i` reads that
+/// index from both sides, so their sizes add.
+///
+/// `m` is the group's upstream partition count. Slices are zipped against the
+/// accumulator rather than indexed, so a shorter or longer member cannot index
+/// out of bounds. Addition saturates.
+fn sum_sizes(sizes: &[&[u64]], m: usize) -> Vec<u64> {
+    let mut summed = vec![0u64; m];
+    for leaf in sizes {
+        for (acc, &size) in summed.iter_mut().zip(leaf.iter()) {
+            *acc = acc.saturating_add(size);
+        }
+    }
+    summed
+}
+
+/// Bin-pack a summed size list into a coalesce decision.
+///
+/// Returns `None` when the rewrite would not reduce the partition count
+/// (`K >= M`). That single test covers every degenerate case: an empty list and
+/// a one-partition input both pack to `K = 1`, which is not below their `M`.
+/// A `K` of 1 over a larger `M` *is* a reduction and is returned.
+fn decide(
+    summed: &[u64],
+    target: u64,
+    small_factor: f64,
+    merged_factor: f64,
+) -> Option<CoalescePlan> {
+    let m = summed.len();
+    let starts =
+        split_size_list_by_target_size(summed, target, small_factor, merged_factor);
+    let k = starts.len();
+    if k >= m {
+        debug!("[coalesce-rule] K={k} is not a reduction from M={m}; no decision");
+        return None;
+    }
+    Some(CoalescePlan {
+        upstream_partition_count: m as u32,
+        groups: start_indices_to_partition_groups(&starts, m),
+    })
+}
 
 /// AQE rule that attaches a coalesce decision to every leaf `ExchangeExec`
 /// feeding the current stage, so the downstream reader exposes `K < M`
@@ -245,13 +290,11 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             return Ok(plan);
         }
 
-        // Sum byte sizes element-wise across the alignment group. Upstream
-        // partition `i` is the same logical hash bucket on every leaf, so
-        // `summed[i]` is the total downstream work for that bucket. If any
-        // leaf is still unresolved we bail — early `replan_stages()` passes
-        // run before all upstream stages finalize, and the rule reruns on
-        // every later pass anyway, so the no-op is free.
-        let mut summed = vec![0u64; m];
+        // Collect each leaf's per-partition byte sizes. If any leaf is still
+        // unresolved we bail — early `replan_stages()` passes run before all
+        // upstream stages finalize, and the rule reruns on every later pass
+        // anyway, so the no-op is free.
+        let mut sizes: Vec<Vec<u64>> = Vec::with_capacity(leaves.len());
         for arc in &leaves {
             let ex = as_exchange(arc);
             let Some(parts) = ex.shuffle_partitions() else {
@@ -261,44 +304,31 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
                 );
                 return Ok(plan);
             };
-            for (i, locs) in parts.iter().enumerate() {
-                summed[i] += locs
+            sizes.push(
+                parts
                     .iter()
-                    .filter_map(|l| l.partition_stats.num_bytes())
-                    .sum::<u64>();
-            }
+                    .map(|locs| {
+                        locs.iter()
+                            .filter_map(|l| l.partition_stats.num_bytes())
+                            .fold(0u64, |acc, b| acc.saturating_add(b))
+                    })
+                    .collect(),
+            );
         }
+
+        let borrowed: Vec<&[u64]> = sizes.iter().map(|s| s.as_slice()).collect();
+        let summed = sum_sizes(&borrowed, m);
         debug!("[coalesce-rule] summed bytes per upstream partition: {summed:?}");
 
-        // One bin-pack decision for the whole alignment group, packing toward
-        // `target_partition_bytes` (Spark's `advisoryPartitionSizeInBytes`).
-        // The rule is opt-in (`coalesce.enabled=false` by default), so users
-        // get parallelism preservation unless they explicitly trade it for
-        // larger tasks. This corresponds to Spark's
-        // `parallelismFirst=false` mode — direct advisory-driven packing.
-        let starts = split_size_list_by_target_size(&summed, target, small, merged);
-        let k = starts.len();
-        debug!("[coalesce-rule] bin-pack result: K={k} M={m}");
-        if k >= m || k <= 1 {
-            debug!(
-                "[coalesce-rule] K degenerate (K>=M or K<=1); bail without setting coalesce"
-            );
+        let Some(cp) = decide(&summed, target, small, merged) else {
             return Ok(plan);
-        }
-
-        // Attach the same `CoalescePlan` to every member of the alignment
-        // group. Sharing the plan (not just the K value) keeps the upstream
-        // index → group mapping identical across leaves — hash buckets that
-        // were aligned at M stay aligned at K, and the join's
-        // partition-count requirement still holds after the rewrite.
-        let cp = Arc::new(CoalescePlan {
-            upstream_partition_count: m as u32,
-            groups: start_indices_to_partition_groups(&starts, m),
-        });
+        };
+        let cp = Arc::new(cp);
         for arc in &leaves {
             let ex = as_exchange(arc);
             debug!(
-                "[coalesce-rule] set_coalesce(K={k}) on plan_id={} (was {:?})",
+                "[coalesce-rule] set_coalesce(K={}) on plan_id={} (was {:?})",
+                cp.groups.len(),
                 ex.plan_id,
                 ex.coalesce().as_ref().map(|cp| cp.groups.len()),
             );
@@ -313,5 +343,86 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
 
     fn schema_check(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The production defaults, at the byte scale the existing snapshot tests
+    /// use, so a trace here lines up with a trace there.
+    const TARGET: u64 = 200;
+    const SMALL: f64 = 0.2;
+    const MERGED: f64 = 1.2;
+
+    fn decide_at_defaults(summed: &[u64]) -> Option<CoalescePlan> {
+        decide(summed, TARGET, SMALL, MERGED)
+    }
+
+    #[test]
+    fn sum_sizes_adds_element_wise() {
+        let a: &[u64] = &[1, 2, 3];
+        let b: &[u64] = &[10, 20, 30];
+        assert_eq!(sum_sizes(&[a, b], 3), vec![11, 22, 33]);
+    }
+
+    #[test]
+    fn sum_sizes_of_no_leaves_is_all_zero() {
+        assert_eq!(sum_sizes(&[], 3), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn sum_sizes_saturates_instead_of_overflowing() {
+        // Byte counts come off the wire; a corrupt pair must not panic a
+        // release-mode scheduler differently from a debug one.
+        let a: &[u64] = &[u64::MAX];
+        let b: &[u64] = &[1];
+        assert_eq!(sum_sizes(&[a, b], 1), vec![u64::MAX]);
+    }
+
+    #[test]
+    fn decide_declines_when_every_partition_is_already_full() {
+        // 300 > 200 so each partition flushes on its own and the post-flush
+        // merge is rejected: K = M = 8, no reduction, nothing to do.
+        assert!(decide_at_defaults(&[300; 8]).is_none());
+    }
+
+    #[test]
+    fn decide_declines_for_a_single_upstream_partition() {
+        // M = 1 always packs to K = 1, which is not a reduction.
+        assert!(decide_at_defaults(&[10]).is_none());
+    }
+
+    #[test]
+    fn decide_declines_for_an_empty_size_list() {
+        assert!(decide_at_defaults(&[]).is_none());
+    }
+
+    #[test]
+    fn decide_packs_eight_fiftys_into_two_partitions() {
+        // 4 x 50 fills a bucket to exactly 200; the fifth overshoots and
+        // flushes; the remaining 4 fill the second bucket; the post-loop merge
+        // is rejected (400 >= 200 * 1.2). This is the trace the existing
+        // end-to-end snapshot asserts.
+        let plan = decide_at_defaults(&[50; 8]).expect("K=2 is a reduction from M=8");
+        assert_eq!(plan.upstream_partition_count, 8);
+        assert_eq!(plan.groups.len(), 2);
+        assert_eq!(plan.groups[0].upstream_indices, vec![0, 1, 2, 3]);
+        assert_eq!(plan.groups[1].upstream_indices, vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn decide_packs_a_tiny_stage_into_a_single_partition() {
+        // 8 x 10 = 80 never reaches the 200 target, so the whole stage becomes
+        // one downstream task. Previously refused by a `K <= 1` guard, which is
+        // exactly the case where per-task overhead dominates.
+        let plan = decide_at_defaults(&[10; 8]).expect("K=1 is a reduction from M=8");
+        assert_eq!(plan.upstream_partition_count, 8);
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(
+            plan.groups[0].upstream_indices,
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
     }
 }
