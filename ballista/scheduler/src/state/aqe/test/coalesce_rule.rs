@@ -26,12 +26,8 @@
 
 use crate::assert_plan;
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::{mock_batch, mock_schema};
+use crate::state::aqe::test::{mock_batch, mock_schema, partitions_with_byte_sizes};
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
-};
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -81,40 +77,6 @@ fn register_partitioned_table(
     let table = MemTable::try_new(mock_schema(), data)?;
     ctx.register_table(name, Arc::new(table))?;
     Ok(())
-}
-
-/// Build a `Vec<Vec<PartitionLocation>>` of length `per_partition_bytes.len()`
-/// where each upstream partition reports the given byte size. The rule sums
-/// `partition_stats.num_bytes` across leaves before bin-packing — that's the
-/// only field these tests need to vary.
-fn partitions_with_byte_sizes(
-    per_partition_bytes: &[u64],
-) -> Vec<Vec<PartitionLocation>> {
-    per_partition_bytes
-        .iter()
-        .enumerate()
-        .map(|(idx, &bytes)| {
-            vec![PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: "".into(),
-                    stage_id: 0,
-                    partition_id: idx,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "".to_string(),
-                    host: "".to_string(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(0),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats::new(Some(1), None, Some(bytes)),
-                file_id: None,
-                is_sort_shuffle: false,
-            }]
-        })
-        .collect()
 }
 
 /// Happy path: M=8 upstream partitions @ 50 bytes each, target=200.

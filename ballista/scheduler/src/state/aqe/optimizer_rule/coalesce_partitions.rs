@@ -124,6 +124,85 @@ use crate::state::aqe::coalesce::{
 use crate::state::aqe::execution_plan::AdaptiveDatafusionExec;
 use crate::state::aqe::execution_plan::ExchangeExec;
 
+/// What one leaf `ExchangeExec` contributes to its alignment group.
+#[derive(Debug, PartialEq, Eq)]
+enum LeafKind {
+    /// A broadcast exchange. Its reader flattens every upstream location into a
+    /// single output partition, so there is no partition structure to coalesce,
+    /// and a `CollectLeft` join never requires it to be co-partitioned with
+    /// anything. Excluded from every alignment group.
+    Broadcast,
+    /// The upstream stage has not finalized. The group defers to a later pass.
+    Unresolved,
+    /// At least one location reports no `num_bytes`.
+    UnknownBytes,
+    /// The resolved location vector's length disagrees with the declared
+    /// partition count. Should be unreachable for a non-broadcast exchange.
+    Inconsistent { declared: usize, resolved: usize },
+    /// Per-upstream-partition byte counts. Length equals the declared count.
+    Sizes(Vec<u64>),
+}
+
+/// A leaf `ExchangeExec` reduced to what the rule needs: its alignment-group
+/// key and its contribution to that group.
+#[derive(Debug)]
+struct ClassifiedLeaf {
+    /// Upstream partition count `M`, the alignment-group key.
+    m: usize,
+    kind: LeafKind,
+}
+
+/// Reduce one leaf `ExchangeExec` to a [`ClassifiedLeaf`].
+///
+/// `m` is the declared partition count. For a `Sizes` leaf the resolved shape
+/// is checked to match it, so `m == sizes.len()` holds for every leaf that
+/// reaches the summing step and the summed vector can never be indexed out of
+/// bounds.
+fn classify_leaf(ex: &ExchangeExec) -> ClassifiedLeaf {
+    let m = ex.properties().partitioning.partition_count();
+    if ex.broadcast {
+        return ClassifiedLeaf {
+            m,
+            kind: LeafKind::Broadcast,
+        };
+    }
+    let Some(parts) = ex.shuffle_partitions() else {
+        return ClassifiedLeaf {
+            m,
+            kind: LeafKind::Unresolved,
+        };
+    };
+    if parts.len() != m {
+        return ClassifiedLeaf {
+            m,
+            kind: LeafKind::Inconsistent {
+                declared: m,
+                resolved: parts.len(),
+            },
+        };
+    }
+    let mut sizes = Vec::with_capacity(parts.len());
+    for locations in &parts {
+        let mut total = 0u64;
+        for location in locations {
+            match location.partition_stats.num_bytes() {
+                Some(bytes) => total = total.saturating_add(bytes),
+                None => {
+                    return ClassifiedLeaf {
+                        m,
+                        kind: LeafKind::UnknownBytes,
+                    };
+                }
+            }
+        }
+        sizes.push(total);
+    }
+    ClassifiedLeaf {
+        m,
+        kind: LeafKind::Sizes(sizes),
+    }
+}
+
 /// Sum an alignment group's per-upstream-partition byte counts element-wise.
 ///
 /// `summed[i]` is the total downstream work for upstream index `i` across the
@@ -266,58 +345,36 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             return Ok(plan);
         }
 
-        // this is temporary fix until we figure it out how to
-        // make this work with broadcast
-        if leaves.iter().any(|arc| as_exchange(arc).broadcast) {
+        let classified: Vec<ClassifiedLeaf> = leaves
+            .iter()
+            .map(|arc| classify_leaf(as_exchange(arc)))
+            .collect();
+
+        // Still one alignment group in this task; Task 4 splits it by M.
+        if classified.iter().any(|c| c.kind == LeafKind::Broadcast) {
             debug!("[coalesce-rule] broadcast leaf present; bail entire group");
             return Ok(plan);
         }
-
-        // The alignment-group invariant assumes a shared `M`. In every plan
-        // shape we currently produce, all leaves of one stage subtree are
-        // hash-partitioned by the same target_partitions setting upstream,
-        // so reading `M` from leaf 0 is sufficient.
-        let m = as_exchange(&leaves[0])
-            .properties()
-            .partitioning
-            .partition_count();
-
-        // TODO: per-M subgrouping; for now bail on heterogeneous M (Q22 panic guard).
-        if leaves
-            .iter()
-            .any(|arc| as_exchange(arc).properties().partitioning.partition_count() != m)
-        {
+        let m = classified[0].m;
+        if classified.iter().any(|c| c.m != m) {
+            debug!("[coalesce-rule] heterogeneous M; bail entire group");
             return Ok(plan);
         }
-
-        // Collect each leaf's per-partition byte sizes. If any leaf is still
-        // unresolved we bail — early `replan_stages()` passes run before all
-        // upstream stages finalize, and the rule reruns on every later pass
-        // anyway, so the no-op is free.
-        let mut sizes: Vec<Vec<u64>> = Vec::with_capacity(leaves.len());
-        for arc in &leaves {
-            let ex = as_exchange(arc);
-            let Some(parts) = ex.shuffle_partitions() else {
-                debug!(
-                    "[coalesce-rule] leaf plan_id={} unresolved; bail entire group",
-                    ex.plan_id
-                );
-                return Ok(plan);
-            };
-            sizes.push(
-                parts
-                    .iter()
-                    .map(|locs| {
-                        locs.iter()
-                            .filter_map(|l| l.partition_stats.num_bytes())
-                            .fold(0u64, |acc, b| acc.saturating_add(b))
-                    })
-                    .collect(),
-            );
+        let mut sizes: Vec<&[u64]> = Vec::with_capacity(classified.len());
+        for (leaf, arc) in classified.iter().zip(&leaves) {
+            match &leaf.kind {
+                LeafKind::Sizes(s) => sizes.push(s.as_slice()),
+                other => {
+                    debug!(
+                        "[coalesce-rule] leaf plan_id={} is {other:?}; bail entire group",
+                        as_exchange(arc).plan_id
+                    );
+                    return Ok(plan);
+                }
+            }
         }
 
-        let borrowed: Vec<&[u64]> = sizes.iter().map(|s| s.as_slice()).collect();
-        let summed = sum_sizes(&borrowed, m);
+        let summed = sum_sizes(&sizes, m);
         debug!("[coalesce-rule] summed bytes per upstream partition: {summed:?}");
 
         let Some(cp) = decide(&summed, target, small, merged) else {
@@ -424,5 +481,93 @@ mod tests {
             plan.groups[0].upstream_indices,
             vec![0, 1, 2, 3, 4, 5, 6, 7]
         );
+    }
+
+    use crate::state::aqe::test::{
+        mock_schema, partitions_with_byte_sizes, partitions_with_optional_byte_sizes,
+    };
+    use ballista_core::serde::scheduler::PartitionLocation;
+    use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    /// A shuffle exchange declaring `m` partitions, optionally resolved.
+    fn shuffle_exchange(
+        m: usize,
+        resolved: Option<Vec<Vec<PartitionLocation>>>,
+    ) -> ExchangeExec {
+        let exchange = ExchangeExec::new(
+            Arc::new(EmptyExec::new(mock_schema())),
+            Some(Partitioning::UnknownPartitioning(m)),
+            0,
+        );
+        if let Some(parts) = resolved {
+            exchange.resolve_shuffle_partitions(parts);
+        }
+        exchange
+    }
+
+    #[test]
+    fn classify_reads_sizes_from_the_resolved_shuffle_shape() {
+        let exchange =
+            shuffle_exchange(3, Some(partitions_with_byte_sizes(&[10, 20, 30])));
+
+        let leaf = classify_leaf(&exchange);
+
+        assert_eq!(leaf.m, 3);
+        assert_eq!(leaf.kind, LeafKind::Sizes(vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn classify_reports_broadcast_regardless_of_resolved_shape() {
+        // The Q22 regression guard. A broadcast exchange declares
+        // `UnknownPartitioning(1)` but resolves to one entry per upstream
+        // partition. Reading M from the declaration and indexing by the
+        // resolution is what panicked; classification never lets a broadcast
+        // leaf reach the summing step at all.
+        let exchange =
+            ExchangeExec::new_broadcast(Arc::new(EmptyExec::new(mock_schema())), None, 0);
+        exchange.resolve_shuffle_partitions(partitions_with_byte_sizes(&[50; 8]));
+
+        let leaf = classify_leaf(&exchange);
+
+        assert_eq!(leaf.kind, LeafKind::Broadcast);
+    }
+
+    #[test]
+    fn classify_reports_inconsistent_when_the_resolved_shape_disagrees() {
+        let exchange = shuffle_exchange(8, Some(partitions_with_byte_sizes(&[50; 4])));
+
+        let leaf = classify_leaf(&exchange);
+
+        assert_eq!(
+            leaf.kind,
+            LeafKind::Inconsistent {
+                declared: 8,
+                resolved: 4
+            }
+        );
+    }
+
+    #[test]
+    fn classify_reports_unresolved_before_the_upstream_stage_finalizes() {
+        let exchange = shuffle_exchange(8, None);
+
+        assert_eq!(classify_leaf(&exchange).kind, LeafKind::Unresolved);
+    }
+
+    #[test]
+    fn classify_reports_unknown_bytes_when_a_location_has_no_size() {
+        // One missing value makes the leaf's totals untrustworthy: counting it
+        // as zero would let real partitions pack into an oversized task.
+        let exchange = shuffle_exchange(
+            3,
+            Some(partitions_with_optional_byte_sizes(&[
+                Some(10),
+                None,
+                Some(30),
+            ])),
+        );
+
+        assert_eq!(classify_leaf(&exchange).kind, LeafKind::UnknownBytes);
     }
 }
