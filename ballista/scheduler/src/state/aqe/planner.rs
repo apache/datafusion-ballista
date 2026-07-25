@@ -369,14 +369,6 @@ impl AdaptivePlanner {
                         // group. This avoids cross-stage gluing and stale state
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
-                        //
-                        // `adapt_to_ballista` must stay in this same closure.
-                        // The rule clears the coalesce slot of every leaf it
-                        // collects before deciding anything, and an
-                        // `ExchangeExec` is a shared `Arc` seen by every stage
-                        // that reads it, so optimizing all stages first and
-                        // adapting them afterwards would let a later stage's
-                        // clear wipe an earlier stage's decision unread.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
                         // adapt_to_ballista takes an job_id, we are passing a job_name. Need to transform to fix compiler.
                         let job_id = self.job_name.clone().into();

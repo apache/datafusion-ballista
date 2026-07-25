@@ -217,6 +217,38 @@ impl ExchangeExec {
         self.shuffle_partitions.lock().clone()
     }
 
+    /// Runs `f` against the resolved shuffle partitions in place, returning
+    /// `None` if they have not been resolved yet.
+    ///
+    /// Prefer this over [`Self::shuffle_partitions`] when only a summary is
+    /// needed. That method deep-clones the whole vector, and every
+    /// `PartitionLocation` in it carries several `String`s, so reading a byte
+    /// count per partition would otherwise allocate proportionally to the
+    /// upstream partition count on every call.
+    pub fn with_shuffle_partitions<R>(
+        &self,
+        f: impl FnOnce(&[Vec<PartitionLocation>]) -> R,
+    ) -> Option<R> {
+        self.shuffle_partitions.lock().as_deref().map(f)
+    }
+
+    /// Whether this exchange carries its child's ordering across the stage
+    /// boundary unchanged.
+    ///
+    /// True exactly for a pass-through exchange, which `DistributedExchangeRule`
+    /// inserts beneath a `SortPreservingMergeExec` or `CoalescePartitionsExec`
+    /// to mark a boundary without re-partitioning. A repartitioning exchange
+    /// makes no such promise.
+    ///
+    /// NOTE: the `true` answer is only sound because `CoalescePartitionsRule`
+    /// declines to coalesce these leaves. A coalesced `ShuffleReaderExec`
+    /// concatenates several upstream partitions into one output partition and
+    /// randomises the order it reads their locations in, which would destroy
+    /// the ordering this reports as preserved.
+    pub fn preserves_child_ordering(&self) -> bool {
+        self.partitioning.is_none()
+    }
+
     /// Flattens partition locations into single vector,
     /// this method is usually used when we want to collect partitions
     /// to form a broadcast join
@@ -341,10 +373,7 @@ impl ExecutionPlan for ExchangeExec {
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
-        match self.partitioning {
-            Some(_) => vec![false; self.children().len()],
-            None => vec![true; self.children().len()],
-        }
+        vec![self.preserves_child_ordering(); self.children().len()]
     }
 
     fn with_new_children(
