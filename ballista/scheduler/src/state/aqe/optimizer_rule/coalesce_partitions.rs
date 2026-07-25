@@ -116,8 +116,9 @@
 //!      has nothing to coalesce.
 //!   2. Clear every leaf's coalesce slot, so the pass recomputes wholesale and
 //!      no decision survives from an earlier pass.
-//!   3. Classify each leaf. Broadcast leaves drop out; unresolved, statistics-
-//!      free, and inconsistent leaves make their group undecidable.
+//!   3. Classify each leaf. Broadcast and pass-through leaves drop out;
+//!      unresolved, statistics-free, and inconsistent leaves make their group
+//!      undecidable.
 //!   4. Group the rest by `M`.
 //!   5. Per group: sum per-partition byte sizes element-wise, then bin-pack the
 //!      sums toward `target_partition_bytes` (Spark's
@@ -255,6 +256,9 @@ fn classify_leaf(ex: &ExchangeExec) -> ClassifiedLeaf {
             kind: LeafKind::Broadcast,
         };
     }
+    // Must run after the broadcast check above: `new_broadcast` and
+    // `to_broadcast` also set `partitioning: None`, so a broadcast leaf would
+    // misclassify as `PassThrough` if this check ran first.
     if ex.partitioning.is_none() {
         return ClassifiedLeaf {
             m,
