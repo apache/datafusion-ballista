@@ -236,9 +236,7 @@ impl Executor {
         self.abort_handles.insert(key.clone(), abort_handle);
 
         let partitions = match std::panic::AssertUnwindSafe(task).catch_unwind().await {
-            Ok(Ok(result)) => {
-                result.map_err(|e| BallistaError::DataFusionError(Box::new(e)))
-            }
+            Ok(Ok(result)) => result.map_err(BallistaError::from),
             Ok(Err(_)) => {
                 warn!("Task has been aborted!");
                 Err(BallistaError::Cancelled)
