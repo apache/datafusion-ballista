@@ -341,7 +341,9 @@ pub(super) mod test_util {
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::common::Result;
     use datafusion::execution::TaskContext;
-    use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+    use datafusion::physical_expr::{
+        EquivalenceProperties, LexOrdering, Partitioning, PhysicalSortExpr,
+    };
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
@@ -368,6 +370,29 @@ pub(super) mod test_util {
         pub(crate) fn new(schema: &Arc<Schema>) -> Self {
             let properties = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema.clone()),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self {
+                schema: schema.clone(),
+                properties,
+            }
+        }
+
+        /// Same as `new` but declares `order_by` as the output ordering.
+        /// `OrderedRangeRepartitionExec::try_new` rejects inputs without a
+        /// declared ordering, so its panic test needs this variant.
+        pub(crate) fn with_ordering(
+            schema: &Arc<Schema>,
+            order_by: Vec<PhysicalSortExpr>,
+        ) -> Self {
+            let mut eq = EquivalenceProperties::new(schema.clone());
+            if let Some(lex) = LexOrdering::new(order_by) {
+                eq.add_ordering(lex);
+            }
+            let properties = Arc::new(PlanProperties::new(
+                eq,
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,

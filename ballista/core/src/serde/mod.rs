@@ -56,9 +56,9 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, PartitionGroup, RuntimeStatsExec,
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-    UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
+    PartitionGroup, RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -617,6 +617,25 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     node.output_partitions as usize,
                 )?))
             }
+            PhysicalPlanType::OrderedRangeRepartition(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "OrderedRangeRepartitionExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let order_by = parse_physical_sort_exprs(
+                    &node.order_by,
+                    &decode_ctx,
+                    input.schema().as_ref(),
+                    &converter,
+                )?;
+                Ok(Arc::new(OrderedRangeRepartitionExec::try_new(
+                    input.clone(),
+                    order_by,
+                    node.output_partitions as usize,
+                )?))
+            }
         }
     }
 
@@ -831,6 +850,27 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode UnorderedRangeRepartitionExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<OrderedRangeRepartitionExec>() {
+            let converter = DefaultPhysicalProtoConverter {};
+            let order_by = serialize_physical_sort_exprs(
+                exec.order_by().iter().cloned(),
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::OrderedRangeRepartition(
+                    protobuf::OrderedRangeRepartitionExecNode {
+                        order_by,
+                        output_partitions: exec.output_partitions() as u32,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode OrderedRangeRepartitionExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -1835,5 +1875,53 @@ mod test {
             "sort options must survive per-key"
         );
         assert!(!decoded_order_by[1].options.nulls_first);
+    }
+
+    /// `OrderedRangeRepartitionExec` requires input to declare a matching
+    /// sort ordering; wrap `EmptyExec` in a `SortExec` so the ordering
+    /// claim is present at construction time.
+    #[tokio::test]
+    async fn test_ordered_range_repartition_exec_roundtrip() {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::sorts::sort::SortExec;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let leaf: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let sort_expr = PhysicalSortExpr {
+            expr: col("v2", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let sort_lex = LexOrdering::new(vec![sort_expr.clone()]).unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(SortExec::new(sort_lex, leaf).with_preserve_partitioning(true));
+        let original = OrderedRangeRepartitionExec::try_new(
+            input.clone(),
+            vec![sort_expr.clone()],
+            8,
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+
+        let decoded = decoded_plan
+            .downcast_ref::<OrderedRangeRepartitionExec>()
+            .expect("Expected OrderedRangeRepartitionExec");
+        let order_by = decoded.order_by();
+        assert_eq!(order_by.len(), 1, "ORDER BY must round-trip");
+        assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
+        assert_eq!(decoded.output_partitions(), 8, "K must round-trip");
     }
 }
