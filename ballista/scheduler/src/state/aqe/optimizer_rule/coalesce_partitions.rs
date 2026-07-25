@@ -23,34 +23,37 @@
 //! subtree, collects every leaf [`ExchangeExec`] — the resolved upstream
 //! shuffles feeding this stage — and decides whether to coalesce.
 //!
-//! # The alignment group
+//! # Alignment groups
 //!
-//! Every leaf `ExchangeExec` in a single stage subtree forms one **alignment
-//! group**. Why one group, not one decision per leaf?
+//! Leaf Exchanges are grouped by upstream partition count `M`, and each group
+//! is decided independently.
 //!
-//! - Hash-partitioned joins (`HashJoinExec(Partitioned)`, `SortMergeJoinExec`)
-//!   require their two inputs to have the *same partition count* and to be
-//!   hash-partitioned on the join key. If we coalesced left to `K=4` and
-//!   right to `K=2`, DataFusion's `EnforceDistribution` would either reject
-//!   the plan or insert remediation repartitions that undo the optimization.
-//! - Both join legs read shuffle output from upstream stages that wrote
-//!   `M` partitions using the *same* hash function on the *same* key
-//!   (that's what made them joinable in the first place). So upstream
-//!   partition `i` of the left and upstream partition `i` of the right
-//!   hold rows that must meet at downstream partition `f(i)`. Coalescing
-//!   them with the *same* mapping `i → group(i)` keeps that meeting point
-//!   consistent; coalescing them with different mappings scatters it.
+//! Grouping exists because hash-partitioned joins (`HashJoinExec(Partitioned)`,
+//! `SortMergeJoinExec`) require their two inputs to have the same partition
+//! count and the same hash mapping. Both legs read shuffle output written with
+//! the same hash function on the same key, so upstream partition `i` of the
+//! left and upstream partition `i` of the right hold rows that must meet at one
+//! downstream partition. Coalescing them with the same `i → group(i)` mapping
+//! keeps that meeting point; coalescing them differently scatters it. Every
+//! member of a group therefore gets the *same* `CoalescePlan`, not merely the
+//! same `K`.
 //!
-//! Practically: we treat all leaf Exchanges as a single workload, sum their
-//! per-partition byte counts element-wise, bin-pack the summed sizes once,
-//! and attach the *same* `CoalescePlan` to every leaf. Joins with two leaves
-//! and chains of joins with three or more leaves all go through the same
-//! code path — there is no per-leaf decision.
+//! Grouping by `M` is sufficient, not merely convenient. DataFusion's
+//! `EnforceDistribution` guarantees both sides of a `Partitioned` join have
+//! equal partition counts, so two leaves feeding one partitioned join always
+//! share an `M` and always land in the same group. Two leaves with different
+//! `M` provably are not co-partitioned siblings of one join.
 //!
-//! Concretely for `[25; 8]` bytes per partition on both sides of a join:
-//! summed `[50; 8]`, bin-pack at target `200` produces `K=2` (4 upstream
-//! partitions per group), both leaves get `coalesce=2 of 8`, the downstream
-//! join runs with 2 partitions on each side, hash buckets stay aligned.
+//! Broadcast leaves are excluded from every group. A broadcast reader flattens
+//! all upstream locations into a single output partition, so there is nothing
+//! to coalesce, and a `CollectLeft` join requires `SinglePartition` on the
+//! build side and `UnspecifiedDistribution` on the probe side, so a broadcast
+//! leaf is never a co-partitioned sibling.
+//!
+//! The grouping is conservative in the other direction: leaves that share an
+//! `M` without sharing any co-partitioning requirement, such as the two arms of
+//! a union, still land in one group and have their sizes summed. That inflates
+//! the per-index totals and under-coalesces, which is safe.
 //!
 //! # Default off
 //!
@@ -68,27 +71,27 @@
 //!
 //! # Algorithm
 //!
-//!   1. Find leaf `ExchangeExec`s — the alignment group. If empty, this
-//!      stage reads from scans and has nothing to coalesce.
-//!   2. All leaves share the upstream partition count `M` (the writer side).
-//!   3. Sum per-partition byte sizes element-wise across the group to get
-//!      combined work per upstream index.
-//!   4. Bin-pack the summed sizes into `K` buckets near
-//!      `target_partition_bytes` (Spark's `advisoryPartitionSizeInBytes`,
-//!      64 MB by default) using `split_size_list_by_target_size`.
-//!   5. If `K >= M`, the rewrite is not a reduction and is skipped.
-//!   6. Otherwise, attach a shared [`CoalescePlan`] (with `K` partition
-//!      groups) to every leaf `ExchangeExec` via `set_coalesce(..)`. The
-//!      adapter consumes that decision when it builds the downstream
-//!      `ShuffleReaderExec`s.
+//!   1. Collect leaf `ExchangeExec`s. If none, this stage reads from scans and
+//!      has nothing to coalesce.
+//!   2. Clear every leaf's coalesce slot, so the pass recomputes wholesale and
+//!      no decision survives from an earlier pass.
+//!   3. Classify each leaf. Broadcast leaves drop out; unresolved, statistics-
+//!      free, and inconsistent leaves make their group undecidable.
+//!   4. Group the rest by `M`.
+//!   5. Per group: sum per-partition byte sizes element-wise, then bin-pack the
+//!      sums toward `target_partition_bytes` (Spark's
+//!      `advisoryPartitionSizeInBytes`, 64 MB by default) with
+//!      `split_size_list_by_target_size`.
+//!   6. If `K >= M` the rewrite is not a reduction and the group is left alone.
+//!      Otherwise attach one shared [`CoalescePlan`] to every member. `K == 1`
+//!      is a legitimate outcome for a stage that fits in one partition.
 //!
 //! # Carrier semantics
 //!
-//! The `CoalescePlan` lives on the upstream `ExchangeExec`; the rule does
-//! not rewrite the plan tree. Idempotency is structural — `set_coalesce`
-//! overwrites the slot with an equivalent plan on re-entry, and the
-//! bin-pack is a pure function of the resolved byte sizes, so the second
-//! pass produces the same decision.
+//! The `CoalescePlan` lives on the upstream `ExchangeExec`; the rule does not
+//! rewrite the plan tree. Idempotency comes from the clear-then-set contract in
+//! step 2 combined with the bin-pack being a pure function of resolved byte
+//! sizes, which do not change once a stage has finalized.
 //!
 //! # Grouping discipline
 //!
@@ -103,11 +106,12 @@
 //!
 //! # Behavior preservation
 //!
-//! When `ballista.planner.coalesce.enabled=false`, when the subtree has no
-//! leaf Exchanges, or when the bin-pack returns a degenerate `K`, the rule
-//! is a no-op and returns the input `Arc` verbatim (preserving
-//! `Arc::ptr_eq`).
+//! The rule never rewrites the plan tree; decisions travel on each leaf's
+//! interior-mutable slot and the input `Arc` is returned verbatim, preserving
+//! `Arc::ptr_eq`. When `ballista.planner.coalesce.enabled=false` the rule
+//! short-circuits before touching any slot.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
@@ -116,7 +120,7 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
-use log::debug;
+use log::{debug, warn};
 
 use crate::state::aqe::coalesce::{
     split_size_list_by_target_size, start_indices_to_partition_groups,
@@ -203,6 +207,82 @@ fn classify_leaf(ex: &ExchangeExec) -> ClassifiedLeaf {
     }
 }
 
+/// Partition classified leaves into alignment groups keyed by upstream
+/// partition count `M`.
+///
+/// Broadcast leaves are dropped: they carry no partition structure to coalesce
+/// and are never a co-partitioned join sibling, so excluding them cannot break
+/// an alignment invariant.
+///
+/// A group maps to `Some(indices)` when every member carries usable sizes, and
+/// to `None` when any member is unresolved, missing byte statistics, or
+/// inconsistent. Skipping is per group: one undecidable leaf no longer
+/// suppresses coalescing for leaves it has no relationship with.
+///
+/// `BTreeMap` rather than `HashMap` so iteration order, and therefore the debug
+/// log and the order decisions are applied, is stable across passes.
+fn group_by_upstream_count(
+    leaves: &[ClassifiedLeaf],
+) -> BTreeMap<usize, Option<Vec<usize>>> {
+    let mut groups: BTreeMap<usize, Option<Vec<usize>>> = BTreeMap::new();
+    for (idx, leaf) in leaves.iter().enumerate() {
+        if leaf.kind == LeafKind::Broadcast {
+            continue;
+        }
+        let entry = groups.entry(leaf.m).or_insert_with(|| Some(Vec::new()));
+        match &leaf.kind {
+            LeafKind::Sizes(_) => {
+                if let Some(members) = entry {
+                    members.push(idx);
+                }
+            }
+            _ => *entry = None,
+        }
+    }
+    groups
+}
+
+/// Unwrap a stage root to the subtree the rule inspects.
+///
+/// The root is either an `ExchangeExec` (intermediate stage) or an
+/// `AdaptiveDatafusionExec` (final stage). Anything else means the adapter is
+/// about to fail anyway, so the rule declines rather than guessing.
+fn stage_input(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+    if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
+        Some(exchange.input().clone())
+    } else if let Some(adaptive) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
+        Some(adaptive.input().clone())
+    } else {
+        None
+    }
+}
+
+/// Collect every leaf `ExchangeExec` feeding this stage.
+///
+/// `Jump` after each hit stops the walk from descending into the upstream
+/// stage's compute: those nodes belong to whatever stage wrote them, not to
+/// this one.
+fn collect_leaf_exchanges(
+    input: &Arc<dyn ExecutionPlan>,
+) -> datafusion::common::Result<Vec<Arc<dyn ExecutionPlan>>> {
+    let mut leaves: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
+    input.apply(|node| {
+        if node.is::<ExchangeExec>() {
+            leaves.push(node.clone());
+            Ok(TreeNodeRecursion::Jump)
+        } else {
+            Ok(TreeNodeRecursion::Continue)
+        }
+    })?;
+    Ok(leaves)
+}
+
+/// Downcast a collected leaf back to `&ExchangeExec`.
+fn as_exchange(arc: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
+    arc.downcast_ref::<ExchangeExec>()
+        .expect("collect_leaf_exchanges filters to ExchangeExec")
+}
+
 /// Sum an alignment group's per-upstream-partition byte counts element-wise.
 ///
 /// `summed[i]` is the total downstream work for upstream index `i` across the
@@ -279,117 +359,81 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         );
 
         // Get the subtree below the root. Two root kinds, same outcome.
-        let input = if let Some(ex) = plan.downcast_ref::<ExchangeExec>() {
-            debug!(
-                "[coalesce-rule] root=ExchangeExec plan_id={} stage_id={:?} stage_resolved={}",
-                ex.plan_id,
-                ex.stage_id(),
-                ex.shuffle_partitions().is_some(),
-            );
-            ex.input().clone()
-        } else if let Some(adp) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
-            debug!(
-                "[coalesce-rule] root=AdaptiveDatafusionExec stage_id={:?}",
-                adp.stage_id(),
-            );
-            adp.input().clone()
-        } else {
+        let Some(input) = stage_input(&plan) else {
             debug!(
                 "[coalesce-rule] root is neither ExchangeExec nor AdaptiveDatafusionExec; bail"
             );
-            return Ok(plan); // unexpected root — adapter will fail anyway, just bail
+            return Ok(plan);
         };
 
-        // Collect the alignment group: every leaf `ExchangeExec` feeding
-        // this stage. `Jump` after each hit stops the walk from descending
-        // into the upstream stage's compute — those nodes aren't part of
-        // *this* stage's group, they belong to whatever stage wrote them.
-        let mut leaves: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
-        input.apply(|node| {
-            if node.is::<ExchangeExec>() {
-                leaves.push(node.clone());
-                Ok(TreeNodeRecursion::Jump)
-            } else {
-                Ok(TreeNodeRecursion::Continue)
-            }
-        })?;
-
-        // Helper: downcast each Arc back to &ExchangeExec.
-        fn as_exchange(arc: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
-            arc.downcast_ref::<ExchangeExec>()
-                .expect("filtered to ExchangeExec above")
-        }
-
+        let leaves = collect_leaf_exchanges(&input)?;
         debug!(
             "[coalesce-rule] collected {} leaf ExchangeExec(s)",
             leaves.len()
         );
-        for arc in &leaves {
-            let ex = as_exchange(arc);
-            debug!(
-                "[coalesce-rule]   leaf: plan_id={} stage_id={:?} partitioning={} M={} resolved={} existing_coalesce={:?}",
-                ex.plan_id,
-                ex.stage_id(),
-                ex.properties().partitioning,
-                ex.properties().partitioning.partition_count(),
-                ex.shuffle_partitions().is_some(),
-                ex.coalesce()
-                    .as_ref()
-                    .map(|cp| (cp.groups.len(), cp.upstream_partition_count)),
-            );
-        }
-
-        // Leaf-scan stage with no upstream Exchanges → nothing to coalesce.
         if leaves.is_empty() {
             debug!("[coalesce-rule] no leaves; bail");
             return Ok(plan);
+        }
+
+        // Wholesale recompute: clear every leaf before deciding anything, so a
+        // group can never be left with one member carrying a decision from an
+        // earlier pass and another carrying none.
+        for arc in &leaves {
+            as_exchange(arc).set_coalesce(None);
         }
 
         let classified: Vec<ClassifiedLeaf> = leaves
             .iter()
             .map(|arc| classify_leaf(as_exchange(arc)))
             .collect();
-
-        // Still one alignment group in this task; Task 4 splits it by M.
-        if classified.iter().any(|c| c.kind == LeafKind::Broadcast) {
-            debug!("[coalesce-rule] broadcast leaf present; bail entire group");
-            return Ok(plan);
-        }
-        let m = classified[0].m;
-        if classified.iter().any(|c| c.m != m) {
-            debug!("[coalesce-rule] heterogeneous M; bail entire group");
-            return Ok(plan);
-        }
-        let mut sizes: Vec<&[u64]> = Vec::with_capacity(classified.len());
-        for (leaf, arc) in classified.iter().zip(&leaves) {
-            match &leaf.kind {
-                LeafKind::Sizes(s) => sizes.push(s.as_slice()),
-                other => {
-                    debug!(
-                        "[coalesce-rule] leaf plan_id={} is {other:?}; bail entire group",
-                        as_exchange(arc).plan_id
-                    );
-                    return Ok(plan);
-                }
+        for (arc, leaf) in leaves.iter().zip(&classified) {
+            let ex = as_exchange(arc);
+            debug!(
+                "[coalesce-rule]   leaf: plan_id={} stage_id={:?} partitioning={} M={} kind={:?}",
+                ex.plan_id,
+                ex.stage_id(),
+                ex.properties().partitioning,
+                leaf.m,
+                leaf.kind,
+            );
+            if let LeafKind::Inconsistent { declared, resolved } = &leaf.kind {
+                warn!(
+                    "[coalesce-rule] leaf plan_id={} declares {declared} partitions but \
+                     resolved {resolved}; skipping its alignment group",
+                    ex.plan_id
+                );
             }
         }
 
-        let summed = sum_sizes(&sizes, m);
-        debug!("[coalesce-rule] summed bytes per upstream partition: {summed:?}");
+        for (m, members) in group_by_upstream_count(&classified) {
+            let Some(members) = members else {
+                debug!("[coalesce-rule] group M={m} has an unusable leaf; skipping");
+                continue;
+            };
+            let sizes: Vec<&[u64]> = members
+                .iter()
+                .filter_map(|&idx| match &classified[idx].kind {
+                    LeafKind::Sizes(sizes) => Some(sizes.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            let summed = sum_sizes(&sizes, m);
+            debug!("[coalesce-rule] group M={m} summed bytes: {summed:?}");
 
-        let Some(cp) = decide(&summed, target, small, merged) else {
-            return Ok(plan);
-        };
-        let cp = Arc::new(cp);
-        for arc in &leaves {
-            let ex = as_exchange(arc);
-            debug!(
-                "[coalesce-rule] set_coalesce(K={}) on plan_id={} (was {:?})",
-                cp.groups.len(),
-                ex.plan_id,
-                ex.coalesce().as_ref().map(|cp| cp.groups.len()),
-            );
-            ex.set_coalesce(Some(cp.clone()));
+            let Some(cp) = decide(&summed, target, small, merged) else {
+                continue;
+            };
+            let cp = Arc::new(cp);
+            for &idx in &members {
+                let ex = as_exchange(&leaves[idx]);
+                debug!(
+                    "[coalesce-rule] set_coalesce(K={}) on plan_id={}",
+                    cp.groups.len(),
+                    ex.plan_id,
+                );
+                ex.set_coalesce(Some(cp.clone()));
+            }
         }
         Ok(plan)
     }
@@ -569,5 +613,70 @@ mod tests {
         );
 
         assert_eq!(classify_leaf(&exchange).kind, LeafKind::UnknownBytes);
+    }
+
+    fn sized(m: usize, sizes: Vec<u64>) -> ClassifiedLeaf {
+        ClassifiedLeaf {
+            m,
+            kind: LeafKind::Sizes(sizes),
+        }
+    }
+
+    fn broadcast(m: usize) -> ClassifiedLeaf {
+        ClassifiedLeaf {
+            m,
+            kind: LeafKind::Broadcast,
+        }
+    }
+
+    fn unresolved(m: usize) -> ClassifiedLeaf {
+        ClassifiedLeaf {
+            m,
+            kind: LeafKind::Unresolved,
+        }
+    }
+
+    #[test]
+    fn grouping_splits_leaves_by_upstream_partition_count() {
+        let leaves = vec![
+            sized(8, vec![50; 8]),
+            sized(8, vec![50; 8]),
+            sized(4, vec![50; 4]),
+            sized(4, vec![50; 4]),
+        ];
+
+        let groups = group_by_upstream_count(&leaves);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.get(&8), Some(&Some(vec![0, 1])));
+        assert_eq!(groups.get(&4), Some(&Some(vec![2, 3])));
+    }
+
+    #[test]
+    fn grouping_drops_broadcast_leaves_without_disturbing_their_siblings() {
+        // The #2166 case: a broadcast leaf must not take the shuffle leaves in
+        // the same stage down with it.
+        let leaves = vec![broadcast(1), sized(8, vec![50; 8]), sized(8, vec![50; 8])];
+
+        let groups = group_by_upstream_count(&leaves);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.get(&8), Some(&Some(vec![1, 2])));
+        assert!(!groups.contains_key(&1));
+    }
+
+    #[test]
+    fn grouping_skips_only_the_group_holding_an_unusable_leaf() {
+        let leaves = vec![sized(8, vec![50; 8]), unresolved(8), sized(4, vec![50; 4])];
+
+        let groups = group_by_upstream_count(&leaves);
+
+        assert_eq!(groups.get(&8), Some(&None));
+        assert_eq!(groups.get(&4), Some(&Some(vec![2])));
+    }
+
+    #[test]
+    fn grouping_of_only_broadcast_leaves_is_empty() {
+        assert!(group_by_upstream_count(&[broadcast(1)]).is_empty());
     }
 }
