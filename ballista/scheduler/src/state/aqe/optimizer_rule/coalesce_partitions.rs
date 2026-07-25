@@ -58,6 +58,16 @@
 //! build side and `UnspecifiedDistribution` on the probe side, so a broadcast
 //! leaf is never a co-partitioned sibling.
 //!
+//! Pass-through leaves — `ExchangeExec`s with `partitioning: None` — are
+//! excluded too. `DistributedExchangeRule` creates exactly two of these: one
+//! beneath a `CoalescePartitionsExec`, one beneath a `SortPreservingMergeExec`.
+//! Neither is a co-partitioned join sibling, for the same reason a broadcast
+//! leaf isn't: `SelectJoinRule` always builds join-leg exchanges with
+//! `Some(partitioning)`, and anything feeding a `Partitioned` join gets a hash
+//! `RepartitionExec` from `EnforceDistribution`, which `DistributedExchangeRule`
+//! turns into a `Some(partitioning)` exchange, never a pass-through one. See
+//! below for why excluding them also costs nothing.
+//!
 //! The grouping is conservative in the other direction: leaves that share an
 //! `M` without sharing any co-partitioning requirement, such as the two arms of
 //! a union, still land in one group and have their sizes summed. That inflates
@@ -65,22 +75,26 @@
 //!
 //! # What this rule does not reason about
 //!
-//! The alignment argument above is about hash co-partitioning only. It says
-//! nothing about the two properties below, and neither does the rule.
+//! **Ordering** used to be an unhandled gap here: a coalesced reader
+//! concatenates several upstream partitions into one output partition without
+//! merging them, so per-partition ordering does not survive the rewrite, and a
+//! `SortPreservingMergeExec` reading a coalesced partition would merge streams
+//! that are no longer sorted and emit wrongly ordered output. The rule now
+//! closes it structurally instead of detecting the shape: the *only* thing
+//! that carries a child's ordering across a stage boundary is a pass-through
+//! `ExchangeExec` (`partitioning: None`), and those are excluded from every
+//! alignment group above. `DistributedExchangeRule` creates a pass-through
+//! exchange at exactly two sites — beneath a `CoalescePartitionsExec` and
+//! beneath a `SortPreservingMergeExec` — and only the second is dangerous: a
+//! `CoalescePartitionsExec` merges everything into one unordered partition
+//! immediately above it, so coalescing underneath was never worth anything
+//! there either. Declining both therefore costs nothing and needs no
+//! ordering-specific reasoning in the rule itself.
 //!
-//! **Ordering.** A coalesced reader concatenates several upstream partitions
-//! into one output partition and does not merge them, so per-partition ordering
-//! does not survive the rewrite. A stage whose consumer depends on the reader's
-//! ordering — a `SortPreservingMergeExec` sitting above the pass-through
-//! `ExchangeExec` that `DistributedExchangeRule` inserts beneath it, for
-//! instance — can therefore produce wrongly ordered output when this rule
-//! fires. The rule does not currently detect that shape. This is not a
-//! consequence of per-group coalescing; it is a property of coalescing at all,
-//! and it predates the grouping rewrite. Untracked at the time of writing.
-//!
-//! **Skew.** The bin-pack only merges neighbouring partitions; it never splits
-//! an oversized one. A single hot upstream partition therefore still becomes a
-//! single downstream task, however large it is.
+//! **Skew** is still a real, untracked gap. The bin-pack only merges
+//! neighbouring partitions; it never splits an oversized one. A single hot
+//! upstream partition therefore still becomes a single downstream task,
+//! however large it is.
 //!
 //! # Default off
 //!
@@ -172,6 +186,19 @@ enum LeafKind {
     /// and a `CollectLeft` join never requires it to be co-partitioned with
     /// anything. Excluded from every alignment group.
     Broadcast,
+    /// A pass-through exchange (`partitioning: None`): `DistributedExchangeRule`
+    /// inserts these directly beneath a `SortPreservingMergeExec` or a
+    /// `CoalescePartitionsExec` to mark a stage boundary without re-partitioning
+    /// the child. Its only job is to carry the child's partitioning *and*
+    /// ordering across that boundary unchanged. A coalesced reader concatenates
+    /// several upstream partitions into one without merging them, which destroys
+    /// both, so this leaf is excluded from every alignment group. It is also
+    /// never a co-partitioned join sibling: `SelectJoinRule` always builds
+    /// join-leg exchanges with `Some(partitioning)`, and anything feeding a
+    /// `Partitioned` join gets a hash `RepartitionExec` from
+    /// `EnforceDistribution`, which `DistributedExchangeRule` turns into a
+    /// `Some(partitioning)` exchange, not this one.
+    PassThrough,
     /// The upstream stage has not finalized. The group defers to a later pass.
     Unresolved,
     /// At least one location reports no `num_bytes`.
@@ -192,6 +219,7 @@ impl LeafKind {
     fn label(&self) -> String {
         match self {
             LeafKind::Broadcast => "Broadcast".to_string(),
+            LeafKind::PassThrough => "PassThrough".to_string(),
             LeafKind::Unresolved => "Unresolved".to_string(),
             LeafKind::UnknownBytes => "UnknownBytes".to_string(),
             LeafKind::Inconsistent { declared, resolved } => {
@@ -225,6 +253,12 @@ fn classify_leaf(ex: &ExchangeExec) -> ClassifiedLeaf {
         return ClassifiedLeaf {
             m,
             kind: LeafKind::Broadcast,
+        };
+    }
+    if ex.partitioning.is_none() {
+        return ClassifiedLeaf {
+            m,
+            kind: LeafKind::PassThrough,
         };
     }
     let Some(parts) = ex.shuffle_partitions() else {
@@ -267,14 +301,24 @@ fn classify_leaf(ex: &ExchangeExec) -> ClassifiedLeaf {
 /// Partition classified leaves into alignment groups keyed by upstream
 /// partition count `M`.
 ///
-/// Broadcast leaves are dropped: they carry no partition structure to coalesce
-/// and are never a co-partitioned join sibling, so excluding them cannot break
-/// an alignment invariant.
+/// Broadcast and pass-through leaves are dropped: neither carries partition
+/// structure to coalesce, and neither is ever a co-partitioned join sibling,
+/// so excluding them cannot break an alignment invariant.
 ///
 /// A group maps to `Some(indices)` when every member carries usable sizes, and
 /// to `None` when any member is unresolved, missing byte statistics, or
 /// inconsistent. Skipping is per group: one undecidable leaf no longer
 /// suppresses coalescing for leaves it has no relationship with.
+///
+/// Broadcast and pass-through leaves take the early `continue` below rather
+/// than falling into the `_ => *entry = None` poisoning arm. That distinction
+/// matters: poisoning is for leaves whose *group* is undecidable (unresolved,
+/// missing stats, inconsistent shape), which must suppress coalescing for
+/// every `Sizes` sibling at the same `M` because the rule cannot tell whether
+/// they were meant to align with it. A broadcast or pass-through leaf is never
+/// such a sibling — it is excluded from alignment entirely — so its presence
+/// must leave an otherwise-decidable group of `Sizes` leaves at the same `M`
+/// alone.
 ///
 /// `BTreeMap` rather than `HashMap` so iteration order, and therefore the debug
 /// log and the order decisions are applied, is stable across passes.
@@ -283,7 +327,7 @@ fn group_by_upstream_count(
 ) -> BTreeMap<usize, Option<Vec<usize>>> {
     let mut groups: BTreeMap<usize, Option<Vec<usize>>> = BTreeMap::new();
     for (idx, leaf) in leaves.iter().enumerate() {
-        if leaf.kind == LeafKind::Broadcast {
+        if matches!(leaf.kind, LeafKind::Broadcast | LeafKind::PassThrough) {
             continue;
         }
         let entry = groups.entry(leaf.m).or_insert_with(|| Some(Vec::new()));
@@ -653,6 +697,21 @@ mod tests {
     }
 
     #[test]
+    fn classify_reports_pass_through_even_once_resolved_with_byte_sizes() {
+        // A pass-through exchange (`partitioning: None`) exists to carry a
+        // child's partitioning and ordering across a stage boundary, not to be
+        // coalesced. It must classify as `PassThrough` and never reach the
+        // summing step, however fully it has resolved.
+        let exchange =
+            ExchangeExec::new(Arc::new(EmptyExec::new(mock_schema())), None, 0);
+        exchange.resolve_shuffle_partitions(partitions_with_byte_sizes(&[50; 8]));
+
+        let leaf = classify_leaf(&exchange);
+
+        assert_eq!(leaf.kind, LeafKind::PassThrough);
+    }
+
+    #[test]
     fn classify_reports_inconsistent_when_the_resolved_shape_disagrees() {
         let exchange = shuffle_exchange(8, Some(partitions_with_byte_sizes(&[50; 4])));
 
@@ -711,6 +770,13 @@ mod tests {
         }
     }
 
+    fn pass_through(m: usize) -> ClassifiedLeaf {
+        ClassifiedLeaf {
+            m,
+            kind: LeafKind::PassThrough,
+        }
+    }
+
     #[test]
     fn grouping_splits_leaves_by_upstream_partition_count() {
         let leaves = vec![
@@ -738,6 +804,30 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups.get(&8), Some(&Some(vec![1, 2])));
         assert!(!groups.contains_key(&1));
+    }
+
+    #[test]
+    fn grouping_drops_pass_through_leaves_without_poisoning_their_siblings() {
+        // A pass-through leaf shares M=8 with two shuffle leaves. If it took
+        // the `_ => *entry = None` poisoning arm instead of the early
+        // `continue`, it would wipe the group and suppress coalescing for both
+        // `Sizes` siblings — the same mistake the broadcast case guards
+        // against above, but for a different `LeafKind`.
+        let leaves = vec![
+            pass_through(8),
+            sized(8, vec![50; 8]),
+            sized(8, vec![50; 8]),
+        ];
+
+        let groups = group_by_upstream_count(&leaves);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.get(&8), Some(&Some(vec![1, 2])));
+    }
+
+    #[test]
+    fn grouping_of_only_pass_through_leaves_is_empty() {
+        assert!(group_by_upstream_count(&[pass_through(1)]).is_empty());
     }
 
     #[test]

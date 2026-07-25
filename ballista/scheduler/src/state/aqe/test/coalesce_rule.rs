@@ -535,6 +535,70 @@ async fn shuffle_leaf_still_coalesces_beside_a_broadcast_leaf_end_to_end()
     Ok(())
 }
 
+/// Guard against the ordering bug: a leaf `ExchangeExec` that
+/// `DistributedExchangeRule` inserted directly beneath a
+/// `SortPreservingMergeExec` is a pass-through exchange (`partitioning: None`)
+/// — it exists only to carry the upstream `SortExec`'s per-partition ordering
+/// across the stage boundary. A coalesced reader concatenates several upstream
+/// partitions into one without merging them, which would destroy that
+/// ordering and the `SortPreservingMergeExec` above would silently emit
+/// wrongly ordered rows. `classify_leaf` must classify this leaf as
+/// `PassThrough`, not `Sizes`, so `CoalescePartitionsRule` declines it.
+///
+/// Byte trace: stage 0 finalizes with 8 partitions x 50 bytes, which packs to
+/// K=2 at target=200 (the same trace as the happy-path test) *if the rule were
+/// allowed to coalesce this leaf*. The assertion is that it is not: the
+/// resulting `ShuffleReaderExec` carries no `coalesce:` field and keeps all 8
+/// upstream partitions, proving the guard fired rather than the bin-pack
+/// merely declining on its own.
+#[tokio::test]
+async fn should_not_coalesce_a_pass_through_exchange_beneath_sort_preserving_merge()
+-> datafusion::error::Result<()> {
+    let ctx = coalesce_context(8, true);
+    register_partitioned_table(&ctx, "t", 8)?;
+
+    let plan = ctx
+        .sql("select a from t order by a")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+
+    // Stage 0 is the upstream writer: each of the 8 source partitions is
+    // locally sorted and written as-is (`ShuffleWriterExec: partitioning: None`
+    // — no hash repartitioning, since a plain ORDER BY has no partitioning
+    // requirement of its own).
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_plan!(stages[0].plan.as_ref(), @ r"
+    ShuffleWriterExec: partitioning: None
+      SortExec: expr=[a@0 ASC NULLS LAST], preserve_partitioning=[true]
+        DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+    ");
+
+    // Finalize stage 0 with byte sizes that would comfortably coalesce
+    // (8 x 50 = 400, target = 200, same trace as `should_attach_coalesce_when_
+    // partitions_pack_below_m`) if the pass-through guard did not exclude this
+    // leaf from its alignment group.
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
+
+    // Stage 1 is the final stage. Its `ShuffleReaderExec` still declares all 8
+    // partitions and carries no `coalesce:` field: the guard suppressed the
+    // decision that would otherwise have collapsed it to K=2, which is exactly
+    // what protects the `SortPreservingMergeExec` above from merging streams
+    // that are no longer sorted.
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_plan!(stages[0].plan.as_ref(), @ r"
+    ShuffleWriterExec: partitioning: None
+      SortPreservingMergeExec: [a@0 ASC NULLS LAST]
+        ShuffleReaderExec: upstream_stage: 0, partitioning: UnknownPartitioning(8)
+    ");
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Rule-level tests.
 //
