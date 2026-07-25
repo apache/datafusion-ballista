@@ -36,7 +36,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use std::sync::Arc;
 
@@ -411,6 +411,130 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
     Ok(())
 }
 
+/// `K == 1` through the adapter. Allowing a whole stage to collapse onto one
+/// downstream task is this branch's one behaviour change, and the decision
+/// layer alone cannot show that `ShuffleReaderExec::try_new_coalesced` accepts
+/// a single group and a 1-partition `Partitioning::Hash`.
+///
+/// Byte trace: 8 partitions × 10 bytes = 80, which never reaches the 200-byte
+/// target, so the bin-pack flushes once at the end: `starts = [0]`, K=1 < M=8.
+#[tokio::test]
+async fn shuffle_reader_collapses_to_one_partition_when_the_stage_is_tiny()
+-> datafusion::error::Result<()> {
+    let ctx = coalesce_context(8, true);
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let plan = ctx
+        .sql("select min(a) as c0, max(b) as c1, c as c2 from t group by c")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[10; 8]))?;
+
+    // The reader declares one partition, not eight: the `K <= 1` guard the old
+    // rule carried would have left this at `partitioning: Hash([c@0], 8)` with
+    // no `coalesce` field at all.
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_plan!(stages[0].plan.as_ref(),  @ r"
+    ShuffleWriterExec: partitioning: None
+      ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
+        AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 1), coalesce: 1 of 8
+    ");
+
+    Ok(())
+}
+
+/// #2166 through the adapter. The rule-level test below states the same case
+/// against hand-built exchanges; this one proves the planner reaches it, since
+/// `BallistaAdapter::adapt_to_ballista` is where the original TPC-H Q22 panic
+/// surfaced and where the old whole-stage bail cost real coalescing.
+///
+/// The join is planned as a `DynamicJoinSelectionExec` over two hash exchanges
+/// — DataFusion's own collect-left promotion is disabled by the zeroed
+/// `hash_join_single_partition_threshold*`, so the strategy is AQE's to pick.
+/// Once both upstream stages finalize, stage 0's measured 8 bytes fall under
+/// the 100-byte broadcast threshold and stage 1's 400 do not, so `SelectJoinRule`
+/// promotes stage 0's exchange to a broadcast and leaves stage 1's a shuffle.
+/// The consuming stage therefore holds one leaf of each kind.
+///
+/// Byte trace for the surviving alignment group: one leaf at `[50; 8]`, target
+/// 200 → K=2, the same trace as the happy-path test.
+#[tokio::test]
+async fn shuffle_leaf_still_coalesces_beside_a_broadcast_leaf_end_to_end()
+-> datafusion::error::Result<()> {
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(8)
+        .with_round_robin_repartition(false)
+        .with_ballista_coalesce_enabled(true)
+        .with_ballista_coalesce_target_partition_bytes(200)
+        // Between stage 0's measured 8 bytes and stage 1's 400, so exactly one
+        // side of the join is broadcast.
+        .with_ballista_broadcast_join_threshold_bytes(100)
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        )
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+            0,
+        );
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_partitioned_table(&ctx, "t1", 8)?;
+    register_partitioned_table(&ctx, "t2", 8)?;
+
+    // `try_new` rather than `try_from_plan`: the broadcast only becomes
+    // available through `DelayJoinSelectionRule`, which runs in the
+    // logical-plan preparation pass.
+    let lp = ctx
+        .sql("select t1.a, t2.b from t1 join t2 on t1.c = t2.c")
+        .await?
+        .into_optimized_plan()?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(2, stages.len());
+
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[1; 8]))?;
+    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[50; 8]))?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    let stage = displayable(stages[0].plan.as_ref())
+        .indent(true)
+        .to_string();
+
+    // Under the pre-#2166 rule the broadcast leaf suppressed the whole stage and
+    // the second reader read `Hash([c@1], 8)` with no coalesce field at all.
+    assert_plan!(stages[0].plan.as_ref(),  @ r"
+    ShuffleWriterExec: partitioning: None
+      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c@1, c@1)], projection=[a@0, b@2]
+        ShuffleReaderExec: upstream_stage: 0, broadcast: true, upstream_partition_count: 8
+        ShuffleReaderExec: upstream_stage: 1, partitioning: Hash([c@1], 2), coalesce: 2 of 8
+    ");
+    assert!(
+        stage.contains("broadcast: true"),
+        "the stage must still hold a broadcast reader; plan was:\n{stage}"
+    );
+    assert!(
+        stage.contains("coalesce: 2 of 8"),
+        "the shuffle leaf beside it must still coalesce; plan was:\n{stage}"
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Rule-level tests.
 //
@@ -428,11 +552,14 @@ fn rule_config() -> SessionConfig {
 }
 
 /// A resolved shuffle leaf declaring `m` partitions of `bytes` bytes each.
-fn resolved_shuffle_leaf(m: usize, bytes: u64) -> Arc<ExchangeExec> {
+///
+/// `plan_id` is per-leaf because the planner never issues two leaves the same
+/// one, and the rule's per-leaf debug output identifies leaves by it.
+fn resolved_shuffle_leaf(plan_id: usize, m: usize, bytes: u64) -> Arc<ExchangeExec> {
     let exchange = ExchangeExec::new(
         Arc::new(EmptyExec::new(mock_schema())),
         Some(Partitioning::UnknownPartitioning(m)),
-        0,
+        plan_id,
     );
     exchange.resolve_shuffle_partitions(partitions_with_byte_sizes(&vec![bytes; m]));
     Arc::new(exchange)
@@ -441,9 +568,12 @@ fn resolved_shuffle_leaf(m: usize, bytes: u64) -> Arc<ExchangeExec> {
 /// A resolved broadcast leaf whose upstream wrote `m` partitions. Note the
 /// declared partition count is 1 while the resolved shape is `m`: that gap is
 /// what the rule used to index off the end of.
-fn resolved_broadcast_leaf(m: usize, bytes: u64) -> Arc<ExchangeExec> {
-    let exchange =
-        ExchangeExec::new_broadcast(Arc::new(EmptyExec::new(mock_schema())), None, 1);
+fn resolved_broadcast_leaf(plan_id: usize, m: usize, bytes: u64) -> Arc<ExchangeExec> {
+    let exchange = ExchangeExec::new_broadcast(
+        Arc::new(EmptyExec::new(mock_schema())),
+        None,
+        plan_id,
+    );
     exchange.resolve_shuffle_partitions(partitions_with_byte_sizes(&vec![bytes; m]));
     Arc::new(exchange)
 }
@@ -483,9 +613,9 @@ fn decision(leaf: &ExchangeExec) -> Option<(usize, u32)> {
 #[test]
 fn should_coalesce_shuffle_leaves_beside_a_broadcast_leaf()
 -> datafusion::error::Result<()> {
-    let broadcast = resolved_broadcast_leaf(8, 25);
-    let left = resolved_shuffle_leaf(8, 25);
-    let right = resolved_shuffle_leaf(8, 25);
+    let broadcast = resolved_broadcast_leaf(0, 8, 25);
+    let left = resolved_shuffle_leaf(1, 8, 25);
+    let right = resolved_shuffle_leaf(2, 8, 25);
     let plan = stage_over(vec![broadcast.clone(), left.clone(), right.clone()])?;
 
     CoalescePartitionsRule.optimize(plan, rule_config().options())?;
@@ -514,8 +644,8 @@ fn should_coalesce_shuffle_leaves_beside_a_broadcast_leaf()
 #[test]
 fn should_coalesce_each_partition_count_group_against_its_own_m()
 -> datafusion::error::Result<()> {
-    let eight = resolved_shuffle_leaf(8, 50);
-    let four = resolved_shuffle_leaf(4, 50);
+    let eight = resolved_shuffle_leaf(0, 8, 50);
+    let four = resolved_shuffle_leaf(1, 4, 50);
     let plan = stage_over(vec![eight.clone(), four.clone()])?;
 
     CoalescePartitionsRule.optimize(plan, rule_config().options())?;
@@ -533,7 +663,7 @@ fn should_coalesce_each_partition_count_group_against_its_own_m()
 #[test]
 fn should_clear_a_stale_decision_when_the_group_becomes_undecidable()
 -> datafusion::error::Result<()> {
-    let resolved = resolved_shuffle_leaf(8, 50);
+    let resolved = resolved_shuffle_leaf(1, 8, 50);
     let unresolved = Arc::new(ExchangeExec::new(
         Arc::new(EmptyExec::new(mock_schema())),
         Some(Partitioning::UnknownPartitioning(8)),

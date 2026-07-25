@@ -44,6 +44,14 @@
 //! share an `M` and always land in the same group. Two leaves with different
 //! `M` provably are not co-partitioned siblings of one join.
 //!
+//! That argument stays checkable by inspection because the rule never touches
+//! a leaf's *declared* partitioning: the count `EnforceDistribution` equalised
+//! is still `M` on every replan pass, so the grouping key is the same value the
+//! distribution guarantee was made about. The substitution of `K` for `M`
+//! happens later and elsewhere, in `BallistaAdapter`, and it happens
+//! identically for every member of a group because they all carry the same
+//! [`CoalescePlan`].
+//!
 //! Broadcast leaves are excluded from every group. A broadcast reader flattens
 //! all upstream locations into a single output partition, so there is nothing
 //! to coalesce, and a `CollectLeft` join requires `SinglePartition` on the
@@ -54,6 +62,25 @@
 //! `M` without sharing any co-partitioning requirement, such as the two arms of
 //! a union, still land in one group and have their sizes summed. That inflates
 //! the per-index totals and under-coalesces, which is safe.
+//!
+//! # What this rule does not reason about
+//!
+//! The alignment argument above is about hash co-partitioning only. It says
+//! nothing about the two properties below, and neither does the rule.
+//!
+//! **Ordering.** A coalesced reader concatenates several upstream partitions
+//! into one output partition and does not merge them, so per-partition ordering
+//! does not survive the rewrite. A stage whose consumer depends on the reader's
+//! ordering — a `SortPreservingMergeExec` sitting above the pass-through
+//! `ExchangeExec` that `DistributedExchangeRule` inserts beneath it, for
+//! instance — can therefore produce wrongly ordered output when this rule
+//! fires. The rule does not currently detect that shape. This is not a
+//! consequence of per-group coalescing; it is a property of coalescing at all,
+//! and it predates the grouping rewrite. Untracked at the time of writing.
+//!
+//! **Skew.** The bin-pack only merges neighbouring partitions; it never splits
+//! an oversized one. A single hot upstream partition therefore still becomes a
+//! single downstream task, however large it is.
 //!
 //! # Default off
 //!
@@ -93,6 +120,15 @@
 //! step 2 combined with the bin-pack being a pure function of resolved byte
 //! sizes, which do not change once a stage has finalized.
 //!
+//! The wholesale clear is only safe because `AdaptivePlanner::actionable_stages`
+//! runs this rule and `BallistaAdapter::adapt_to_ballista` inside the *same*
+//! per-stage closure, so each stage's decision is consumed before the next
+//! stage is optimized. An `ExchangeExec` is a shared `Arc` — at once the root
+//! of the stage that writes it and a leaf of every stage that reads it — so
+//! splitting that loop into "optimize every stage, then adapt every stage"
+//! would let a later stage's clear wipe an earlier stage's decision before the
+//! adapter ever read it.
+//!
 //! # Grouping discipline
 //!
 //! The bin-pack groups **neighboring** upstream partitions only — each
@@ -102,7 +138,7 @@
 //! Spark's `CoalesceShufflePartitions` and is what keeps hash
 //! co-partitioning intact across the rewrite: a hash bucket that used to
 //! live at index `i` still lives in the single output group that covers
-//! `i`, on every leaf of the alignment group.
+//! `i`, on every leaf of its alignment group.
 //!
 //! # Behavior preservation
 //!
@@ -147,12 +183,33 @@ enum LeafKind {
     Sizes(Vec<u64>),
 }
 
+impl LeafKind {
+    /// A short label for the debug log.
+    ///
+    /// `Sizes` is summarised by its length: a stage with `M` in the thousands
+    /// would otherwise print every element, once per leaf, once per pass, and
+    /// the group's summed vector is logged on its own line anyway.
+    fn label(&self) -> String {
+        match self {
+            LeafKind::Broadcast => "Broadcast".to_string(),
+            LeafKind::Unresolved => "Unresolved".to_string(),
+            LeafKind::UnknownBytes => "UnknownBytes".to_string(),
+            LeafKind::Inconsistent { declared, resolved } => {
+                format!("Inconsistent(declared={declared}, resolved={resolved})")
+            }
+            LeafKind::Sizes(sizes) => format!("Sizes(len={})", sizes.len()),
+        }
+    }
+}
+
 /// A leaf `ExchangeExec` reduced to what the rule needs: its alignment-group
 /// key and its contribution to that group.
 #[derive(Debug)]
 struct ClassifiedLeaf {
     /// Upstream partition count `M`, the alignment-group key.
     m: usize,
+    /// What the leaf contributes to that group: its per-partition byte counts,
+    /// or the reason it has none to contribute.
     kind: LeafKind,
 }
 
@@ -247,10 +304,23 @@ fn group_by_upstream_count(
 /// The root is either an `ExchangeExec` (intermediate stage) or an
 /// `AdaptiveDatafusionExec` (final stage). Anything else means the adapter is
 /// about to fail anyway, so the rule declines rather than guessing.
+///
+/// The root's identity is logged here because the rule runs once per runnable
+/// stage within a single pass, so without it the leaf and group lines of
+/// several stages interleave with nothing saying which stage each belongs to.
 fn stage_input(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
     if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
+        debug!(
+            "[coalesce-rule] root=ExchangeExec plan_id={} stage_id={:?}",
+            exchange.plan_id,
+            exchange.stage_id(),
+        );
         Some(exchange.input().clone())
     } else if let Some(adaptive) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
+        debug!(
+            "[coalesce-rule] root=AdaptiveDatafusionExec stage_id={:?}",
+            adaptive.stage_id(),
+        );
         Some(adaptive.input().clone())
     } else {
         None
@@ -318,6 +388,7 @@ fn decide(
     let starts =
         split_size_list_by_target_size(summed, target, small_factor, merged_factor);
     let k = starts.len();
+    debug!("[coalesce-rule] bin-pack result: K={k} M={m}");
     if k >= m {
         debug!("[coalesce-rule] K={k} is not a reduction from M={m}; no decision");
         return None;
@@ -390,12 +461,12 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         for (arc, leaf) in leaves.iter().zip(&classified) {
             let ex = as_exchange(arc);
             debug!(
-                "[coalesce-rule]   leaf: plan_id={} stage_id={:?} partitioning={} M={} kind={:?}",
+                "[coalesce-rule]   leaf: plan_id={} stage_id={:?} partitioning={} M={} kind={}",
                 ex.plan_id,
                 ex.stage_id(),
                 ex.properties().partitioning,
                 leaf.m,
-                leaf.kind,
+                leaf.kind.label(),
             );
             if let LeafKind::Inconsistent { declared, resolved } = &leaf.kind {
                 warn!(
@@ -413,9 +484,13 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             };
             let sizes: Vec<&[u64]> = members
                 .iter()
-                .filter_map(|&idx| match &classified[idx].kind {
-                    LeafKind::Sizes(sizes) => Some(sizes.as_slice()),
-                    _ => None,
+                .map(|&idx| match &classified[idx].kind {
+                    LeafKind::Sizes(sizes) => sizes.as_slice(),
+                    other => unreachable!(
+                        "group_by_upstream_count only puts LeafKind::Sizes leaves in a \
+                         decidable group, but member {idx} of group M={m} is {}",
+                        other.label()
+                    ),
                 })
                 .collect();
             let summed = sum_sizes(&sizes, m);
