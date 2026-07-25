@@ -442,11 +442,8 @@ fn resolved_shuffle_leaf(m: usize, bytes: u64) -> Arc<ExchangeExec> {
 /// declared partition count is 1 while the resolved shape is `m`: that gap is
 /// what the rule used to index off the end of.
 fn resolved_broadcast_leaf(m: usize, bytes: u64) -> Arc<ExchangeExec> {
-    let exchange = ExchangeExec::new_broadcast(
-        Arc::new(EmptyExec::new(mock_schema())),
-        None,
-        1,
-    );
+    let exchange =
+        ExchangeExec::new_broadcast(Arc::new(EmptyExec::new(mock_schema())), None, 1);
     exchange.resolve_shuffle_partitions(partitions_with_byte_sizes(&vec![bytes; m]));
     Arc::new(exchange)
 }
@@ -454,7 +451,9 @@ fn resolved_broadcast_leaf(m: usize, bytes: u64) -> Arc<ExchangeExec> {
 /// Wrap leaves in a final-stage root so the rule sees them as one stage's
 /// alignment set. Takes `Arc<ExchangeExec>` so callers can keep a typed handle
 /// on each leaf and read its decision back after the rule runs.
-fn stage_over(leaves: Vec<Arc<ExchangeExec>>) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+fn stage_over(
+    leaves: Vec<Arc<ExchangeExec>>,
+) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
     let mut inputs: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(leaves.len());
     for leaf in leaves {
         // Push, rather than cast: `as` cannot perform the unsizing coercion
@@ -494,6 +493,14 @@ fn should_coalesce_shuffle_leaves_beside_a_broadcast_leaf()
     assert_eq!(decision(&left), Some((2, 8)));
     assert_eq!(decision(&right), Some((2, 8)));
     assert_eq!(decision(&broadcast), None);
+
+    // Same K is not enough: a hash join needs identical `i -> group(i)`
+    // boundaries on both sides, which is why the rule hands every member of a
+    // group the same plan rather than packing each leaf separately.
+    assert!(Arc::ptr_eq(
+        &left.coalesce().expect("left is coalesced"),
+        &right.coalesce().expect("right is coalesced"),
+    ));
 
     Ok(())
 }
