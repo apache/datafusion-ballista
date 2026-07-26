@@ -43,6 +43,7 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
@@ -51,6 +52,7 @@ use log::debug;
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
+use crate::state::task_builder::restrict_plan_to_partitions;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -184,6 +186,55 @@ impl DefaultDistributedPlanner {
             let new_join =
                 execution_plan.with_new_children(vec![broadcast_left, probe])?;
             return Ok((new_join, stages));
+        }
+
+        // UnionExec: a branch that cannot be restricted away needs its own
+        // stage. Per-task restriction gives each branch of a union the
+        // partitions that task owns and an empty slice to the rest, relying on
+        // an unowned branch becoming 0-partition so `UnionExec`'s index
+        // arithmetic routes past it.
+        //
+        // That fails when the branch's partition count does not come from
+        // restrictable leaves — a `CoalescePartitionsExec` or non-preserving
+        // `SortExec` reports one partition whatever its leaves do, and a
+        // broadcast `ShuffleReaderExec` is deliberately never pruned. The
+        // branch keeps reporting a partition and keeps producing all of its
+        // data, so every task runs every branch: results come back inflated by
+        // the branch count, or a task executes a branch whose scan was emptied
+        // (#2184).
+        //
+        // Cutting a boundary beneath such a branch turns it into a
+        // `ShuffleReaderExec`, which restricts to nothing cleanly, and leaves
+        // the collapse in its own stage where it sees its whole input.
+        if execution_plan.is::<UnionExec>() {
+            let mut stages = vec![];
+            let mut children = vec![];
+            for child in execution_plan.children() {
+                let (new_child, mut child_stages) =
+                    self.plan_query_stages_internal(job_id, child.clone(), config)?;
+                stages.append(&mut child_stages);
+
+                if new_child.is::<UnresolvedShuffleExec>()
+                    || restricts_to_nothing(&new_child)
+                {
+                    children.push(new_child);
+                    continue;
+                }
+
+                let writer = create_shuffle_writer_with_config(
+                    job_id,
+                    self.next_stage_id(),
+                    new_child,
+                    None,
+                    config,
+                )?;
+                children.push(create_unresolved_shuffle(writer.as_ref()));
+                stages.push(writer);
+            }
+            return Ok((
+                with_new_children_if_necessary(execution_plan, children)?,
+                stages,
+            ));
         }
 
         let mut stages = vec![];
@@ -532,6 +583,42 @@ impl DefaultDistributedPlanner {
     }
 }
 
+/// Whether per-task restriction can reduce `plan` to zero partitions.
+///
+/// This asks the real rewriter rather than testing for particular operators,
+/// so it stays correct as the rewriter's handling of collapses, broadcast
+/// readers and leaf types evolves. An empty slice means "this task polls
+/// nothing here", so a branch that still reports a partition afterwards is one
+/// that cannot be restricted away.
+fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    !holds_a_broadcast(plan)
+        && restrict_plan_to_partitions(plan.clone(), &[])
+            .map(|p| p.properties().output_partitioning().partition_count() == 0)
+            .unwrap_or(false)
+}
+
+/// Whether `plan` contains a broadcast input or a `CollectLeft` join.
+///
+/// Asking the rewriter alone is not enough here. A `CollectLeft` join's build
+/// and probe sides can still be swapped after stage planning, and the two
+/// orders restrict differently: the build side is read in full (it must see
+/// its whole input), while a broadcast input is never pruned at all. So a
+/// branch that looks restrictable now can stop being restrictable by the time
+/// the task is built, which is exactly the case that left TPC-DS q5's catalog
+/// branch running in every task.
+///
+/// Treat any such branch as needing its own stage. The cost is one extra
+/// stage; the alternative is a silently inflated result.
+fn holds_a_broadcast(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let here = plan
+        .downcast_ref::<UnresolvedShuffleExec>()
+        .is_some_and(|u| u.broadcast)
+        || plan
+            .downcast_ref::<HashJoinExec>()
+            .is_some_and(|j| *j.partition_mode() == PartitionMode::CollectLeft);
+    here || plan.children().iter().any(|c| holds_a_broadcast(c))
+}
+
 fn create_unresolved_shuffle(
     shuffle_writer: &dyn ShuffleWriter,
 ) -> Arc<UnresolvedShuffleExec> {
@@ -803,6 +890,74 @@ mod test {
         assert_eq!(
             displayable(rewritten.as_ref()).indent(false).to_string(),
             "EmptyExec\n"
+        );
+    }
+
+    use super::restricts_to_nothing;
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+
+    /// Build a `DataSourceExec` over `n` single-file groups, so its output
+    /// partition count is `n` and every group is restrictable.
+    fn scan(n: usize) -> Arc<dyn ExecutionPlan> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::datasource::listing::PartitionedFile;
+        use datafusion::datasource::physical_plan::{
+            FileGroup, FileScanConfigBuilder, ParquetSource,
+        };
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion::execution::object_store::ObjectStoreUrl;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let source = Arc::new(ParquetSource::new(schema));
+        let mut builder =
+            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
+        for i in 0..n {
+            builder =
+                builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
+                    format!("f{i}.parquet"),
+                    10,
+                )]));
+        }
+        DataSourceExec::from_data_source(builder.build())
+    }
+
+    /// A plain scan branch restricts away cleanly, so it can stay inline in
+    /// the union's stage.
+    #[test]
+    fn plain_union_branch_needs_no_stage_of_its_own() {
+        assert!(restricts_to_nothing(&scan(4)));
+    }
+
+    /// A branch that collapses internally reports one partition whatever its
+    /// leaves do, so restriction cannot empty it and it needs its own stage.
+    #[test]
+    fn collapsing_union_branch_needs_its_own_stage() {
+        let branch: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(scan(4)));
+        assert_eq!(
+            branch.properties().output_partitioning().partition_count(),
+            1
+        );
+        assert!(
+            !restricts_to_nothing(&branch),
+            "a collapsing branch cannot be restricted away"
+        );
+    }
+
+    /// A branch holding a broadcast input is treated as needing its own stage
+    /// even though restriction looks like it would empty it: the build and
+    /// probe sides of a `CollectLeft` join can still be swapped after stage
+    /// planning, and a broadcast input is never pruned.
+    #[test]
+    fn broadcast_union_branch_needs_its_own_stage() {
+        use ballista_core::execution_plans::UnresolvedShuffleExec;
+
+        let inner = scan(4);
+        let broadcast: Arc<dyn ExecutionPlan> =
+            Arc::new(UnresolvedShuffleExec::new_broadcast(1, inner.schema(), 4));
+        assert!(
+            !restricts_to_nothing(&broadcast),
+            "a broadcast input is never pruned, so it cannot be restricted away"
         );
     }
 
