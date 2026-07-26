@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 pub use chaos_exec::ChaosExec;
 use datafusion::common::exec_err;
 pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
-pub use distributed_query::DistributedQueryExec;
+pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
 pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;

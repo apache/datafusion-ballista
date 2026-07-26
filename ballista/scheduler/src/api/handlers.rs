@@ -22,9 +22,12 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
+use ballista_core::serde::protobuf::failed_task::FailedReason::{
+    ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
+};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    ExecutorMetric, executor_metric::Metric, task_status,
+    ExecutorMetric, FailedTask, executor_metric::Metric, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -165,14 +168,17 @@ pub struct TaskSummary {
 pub enum TaskStatus {
     Running,
     Successful,
-    Failed,
+    Failed { reason: String, error: String },
 }
 
 impl From<&task_status::Status> for TaskStatus {
     fn from(value: &task_status::Status) -> Self {
         match value {
             task_status::Status::Running(_) => TaskStatus::Running,
-            task_status::Status::Failed(_) => TaskStatus::Failed,
+            task_status::Status::Failed(failed) => TaskStatus::Failed {
+                reason: failed_reason(failed),
+                error: failed.error.clone(),
+            },
             task_status::Status::Successful(_) => TaskStatus::Successful,
         }
     }
@@ -637,6 +643,54 @@ pub async fn get_query_stages<
                             })
                             .collect();
                     }
+                    ExecutionStage::Failed(failed_stage) => {
+                        let metrics = failed_stage.stage_metrics.as_deref().unwrap_or(&[]);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(failed_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree => displayable(failed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(failed_stage.plan.as_ref(), metrics),
+                        });
+                        summary.input_rows = get_combined_count(metrics, "input_rows");
+                        summary.output_rows = get_combined_count(metrics, "output_rows");
+                        summary.elapsed_compute = get_finished_stage_time(
+                            &failed_stage
+                                .task_infos
+                                .iter()
+                                .flatten()
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        );
+
+                        summary.tasks = failed_stage
+                            .task_infos
+                            .iter()
+                            .enumerate()
+                            .map(|(partition_id, task_info)| {
+                                task_info.as_ref().map(|info| {
+                                    let (input_rows, output_rows) =
+                                        get_partition_counts(metrics, partition_id);
+
+                                    let start_exec_time = info.start_exec_time as u64;
+                                    let end_exec_time = info.end_exec_time as u64;
+                                    let task_status: TaskStatus = (&info.task_status).into();
+
+                                    TaskSummary {
+                                        id: info.task_id,
+                                        partition_id: partition_id as u32,
+                                        scheduled_time: info.scheduled_time as u64,
+                                        launch_time: info.launch_time as u64,
+                                        start_exec_time,
+                                        end_exec_time,
+                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                        finish_time: info.finish_time as u64,
+                                        input_rows,
+                                        output_rows,
+                                        status: task_status,
+                                    }
+                                })
+                            })
+                            .collect();
+                    }
                     _ => {}
                 }
                 summary.task_duration_percentiles = task_duration_percentiles(&summary.tasks);
@@ -759,6 +813,19 @@ fn get_running_stage_time(
         }
         _ => None,
     }
+}
+
+fn failed_reason(failed: &FailedTask) -> String {
+    match &failed.failed_reason {
+        Some(ExecutionError(_)) => "ExecutionError",
+        Some(FetchPartitionError(_)) => "FetchPartitionError",
+        Some(IoError(_)) => "IoError",
+        Some(ExecutorLost(_)) => "ExecutorLost",
+        Some(ResultLost(_)) => "ResultLost",
+        Some(TaskKilled(_)) => "TaskKilled",
+        None => "Failed",
+    }
+    .to_string()
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {

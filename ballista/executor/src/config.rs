@@ -171,6 +171,15 @@ pub struct Config {
         help = "Optional total executor memory budget (e.g. \"8GB\", \"512MiB\"). Each concurrent task receives an equal share."
     )]
     pub memory_pool_size: Option<u64>,
+    /// Maximum number of sessions whose shared runtime state (object-store
+    /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
+    /// disables caching.
+    #[arg(
+        long,
+        default_value_t = 16,
+        help = "Max number of sessions whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). 0 disables caching."
+    )]
+    pub session_runtime_cache_capacity: usize,
     /// Number of seconds established client connection should be cached if not used (0 means no cache)
     #[arg(
         long,
@@ -207,6 +216,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
             metric_collection_policy: opt.metric_collection_policy,
             memory_pool_size: opt.memory_pool_size,
+            session_runtime_cache_capacity: opt.session_runtime_cache_capacity,
             override_execution_engine: None,
             override_function_registry: None,
             override_config_producer: None,

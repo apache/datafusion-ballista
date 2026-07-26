@@ -59,6 +59,31 @@ cargo build --release
 cargo test
 ```
 
+### TPC-H plan-stability golden files
+
+The `tpch_plan_stability` test suite in the `ballista-scheduler` crate guards the shape of the
+distributed physical plans that Ballista produces for the 22 TPC-H queries. For each query it plans
+the SQL and compares the staged plan text — the stage boundaries (`=== Stage N ===` banners),
+`ShuffleWriterExec` / `UnresolvedShuffleExec` nodes, and any exchange reuse — against an approved
+"golden" file. The queries are planned against a synthetic statistics-only table, so the suite is
+deterministic and runs without TPC-H data or a running cluster.
+
+The golden files live in
+[`ballista/scheduler/tests/tpch_plan_stability/approved/`](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/tests/tpch_plan_stability/approved)
+(`q1.txt` through `q22.txt`). When a change alters distributed planning, the suite fails with a
+plan-drift diff. Review the diff: if the change is unintended, fix the regression; if the new plans
+are correct, regenerate the golden files:
+
+```shell
+./dev/update-tpch-plan-stability.sh
+```
+
+This runs the suite in generate mode
+(`BALLISTA_GENERATE_GOLDEN=1 cargo test -p ballista-scheduler --test tpch_plan_stability`) and
+rewrites the approved files. Review the resulting changes under
+`ballista/scheduler/tests/tpch_plan_stability/approved/` and commit them together with the code
+change that caused them.
+
 ## Running the examples
 
 ```shell
@@ -156,3 +181,12 @@ This includes instructions for:
 - Running benchmarks against DataFusion and Ballista
 - Comparing performance with Apache Spark
 - Running load tests
+
+## Upgrade notes
+
+When a change breaks a public API, renames or removes a configuration key or CLI
+flag, changes a default that alters query plans or results, or changes the
+wire/serialization format, add an entry describing the change and the required
+action to the current unreleased page under
+[`docs/source/upgrading/`](../upgrading/index.rst). This keeps the upgrade guide
+complete for the next release.

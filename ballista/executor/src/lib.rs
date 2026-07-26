@@ -39,6 +39,8 @@ pub mod executor_server;
 pub mod flight_service;
 /// Metrics collection for executor runtime statistics.
 pub mod metrics;
+/// Session-scoped cache of shared executor runtime environments.
+pub mod runtime_cache;
 /// Graceful shutdown coordination for executor components.
 pub mod shutdown;
 /// Signal handling for process termination.

@@ -422,6 +422,8 @@ impl SubstraitSchedulerClient {
             None,
             io_retries_times,
             io_retry_wait_time_ms,
+            0,
+            0,
         )
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;

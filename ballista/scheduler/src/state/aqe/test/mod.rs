@@ -19,6 +19,8 @@
 mod alter_stages;
 /// Functional tests for the CoalescePartitionsRule end-to-end through the planner
 mod coalesce_rule;
+/// Job-failure lifecycle tests for the adaptive graph
+mod job_failure;
 /// covers join selection tests
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly

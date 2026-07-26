@@ -30,13 +30,14 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
 use datafusion::error::DataFusionError;
+#[cfg(test)]
+use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
-use datafusion::prelude::SessionConfig;
 use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
@@ -85,8 +86,7 @@ impl AdaptivePlanner {
     /// Creates a new `AdaptivePlanner` with the specified physical optimizer rules.
     ///
     /// # Arguments:
-    ///
-    /// * `session_config` - The session configuration for the job.
+    /// * `state_builder` -  Session state builder,
     /// * `plan` - The physical execution plan for the job.
     /// * `job_name` - The name of the job.
     /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
@@ -94,13 +94,13 @@ impl AdaptivePlanner {
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
     pub fn try_new_with_optimizers(
-        session_config: &SessionConfig,
+        state_builder: SessionStateBuilder,
         plan: Arc<dyn ExecutionPlan>,
         job_name: String,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
         let session_state =
-            Self::create_session_state(session_config, physical_optimizer_rules);
+            Self::create_session_state(state_builder, physical_optimizer_rules);
         let planner = DefaultPhysicalPlanner::default();
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
@@ -131,8 +131,10 @@ impl AdaptivePlanner {
         job_name: String,
     ) -> common::Result<Self> {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
+        let state_builder = SessionStateBuilder::new_with_default_features()
+            .with_config(session_config.clone());
         Self::try_new_with_optimizers(
-            session_config,
+            state_builder,
             plan,
             job_name,
             Self::default_optimizers(plan_id_generator),
@@ -159,12 +161,16 @@ impl AdaptivePlanner {
         // running standard set of optimizers, which will
         // after each stage.
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
-        let state = Self::create_session_state(
-            ctx.state().config(),
+
+        let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
+        let plan_preparation_state = Self::create_session_state(
+            plan_preparation_state_builder,
             Self::plan_preparation_optimizers(plan_id_generator.clone()),
         );
 
-        let plan = state.create_physical_plan(logical_plan).await?;
+        let plan = plan_preparation_state
+            .create_physical_plan(logical_plan)
+            .await?;
 
         // Note: the signature requires a JobId, but we are passing a JobName. The below is a
         // dirty fix but this seems like a bug or a design flaw.
@@ -173,8 +179,9 @@ impl AdaptivePlanner {
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
+        let state_builder = SessionStateBuilder::from(ctx.state());
         Self::try_new_with_optimizers(
-            ctx.state().config(),
+            state_builder,
             plan,
             job_name,
             Self::default_optimizers(plan_id_generator),
@@ -539,20 +546,20 @@ impl AdaptivePlanner {
     /// Creates a session state with the given configuration and optimizer rules.
     ///
     /// # Arguments
-    /// * `session_config` - The session configuration.
+    /// * `session_builder` - The session builder.
     /// * `physical_optimizers` - A list of physical optimizer rules.
     ///
     /// # Returns
     /// A new `SessionState` instance.
     fn create_session_state(
-        session_config: &SessionConfig,
+        builder: SessionStateBuilder,
         physical_optimizers: Vec<PhysicalOptimizerRuleRef>,
     ) -> SessionState {
-        SessionStateBuilder::new_with_default_features()
+        builder
             .with_physical_optimizer_rules(physical_optimizers)
-            .with_config(session_config.clone())
             .build()
     }
+
     /// Recursively finds runnable exchanges in the execution plan.
     ///
     /// # Arguments

@@ -43,11 +43,19 @@ pub struct JobStageResponse {
     pub tasks: Vec<Option<StageTaskResponse>>,
 }
 
+// TaskStatus
+#[derive(Deserialize, Clone, Debug)]
+pub enum StageTaskStatus {
+    Running,
+    Successful,
+    Failed { reason: String },
+}
+
 // TaskSummary
 #[derive(Deserialize, Clone, Debug)]
 pub struct StageTaskResponse {
     pub id: usize,
-    pub status: String,
+    pub status: StageTaskStatus,
     pub partition_id: u32,
     pub input_rows: usize,
     pub output_rows: usize,
@@ -364,7 +372,7 @@ impl StagesGraph {
 mod tests {
     use super::{
         JobStageResponse, JobStagesPopup, JobStagesResponse, StageTaskResponse,
-        StagesGraph, TaskPercentiles,
+        StageTaskStatus, StagesGraph, TaskPercentiles,
     };
 
     fn make_percentiles() -> TaskPercentiles {
@@ -608,7 +616,7 @@ mod tests {
     fn make_task(id: usize) -> StageTaskResponse {
         StageTaskResponse {
             id,
-            status: "Completed".to_string(),
+            status: StageTaskStatus::Successful,
             partition_id: id as u32,
             input_rows: 0,
             output_rows: 0,

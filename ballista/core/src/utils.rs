@@ -72,6 +72,10 @@ pub struct GrpcClientConfig {
     pub io_retries_times: u8,
     /// Wait time in milliseconds between IO retries.
     pub io_retry_wait_time_ms: u64,
+    /// HTTP/2 initial connection-level flow-control window in bytes. 0 = tonic default.
+    pub initial_connection_window_size: u32,
+    /// HTTP/2 initial stream-level flow-control window in bytes. 0 = tonic default.
+    pub initial_stream_window_size: u32,
 }
 
 impl From<&BallistaConfig> for GrpcClientConfig {
@@ -87,6 +91,9 @@ impl From<&BallistaConfig> for GrpcClientConfig {
             max_message_size: config.grpc_client_max_message_size(),
             io_retries_times: config.io_retries_times() as u8,
             io_retry_wait_time_ms: config.io_retry_wait_time_ms() as u64,
+            initial_connection_window_size: config
+                .grpc_client_initial_connection_window_size(),
+            initial_stream_window_size: config.grpc_client_initial_stream_window_size(),
         }
     }
 }
@@ -102,6 +109,8 @@ impl Default for GrpcClientConfig {
             max_message_size: 16 * 1024 * 1024,
             io_retries_times: 3,
             io_retry_wait_time_ms: 3000,
+            initial_connection_window_size: 67108864,
+            initial_stream_window_size: 16777216,
         }
     }
 }
@@ -294,7 +303,7 @@ where
 {
     let endpoint = tonic::transport::Endpoint::new(dst)?;
     if let Some(config) = config {
-        Ok(endpoint
+        let mut endpoint = endpoint
             .connect_timeout(Duration::from_secs(config.connect_timeout_seconds))
             .timeout(Duration::from_secs(config.timeout_seconds))
             .tcp_nodelay(true)
@@ -303,7 +312,17 @@ where
                 config.http2_keepalive_interval_seconds,
             ))
             .keep_alive_timeout(Duration::from_secs(20))
-            .keep_alive_while_idle(true))
+            .keep_alive_while_idle(true);
+        if config.initial_connection_window_size > 0 {
+            endpoint = endpoint.initial_connection_window_size(Some(
+                config.initial_connection_window_size,
+            ));
+        }
+        if config.initial_stream_window_size > 0 {
+            endpoint = endpoint
+                .initial_stream_window_size(Some(config.initial_stream_window_size));
+        }
+        Ok(endpoint)
     } else {
         Ok(endpoint)
     }
@@ -396,6 +415,8 @@ mod tests {
             max_message_size: 16 * 1024 * 1024,
             io_retries_times: 3,
             io_retry_wait_time_ms: 3000,
+            initial_connection_window_size: 67108864,
+            initial_stream_window_size: 16777216,
         };
         let result = create_grpc_client_endpoint("http://localhost:50051", Some(&config));
         assert!(result.is_ok());
