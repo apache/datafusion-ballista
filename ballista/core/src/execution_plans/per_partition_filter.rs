@@ -18,10 +18,11 @@
 //! Filter with a distinct predicate per input partition.
 //!
 //! `FilterExec` in DataFusion carries a single predicate applied to every
-//! partition. That's wrong for the URRE-consuming reader in the adaptive
-//! range shuffle: each downstream partition `k` needs a range predicate
-//! `cuts[k-1] <= key < cuts[k]` unique to that partition, so straddling
-//! sub-parts from the producer are trimmed to just partition `k`'s slice.
+//! partition. That's wrong for the range-repartition-consuming reader in
+//! the adaptive range shuffle: each downstream partition `k` needs a range
+//! predicate `cuts[k-1] <= key < cuts[k]` unique to that partition, so
+//! straddling sub-parts from the producer are trimmed to just partition
+//! `k`'s slice.
 //!
 //! One-task-per-downstream-partition + plain `FilterExec` would work but
 //! defeats vcore packing (`K` tasks instead of `K / vcores`). This operator
@@ -270,6 +271,73 @@ impl RecordBatchStream for PerPartitionFilterStream {
     }
 }
 
+/// Build the `K = cuts.len() + 1` half-open range predicates a
+/// `PerPartitionFilterExec` needs to reproduce the range repartition's
+/// write-side routing on the read side.
+///
+/// Partition `i` receives the predicate
+///
+/// ```text
+///   i = 0        →  routing_expr < cuts[0]
+///   0 < i < K-1  →  cuts[i-1] <= routing_expr AND routing_expr < cuts[i]
+///   i = K-1      →  routing_expr >= cuts[K-2]
+///   K = 1        →  lit(true)   // empty cuts, single-bucket range repartition
+/// ```
+///
+/// Consistent with the private `range_repartition_common::split_batch_by_range`
+/// helper, which uses the same half-open convention on the write side.
+/// Callers pass the range repartition's routing expression verbatim
+/// (`CAST(order_by[0] AS Float64)` today).
+///
+/// Non-null routing expressions only. Both `UnorderedRangeRepartitionExec`
+/// and `OrderedRangeRepartitionExec` refuse nullable routing exprs at
+/// `try_new`, so any expression that reaches this helper via
+/// `RangeRepartitionRouting` is guaranteed non-null — no `IS NULL` branch
+/// needed.
+pub fn range_partition_predicates(
+    routing_expr: Arc<dyn PhysicalExpr>,
+    cuts: &[f64],
+) -> Vec<Arc<dyn PhysicalExpr>> {
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
+    use datafusion::scalar::ScalarValue;
+
+    let partition_count = cuts.len() + 1;
+    let lit = |v: f64| -> Arc<dyn PhysicalExpr> {
+        Arc::new(Literal::new(ScalarValue::Float64(Some(v))))
+    };
+    let ge = |lo: f64| -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            routing_expr.clone(),
+            Operator::GtEq,
+            lit(lo),
+        ))
+    };
+    let lt = |hi: f64| -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(routing_expr.clone(), Operator::Lt, lit(hi)))
+    };
+    (0..partition_count)
+        .map(|partition_idx| {
+            let lo = partition_idx
+                .checked_sub(1)
+                .and_then(|cut_idx| cuts.get(cut_idx).copied());
+            let hi = cuts.get(partition_idx).copied();
+            match (lo, hi) {
+                (None, None) => {
+                    // K == 1: single bucket covers everything.
+                    Arc::new(Literal::new(ScalarValue::Boolean(Some(true))))
+                        as Arc<dyn PhysicalExpr>
+                }
+                (None, Some(hi)) => lt(hi),
+                (Some(lo), None) => ge(lo),
+                (Some(lo), Some(hi)) => {
+                    Arc::new(BinaryExpr::new(ge(lo), Operator::And, lt(hi)))
+                }
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +466,83 @@ mod tests {
             err.to_string().contains("Boolean"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The K=4 range predicates cover every value under the half-open
+    /// convention, and each row lands in exactly one predicate. Random
+    /// probe values are routed through the predicates and expected to
+    /// match the same partition assignment as the range repartition's
+    /// write-side `split_batch_by_range` would produce.
+    #[test]
+    fn range_partition_predicates_partition_every_value_exactly_once() {
+        use datafusion::arrow::array::Float64Array;
+        use datafusion::arrow::datatypes::Field;
+        use datafusion::physical_expr::expressions::Column;
+
+        let cuts = vec![10.0, 20.0, 30.0];
+        let k = cuts.len() + 1;
+        let routing: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let preds = range_partition_predicates(routing, &cuts);
+        assert_eq!(preds.len(), k);
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let values: Vec<f64> = vec![
+            -5.0, 0.0, 9.999, 10.0, 15.0, 19.999, 20.0, 25.0, 30.0, 100.0,
+        ];
+        let arr = Float64Array::from_iter_values(values.iter().copied());
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(arr)]).unwrap();
+
+        // For each row, find the unique partition whose predicate accepts it.
+        for (row, &v) in values.iter().enumerate() {
+            let mut hits = 0;
+            for pred in &preds {
+                let mask = pred
+                    .evaluate(&batch)
+                    .and_then(|v| v.into_array(batch.num_rows()))
+                    .unwrap();
+                let mask = as_boolean_array(&mask).unwrap();
+                if mask.value(row) {
+                    hits += 1;
+                }
+            }
+            assert_eq!(
+                hits, 1,
+                "value {v} matched {hits} predicates, expected exactly 1"
+            );
+        }
+
+        // Expected assignment mirrors split_batch_by_range: `partition_point`
+        // returns the count of cuts `<= key`, which is the partition index
+        // under the half-open convention.
+        let expected: Vec<usize> = values
+            .iter()
+            .map(|v| cuts.partition_point(|&c| c <= *v))
+            .collect();
+        for (row, want) in expected.iter().enumerate() {
+            let mask = preds[*want]
+                .evaluate(&batch)
+                .and_then(|v| v.into_array(batch.num_rows()))
+                .unwrap();
+            let mask = as_boolean_array(&mask).unwrap();
+            assert!(
+                mask.value(row),
+                "value {} should have landed in partition {}",
+                values[row],
+                want
+            );
+        }
+    }
+
+    /// Degenerate K=1 (empty cuts) yields a single lit(true) predicate.
+    #[test]
+    fn range_partition_predicates_single_bucket_when_cuts_empty() {
+        use datafusion::physical_expr::expressions::Column;
+
+        let routing: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let preds = range_partition_predicates(routing, &[]);
+        assert_eq!(preds.len(), 1);
+        assert_eq!(preds[0].to_string(), "true");
     }
 
     /// `with_new_children` swaps the input while preserving the predicate

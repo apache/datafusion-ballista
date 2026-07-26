@@ -27,6 +27,9 @@ mod job_failure;
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// Regression tests for range-repartition planning end-to-end
+/// through `AdaptivePlanner` (DER → routing park → filter injection).
+mod range_repartition;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 

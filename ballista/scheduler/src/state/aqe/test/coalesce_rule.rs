@@ -203,6 +203,67 @@ async fn should_skip_coalesce_when_rule_disabled() -> datafusion::error::Result<
     Ok(())
 }
 
+/// Range-repartition bail: same happy-path inputs (M=8 @ 50 bytes, target=200),
+/// but we park a `RangeRepartitionRouting` slot on the leaf `ExchangeExec`
+/// before the downstream optimizer pass fires — mirrors what `SchedulerAqe`
+/// does after a range-repartitioned stage completes. Coalesce K and
+/// range-repartition K' would independently commit to different partition
+/// counts on the same exchange. Contiguous coalescing is compatible with
+/// range partitioning in principle (apache/datafusion-ballista#2220),
+/// but until we merge cuts alongside groups the rule bails.
+#[tokio::test]
+async fn should_skip_coalesce_when_leaf_has_range_repartition_routing()
+-> datafusion::error::Result<()> {
+    use crate::state::aqe::execution_plan::RangeRepartitionRouting;
+    use datafusion::physical_expr::expressions::Column;
+
+    let ctx = coalesce_context(8, true);
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let plan = ctx
+        .sql("select min(a) as c0, c as c2 from t group by c")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+
+    let _ = planner.runnable_stages()?.unwrap();
+
+    // Park routing on the upstream exchange while it's still in the
+    // runnable cache — `finalise_stage_internal` will remove it. Mirrors
+    // `SchedulerAqe`: `set_repartition_routing` runs before
+    // `resolve_stage_partitions` at the boundary. 7 cuts → K=8, matching
+    // the hash-partitioning's M=8 so the adapter's `PerPartitionFilterExec`
+    // builds cleanly; the point of the test is the rule's bail decision,
+    // not a realistic end-to-end range-repartition query.
+    planner.set_repartition_routing(
+        0,
+        RangeRepartitionRouting {
+            cuts: vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
+            routing_expr: Arc::new(Column::new("c", 0)),
+        },
+    )?;
+
+    // Resolve partitions → triggers `replan_stages`, where
+    // `CoalescePartitionsRule` fires on the downstream subtree and sees a
+    // range-repartitioned leaf → bails.
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
+    let _ = planner.runnable_stages()?;
+
+    // No `coalesce=` on plan_id=0; `range_repartition_cuts=7` present.
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=true, plan_id=1, stage_id=1, stage_resolved=false
+      ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
+        AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
+          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=0, stage_resolved=true, range_repartition_cuts=7
+            AggregateExec: mode=Partial, gby=[c@1 as c], aggr=[min(t.a)]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+    ");
+
+    Ok(())
+}
+
 /// Degenerate K=M path: every partition is already at target. Bin-pack
 /// flushes after each one (adding the next would exceed target=200), and
 /// the post-flush merge is rejected (each bucket = 300, neither small nor

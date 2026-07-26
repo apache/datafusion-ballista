@@ -1211,6 +1211,7 @@ dependencies = [
  "clap 4.6.3",
  "dashmap",
  "datafusion",
+ "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-substrait",
  "futures",
