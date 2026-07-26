@@ -147,7 +147,10 @@ fn union_child_partitions(
 ///   every child (it's sticky — descendants of a collapse all read
 ///   everything).
 /// - `CoalescePartitionsExec` / `SortPreservingMergeExec`: set for all
-///   children.
+///   children. These cannot be derived from the rule below — both declare
+///   `UnspecifiedDistribution`, because they consume every input partition
+///   without constraining how the input is partitioned. Keep the explicit
+///   case.
 /// - Anything else: set per child from `required_input_distribution()`. An
 ///   input declared `SinglePartition` is one the operator consumes whole —
 ///   a join or cross-join build side, for instance — so restricting it to
@@ -159,7 +162,9 @@ fn union_child_partitions(
 ///   `CrossJoinExec` also collects its left input but was not on that list,
 ///   so each task of a multi-partition stage rebuilt the cross-join's left
 ///   side from its own slice and the result came back inflated (seen on
-///   TPC-DS q77, whose catalog branch is `from cs, cr`).
+///   TPC-DS q77, whose catalog branch is `from cs, cr`). It also brings in
+///   a non-preserving `SortExec` and `GlobalLimitExec`, which declare
+///   `SinglePartition` for the same reason.
 ///
 /// `UnionExec` is handled by the caller before reaching this function —
 /// its children need per-child *partition* sub-slices, not just per-child
@@ -173,13 +178,19 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
         return vec![true; children.len()];
     }
     let required = plan.required_input_distribution();
-    if required.len() == children.len() {
-        return required
-            .into_iter()
-            .map(|d| matches!(d, Distribution::SinglePartition))
-            .collect();
+    if required.len() != children.len() {
+        // The trait contract is one entry per child, so a mismatch means a
+        // broken operator. Stay partition-aligned rather than reading whole:
+        // `true` here is not the safe direction, it makes every task of the
+        // stage read the entire input, which duplicates the data instead of
+        // protecting it. `false` is also what every operator outside the
+        // cases above got before this rule generalized.
+        return vec![false; children.len()];
     }
-    vec![false; children.len()]
+    required
+        .into_iter()
+        .map(|d| matches!(d, Distribution::SinglePartition))
+        .collect()
 }
 
 /// Restrict a plan node to a subset of its output partitions, re-indexed
@@ -487,30 +498,8 @@ mod tests {
     // upstream fix used a per-single-partition helper on the executor side;
     // this suite ports the same invariants to the scheduler-side rewriter.
 
-    use datafusion::arrow::datatypes::SchemaRef;
-    use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::ParquetSource;
-    use datafusion::execution::object_store::ObjectStoreUrl;
+    use crate::test_utils::scan_with_file_groups;
     use datafusion::physical_plan::union::UnionExec;
-
-    /// Build a `DataSourceExec` over `n` file groups (one file each), so
-    /// every group is exactly one partition. The scan's output partition
-    /// count equals `n`.
-    fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let source = Arc::new(ParquetSource::new(schema));
-        let mut builder =
-            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
-        for i in 0..n {
-            builder =
-                builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
-                    format!("file{i}.parquet"),
-                    100,
-                )]));
-        }
-        DataSourceExec::from_data_source(builder.build())
-    }
 
     /// File counts per file group of a `DataSourceExec` — the shape a union
     /// test cares about after restriction.
@@ -608,10 +597,10 @@ mod tests {
     fn cross_join_left_side_is_read_whole() {
         use datafusion::physical_plan::joins::CrossJoinExec;
 
-        let left = scan_with_file_groups(4);
-        let right = scan_with_file_groups(4);
-        let join: Arc<dyn ExecutionPlan> =
-            Arc::new(CrossJoinExec::new(left, right.clone()));
+        let join: Arc<dyn ExecutionPlan> = Arc::new(CrossJoinExec::new(
+            scan_with_file_groups(4),
+            scan_with_file_groups(4),
+        ));
 
         // Sanity: the operator really does declare its left input collected.
         assert!(
