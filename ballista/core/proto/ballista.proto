@@ -55,6 +55,7 @@ message BallistaPhysicalPlanNode {
     BufferExecNode buffer = 7;
     UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
     OrderedRangeRepartitionExecNode ordered_range_repartition = 9;
+    PerPartitionFilterExecNode per_partition_filter = 10;
   }
 }
 
@@ -122,6 +123,14 @@ message UnorderedRangeRepartitionExecNode {
   repeated datafusion.PhysicalSortExprNode order_by = 1;
   // K — number of output partitions. Must be ≥ 2.
   uint32 output_partitions = 2;
+}
+
+// Filter with per-input-partition predicates. `predicates[k]` is the
+// boolean expression applied to input partition `k`. Requires
+// `predicates.len() == input_partition_count`. The child plan is
+// plumbed by the framework as `inputs[0]` during decode.
+message PerPartitionFilterExecNode {
+  repeated datafusion.PhysicalExprNode predicates = 1;
 }
 
 message ChaosExecNode {

@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -59,6 +59,8 @@ pub mod ballista_physical_plan_node {
         UnorderedRangeRepartition(super::UnorderedRangeRepartitionExecNode),
         #[prost(message, tag = "9")]
         OrderedRangeRepartition(super::OrderedRangeRepartitionExecNode),
+        #[prost(message, tag = "10")]
+        PerPartitionFilter(super::PerPartitionFilterExecNode),
     }
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
@@ -132,6 +134,17 @@ pub struct UnorderedRangeRepartitionExecNode {
     /// K — number of output partitions. Must be ≥ 2.
     #[prost(uint32, tag = "2")]
     pub output_partitions: u32,
+}
+/// Filter with per-input-partition predicates. `predicates\[k\]` is the
+/// boolean expression applied to input partition `k`. Requires
+/// `predicates.len() == input_partition_count`. The child plan is
+/// plumbed by the framework as `inputs\[0\]` during decode.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PerPartitionFilterExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub predicates: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChaosExecNode {
