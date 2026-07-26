@@ -408,18 +408,19 @@ impl ExecutorManager {
         executor_id: &str,
         multi_tasks: Vec<MultiTaskDefinition>,
         scheduler_id: String,
-    ) -> Result<()> {
+    ) -> Result<Vec<JobId>> {
         let mut client = self
             .get_client(executor_id, &self.grpc_client_config)
             .await?;
-        client
+        let res = client
             .launch_multi_task(protobuf::LaunchMultiTaskParams {
                 multi_tasks,
                 scheduler_id,
             })
-            .await?;
+            .await?
+            .into_inner();
 
-        Ok(())
+        Ok(res.failed_jobs.into_iter().map(JobId::from).collect())
     }
 
     pub(crate) fn drain_pending_cleanup_jobs(

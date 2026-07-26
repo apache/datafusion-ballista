@@ -1277,11 +1277,13 @@ pub struct LaunchTaskResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchMultiTaskResult {
-    /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
     pub success: bool,
+    /// TODO when part of the task set are scheduled successfully
+    #[prost(string, repeated, tag = "2")]
+    pub failed_jobs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelTasksParams {

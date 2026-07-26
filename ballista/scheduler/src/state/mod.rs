@@ -37,7 +37,6 @@ use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tonic::Code;
 
 mod aqe;
 mod distributed_explain;
@@ -305,56 +304,46 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
             // Total number of tasks to be launched for one executor
             let n_tasks: usize = tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
-
             let state = self.clone();
             let join_handle = tokio::spawn(async move {
-                let mut failed_jobs: Vec<JobId> = Vec::new();
                 let job_ids: Vec<JobId> = tasks
                     .iter()
                     .flatten()
                     .map(|t| t.key.job_id.clone())
                     .collect();
-                let success = match state
+                match state
                     .executor_manager
                     .get_executor_metadata(&executor_id)
                     .await
                 {
                     Ok(executor) => {
-                        if let Err(e) = state
+                        match state
                             .task_manager
                             .launch_multi_task(&executor, tasks, &state.executor_manager)
                             .await
                         {
-                            let is_task_rejected = matches!(&e,BallistaError::GrpcError(status)
-                                if status.code() == Code::InvalidArgument);
-                            failed_jobs = if is_task_rejected {
-                                job_ids
-                            } else {
+                            Ok(rejected) => {
+                                let freed = job_ids
+                                    .iter()
+                                    .filter(|j| rejected.contains(j))
+                                    .count()
+                                    as u32;
+                                (vec![(executor_id.clone(), freed)], rejected)
+                            }
+                            Err(e) => {
                                 let err_msg = format!("Failed to launch new task: {e}");
-                                error!("{}", err_msg.clone());
-
-                                // It's OK to remove executor aggressively,
-                                // since if the executor is in healthy state, it will be registered again.
+                                error!("{err_msg}");
                                 state.remove_executor(&executor_id, Some(err_msg)).await;
-                                Vec::new()
-                            };
-
-                            false
-                        } else {
-                            true
+                                (vec![(executor_id.clone(), n_tasks as u32)], vec![])
+                            }
                         }
                     }
                     Err(e) => {
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
-                        false
+                        (vec![(executor_id.clone(), n_tasks as u32)], vec![])
                     }
-                };
-                if success {
-                    (vec![], vec![])
-                } else {
-                    (vec![(executor_id.clone(), n_tasks as u32)], failed_jobs)
                 }
             });
             join_handles.push(join_handle);
@@ -442,5 +431,153 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SchedulerConfig;
+    use crate::scheduler_server::timestamp_millis;
+    use crate::state::executor_manager::ExecutorManager;
+    use crate::state::task_manager::TaskLauncher;
+    use crate::test_utils::test_cluster_context;
+    use ballista_core::extension::SessionConfigExt;
+    use ballista_core::serde::BallistaCodec;
+    use ballista_core::serde::protobuf::MultiTaskDefinition;
+    use ballista_core::serde::scheduler::{
+        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+        ExecutorSpecification,
+    };
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::context::SessionConfig;
+    use datafusion::functions_aggregate::sum::sum;
+    use datafusion::logical_expr::{LogicalPlan, col};
+    use datafusion::test_util::scan_empty_with_partitions;
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+    struct RejectOne {
+        reject: JobId,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskLauncher for RejectOne {
+        async fn launch_tasks(
+            &self,
+            _executor: &ExecutorMetadata,
+            tasks: Vec<MultiTaskDefinition>,
+            _executor_manager: &ExecutorManager,
+        ) -> Result<Vec<JobId>> {
+            Ok(tasks
+                .iter()
+                .map(|t| JobId::from(t.job_id.clone()))
+                .filter(|j| j == &self.reject)
+                .take(1)
+                .collect())
+        }
+    }
+
+    fn agg_plan() -> LogicalPlan {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_isolates_single_rejected_job() -> Result<()> {
+        let bad_job = JobId::from("job-bad");
+        let good_job = JobId::from("job-good");
+
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                BallistaCodec::default(),
+                "localhost:50050".to_owned(),
+                Arc::new(SchedulerConfig::default()),
+                Arc::new(RejectOne {
+                    reject: bad_job.clone(),
+                }),
+            );
+
+        let vcores = 8;
+        state
+            .executor_manager
+            .register_executor(
+                ExecutorMetadata {
+                    id: "executor-1".to_string(),
+                    host: String::default(),
+                    port: 0,
+                    grpc_port: 0,
+                    specification: ExecutorSpecification::default().with_vcores(vcores),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                ExecutorData {
+                    executor_id: "executor-1".to_string(),
+                    total_vcores: vcores,
+                    available_vcores: vcores,
+                },
+            )
+            .await?;
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+
+        for job_id in [&good_job, &bad_job] {
+            state
+                .task_manager
+                .queue_job(job_id, "", timestamp_millis())?;
+            state
+                .task_manager
+                .submit_job(
+                    job_id,
+                    "",
+                    ctx.clone(),
+                    &agg_plan(),
+                    timestamp_millis(),
+                    None,
+                )
+                .await?;
+        }
+
+        let bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+
+        let bad_task_count = bound
+            .iter()
+            .filter(|(_, t)| t.key.job_id == bad_job)
+            .count() as u32;
+        let good_task_count = bound
+            .iter()
+            .filter(|(_, t)| t.key.job_id == good_job)
+            .count() as u32;
+        assert!(bad_task_count > 0 && good_task_count > 0);
+
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound).await?;
+
+        assert_eq!(failed_jobs, vec![bad_job.clone()]);
+
+        let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
+        assert_eq!(freed, bad_task_count);
+
+        assert!(
+            state
+                .executor_manager
+                .get_executor_metadata("executor-1")
+                .await
+                .is_ok()
+        );
+
+        Ok(())
     }
 }

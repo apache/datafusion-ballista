@@ -340,8 +340,8 @@ impl TaskLauncher for BlackholeTaskLauncher {
         _executor: &ExecutorMetadata,
         _tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<Vec<JobId>> {
+        Ok(vec![])
     }
 }
 
@@ -358,7 +358,7 @@ impl TaskLauncher for VirtualTaskLauncher {
         executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<Vec<JobId>> {
         let virtual_executor = self.executors.get(&executor.id).ok_or_else(|| {
             BallistaError::Internal(format!(
                 "No virtual executor with ID {} found",
@@ -376,12 +376,15 @@ impl TaskLauncher for VirtualTaskLauncher {
             .await
             .map_err(|e| {
                 BallistaError::Internal(format!("Error sending task status: {e:?}"))
-            })
+            })?;
+        Ok(vec![])
     }
 }
 
-/// Launcher that rejects every launch with a deterministic gRPC `InvalidArgument`,
-/// simulating an executor that cannot decode/validate the task (see issue #1908).
+/// Launcher that reports every job in the batch as rejected via the
+/// `failed_jobs` channel, simulating an executor that cannot decode/validate
+/// the task (see issue #1908). The RPC itself succeeds; the jobs are failed
+/// individually rather than the whole batch.
 #[derive(Default)]
 pub struct RejectingTaskLauncher {}
 
@@ -390,12 +393,17 @@ impl TaskLauncher for RejectingTaskLauncher {
     async fn launch_tasks(
         &self,
         _executor: &ExecutorMetadata,
-        _tasks: Vec<MultiTaskDefinition>,
+        tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Err(BallistaError::GrpcError(Box::new(
-            tonic::Status::invalid_argument("undecodable task"),
-        )))
+    ) -> Result<Vec<JobId>> {
+        let mut failed: Vec<JobId> = Vec::new();
+        for t in &tasks {
+            let job_id = JobId::from(t.job_id.clone());
+            if !failed.contains(&job_id) {
+                failed.push(job_id);
+            }
+        }
+        Ok(failed)
     }
 }
 
@@ -512,7 +520,7 @@ impl SchedulerTest {
                 let id = format!("virtual-executor-{i}");
                 let executor = VirtualExecutor {
                     executor_id: id.clone(),
-                    task_slots: task_slots_per_executor,
+                    vcores: task_slots_per_executor,
                     runner: runner.clone(),
                 };
                 (id, executor)
@@ -533,21 +541,21 @@ impl SchedulerTest {
             );
         scheduler.init().await?;
 
-        for (executor_id, VirtualExecutor { task_slots, .. }) in executors {
+        for (executor_id, VirtualExecutor { vcores, .. }) in executors {
             let metadata = ExecutorMetadata {
                 id: executor_id.clone(),
                 host: String::default(),
                 port: 0,
                 grpc_port: 0,
                 specification: ExecutorSpecification::default()
-                    .with_task_slots(task_slots as u32),
+                    .with_vcores(vcores as u32),
                 os_info: ExecutorOperatingSystemSpecification::default(),
             };
 
             let executor_data = ExecutorData {
                 executor_id,
-                total_task_slots: task_slots as u32,
-                available_task_slots: task_slots as u32,
+                total_vcores: vcores as u32,
+                available_vcores: vcores as u32,
             };
 
             scheduler
