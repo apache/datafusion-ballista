@@ -97,7 +97,9 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
     "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
 /// Configuration key for the byte-size threshold below which a hash join's
 /// smaller side is promoted to `CollectLeft` and lowered via the broadcast
-/// pattern in the distributed planner. Set to `0` to disable promotion.
+/// pattern in the distributed planner. It also caps null-aware anti joins with
+/// a known build size because they require single-task `CollectLeft` execution.
+/// Set to `0` to disable promotion and reject null-aware anti joins.
 pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES: &str =
     "ballista.optimizer.broadcast_join_threshold_bytes";
 
@@ -255,8 +257,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Byte-size threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern. \
                           Governs broadcast selection under both the static distributed \
-                          planner and adaptive query planning (AQE). Set to 0 to disable \
-                          promotion.".to_string(),
+                          planner and adaptive query planning (AQE). It also caps \
+                          null-aware anti joins with a known build size because they require \
+                          single-task CollectLeft execution. Set to 0 to disable promotion \
+                          and reject null-aware anti joins.".to_string(),
                          DataType::UInt64,
                          Some((10 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
