@@ -791,7 +791,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                 task_id,
                                 runtime_stats.len(),
                             );
-                            running_stage.append_runtime_stats_reports(runtime_stats);
+                            running_stage
+                                .append_runtime_stats_reports(task_id, runtime_stats);
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(

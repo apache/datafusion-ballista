@@ -41,7 +41,7 @@ pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
 pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use runtime_stats::{
-    MergedRuntimeStats, RuntimeStatsExec,
+    MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
     collect_reports as collect_runtime_stats_reports, log_merged_runtime_stats,
     merge_reports as merge_runtime_stats_reports, sketch_from_proto, sketch_to_proto,
 };

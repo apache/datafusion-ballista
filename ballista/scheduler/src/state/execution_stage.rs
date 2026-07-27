@@ -32,7 +32,9 @@ use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::execution_plans::{ShuffleWriterExec, SortShuffleWriterExec};
+use ballista_core::execution_plans::{
+    ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats,
+};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
     FailedTask, OperatorMetricsSet, ResultLost, RuntimeStatsReport, SuccessfulTask,
@@ -219,10 +221,13 @@ pub struct RunningStage {
     pub stage_metrics: Option<Vec<MetricsSet>>,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
-    /// `RuntimeStatsReport`s collected from every successful task in
-    /// this stage attempt. Merged and logged once the stage finalizes;
-    /// dropped when the stage transitions to Successful.
-    pub runtime_stats_reports: Vec<RuntimeStatsReport>,
+    /// Per-task runtime-stats reports collected from every successful task
+    /// in this stage attempt. Each entry pairs the producer task's `task_id`
+    /// (== `file_id` on the emitted shuffle files) with its report — the pair
+    /// is what uniquely addresses a producer file, since the report's own
+    /// `partition_id` field is producer-local. Merged and logged once the
+    /// stage finalizes; dropped when the stage transitions to Successful.
+    pub runtime_stats_reports: Vec<TaskRuntimeStats>,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -832,14 +837,25 @@ impl RunningStage {
     }
 
     /// Accumulate the `RuntimeStatsReport`s a successful task shipped
-    /// back in its `SuccessfulTask` payload. Consumed at final-success
-    /// by `ballista_core::execution_plans::log_merged_runtime_stats`;
-    /// each stage attempt starts with an empty accumulator.
-    pub fn append_runtime_stats_reports(&mut self, reports: Vec<RuntimeStatsReport>) {
+    /// back in its `SuccessfulTask` payload, tagging each with the producer
+    /// `task_id` so downstream stages can address individual producer files.
+    /// Consumed at final-success by
+    /// `ballista_core::execution_plans::log_merged_runtime_stats` and by the
+    /// step-3 overlap router (`compute_overlapping_locations`); each stage
+    /// attempt starts with an empty accumulator.
+    pub fn append_runtime_stats_reports(
+        &mut self,
+        producer_task_id: usize,
+        reports: Vec<RuntimeStatsReport>,
+    ) {
         if reports.is_empty() {
             return;
         }
-        self.runtime_stats_reports.extend(reports);
+        self.runtime_stats_reports
+            .extend(reports.into_iter().map(|report| TaskRuntimeStats {
+                producer_task_id,
+                report,
+            }));
     }
 
     /// update and upsert the task metrics to the stage metrics

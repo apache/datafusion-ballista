@@ -787,6 +787,22 @@ fn merge_group(
     })
 }
 
+/// One producer task's runtime-stats report, kept alongside the
+/// `producer_task_id` that emitted it. The scheduler stores these on
+/// `RunningStage.runtime_stats_reports` so downstream stages can address
+/// individual producer files as `(producer_task_id, partition_id)` pairs —
+/// the partition_id inside a report is producer-local (0..K URRE sub-parts),
+/// so the pair is what uniquely identifies a shuffle file across producers.
+#[derive(Debug, Clone)]
+pub struct TaskRuntimeStats {
+    /// Producer task's task_id at the time it emitted the report. Matches
+    /// the `file_id` stamped on `ShuffleWritePartition` records.
+    pub producer_task_id: usize,
+    /// The report itself: per-partition row counts and (in sketch mode)
+    /// quantile sketches for the routing expression.
+    pub report: crate::serde::protobuf::RuntimeStatsReport,
+}
+
 /// Merge `reports` and log each group's merged view at `debug!`
 /// (`RUST_LOG` promotes when needed). Any merge error is logged at
 /// `warn!` — the scheduler doesn't want telemetry loss to tank a query
@@ -795,9 +811,11 @@ fn merge_group(
 pub fn log_merged_runtime_stats(
     job_id: &str,
     stage_id: usize,
-    reports: &[crate::serde::protobuf::RuntimeStatsReport],
+    reports: &[TaskRuntimeStats],
 ) {
-    let merged_groups = match merge_reports(reports) {
+    let raw: Vec<crate::serde::protobuf::RuntimeStatsReport> =
+        reports.iter().map(|t| t.report.clone()).collect();
+    let merged_groups = match merge_reports(&raw) {
         Ok(groups) => groups,
         Err(err) => {
             log::warn!(

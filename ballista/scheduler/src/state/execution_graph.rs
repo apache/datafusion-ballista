@@ -958,7 +958,8 @@ impl ExecutionGraph for StaticExecutionGraph {
                                 runtime_stats,
                                 ..
                             } = successful_task;
-                            running_stage.append_runtime_stats_reports(runtime_stats);
+                            running_stage
+                                .append_runtime_stats_reports(task_id, runtime_stats);
 
                             locations.append(&mut partition_to_location(
                                 &job_id, task_id, stage_id, executor, partitions,
