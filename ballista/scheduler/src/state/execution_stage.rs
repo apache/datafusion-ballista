@@ -1023,6 +1023,11 @@ impl RunningStage {
     /// Mark the task as lost/killed and push its partitions back to the
     /// front of `pending` so they are retried on the next bind. Does not
     /// touch failure counts — those are updated in `update_task_info`.
+    ///
+    /// Any runtime-stats reports the task already contributed are also
+    /// dropped: the retry will produce fresh sketches under a new
+    /// `task_id`, and leaving the ghost behind would double-count the
+    /// slice in the stage's merged view.
     pub fn reset_task_info(&mut self, task_id: usize) {
         let task = &mut self.task_infos[task_id];
         let partitions = task.global_input_partition_ids.clone();
@@ -1033,16 +1038,25 @@ impl RunningStage {
             failed_reason: Some(FailedReason::TaskKilled(TaskKilled {})),
         });
         self.pending.reschedule(partitions);
+        self.runtime_stats_reports
+            .retain(|s| s.producer_task_id != task_id);
     }
 
     /// Reset the running and completed tasks on a given executor by
     /// marking their `TaskInfo` as `Failed(ResultLost)` and pushing their
     /// partition slices back to `pending`. Returns the number of tasks
     /// reset.
+    ///
+    /// Runtime-stats reports contributed by any reset producer are
+    /// dropped — the retries will report fresh sketches under new
+    /// `task_id`s. Reports are append-only otherwise, so without this
+    /// purge the stage's merged view would double-count every slice that
+    /// bounced through a lost executor.
     pub fn reset_tasks(&mut self, executor: &str) -> usize {
         let mut reset = 0;
         let mut to_reschedule: Vec<usize> = vec![];
-        for task in self.task_infos.iter_mut() {
+        let mut reset_task_ids: HashSet<usize> = HashSet::new();
+        for (task_id, task) in self.task_infos.iter_mut().enumerate() {
             let matches_exec = match &task.task_status {
                 task_status::Status::Running(RunningTask { executor_id })
                 | task_status::Status::Successful(SuccessfulTask {
@@ -1058,10 +1072,13 @@ impl RunningStage {
                     failed_reason: Some(FailedReason::ResultLost(ResultLost {})),
                 });
                 to_reschedule.extend(task.global_input_partition_ids.iter().copied());
+                reset_task_ids.insert(task_id);
                 reset += 1;
             }
         }
         self.pending.reschedule(to_reschedule);
+        self.runtime_stats_reports
+            .retain(|s| !reset_task_ids.contains(&s.producer_task_id));
         reset
     }
 
@@ -1723,5 +1740,84 @@ mod tests {
         // per-partition lie called out in the TODO.
         let aggregated = operator_metrics.aggregate_by_name();
         assert_eq!(aggregated.output_rows(), Some(2000));
+    }
+
+    /// Build a bare-bones report tagged with a `partition_id` we can look
+    /// for in assertions — no sketches, no order-by; the purge cares only
+    /// about the wrapping `producer_task_id`.
+    fn make_report(marker_partition_id: u32) -> RuntimeStatsReport {
+        RuntimeStatsReport {
+            order_by: vec![],
+            partitions: vec![
+                ballista_core::serde::protobuf::RuntimeStatsPartitionEntry {
+                    partition_id: marker_partition_id,
+                    row_count: 0,
+                    sketch: None,
+                },
+            ],
+        }
+    }
+
+    /// When a task is reset for retry, its previously-appended runtime-stats
+    /// reports must be dropped so the retry's fresh sketches don't merge
+    /// with ghost data from the original attempt. Reports from *other* tasks
+    /// must survive.
+    #[test]
+    fn test_reset_task_info_purges_runtime_stats_reports() {
+        let mut stage = make_running_stage(2);
+        append_running_task(&mut stage, 0, "executor-1", vec![0]);
+        append_running_task(&mut stage, 1, "executor-1", vec![1]);
+
+        stage.append_runtime_stats_reports(0, vec![make_report(100)]);
+        stage.append_runtime_stats_reports(1, vec![make_report(200)]);
+        assert_eq!(stage.runtime_stats_reports.len(), 2);
+
+        stage.reset_task_info(0);
+
+        assert_eq!(stage.runtime_stats_reports.len(), 1);
+        assert_eq!(stage.runtime_stats_reports[0].producer_task_id, 1);
+        assert_eq!(
+            stage.runtime_stats_reports[0].report.partitions[0].partition_id,
+            200
+        );
+    }
+
+    /// Executor loss resets every task the executor was hosting; the
+    /// runtime-stats reports those (previously-Successful) producers had
+    /// already contributed must be purged along with the task status.
+    /// Reports produced on surviving executors must be left alone.
+    #[test]
+    fn test_reset_tasks_purges_runtime_stats_reports_for_lost_executor() {
+        let mut stage = make_running_stage(3);
+        append_running_task(&mut stage, 0, "executor-1", vec![0]);
+        append_running_task(&mut stage, 1, "executor-1", vec![1]);
+        append_running_task(&mut stage, 2, "executor-2", vec![2]);
+        // Drain the pending queue so reschedules below are visible.
+        stage.pending.next_slice(3);
+
+        // All three tasks made it to Successful and shipped reports.
+        for (task_id, executor) in
+            [(0, "executor-1"), (1, "executor-1"), (2, "executor-2")]
+        {
+            stage.task_infos[task_id].task_status =
+                task_status::Status::Successful(SuccessfulTask {
+                    executor_id: executor.to_string(),
+                    partitions: vec![],
+                    runtime_stats: vec![],
+                });
+            stage.append_runtime_stats_reports(
+                task_id,
+                vec![make_report(100 + task_id as u32)],
+            );
+        }
+        assert_eq!(stage.runtime_stats_reports.len(), 3);
+
+        // Simulate executor-1 heartbeat loss.
+        let reset_count = stage.reset_tasks("executor-1");
+        assert_eq!(reset_count, 2);
+
+        // Only executor-2's producer survives.
+        assert_eq!(stage.runtime_stats_reports.len(), 1);
+        assert_eq!(stage.runtime_stats_reports[0].producer_task_id, 2);
     }
 }
