@@ -1245,3 +1245,30 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
         status: Some(task_status::Status::Failed(failed_task)),
     }
 }
+
+/// A `DataSourceExec` over `n` single-file groups, so its output partition
+/// count is `n` and each group is independently restrictable.
+///
+/// Shared by the planner and task-builder tests, both of which need a leaf
+/// whose partitions per-task restriction can actually slice.
+pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, ParquetSource,
+    };
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+
+    let schema: SchemaRef =
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+    let source = Arc::new(ParquetSource::new(schema));
+    let mut builder =
+        FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
+    for i in 0..n {
+        builder = builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
+            format!("file{i}.parquet"),
+            100,
+        )]));
+    }
+    DataSourceExec::from_data_source(builder.build())
+}

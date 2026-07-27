@@ -46,7 +46,6 @@ use datafusion::error::Result;
 use datafusion::physical_expr::Distribution;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
-use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
@@ -148,11 +147,24 @@ fn union_child_partitions(
 ///   every child (it's sticky — descendants of a collapse all read
 ///   everything).
 /// - `CoalescePartitionsExec` / `SortPreservingMergeExec`: set for all
-///   children.
-/// - `HashJoinExec` / `NestedLoopJoinExec`: set per child based on
-///   `required_input_distribution()`. Typically only the build side is
-///   `SinglePartition`, so the probe side inherits `false` and remains
-///   partition-aligned.
+///   children. These cannot be derived from the rule below — both declare
+///   `UnspecifiedDistribution`, because they consume every input partition
+///   without constraining how the input is partitioned. Keep the explicit
+///   case.
+/// - Anything else: set per child from `required_input_distribution()`. An
+///   input declared `SinglePartition` is one the operator consumes whole —
+///   a join or cross-join build side, for instance — so restricting it to
+///   the task's slice would hand each sibling task a different fraction of
+///   it. Typically only the build side is `SinglePartition`, so the probe
+///   side inherits `false` and remains partition-aligned.
+///
+///   This is asked of every operator rather than a list of join types.
+///   `CrossJoinExec` also collects its left input but was not on that list,
+///   so each task of a multi-partition stage rebuilt the cross-join's left
+///   side from its own slice and the result came back inflated (seen on
+///   TPC-DS q77, whose catalog branch is `from cs, cr`). It also brings in
+///   a non-preserving `SortExec` and `GlobalLimitExec`, which declare
+///   `SinglePartition` for the same reason.
 ///
 /// `UnionExec` is handled by the caller before reaching this function —
 /// its children need per-child *partition* sub-slices, not just per-child
@@ -165,14 +177,20 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
     if plan.is::<CoalescePartitionsExec>() || plan.is::<SortPreservingMergeExec>() {
         return vec![true; children.len()];
     }
-    if plan.is::<HashJoinExec>() || plan.is::<NestedLoopJoinExec>() {
-        return plan
-            .required_input_distribution()
-            .into_iter()
-            .map(|d| matches!(d, Distribution::SinglePartition))
-            .collect();
+    let required = plan.required_input_distribution();
+    if required.len() != children.len() {
+        // The trait contract is one entry per child, so a mismatch means a
+        // broken operator. Stay partition-aligned rather than reading whole:
+        // `true` here is not the safe direction, it makes every task of the
+        // stage read the entire input, which duplicates the data instead of
+        // protecting it. `false` is also what every operator outside the
+        // cases above got before this rule generalized.
+        return vec![false; children.len()];
     }
-    vec![false; children.len()]
+    required
+        .into_iter()
+        .map(|d| matches!(d, Distribution::SinglePartition))
+        .collect()
 }
 
 /// Restrict a plan node to a subset of its output partitions, re-indexed
@@ -480,30 +498,8 @@ mod tests {
     // upstream fix used a per-single-partition helper on the executor side;
     // this suite ports the same invariants to the scheduler-side rewriter.
 
-    use datafusion::arrow::datatypes::SchemaRef;
-    use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::ParquetSource;
-    use datafusion::execution::object_store::ObjectStoreUrl;
+    use crate::test_utils::scan_with_file_groups;
     use datafusion::physical_plan::union::UnionExec;
-
-    /// Build a `DataSourceExec` over `n` file groups (one file each), so
-    /// every group is exactly one partition. The scan's output partition
-    /// count equals `n`.
-    fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let source = Arc::new(ParquetSource::new(schema));
-        let mut builder =
-            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
-        for i in 0..n {
-            builder =
-                builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
-                    format!("file{i}.parquet"),
-                    100,
-                )]));
-        }
-        DataSourceExec::from_data_source(builder.build())
-    }
 
     /// File counts per file group of a `DataSourceExec` — the shape a union
     /// test cares about after restriction.
@@ -587,5 +583,45 @@ mod tests {
         let plan = scan_with_file_groups(4);
         let restricted = restrict_plan_to_partitions(plan, &[2]).unwrap();
         assert_eq!(group_file_counts(&restricted), vec![1]);
+    }
+
+    /// A `CrossJoinExec` collects its left input, so that side must be read
+    /// whole. Scoping is taken from `required_input_distribution()` rather
+    /// than a list of join types, which is what brings cross joins in.
+    ///
+    /// Restricting the collected side would give each sibling task a
+    /// different fraction of it, and the join would emit a different subset
+    /// of the cartesian product per task — TPC-DS q77's `from cs, cr` branch
+    /// came back inflated exactly this way.
+    #[test]
+    fn cross_join_left_side_is_read_whole() {
+        use datafusion::physical_plan::joins::CrossJoinExec;
+
+        let join: Arc<dyn ExecutionPlan> = Arc::new(CrossJoinExec::new(
+            scan_with_file_groups(4),
+            scan_with_file_groups(4),
+        ));
+
+        // Sanity: the operator really does declare its left input collected.
+        assert!(
+            matches!(
+                join.required_input_distribution().first(),
+                Some(Distribution::SinglePartition)
+            ),
+            "CrossJoinExec must declare SinglePartition on its left input"
+        );
+
+        let restricted = restrict_plan_to_partitions(join, &[1]).unwrap();
+        let children = restricted.children();
+        assert_eq!(
+            group_file_counts(children[0]),
+            vec![1, 1, 1, 1],
+            "collected left side keeps every group"
+        );
+        assert_eq!(
+            group_file_counts(children[1]),
+            vec![1],
+            "streaming right side is pinned to this task's partition"
+        );
     }
 }
