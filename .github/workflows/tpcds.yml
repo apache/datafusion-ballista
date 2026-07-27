@@ -56,6 +56,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
+    # A passing run takes ~7 minutes. Cap the job well under the 6-hour
+    # default so a hung query fails fast and frees the runner rather than
+    # sitting for hours with no useful signal.
+    timeout-minutes: 45
     steps:
       - name: Install dependencies
         run: |
@@ -93,6 +97,10 @@ jobs:
             --output-dir "$RUNNER_TEMP/tpcds-data"
 
       - name: Run TPC-DS queries against Ballista cluster
+        # Primary timeout, on the step rather than the job, so that a hang
+        # still runs the log-upload step below and leaves something to
+        # diagnose. The job-level cap is only a backstop.
+        timeout-minutes: 30
         env:
           DATA_DIR: ${{ runner.temp }}/tpcds-data
           WORK_DIR: ${{ runner.temp }}/work
@@ -153,10 +161,9 @@ jobs:
           # internally loops all non-skipped queries and exits non-zero on any
           # failure, so a single invocation covers the whole suite.
           #
-          # The adaptive planner (AQE on) is intentionally not run here yet: it
-          # currently fails many TPC-DS queries with an `EmptyExec invalid
-          # partition` assertion (issue #2047). Re-add an `AQE on` invocation
-          # once that is fixed.
+          # Coverage for the adaptive planner (AQE on) and for single-partition
+          # execution is being added separately; both currently fail on
+          # pre-existing bugs.
           run_suite() {
             local label="$1"; shift
             echo "::group::[$label] TPC-DS suite"
@@ -173,7 +180,10 @@ jobs:
             -c datafusion.optimizer.prefer_hash_join=false
 
       - name: Upload cluster logs on failure
-        if: failure()
+        # `!success()` rather than `failure()` so a timed-out or cancelled
+        # run still surfaces its scheduler/executor logs — the hang case is
+        # exactly when they are most worth having.
+        if: ${{ !success() }}
         uses: actions/upload-artifact@v7
         with:
           name: tpcds-sf1-cluster-logs

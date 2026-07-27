@@ -16,6 +16,9 @@
 # under the License.
 
 on:
+  # Allow the docs site to be rebuilt and republished on demand, e.g. when a
+  # push-triggered run was dropped and the change never made it to asf-site.
+  workflow_dispatch:
   push:
     branches: [ "main" ]
     paths:

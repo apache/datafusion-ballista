@@ -242,13 +242,91 @@ struct SortShuffleWriteMetrics {
     input_rows: metrics::Count,
     /// Number of output rows
     output_rows: metrics::Count,
-    /// Number of times the writer flushed buffered partitions to disk under
-    /// memory pressure. One event typically writes one batch per non-empty
-    /// output partition, so this is strictly less than or equal to the number
-    /// of batches written into spill files.
+    /// Number of times the writer flushed buffered partitions to disk, whether
+    /// because the runtime `MemoryPool` rejected a reservation grow or because
+    /// the per-task buffer budget was reached. One event typically writes one
+    /// batch per non-empty output partition, so this is strictly less than or
+    /// equal to the number of batches written into spill files.
     spill_count: metrics::Count,
     /// Bytes spilled to disk
     spill_bytes: metrics::Count,
+}
+
+/// What made the writer flush its buffered partitions to disk.
+///
+/// The writer has two independent spill triggers and they can fire on the same
+/// input batch, so the cause is recorded per event rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpillTrigger {
+    /// The runtime `MemoryPool` refused to grow this writer's reservation:
+    /// the executor as a whole is out of budget.
+    MemoryPool,
+    /// The per-task buffered-bytes budget
+    /// (`ballista.shuffle.sort_based.memory_limit_per_task_bytes`) was reached.
+    /// The pool still had room; this writer hit its own configured cap.
+    TaskBudget,
+    /// Both fired on the same batch.
+    Both,
+}
+
+impl SpillTrigger {
+    /// Classify a spill decision, or `None` if neither trigger fired.
+    fn classify(pool_rejected: bool, budget_reached: bool) -> Option<Self> {
+        match (pool_rejected, budget_reached) {
+            (true, true) => Some(Self::Both),
+            (true, false) => Some(Self::MemoryPool),
+            (false, true) => Some(Self::TaskBudget),
+            (false, false) => None,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::MemoryPool => "memory pool rejected the reservation grow",
+            Self::TaskBudget => "per-task buffer budget reached",
+            Self::Both => {
+                "memory pool rejected the reservation grow and per-task buffer budget reached"
+            }
+        }
+    }
+}
+
+/// Per-task tally of spill events by trigger, for the end-of-task summary.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SpillTriggerCounts {
+    memory_pool: u64,
+    task_budget: u64,
+    both: u64,
+}
+
+impl SpillTriggerCounts {
+    fn record(&mut self, trigger: SpillTrigger) {
+        match trigger {
+            SpillTrigger::MemoryPool => self.memory_pool += 1,
+            SpillTrigger::TaskBudget => self.task_budget += 1,
+            SpillTrigger::Both => self.both += 1,
+        }
+    }
+
+    /// Human-readable breakdown listing only the triggers that actually fired,
+    /// so the summary names the real cause instead of a generic one.
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.memory_pool > 0 {
+            parts.push(format!("memory pool rejection x{}", self.memory_pool));
+        }
+        if self.task_budget > 0 {
+            parts.push(format!("per-task buffer budget x{}", self.task_budget));
+        }
+        if self.both > 0 {
+            parts.push(format!("both x{}", self.both));
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
 }
 
 impl SortShuffleWriteMetrics {
@@ -438,6 +516,7 @@ impl SortShuffleWriterExec {
 
             let mut hash_buffer: Vec<u64> = Vec::new();
             let mut spill_events: u64 = 0;
+            let mut spill_triggers = SpillTriggerCounts::default();
             // Absolute buffered-bytes counter, independent of the runtime
             // `MemoryPool`. When `memory_limit` is non-zero it caps this counter
             // as a second spill trigger; a `memory_limit` of 0 disables the cap
@@ -478,9 +557,11 @@ impl SortShuffleWriterExec {
                 // consumer owes the pool.
                 let pool_rejected_growth = reservation.try_grow(growth).is_err();
                 buffered_bytes = buffered_bytes.saturating_add(growth);
+                let budget_reached =
+                    per_task_budget_enabled && buffered_bytes >= memory_limit;
 
-                if pool_rejected_growth
-                    || (per_task_budget_enabled && buffered_bytes >= memory_limit)
+                if let Some(trigger) =
+                    SpillTrigger::classify(pool_rejected_growth, budget_reached)
                 {
                     let spill_timer = metrics.spill_time.timer();
                     let (event_batches, event_bytes) = spill_all_partitions(
@@ -494,12 +575,14 @@ impl SortShuffleWriterExec {
 
                     if event_batches > 0 {
                         spill_events += 1;
+                        spill_triggers.record(trigger);
                         debug!(
                             "Sort shuffle writer for input partition {} spilled \
-                             event #{}: {} batches, {} bytes \
+                             event #{} ({}): {} batches, {} bytes \
                              (cumulative: {} events, {} batches, {} bytes)",
                             input_partition,
                             spill_events,
+                            trigger.label(),
                             event_batches,
                             event_bytes,
                             spill_events,
@@ -555,14 +638,21 @@ impl SortShuffleWriterExec {
             if total_bytes_spilled > 0 {
                 warn!(
                     "Sort shuffle spill: job={} stage={} input_partition={} \
-                     spilled {} bytes in {} batches ({} events) under memory \
-                     pressure; repart_time={:?} spill_time={:?} write_time={:?}",
+                     spilled {} bytes in {} batches ({} events); \
+                     triggered by: {} (per-task buffer budget: {}); \
+                     repart_time={:?} spill_time={:?} write_time={:?}",
                     job_id,
                     stage_id,
                     input_partition,
                     total_bytes_spilled,
                     total_spilled_batches,
                     spill_events,
+                    spill_triggers.summary(),
+                    if per_task_budget_enabled {
+                        format!("{memory_limit} bytes")
+                    } else {
+                        "disabled".to_string()
+                    },
                     repart_time,
                     spill_time,
                     write_time,
@@ -1128,6 +1218,44 @@ mod tests {
         // Distribution is non-trivial — at least 2 distinct partitions used
         let used = result.iter().filter(|v| !v.is_empty()).count();
         assert!(used >= 2, "expected hash to use multiple partitions");
+    }
+
+    #[test]
+    fn spill_trigger_classifies_each_cause_distinctly() {
+        assert_eq!(SpillTrigger::classify(false, false), None);
+        assert_eq!(
+            SpillTrigger::classify(true, false),
+            Some(SpillTrigger::MemoryPool)
+        );
+        assert_eq!(
+            SpillTrigger::classify(false, true),
+            Some(SpillTrigger::TaskBudget)
+        );
+        assert_eq!(SpillTrigger::classify(true, true), Some(SpillTrigger::Both));
+
+        // The two causes must not be described with the same wording, otherwise
+        // the log cannot tell an operator which knob to turn.
+        assert_ne!(
+            SpillTrigger::MemoryPool.label(),
+            SpillTrigger::TaskBudget.label()
+        );
+    }
+
+    #[test]
+    fn spill_trigger_counts_summarize_only_triggers_that_fired() {
+        let mut counts = SpillTriggerCounts::default();
+        assert_eq!(counts.summary(), "none");
+
+        counts.record(SpillTrigger::TaskBudget);
+        counts.record(SpillTrigger::TaskBudget);
+        assert_eq!(counts.summary(), "per-task buffer budget x2");
+
+        counts.record(SpillTrigger::MemoryPool);
+        counts.record(SpillTrigger::Both);
+        assert_eq!(
+            counts.summary(),
+            "memory pool rejection x1, per-task buffer budget x2, both x1"
+        );
     }
 
     #[tokio::test]

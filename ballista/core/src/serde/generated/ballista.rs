@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -55,7 +55,31 @@ pub mod ballista_physical_plan_node {
         RuntimeStats(super::RuntimeStatsExecNode),
         #[prost(message, tag = "7")]
         Buffer(super::BufferExecNode),
+        #[prost(message, tag = "8")]
+        UnorderedRangeRepartition(super::UnorderedRangeRepartitionExecNode),
+        #[prost(message, tag = "9")]
+        OrderedRangeRepartition(super::OrderedRangeRepartitionExecNode),
     }
+}
+/// Value-range router over N locally-sorted overlapping input partitions.
+/// Redistributes them into K range-disjoint output partitions where each
+/// output is fully sorted on the routing expression. Uses N × K scatter
+/// channels feeding K per-output k-way merges (via DataFusion's SPM
+/// internals). Discovery of cut boundaries is identical to the unordered
+/// variant — walk the child subtree for a matching `RuntimeStatsExec`, snap
+/// its T-Digest.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OrderedRangeRepartitionExecNode {
+    /// Lexicographic ORDER BY. Routing keys off the first entry; the full
+    /// ordering is preserved for downstream operators. Must match the
+    /// input's declared `output_ordering` at plan time.
+    #[prost(message, repeated, tag = "1")]
+    pub order_by: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
+    /// K — number of output partitions. Must be ≥ 2.
+    #[prost(uint32, tag = "2")]
+    pub output_partitions: u32,
 }
 /// Runtime-stats tap. Passes batches through unmodified while accumulating:
 ///
@@ -89,6 +113,25 @@ pub struct QuantileSketchState {
 pub struct BufferExecNode {
     #[prost(enumeration = "BufferMode", tag = "1")]
     pub mode: i32,
+}
+/// Value-range router over unordered inputs. Reads P input partitions with
+/// no sort assumption, evaluates the first ORDER BY expression per row, and
+/// routes each row to one of K output partitions using cuts discovered at
+/// runtime from a sibling RuntimeStatsExec's quantile sketch. The child
+/// plan is plumbed by the framework as `inputs\[0\]`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnorderedRangeRepartitionExecNode {
+    /// Lexicographic ORDER BY carried through from the wrapping window
+    /// operator. Routing keys off the first entry today; the full ordering is
+    /// preserved so downstream operators (SortExec, BWAG) that need it keep
+    /// working.
+    #[prost(message, repeated, tag = "1")]
+    pub order_by: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
+    /// K — number of output partitions. Must be ≥ 2.
+    #[prost(uint32, tag = "2")]
+    pub output_partitions: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChaosExecNode {

@@ -215,7 +215,17 @@ impl DynamicJoinSelectionExec {
         &self,
         config: &ConfigOptions,
     ) -> Result<JoinSelectionAction> {
-        let prefer_hash_join = config.optimizer.prefer_hash_join;
+        // `datafusion.optimizer.prefer_hash_join` is deliberately NOT consulted
+        // here. It is a *planner* flag: DataFusion applies it when it builds the
+        // physical plan, and `DelayJoinSelectionRule` then maps both
+        // `HashJoinExec` and `SortMergeJoinExec` onto this node, so the flag has
+        // already had its effect by the time AQE runs. Re-reading it would apply
+        // the same preference twice, and — since the two `CollectLeft` arms below
+        // produce a hash join unconditionally — it would only ever apply to one
+        // of the three paths that can emit one. AQE picks its strategy from
+        // runtime evidence instead: broadcast thresholds and the build-side fit
+        // check.
+        //
         // Both broadcast thresholds come from Ballista's own config so that a
         // single set of keys governs broadcast selection under both the static
         // planner (`maybe_promote_to_broadcast`) and AQE. A byte threshold of 0
@@ -230,34 +240,45 @@ impl DynamicJoinSelectionExec {
         let threshold_collect_left_join_bytes = bc.broadcast_join_threshold_bytes();
         let threshold_collect_left_join_rows = bc.broadcast_join_threshold_rows();
         let max_build_bytes = bc.hash_join_max_build_partition_bytes();
-        let build_max_partition_bytes = max_per_partition_build_bytes(&self.left);
 
+        // The resolver collects the smaller side onto the build (left) input,
+        // swapping the inputs when the right side is the smaller one (the
+        // `swap_inputs` calls in `SelectJoinRule`). Derive that decision once,
+        // up front, so every size check below measures the input the executor
+        // actually builds from rather than `self.left` unconditionally.
+        // `supports_swap_join_order` is true when the *left* is the larger side,
+        // so a swap moves the build onto `self.right`.
+        let swap_inputs = SelectJoinRule::supports_swap_join_order(
+            self.left.as_ref(),
+            self.right.as_ref(),
+        )?;
+        let build_side = if swap_inputs { &self.right } else { &self.left };
+
+        let build_max_partition_bytes = max_per_partition_build_bytes(build_side);
+
+        // Broadcast eligibility is a property of the build side alone, since that
+        // is the side replicated to every probe task. Testing both sides and
+        // OR-ing the results would promote the join whenever *either* side fit,
+        // including when the swap then picks the other, over-threshold side to
+        // broadcast.
+        //
         // The `!= 0` guard sits here rather than inside
         // `supports_collect_by_thresholds`: that helper falls back to the row
         // check when the byte threshold is 0/absent, so gating at this level is
         // what makes a 0 threshold disable both the byte and row broadcast paths.
         let under_threshold = threshold_collect_left_join_bytes != 0
-            && (Self::supports_collect_by_thresholds(
-                self.left.as_ref(),
+            && Self::supports_collect_by_thresholds(
+                build_side.as_ref(),
                 threshold_collect_left_join_bytes,
                 threshold_collect_left_join_rows,
-            ) || Self::supports_collect_by_thresholds(
-                self.right.as_ref(),
-                threshold_collect_left_join_bytes,
-                threshold_collect_left_join_rows,
-            ));
+            );
 
-        // The resolver collects the smaller side onto the build (left) input,
-        // swapping the join type when the right side is the smaller one (the
-        // `swap_inputs` calls in `SelectJoinRule`). A `CollectLeft` join then
-        // broadcasts that build side to every probe task, which is only correct
-        // for join types that never emit rows on behalf of the build side. Use
-        // the same swap decision as the resolver to determine the resulting join
-        // type and skip the broadcast when it would be unsafe.
-        let build_side_join_type = if SelectJoinRule::supports_swap_join_order(
-            self.left.as_ref(),
-            self.right.as_ref(),
-        )? {
+        // A `CollectLeft` join broadcasts the build side to every probe task,
+        // which is only correct for join types that never emit rows on behalf of
+        // the build side. Evaluate that against the join type the resolver ends
+        // up with, which the swap rewrites, and skip the broadcast when it would
+        // be unsafe.
+        let build_side_join_type = if swap_inputs {
             self.join_type.swap()
         } else {
             self.join_type
@@ -278,8 +299,7 @@ impl DynamicJoinSelectionExec {
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
             (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if prefer_hash_join
-                    && hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
+                if hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
             {
                 self.to_hash_join(PartitionMode::Partitioned)
                     .map(JoinSelectionAction::Hash)
@@ -320,13 +340,15 @@ impl DynamicJoinSelectionExec {
         };
 
         debug!(
-            "AQE join decision plan_id={} action={} partition_mode={:?} under_threshold={} \
+            "AQE join decision plan_id={} action={} partition_mode={:?} build_side={} \
+             under_threshold={} \
              build_max_partition_bytes={:?} hash_join_max_build_partition_bytes={} \
              left=(rows={:?}, bytes={:?}) right=(rows={:?}, bytes={:?}) \
              byte_threshold={} row_threshold={}",
             self.plan_id,
             action_label,
             partition_mode,
+            if swap_inputs { "right" } else { "left" },
             under_threshold,
             build_max_partition_bytes,
             max_build_bytes,
@@ -520,16 +542,31 @@ fn hash_build_fits(
 /// the shape of the Q18 OOM, so an average would have hidden the failure
 /// mode this check exists to catch.
 ///
+/// `build` must be the *post-swap* build input — `self.right` when
+/// `SelectJoinRule::supports_swap_join_order` holds, `self.left` otherwise —
+/// since that is the side the build task materializes. Measuring `self.left`
+/// unconditionally validates a partition the build may never consume.
+///
 /// Reachability: at the one call site this feeds — the
 /// `(JoinInputState::Repartitioned, PartitionMode::Partitioned)` arm of
-/// `to_actual_join` — `self.left` is always the `ExchangeExec` that
-/// `SelectJoinRule` inserted while resolving the prior `Repartition` action
-/// (see `JoinSelectionAction::Repartition` in `join_selection.rs`), and
-/// `upstream_resolved()` guarantees that exchange's shuffle has already
-/// finished. So the actual, materialized per-partition byte sizes that
+/// `to_actual_join` — both children are `ExchangeExec`s that `SelectJoinRule`
+/// inserted while resolving the prior `Repartition` action (see
+/// `JoinSelectionAction::Repartition` in `join_selection.rs`), and
+/// `upstream_resolved()` guarantees those shuffles have already finished. So
+/// the actual, materialized per-partition byte sizes that
 /// `CoalescePartitionsRule` reads (`ExchangeExec::shuffle_partitions()` ->
 /// `PartitionLocation::partition_stats::num_bytes()`) are reachable here too,
 /// and are used directly rather than falling back to an average.
+///
+/// Known gap: the sizes are pre-coalesce. `CoalescePartitionsRule` groups
+/// neighboring upstream partitions, so a coalesced build partition can exceed
+/// the budget this check passed. The grouping is not knowable here — the rule
+/// fires later, per stage, in `AdaptivePlanner::actionable_stages()`, after
+/// `SelectJoinRule` has already run inside `replan_stages()` — so a
+/// coalesce-aware check would have to re-derive the bin-pack over a leaf set
+/// that differs from the rule's own for chained joins. Left as-is:
+/// `ballista.planner.coalesce.enabled` is `false` by default, so the gap is
+/// inert unless coalescing is explicitly turned on.
 ///
 /// Returns `None` (callers treat this as "fits", not as a forced fallback)
 /// when `build` isn't an `ExchangeExec`, its shuffle hasn't resolved yet, or
@@ -998,6 +1035,43 @@ mod tests {
         );
     }
 
+    // Broadcast eligibility must be judged on the side that actually becomes the
+    // build input, not OR-ed across both. Byte-size statistics are absent on both
+    // sides here, so the swap decision falls back to row count: the left has
+    // fewer rows and therefore stays the build side. It is also by far the wider
+    // side — roughly 40 KB estimated against the right's 4 KB — so broadcasting
+    // it replicates more bytes to every probe task than the threshold intended,
+    // even though the right side on its own passes the check.
+    #[test]
+    fn broadcast_eligibility_follows_the_build_side() {
+        let mut left_fields = vec![Field::new("k", DataType::Int32, false)];
+        left_fields.extend(
+            (0..20).map(|i| Field::new(format!("wide{i}"), DataType::Utf8, false)),
+        );
+        // 100 rows * (4 B key + 20 columns * 20 B default width) ≈ 40 KB
+        let left = sizeless_stats_exec(100, left_fields);
+        // 1000 rows * 4 B ≈ 4 KB — under the threshold on its own
+        let right =
+            sizeless_stats_exec(1000, vec![Field::new("k", DataType::Int32, false)]);
+
+        let action = run_to_actual_join(
+            left,
+            right,
+            JoinType::Inner,
+            true,
+            // Between the right side's ~4 KB and the left side's ~40 KB.
+            10_000,
+            // Row ceiling well clear of both sides, so bytes decide.
+            1_000_000,
+        );
+
+        assert!(
+            !is_collected(&action),
+            "the left side is the build (fewer rows) and is over the byte threshold, \
+             so the join must repartition rather than broadcast it"
+        );
+    }
+
     // A threshold of 0 disables broadcast promotion entirely, matching the static
     // planner, even for a side small enough to collect under any positive cutoff.
     #[test]
@@ -1196,47 +1270,27 @@ mod tests {
     /// string-keyed `BallistaConfig::set` path (the same path
     /// `run_to_actual_join` above uses for other Ballista settings) since
     /// there is no fluent setter for this key yet.
+    ///
+    /// Broadcast promotion is switched off (`broadcast_join_threshold_bytes = 0`)
+    /// so the build-fit tests below exercise the `Partitioned` path without a
+    /// `CollectLeft` decision shadowing it.
+    ///
+    /// `prefer_hash_join` is set to `false` deliberately — the hostile value. AQE
+    /// does not consult it, so every test below that asserts a `HashJoinExec`
+    /// would fail if that ever regressed.
     fn config_with_max_build(max_build_bytes: usize) -> ConfigOptions {
         let mut config = ConfigOptions::new();
-        config.optimizer.prefer_hash_join = true;
+        config.optimizer.prefer_hash_join = false;
         let mut bc = BallistaConfig::default();
         bc.set(
             "optimizer.hash_join_max_build_partition_bytes",
             &max_build_bytes.to_string(),
         )
         .unwrap();
+        bc.set("optimizer.broadcast_join_threshold_bytes", "0")
+            .unwrap();
         config.extensions.insert(bc);
         config
-    }
-
-    /// Builds a `DynamicJoinSelectionExec` already in `Repartitioned` state
-    /// whose build side (`left`) is a resolved `ExchangeExec` reporting the
-    /// given per-partition byte sizes, so `to_actual_join`'s
-    /// `(Repartitioned, Partitioned)` arm is reached and
-    /// `max_per_partition_build_bytes` sees known sizes.
-    fn repartitioned_join_with_build_partition_bytes(
-        per_partition_bytes: &[usize],
-    ) -> DynamicJoinSelectionExec {
-        // test_exchange_with_partition_bytes wraps test_schema(), whose sole
-        // field is named "x" (not "k" like stats_exec's schema), so the join
-        // key below must match that name.
-        let left = test_exchange_with_partition_bytes(per_partition_bytes);
-        let right = stats_exec(1_000_000); // large enough to never be broadcast
-        let on: JoinOn =
-            vec![(Arc::new(Column::new("x", 0)), Arc::new(Column::new("k", 0)))];
-        DynamicJoinSelectionExec {
-            properties: Arc::clone(left.properties()),
-            left,
-            right,
-            on,
-            filter: None,
-            join_type: JoinType::Inner,
-            projection: None,
-            null_equality: NullEquality::NullEqualsNothing,
-            selection_state: JoinInputState::Repartitioned,
-            null_aware: false,
-            plan_id: 0,
-        }
     }
 
     /// Renders the `ExecutionPlan` a `JoinSelectionAction` resolves to, so
@@ -1258,12 +1312,20 @@ mod tests {
         }
     }
 
+    /// The probe side used by the build-fit tests below: bigger in total than
+    /// any build side they set up, so `supports_swap_join_order` is false, no
+    /// swap happens, and `left` stays the build. Its own per-partition size is
+    /// irrelevant — only the build side is measured.
+    const PROBE_PARTITION_BYTES: &[usize] = &[600 * MB];
+
     // A build partition over the configured max falls back to SortMergeJoin,
     // even though `prefer_hash_join` is true — the fit check overrides the
     // preference rather than the other way around.
     #[test]
     fn build_over_threshold_falls_back_to_sort_merge_join() {
-        let exec = repartitioned_join_with_build_partition_bytes(&[500 * MB]); // > 200 MB
+        // 500 MB build > the 200 MB budget
+        let exec =
+            repartitioned_join_between_exchanges(&[500 * MB], PROBE_PARTITION_BYTES);
         let action = exec
             .to_actual_join(&config_with_max_build(200 * MB))
             .unwrap();
@@ -1277,7 +1339,9 @@ mod tests {
     // join `prefer_hash_join` selected.
     #[test]
     fn build_within_threshold_uses_partitioned_hash_join() {
-        let exec = repartitioned_join_with_build_partition_bytes(&[50 * MB]); // < 200 MB
+        // 50 MB build < the 200 MB budget
+        let exec =
+            repartitioned_join_between_exchanges(&[50 * MB], PROBE_PARTITION_BYTES);
         let action = exec
             .to_actual_join(&config_with_max_build(200 * MB))
             .unwrap();
@@ -1288,11 +1352,109 @@ mod tests {
         assert!(rendered.contains("mode=Partitioned"), "{rendered}");
     }
 
+    /// Builds a `DynamicJoinSelectionExec` in `Repartitioned` state whose *both*
+    /// children are resolved `ExchangeExec`s with the given per-partition byte
+    /// sizes. This is the shape `SelectJoinRule` produces after resolving a
+    /// `Repartition` action, and the only shape in which the swap can move the
+    /// build side onto `right`.
+    fn repartitioned_join_between_exchanges(
+        left_partition_bytes: &[usize],
+        right_partition_bytes: &[usize],
+    ) -> DynamicJoinSelectionExec {
+        let left = test_exchange_with_partition_bytes(left_partition_bytes);
+        let right = test_exchange_with_partition_bytes(right_partition_bytes);
+        // Both exchanges wrap test_schema(), whose sole field is named "x".
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("x", 0)), Arc::new(Column::new("x", 0)))];
+        DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type: JoinType::Inner,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Repartitioned,
+            null_aware: false,
+            plan_id: 0,
+        }
+    }
+
+    // The fit check must measure the input the build task actually runs. The
+    // left side is the larger one in total (400 MB against 303 MB), so
+    // `SelectJoinRule` swaps the inputs and the right becomes the build — and
+    // the right carries a 300 MB partition, over the 200 MB budget. Measuring
+    // the pre-swap left would see only its 100 MB max and keep the hash join,
+    // leaving the build task to OOM on a partition the check never looked at.
+    #[test]
+    fn build_fit_check_measures_the_post_swap_build_side() {
+        let exec = repartitioned_join_between_exchanges(
+            &[100 * MB, 100 * MB, 100 * MB, 100 * MB], // total 400 MB, max 100 MB
+            &[MB, MB, MB, 300 * MB],                   // total 303 MB, max 300 MB
+        );
+
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("SortMergeJoinExec"), "{rendered}");
+    }
+
+    // The mirror case: same partition shapes, sides exchanged, so the left is
+    // now the smaller total and no swap happens. The build stays on the left,
+    // and its 300 MB partition is what must be measured. Pins that the fix
+    // selects by the swap decision rather than blanket-switching to the right.
+    #[test]
+    fn build_fit_check_stays_on_the_left_when_no_swap_happens() {
+        let exec = repartitioned_join_between_exchanges(
+            &[MB, MB, MB, 300 * MB], // total 303 MB, max 300 MB
+            &[100 * MB, 100 * MB, 100 * MB, 100 * MB], // total 400 MB, max 100 MB
+        );
+
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let rendered = displayable(resolved_plan(&action).as_ref())
+            .indent(false)
+            .to_string();
+        assert!(rendered.contains("SortMergeJoinExec"), "{rendered}");
+    }
+
+    // `datafusion.optimizer.prefer_hash_join` is a planner flag that DataFusion
+    // has already applied by the time `DelayJoinSelectionRule` folds both join
+    // operators into this node, so AQE must not consult it again. A build side
+    // that fits stays a Partitioned hash join under either setting; the strategy
+    // follows runtime evidence, not the flag.
+    #[test]
+    fn prefer_hash_join_does_not_affect_the_aqe_decision() {
+        for prefer_hash_join in [true, false] {
+            let exec =
+                repartitioned_join_between_exchanges(&[50 * MB], PROBE_PARTITION_BYTES);
+            let mut config = config_with_max_build(200 * MB);
+            config.optimizer.prefer_hash_join = prefer_hash_join;
+
+            let action = exec.to_actual_join(&config).unwrap();
+            let rendered = displayable(resolved_plan(&action).as_ref())
+                .indent(false)
+                .to_string();
+
+            assert!(
+                rendered.contains("HashJoinExec")
+                    && rendered.contains("mode=Partitioned"),
+                "prefer_hash_join={prefer_hash_join} must not change the decision: {rendered}"
+            );
+        }
+    }
+
     // `hash_join_max_build_partition_bytes = 0` disables the check entirely,
     // matching the design contract: 0 always fits regardless of build size.
     #[test]
     fn zero_threshold_disables_the_check() {
-        let exec = repartitioned_join_with_build_partition_bytes(&[500 * MB]);
+        let exec =
+            repartitioned_join_between_exchanges(&[500 * MB], PROBE_PARTITION_BYTES);
         let action = exec.to_actual_join(&config_with_max_build(0)).unwrap();
         let rendered = displayable(resolved_plan(&action).as_ref())
             .indent(false)

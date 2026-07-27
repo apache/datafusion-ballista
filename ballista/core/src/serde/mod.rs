@@ -56,8 +56,9 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, PartitionGroup, RuntimeStatsExec,
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
+    PartitionGroup, RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -597,6 +598,44 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 };
                 Ok(Arc::new(BufferExec::try_new(input.clone(), mode)?))
             }
+            PhysicalPlanType::UnorderedRangeRepartition(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "UnorderedRangeRepartitionExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let order_by = parse_physical_sort_exprs(
+                    &node.order_by,
+                    &decode_ctx,
+                    input.schema().as_ref(),
+                    &converter,
+                )?;
+                Ok(Arc::new(UnorderedRangeRepartitionExec::try_new(
+                    input.clone(),
+                    order_by,
+                    node.output_partitions as usize,
+                )?))
+            }
+            PhysicalPlanType::OrderedRangeRepartition(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "OrderedRangeRepartitionExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let order_by = parse_physical_sort_exprs(
+                    &node.order_by,
+                    &decode_ctx,
+                    input.schema().as_ref(),
+                    &converter,
+                )?;
+                Ok(Arc::new(OrderedRangeRepartitionExec::try_new(
+                    input.clone(),
+                    order_by,
+                    node.output_partitions as usize,
+                )?))
+            }
         }
     }
 
@@ -791,6 +830,48 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             };
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!("failed to encode BufferExec: {e:?}"))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<UnorderedRangeRepartitionExec>() {
+            let converter = DefaultPhysicalProtoConverter {};
+            let order_by = serialize_physical_sort_exprs(
+                exec.order_by().iter().cloned(),
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::UnorderedRangeRepartition(
+                    protobuf::UnorderedRangeRepartitionExecNode {
+                        order_by,
+                        output_partitions: exec.output_partitions() as u32,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode UnorderedRangeRepartitionExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<OrderedRangeRepartitionExec>() {
+            let converter = DefaultPhysicalProtoConverter {};
+            let order_by = serialize_physical_sort_exprs(
+                exec.order_by().iter().cloned(),
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::OrderedRangeRepartition(
+                    protobuf::OrderedRangeRepartitionExecNode {
+                        order_by,
+                        output_partitions: exec.output_partitions() as u32,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode OrderedRangeRepartitionExec: {e:?}"
+                ))
             })?;
             Ok(())
         } else {
@@ -1432,6 +1513,62 @@ mod test {
         assert_eq!(decoded_exec.partition.len(), 1);
     }
 
+    /// `INTERSECT` / `EXCEPT` lower to semi/anti joins with
+    /// `NullEquality::NullEqualsNull` so that NULL matches NULL. Ballista ships
+    /// the client's *logical* plan to the scheduler as protobuf, so that flag
+    /// has to survive the roundtrip: if it decodes back as `NullEqualsNothing`
+    /// the scheduler silently plans a different query than the client asked for
+    /// (NULL stops matching itself, so INTERSECT drops rows and EXCEPT keeps
+    /// them). See https://github.com/apache/datafusion-ballista/issues/2046
+    ///
+    /// `null_equality` is not part of the rendered plan, so this inspects the
+    /// decoded `Join` directly rather than asserting on a plan string.
+    #[tokio::test]
+    async fn logical_join_roundtrip_preserves_null_equality() {
+        use datafusion::common::NullEquality;
+        use datafusion::logical_expr::LogicalPlan;
+
+        fn join_null_equality(plan: &LogicalPlan) -> Option<NullEquality> {
+            if let LogicalPlan::Join(join) = plan {
+                return Some(join.null_equality);
+            }
+            plan.inputs().into_iter().find_map(join_null_equality)
+        }
+
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            "t",
+            "../../examples/testdata/alltypes_plain.parquet",
+            datafusion::prelude::ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let plan = ctx
+            .state()
+            .create_logical_plan(
+                "select string_col from t intersect select string_col from t",
+            )
+            .await
+            .unwrap();
+        let plan = ctx.state().optimize(&plan).unwrap();
+        assert_eq!(
+            join_null_equality(&plan),
+            Some(NullEquality::NullEqualsNull),
+            "precondition: INTERSECT should plan a NullEqualsNull join"
+        );
+
+        let codec = BallistaLogicalExtensionCodec::default();
+        let node = LogicalPlanNode::try_from_logical_plan(&plan, &codec).unwrap();
+        let roundtripped = node.try_into_logical_plan(&ctx.task_ctx(), &codec).unwrap();
+
+        assert_eq!(
+            join_null_equality(&roundtripped),
+            Some(NullEquality::NullEqualsNull),
+            "null_equality must survive the logical plan protobuf roundtrip"
+        );
+    }
+
     /// `RuntimeStatsExec` in sketching mode round-trips its ORDER BY
     /// and keeps the sketch accessor available. Row-count accessor is
     /// always available (and empty on a fresh operator).
@@ -1637,5 +1774,154 @@ mod test {
             .downcast_ref::<BufferExec>()
             .expect("Expected BufferExec");
         assert!(matches!(decoded.mode(), BufferMode::Dam));
+    }
+
+    /// The wrapper carries its ORDER BY across the network so the executor's
+    /// sampler knows which column to route on. Round-trip a single-key
+    /// ordering to guard the codec's happy path.
+    #[tokio::test]
+    async fn test_unordered_range_repartition_exec_roundtrip_single_key() {
+        use crate::execution_plans::UnorderedRangeRepartitionExec;
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let sort_expr = PhysicalSortExpr {
+            expr: col("v2", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let original = UnorderedRangeRepartitionExec::try_new(
+            input.clone(),
+            vec![sort_expr.clone()],
+            8,
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+
+        let decoded = decoded_plan
+            .downcast_ref::<UnorderedRangeRepartitionExec>()
+            .expect("Expected UnorderedRangeRepartitionExec");
+        let order_by = decoded.order_by();
+        assert_eq!(order_by.len(), 1, "single-key ORDER BY should round-trip");
+        assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
+        assert!(!order_by[0].options.descending);
+        assert!(order_by[0].options.nulls_first);
+        assert_eq!(decoded.output_partitions(), 8, "K must round-trip");
+    }
+
+    /// The API accepts multi-key lexicographic ordering (RANGE-frame windows
+    /// only route on the first key, but the wire format must not drop the
+    /// rest — that's the ROWS-frame follow-up's substrate).
+    #[tokio::test]
+    async fn test_unordered_range_repartition_exec_roundtrip_multi_key() {
+        use crate::execution_plans::UnorderedRangeRepartitionExec;
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let order_by = vec![
+            PhysicalSortExpr {
+                expr: col("v2", schema.as_ref()).unwrap(),
+                options: SortOptions {
+                    descending: false,
+                    nulls_first: true,
+                },
+            },
+            PhysicalSortExpr {
+                expr: col("id", schema.as_ref()).unwrap(),
+                options: SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                },
+            },
+        ];
+        let original =
+            UnorderedRangeRepartitionExec::try_new(input.clone(), order_by.clone(), 16)
+                .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+
+        let decoded = decoded_plan
+            .downcast_ref::<UnorderedRangeRepartitionExec>()
+            .expect("Expected UnorderedRangeRepartitionExec");
+        let decoded_order_by = decoded.order_by();
+        assert_eq!(decoded_order_by.len(), 2, "multi-key ORDER BY must survive");
+        assert!(
+            decoded_order_by[1].options.descending,
+            "sort options must survive per-key"
+        );
+        assert!(!decoded_order_by[1].options.nulls_first);
+    }
+
+    /// `OrderedRangeRepartitionExec` requires input to declare a matching
+    /// sort ordering; wrap `EmptyExec` in a `SortExec` so the ordering
+    /// claim is present at construction time.
+    #[tokio::test]
+    async fn test_ordered_range_repartition_exec_roundtrip() {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::sorts::sort::SortExec;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let leaf: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let sort_expr = PhysicalSortExpr {
+            expr: col("v2", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let sort_lex = LexOrdering::new(vec![sort_expr.clone()]).unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(SortExec::new(sort_lex, leaf).with_preserve_partitioning(true));
+        let original = OrderedRangeRepartitionExec::try_new(
+            input.clone(),
+            vec![sort_expr.clone()],
+            8,
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+
+        let decoded = decoded_plan
+            .downcast_ref::<OrderedRangeRepartitionExec>()
+            .expect("Expected OrderedRangeRepartitionExec");
+        let order_by = decoded.order_by();
+        assert_eq!(order_by.len(), 1, "ORDER BY must round-trip");
+        assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
+        assert_eq!(decoded.output_partitions(), 8, "K must round-trip");
     }
 }
