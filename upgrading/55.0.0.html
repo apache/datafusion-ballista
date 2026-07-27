@@ -441,6 +441,46 @@ into the non-spilling hash join for <em>all</em> joins in the session, not only 
 ones.</p>
 </section>
 </section>
+<section id="api-changes">
+<h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
+<section id="ballista-executor-as-task-status-signature-reshaped">
+<h4><code class="docutils literal notranslate"><span class="pre">ballista_executor::as_task_status</span></code> signature reshaped<a class="headerlink" href="#ballista-executor-as-task-status-signature-reshaped" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">as_task_status</span></code> now takes a <code class="docutils literal notranslate"><span class="pre">TaskCompletionExtras</span></code> struct in place of the
+<code class="docutils literal notranslate"><span class="pre">operator_metrics:</span> <span class="pre">Option&lt;Vec&lt;OperatorMetricsSet&gt;&gt;</span></code> positional parameter. The
+struct also carries a new <code class="docutils literal notranslate"><span class="pre">runtime_stats:</span> <span class="pre">Vec&lt;RuntimeStatsReport&gt;</span></code> field used to
+transport <code class="docutils literal notranslate"><span class="pre">RuntimeStatsExec</span></code> reports back to the scheduler. It is marked
+<code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code> with a <code class="docutils literal notranslate"><span class="pre">Default</span></code> impl, so future additions to the struct
+are non-breaking for callers that construct via <code class="docutils literal notranslate"><span class="pre">..Default::default()</span></code>.</p>
+<p>The parameter order also changed: <code class="docutils literal notranslate"><span class="pre">execution_times</span></code> now precedes the extras
+struct.</p>
+<p><strong>Action required:</strong> external callers building a <code class="docutils literal notranslate"><span class="pre">TaskStatus</span></code> via
+<code class="docutils literal notranslate"><span class="pre">as_task_status</span></code> should migrate from:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">as_task_status</span><span class="p">(</span>
+<span class="w">    </span><span class="n">execution_result</span><span class="p">,</span>
+<span class="w">    </span><span class="n">executor_id</span><span class="p">,</span>
+<span class="w">    </span><span class="n">stage_attempt_num</span><span class="p">,</span>
+<span class="w">    </span><span class="n">key</span><span class="p">,</span>
+<span class="w">    </span><span class="n">operator_metrics</span><span class="p">,</span>
+<span class="w">    </span><span class="n">execution_times</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>to:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">as_task_status</span><span class="p">(</span>
+<span class="w">    </span><span class="n">execution_result</span><span class="p">,</span>
+<span class="w">    </span><span class="n">executor_id</span><span class="p">,</span>
+<span class="w">    </span><span class="n">stage_attempt_num</span><span class="p">,</span>
+<span class="w">    </span><span class="n">key</span><span class="p">,</span>
+<span class="w">    </span><span class="n">execution_times</span><span class="p">,</span>
+<span class="w">    </span><span class="n">TaskCompletionExtras</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">operator_metrics</span><span class="p">,</span>
+<span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
 </section>
 </section>
 
@@ -494,6 +534,10 @@ ones.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-55-0-0">Ballista 55.0.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#planner-and-execution-behavior-changes">Planner and execution behavior changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join"><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-executor-as-task-status-signature-reshaped"><code class="docutils literal notranslate"><span class="pre">ballista_executor::as_task_status</span></code> signature reshaped</a></li>
 </ul>
 </li>
 </ul>
