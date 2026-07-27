@@ -779,13 +779,24 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             running_stage
                                 .update_task_metrics(task_id, operator_metrics)?;
 
+                            let ballista_core::serde::protobuf::SuccessfulTask {
+                                partitions,
+                                runtime_stats,
+                                ..
+                            } = successful_task;
+                            debug!(
+                                "append_runtime_stats_reports: job={} stage={} task={} report_count={}",
+                                job_id,
+                                stage_id,
+                                task_id,
+                                runtime_stats.len(),
+                            );
+                            running_stage
+                                .append_runtime_stats_reports(task_id, runtime_stats);
+
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
-                                    &job_id,
-                                    task_id,
-                                    stage_id,
-                                    executor,
-                                    successful_task.partitions,
+                                    &job_id, task_id, stage_id, executor, partitions,
                                 ),
                             );
                         } else {
@@ -815,6 +826,11 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                 stage_metrics,
                             );
                         }
+                        ballista_core::execution_plans::log_merged_runtime_stats(
+                            job_id.as_str(),
+                            stage_id,
+                            &running_stage.runtime_stats_reports,
+                        );
                     }
                     let stages_to_cancel = self.update_stage_progress(
                         stage_id,
