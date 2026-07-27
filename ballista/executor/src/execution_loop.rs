@@ -24,7 +24,7 @@
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_data;
-use crate::{TaskExecutionTimes, as_task_status};
+use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -245,8 +245,8 @@ where
                                 executor.metadata.id.clone(),
                                 task.task_attempt_num as usize,
                                 task_key,
-                                None,
                                 task_execution_times,
+                                TaskCompletionExtras::default(),
                             )) {
                                 warn!("failed to send task status: {error:?}");
                             };
@@ -392,6 +392,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .map(|m| m.try_into())
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
+        let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
 
         let end_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -409,8 +410,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             executor.metadata.id.clone(),
             stage_attempt_num as usize,
             key,
-            operator_metrics,
             task_execution_times,
+            TaskCompletionExtras {
+                operator_metrics,
+                runtime_stats,
+            },
         ));
 
         // Release the permit after the work is done
