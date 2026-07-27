@@ -57,8 +57,9 @@ use std::{convert::TryInto, io::Cursor};
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec,
-    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    PartitionGroup, PerPartitionFilterExec, RuntimeStatsExec, ShuffleReaderExec,
+    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -636,6 +637,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     node.output_partitions as usize,
                 )?))
             }
+            PhysicalPlanType::PerPartitionFilter(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PerPartitionFilterExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let schema = input.schema();
+                let predicates = node
+                    .predicates
+                    .iter()
+                    .map(|p| {
+                        datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+                            p,
+                            ctx,
+                            schema.as_ref(),
+                            self,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                Ok(Arc::new(PerPartitionFilterExec::try_new(
+                    input.clone(),
+                    predicates,
+                )?))
+            }
         }
     }
 
@@ -871,6 +897,28 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode OrderedRangeRepartitionExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PerPartitionFilterExec>() {
+            let predicates = exec
+                .predicates()
+                .iter()
+                .map(|p| {
+                    datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                        p,
+                        self.default_codec.as_ref(),
+                    )
+                })
+                .collect::<Result<Vec<_>, DataFusionError>>()?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PerPartitionFilter(
+                    protobuf::PerPartitionFilterExecNode { predicates },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PerPartitionFilterExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -1749,6 +1797,63 @@ mod test {
                 .contains("routing expression must be non-nullable"),
             "got: {err}"
         );
+    }
+
+    /// `PerPartitionFilterExec` round-trips through the codec: three input
+    /// partitions with three distinct range predicates re-materialize
+    /// on the other side with the same predicate strings in the same
+    /// order.
+    #[tokio::test]
+    async fn test_per_partition_filter_exec_roundtrip() {
+        use crate::execution_plans::PerPartitionFilterExec;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_plan::repartition::RepartitionExec;
+        use datafusion::scalar::ScalarValue;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let source: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(schema.clone()),
+        );
+        let input: Arc<dyn ExecutionPlan> = Arc::new(
+            RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(3)).unwrap(),
+        );
+        let range = |lo: i64, hi: i64| -> Arc<dyn PhysicalExpr> {
+            let c: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+            let ge: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                c.clone(),
+                Operator::GtEq,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(lo)))),
+            ));
+            let lt: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                c,
+                Operator::Lt,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(hi)))),
+            ));
+            Arc::new(BinaryExpr::new(ge, Operator::And, lt))
+        };
+        let predicates = vec![range(0, 10), range(10, 20), range(20, 30)];
+        let original =
+            PerPartitionFilterExec::try_new(input.clone(), predicates.clone()).unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<PerPartitionFilterExec>()
+            .expect("Expected PerPartitionFilterExec");
+        assert_eq!(decoded.predicates().len(), 3);
+        for (k, expected) in predicates.iter().enumerate() {
+            assert_eq!(
+                decoded.predicates()[k].to_string(),
+                expected.to_string(),
+                "predicate {k} mismatched after roundtrip",
+            );
+        }
     }
 
     /// `BufferExec` in `Dam` mode round-trips through the codec.
