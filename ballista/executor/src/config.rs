@@ -169,7 +169,7 @@ pub struct Config {
         help = "Tracing log rotation policy."
     )]
     pub log_rotation_policy: ballista_core::config::LogRotationPolicy,
-    /// Maximum size of incoming gRPC messages in bytes (default: 128MB).
+    /// Maximum size of incoming gRPC messages in bytes (default: 128MiB).
     #[arg(
         long,
         default_value_t = 134217728,
