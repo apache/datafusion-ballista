@@ -26,6 +26,11 @@
 
 set -e
 
+if ! command -v taplo &> /dev/null; then
+    echo "Installing taplo using cargo"
+    cargo install taplo-cli --version 0.10.0 --locked
+fi
+
 if [ "${1:-}" = "--write" ]; then
     taplo format
 else

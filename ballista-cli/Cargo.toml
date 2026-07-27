@@ -84,8 +84,8 @@ cli = [
     "dep:ballista",
     "dep:datafusion",
     "dep:datafusion-cli",
-    "dep:rustyline",
     "dep:mimalloc",
+    "dep:rustyline",
 ]
 
 tui = [

@@ -241,7 +241,7 @@ jobs:
       - name: Install taplo
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
-          tool: taplo-cli@0.9
+          tool: taplo-cli@0.10.0
 
       - name: Check Cargo.toml formatting
         run: |

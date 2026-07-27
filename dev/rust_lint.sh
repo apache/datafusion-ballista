@@ -17,10 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 set -e
-if ! command -v taplo &> /dev/null; then
-    echo "Installing taplo using cargo"
-    cargo install taplo-cli --locked
-fi
 
 ci/scripts/rust_fmt.sh
 ci/scripts/rust_clippy.sh
