@@ -176,7 +176,7 @@ pub struct Config {
         help = "The maximum size of a decoded message at the grpc server side."
     )]
     pub grpc_server_max_decoding_message_size: u32,
-    /// Maximum size of outgoing gRPC messages in bytes (default: 128MB).
+    /// Maximum size of outgoing gRPC messages in bytes (default: 128MiB).
     #[arg(
         long,
         default_value_t = 134217728,
