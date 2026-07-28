@@ -86,10 +86,14 @@ mod null_aware {
         let expected = pretty_format_batches(&df_batches).unwrap().to_string();
 
         let mut mismatches = vec![];
-        // The default Ballista setting selects SortMergeJoinExec and loses the
-        // null-aware flag before scheduler lowering, so this test covers the
-        // hash-join planning paths that retain the flag.
-        for variant in ["prefer_hash_join", "aqe"] {
+        // "default" exercises the NOT IN logical rewrite under Ballista's
+        // stock configuration (sort-merge joins): the rewrite removes the
+        // subquery before decorrelation, so no null-aware join is planned at
+        // all. "prefer_hash_join" and "aqe" exercise the rewrite under the
+        // hash-join planning paths. "rewrite_disabled" turns the rewrite off
+        // with hash joins preferred, covering the fallback path where the
+        // null-aware join survives and is lowered to a single task.
+        for variant in ["default", "prefer_hash_join", "aqe", "rewrite_disabled"] {
             let ctx = SessionContext::standalone().await.unwrap();
             if variant == "aqe" {
                 ctx.sql("SET ballista.planner.adaptive.enabled = true")
@@ -99,12 +103,22 @@ mod null_aware {
                     .await
                     .unwrap();
             }
-            ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
-                .await
-                .unwrap()
-                .collect()
-                .await
-                .unwrap();
+            if variant != "default" {
+                ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
+                    .await
+                    .unwrap()
+                    .collect()
+                    .await
+                    .unwrap();
+            }
+            if variant == "rewrite_disabled" {
+                ctx.sql("SET ballista.optimizer.not_in_subquery_rewrite = false")
+                    .await
+                    .unwrap()
+                    .collect()
+                    .await
+                    .unwrap();
+            }
             register(&ctx, &dir).await;
 
             match ctx.sql(QUERY).await.unwrap().collect().await {

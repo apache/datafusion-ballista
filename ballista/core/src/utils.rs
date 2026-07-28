@@ -165,6 +165,7 @@ pub fn default_session_builder(
         .with_default_features()
         .with_config(config)
         .with_runtime_env(Arc::new(RuntimeEnvBuilder::new().build()?))
+        .with_optimizer_rules(crate::optimizer::ballista_default_optimizer_rules())
         .with_scalar_functions(ballista_scalar_functions())
         .with_aggregate_functions(ballista_aggregate_functions())
         .with_window_functions(ballista_window_functions())
