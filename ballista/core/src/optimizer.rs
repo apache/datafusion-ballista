@@ -17,7 +17,8 @@
 
 //! Ballista-specific logical optimizer rules.
 //!
-//! [`NotInSubqueryRewrite`] rewrites uncorrelated `NOT IN (subquery)` filter
+//! [`NotInSubqueryRewrite`](crate::optimizer::NotInSubqueryRewrite) rewrites
+//! uncorrelated `NOT IN (subquery)` filter
 //! predicates into a plain anti join combined with a one-row count aggregate,
 //! so the query never needs DataFusion's null-aware hash join. That join
 //! coordinates probe-side state through in-process atomics, which forces
