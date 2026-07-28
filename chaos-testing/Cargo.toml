@@ -25,11 +25,11 @@ rust-version = { workspace = true }
 publish = false
 
 [dependencies]
+arrow = { workspace = true }
 ballista = { path = "../ballista/client" }
 ballista-core = { path = "../ballista/core" }
 ballista-executor = { path = "../ballista/executor" }
 ballista-scheduler = { path = "../ballista/scheduler" }
-arrow = { workspace = true }
 datafusion = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
