@@ -101,6 +101,9 @@ impl PropagateEmptyExecRule {
             Ok(Transformed::yes(limit.input().clone()))
         } else if let Some(aggregation) = plan.downcast_ref::<AggregateExec>()
             && is_empty_exec!(aggregation.input())
+            // An aggregate with no GROUP BY emits exactly one row even over zero
+            // input rows (`sum` -> NULL, `count` -> 0), so it must be preserved.
+            && !aggregation.group_expr().is_empty()
         {
             empty_exec!(aggregation)
         } else if let Some(repartition) = plan.downcast_ref::<RepartitionExec>()
@@ -328,8 +331,12 @@ mod tests {
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
         common::{ColumnStatistics, JoinType, NullEquality, Statistics},
+        physical_expr::aggregate::AggregateExprBuilder,
         physical_plan::{
-            expressions::Column, joins::PartitionMode, test::exec::StatisticsExec,
+            aggregates::{AggregateMode, PhysicalGroupBy},
+            expressions::Column,
+            joins::PartitionMode,
+            test::exec::StatisticsExec,
         },
     };
 
@@ -869,6 +876,75 @@ mod tests {
         );
         let result = transform(plan);
         assert!(result.downcast_ref::<StatisticsExec>().is_some());
+    }
+
+    // ── Aggregate ────────────────────────────────────────────────────────────
+
+    /// Build an `AggregateExec` over `input` with the given grouping.
+    fn aggregate(
+        input: Arc<dyn ExecutionPlan>,
+        group_by: PhysicalGroupBy,
+        mode: AggregateMode,
+    ) -> Arc<dyn ExecutionPlan> {
+        let aggr = AggregateExprBuilder::new(
+            datafusion::functions_aggregate::count::count_udaf(),
+            vec![Arc::new(Column::new("a", 0))],
+        )
+        .schema(input.schema())
+        .alias("count(a)")
+        .build()
+        .unwrap();
+
+        Arc::new(
+            AggregateExec::try_new(
+                mode,
+                group_by,
+                vec![Arc::new(aggr)],
+                vec![None],
+                input,
+                schema(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn aggregate_with_grouping_over_empty_eliminated() {
+        // GROUP BY over zero rows produces zero groups — collapsing is correct.
+        let group_by = PhysicalGroupBy::new_single(vec![(
+            Arc::new(Column::new("a", 0)),
+            "a".into(),
+        )]);
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            group_by,
+            AggregateMode::Single,
+        );
+        assert_empty(&transform(plan));
+    }
+
+    #[test]
+    fn aggregate_without_grouping_over_empty_is_preserved() {
+        // No GROUP BY means exactly one output row even over zero input rows
+        // (`sum` -> NULL, `count` -> 0). Collapsing to EmptyExec loses that row.
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            PhysicalGroupBy::default(),
+            AggregateMode::Single,
+        );
+        assert_untouched(&transform(plan));
+    }
+
+    #[test]
+    fn partial_aggregate_without_grouping_over_empty_is_preserved() {
+        // Same holds for a partial aggregate: it emits one row of accumulator
+        // state per partition, which the final aggregate needs.
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            PhysicalGroupBy::default(),
+            AggregateMode::Partial,
+        );
+        assert_untouched(&transform(plan));
     }
 
     // ── unknown stats — never optimised ─────────────────────────────────────
