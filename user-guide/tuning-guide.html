@@ -642,7 +642,7 @@ clear that AQE was used:</p>
 <tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>10485760</p></td>
-<td><p>Byte-size threshold below which a hash join’s smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>). Governs both the static planner and AQE. Set to 0 to disable broadcast joins.</p></td>
+<td><p>Byte-size threshold below which a hash join’s smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins.</p></td>
 </tr>
 <tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
 <td><p>UInt64</p></td>
@@ -664,7 +664,10 @@ implemented:</p>
 smaller side drives the join.</p></li>
 <li><p><strong>Broadcast join selection.</strong> When a join input’s runtime size falls under
 <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> (or the row-count
-fallback), the smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) instead of shuffled.</p></li>
+fallback), the smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) instead of shuffled.
+Null-aware anti joins use <code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code> with a single probe task because their
+state cannot be coordinated across executors. A known oversized build side is
+rejected instead of producing an incorrect distributed result.</p></li>
 <li><p><strong>Empty stage elimination.</strong> When a completed stage produces zero rows, its
 downstream exchange is replaced with an empty execution node, and emptiness
 is propagated up the plan so downstream stages are skipped entirely.</p></li>
