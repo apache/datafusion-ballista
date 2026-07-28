@@ -224,7 +224,7 @@ jobs:
           fi
 
           # This matrix leg runs one planner configuration against the whole
-          # SF10 dataset. The other legs run in parallel jobs.
+          # generated dataset. The other legs run in parallel jobs.
           # q16 omitted: still unsupported (matches benchmarks/run.sh).
           for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
             echo "::group::[${{ matrix.label }}] Query $q"

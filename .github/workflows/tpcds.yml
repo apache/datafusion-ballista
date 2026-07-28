@@ -61,8 +61,7 @@ jobs:
     # sitting for hours with no useful signal.
     timeout-minutes: 45
     strategy:
-      # One red leg must not cancel the other; the two task-packing modes are
-      # independent signals.
+      # One red leg must not cancel the others; the legs are independent signals.
       fail-fast: false
       matrix:
         include:
@@ -193,7 +192,7 @@ jobs:
           # This matrix leg runs the suite under the default (static) planner at
           # one task-packing setting. The tpcds binary internally loops all
           # non-skipped queries and exits non-zero on any failure, so a single
-          # invocation covers the whole suite. The other leg runs in parallel.
+          # invocation covers the whole suite. The other legs run in parallel.
           #
           # Coverage for the adaptive planner (AQE on) is being added
           # separately; it currently fails on pre-existing bugs.
