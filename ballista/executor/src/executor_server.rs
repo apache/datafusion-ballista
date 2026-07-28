@@ -67,7 +67,7 @@ use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::health::ExecutorHealth;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
-use crate::{TaskExecutionTimes, as_task_status};
+use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 
 /// Number of consecutive heartbeat failures after which the executor
 /// initiates its own shutdown, letting k8s (or the operator) restart the
@@ -451,6 +451,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .map(|m| m.try_into())
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
+                let runtime_stats = exec.collect_runtime_stats_reports();
                 let executor_id = &self.executor.metadata.id;
 
                 let end_exec_time = SystemTime::now()
@@ -468,8 +469,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     executor_id.clone(),
                     stage_attempt_num,
                     key.clone(),
-                    operator_metrics,
                     task_execution_times,
+                    TaskCompletionExtras {
+                        operator_metrics,
+                        runtime_stats,
+                    },
                 );
 
                 let _ = self
@@ -492,12 +496,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     self.executor.metadata.id.clone(),
                     stage_attempt_num,
                     key.clone(),
-                    None,
                     TaskExecutionTimes {
                         launch_time: task.launch_time,
                         start_exec_time,
                         end_exec_time,
                     },
+                    TaskCompletionExtras::default(),
                 );
                 let _ = self
                     .executor_env

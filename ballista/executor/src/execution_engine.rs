@@ -38,7 +38,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::prelude::SessionConfig;
 use futures::stream::TryStreamExt;
-use log::info;
+use log::debug;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
@@ -86,6 +86,18 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
 
     /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
+
+    /// Collect runtime-stats reports for every `RuntimeStatsExec` still
+    /// valid at the plan's output (walked through the distribution-
+    /// preserving whitelist). Called at task completion; whatever comes
+    /// back rides along in the task's `SuccessfulTask` message to the
+    /// scheduler. Default returns empty — implementers with real plans
+    /// override to walk their operator tree.
+    fn collect_runtime_stats_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
+        Vec::new()
+    }
 }
 
 /// Default execution engine using DataFusion's ShuffleWriterExec.
@@ -149,18 +161,17 @@ impl ExecutionEngine for DefaultExecutionEngine {
 
         // the query plan created by the scheduler always starts with a shuffle writer
         // (either ShuffleWriterExec or SortShuffleWriterExec)
-        if let Some(shuffle_writer) = plan.downcast_ref::<ShuffleWriterExec>() {
+        if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
             let exec = ShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
                 plan.children()[0].clone(),
                 work_dir.to_string(),
-                shuffle_writer.shuffle_output_partitioning().cloned(),
             )?
             .with_task_id(task_id)
             .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
-                ShuffleWriterVariant::Hash(exec),
+                ShuffleWriterVariant::Passthrough(exec),
             )))
         } else if let Some(sort_shuffle_writer) =
             plan.downcast_ref::<SortShuffleWriterExec>()
@@ -190,8 +201,9 @@ impl ExecutionEngine for DefaultExecutionEngine {
 /// Enum representing the different shuffle writer implementations.
 #[derive(Debug, Clone)]
 pub enum ShuffleWriterVariant {
-    /// Hash-based shuffle writer (original implementation).
-    Hash(ShuffleWriterExec),
+    /// Passthrough shuffle writer: preserves its input partitioning,
+    /// one file per output partition.
+    Passthrough(ShuffleWriterExec),
     /// Sort-based shuffle writer.
     Sort(SortShuffleWriterExec),
 }
@@ -216,7 +228,7 @@ impl DefaultQueryStageExec {
 impl Display for DefaultQueryStageExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.shuffle_writer {
-            ShuffleWriterVariant::Hash(writer) => {
+            ShuffleWriterVariant::Passthrough(writer) => {
                 let stage_metrics: Vec<String> = writer
                     .metrics()
                     .unwrap_or_default()
@@ -225,7 +237,7 @@ impl Display for DefaultQueryStageExec {
                     .collect();
                 write!(
                     f,
-                    "DefaultQueryStageExec(Hash): ({})\n{}",
+                    "DefaultQueryStageExec(Passthrough): ({})\n{}",
                     stage_metrics.join(", "),
                     writer
                 )
@@ -257,10 +269,12 @@ impl QueryStageExecutor for DefaultQueryStageExec {
     ) -> Result<Vec<ShuffleWritePartition>> {
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
             match &self.shuffle_writer {
-                ShuffleWriterVariant::Hash(writer) => (Arc::new(writer.clone()), false),
+                ShuffleWriterVariant::Passthrough(writer) => {
+                    (Arc::new(writer.clone()), false)
+                }
                 ShuffleWriterVariant::Sort(writer) => (Arc::new(writer.clone()), true),
             };
-        info!(
+        debug!(
             "executor plan pre-run (task_id={task_id}):\n{}",
             DisplayableExecutionPlan::new(plan_arc.as_ref()).indent(true)
         );
@@ -272,7 +286,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         let result =
             drive_shuffle_writer_stage(plan_arc.clone(), context, is_sort_shuffle).await;
 
-        info!(
+        debug!(
             "executor plan post-run (task_id={task_id}, ok={}):\n{}",
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
@@ -282,8 +296,35 @@ impl QueryStageExecutor for DefaultQueryStageExec {
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
         match &self.shuffle_writer {
-            ShuffleWriterVariant::Hash(writer) => utils::collect_plan_metrics(writer),
+            ShuffleWriterVariant::Passthrough(writer) => {
+                utils::collect_plan_metrics(writer)
+            }
             ShuffleWriterVariant::Sort(writer) => utils::collect_plan_metrics(writer),
+        }
+    }
+
+    fn collect_runtime_stats_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
+        // Walk from the shuffle writer's plan through the whitelist. If
+        // no `RuntimeStatsExec` sits within reach, we return an empty
+        // Vec — the majority of plans (anything not on the parallel-
+        // window path today). Serialization errors are logged and the
+        // report dropped rather than failing the task; the task's data
+        // was already produced correctly, telemetry loss shouldn't tank
+        // the query.
+        let plan: Arc<dyn ExecutionPlan> = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Sort(writer) => Arc::new(writer.clone()),
+        };
+        match ballista_core::execution_plans::collect_runtime_stats_reports(&plan) {
+            Ok(reports) => reports,
+            Err(e) => {
+                log::warn!(
+                    "collect_runtime_stats_reports failed, task will report empty stats: {e}"
+                );
+                Vec::new()
+            }
         }
     }
 }
