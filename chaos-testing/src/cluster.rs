@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use nix::fcntl::{Flock, FlockArg};
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -137,6 +138,18 @@ impl TestClusterBuilder {
         // is more robust than documenting a flag.
         let cluster_lock = cluster_lock().lock_owned().await;
 
+        // The mutex above only serializes within one process. `cargo test`
+        // runs test binaries sequentially, but nothing else does: a second
+        // cargo invocation in another shell, an IDE's background test run, or
+        // a runner like nextest (which parallelizes binaries) would put two
+        // multi-process clusters on the machine at once, and on a two-core CI
+        // runner that is enough for executors to miss the registration
+        // deadline. flock is advisory and machine-wide, so the second process
+        // blocks here until the first one's cluster is gone.
+        let machine_lock = tokio::task::spawn_blocking(machine_lock)
+            .await
+            .map_err(|e| format!("acquire machine-wide cluster lock: {e}"))??;
+
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
@@ -187,6 +200,7 @@ impl TestClusterBuilder {
             log_dir,
             builder: self,
             _cluster_lock: cluster_lock,
+            _machine_lock: machine_lock,
         };
 
         for i in 0..cluster.builder.executors {
@@ -212,12 +226,32 @@ pub struct TestCluster {
     /// before this field is dropped, so the next cluster never starts until the
     /// previous one's processes are gone.
     _cluster_lock: OwnedMutexGuard<()>,
+    /// Serializes clusters across test *processes* on the same machine; see
+    /// [`TestClusterBuilder::start`].
+    _machine_lock: Flock<File>,
 }
 
 /// The process-wide lock guaranteeing one cluster at a time.
 fn cluster_lock() -> Arc<Mutex<()>> {
     static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
     LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone()
+}
+
+/// The machine-wide lock guaranteeing one cluster at a time across processes.
+///
+/// Blocks until acquired, so call it from a blocking-friendly context. The
+/// kernel releases a flock when its file handle closes, so a SIGKILLed test
+/// process cannot leave the lock stuck.
+fn machine_lock() -> Result<Flock<File>, String> {
+    let path = std::env::temp_dir().join("ballista-chaos-cluster.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("open lock file {}: {e}", path.display()))?;
+    Flock::lock(file, FlockArg::LockExclusive)
+        .map_err(|(_, e)| format!("flock {}: {e}", path.display()))
 }
 
 impl TestCluster {
@@ -303,8 +337,13 @@ impl TestCluster {
     }
 
     /// Block until `n` executors have registered with the scheduler.
+    ///
+    /// The deadline is generous because a loaded CI runner starts these child
+    /// processes slowly; a healthy cluster returns in a couple of seconds
+    /// regardless. On timeout the error carries every child's log tail — the
+    /// only evidence of a startup failure CI would otherwise throw away.
     pub async fn await_executors(&self, n: usize) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             if let Ok(count) = self.registered_executors().await
                 && count >= n
@@ -312,10 +351,36 @@ impl TestCluster {
                 return Ok(());
             }
             if Instant::now() > deadline {
-                return Err(format!("timed out waiting for {n} executors to register"));
+                return Err(format!(
+                    "timed out waiting for {n} executors to register\n{}",
+                    self.log_tails()
+                ));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    /// The last lines of every child process log, for timeout diagnostics.
+    fn log_tails(&self) -> String {
+        let mut out = String::new();
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.log_dir)
+            .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
+            .unwrap_or_default();
+        paths.sort();
+        for path in paths {
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let tail: Vec<&str> = content.lines().rev().take(20).collect();
+            out.push_str(&format!(
+                "--- {} (last {} lines) ---\n",
+                path.display(),
+                tail.len()
+            ));
+            for line in tail.into_iter().rev() {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
     }
 
     /// Block until the scheduler considers exactly `n` executors registered.
@@ -328,7 +393,7 @@ impl TestCluster {
     /// actually reaping it (rather than just transiently over-counting) needs
     /// to wait for the count to come down to `n` exactly, not merely reach it.
     pub async fn await_executor_count(&self, n: usize) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             if let Ok(count) = self.registered_executors().await
                 && count == n

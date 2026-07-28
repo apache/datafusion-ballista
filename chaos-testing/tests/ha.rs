@@ -67,26 +67,36 @@ use chaos_testing::fixture::Fixture;
 /// or dropped partitions would show up.
 ///
 /// This scenario is split into one test per AQE setting rather than being an
-/// `rstest` over both, because only the AQE-on case fails and `rstest` cannot
-/// ignore an individual case.
+/// `rstest` over both, because historically only the AQE-on case failed and
+/// `rstest` cannot ignore an individual case.
+///
+/// Both cases originally passed or reproduced #2028 (the AQE-on case:
+/// `Shared(IoError)` misses the classifier's shallow match). #2028 was fixed
+/// by classifying on `find_root()` (#2119), but the sort-shuffle writer
+/// refactor (#2038/#2106) then made both cases fail the same way: the shuffle
+/// write coordinator flattens any task error into
+/// `DataFusionError::Execution(format!("{e:?}"))`
+/// (`ballista/core/src/execution_plans/shuffle_writer.rs`, error arm of the
+/// coordinator fan-out), so the injected `IoError` reaches the classifier as
+/// inert text inside an `Execution` string, `find_root()` has nothing to see
+/// through, and the task is marked non-retryable. That is the same
+/// type-erasing mechanism tracked for fetch failures by #2027.
+///
+/// Ignored, not deleted or weakened. Un-ignore both as the regression tests
+/// when #2027's error-flattening is fixed; see chaos-testing/README.md,
+/// Finding 2.
 #[tokio::test]
+#[ignore = "reproduces #2027's error flattening: the shuffle writer Debug-formats the IoError into an opaque Execution string, so it is misclassified as non-retryable"]
 async fn retryable_fault_is_retried_and_result_is_correct_aqe_off() {
     retryable_fault_is_retried_and_result_is_correct(false).await;
 }
 
-/// Scenario A under AQE, which reproduces #2028: under AQE this join plans
-/// through a broadcast build side collected once and shared across output
-/// partitions (DataFusion's `OnceFut`/`OnceAsync` pattern). When that
-/// collection fails, the error is re-wrapped as `DataFusionError::Shared`.
-/// Ballista's failure classifier (`ballista/core/src/error.rs`) matches only a
-/// *direct* `DataFusionError::IoError`, so a `Shared(IoError(..))` falls
-/// through to the catch-all arm and is misclassified non-retryable: the job
-/// fails on the first attempt instead of retrying.
-///
-/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
-/// #2028 is fixed; see chaos-testing/README.md, Finding 2.
+/// See `retryable_fault_is_retried_and_result_is_correct_aqe_off` above; the
+/// AQE-on case fails identically (the error arrives as
+/// `Execution("Shared(IoError(..))")` — stringified before the classifier,
+/// which is what distinguishes this from the fixed #2028).
 #[tokio::test]
-#[ignore = "reproduces #2028: Shared(IoError) is misclassified as non-retryable"]
+#[ignore = "reproduces #2027's error flattening: the shuffle writer Debug-formats the IoError into an opaque Execution string, so it is misclassified as non-retryable"]
 async fn retryable_fault_is_retried_and_result_is_correct_aqe_on() {
     retryable_fault_is_retried_and_result_is_correct(true).await;
 }
@@ -262,10 +272,21 @@ async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
 /// path rather than the heartbeat-expiry ExecutorLost path; both are valid
 /// recoveries, so the assertion is on correctness, and the path that actually
 /// fired is only recorded.
+///
+/// Reproduces #2027: whenever the reduce stage genuinely has to fetch from the
+/// dead executor, the typed `FetchFailed` arrives flattened inside
+/// `DataFusionError::Shared`, the scheduler never resubmits the map stage, and
+/// the job fails. The scenario only passes when the kill happens to land after
+/// the reduce tasks have already fetched their partitions, which makes it
+/// timing-dependent (it failed in CI, aqe_off case).
+///
+/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
+/// #2027 is fixed; see chaos-testing/README.md, Finding 1.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
+#[ignore = "reproduces #2027: FetchFailed loses its type, so the map stage is never resubmitted"]
 async fn executor_killed_after_shuffle_write_is_recovered(#[case] aqe: bool) {
     let mut run = ChaosRun::start_with(aqe, 2, 60).await;
     let expected = run.local_baseline().await;

@@ -43,7 +43,7 @@ async fn main() -> ballista_core::error::Result<()> {
         grpc_port: env_u16("CHAOS_EXECUTOR_GRPC_PORT"),
         scheduler_host: "127.0.0.1".to_string(),
         scheduler_port: env_u16("CHAOS_SCHEDULER_PORT"),
-        concurrent_tasks: std::env::var("CHAOS_CONCURRENT_TASKS")
+        vcores: std::env::var("CHAOS_CONCURRENT_TASKS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4),
