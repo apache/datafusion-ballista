@@ -477,7 +477,7 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StagesCompleted);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                    self.sort_executors_by(ExecutorsSortColumn::Vcores);
                 }
             }
             KeyCode::Char('5') => {
@@ -1209,7 +1209,7 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StagesCompleted);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                    self.sort_executors_by(ExecutorsSortColumn::Vcores);
                 }
                 None
             }
@@ -1614,7 +1614,7 @@ mod tests {
             port: 8080,
             id: id.to_string(),
             last_seen: None,
-            specification: Specification { task_slots: 4 },
+            specification: Specification { vcores: 4 },
             metrics: vec![],
             os_info: OsInfo {
                 kernel_ver: "5.15".to_string(),

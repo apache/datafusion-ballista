@@ -65,6 +65,22 @@ or run them all at once:
 
 - [dev/rust_lint.sh](dev/rust_lint.sh)
 
+### Configuration Documentation
+
+The configuration tables in
+[docs/source/user-guide/configs.md](docs/source/user-guide/configs.md) are
+generated from the `CONFIG_ENTRIES` registry in `ballista/core/src/config.rs`.
+After adding or changing a configuration key, regenerate them with:
+
+```bash
+./dev/update_config_docs.sh
+```
+
+and commit the result. Every registered key must be covered by one of the
+generated regions in that page, so a new key whose prefix matches none of them
+will fail the check until it is given a home. CI enforces this with
+[ci/scripts/rust_config_docs_check.sh](ci/scripts/rust_config_docs_check.sh).
+
 ### Python Environment
 
 Refer to the instructions in the Python Bindings [README](./python/README.md)

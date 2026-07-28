@@ -1,89 +1,84 @@
 === Stage 1 ===
-SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
-  FilterExec: n_name@1 = FRANCE OR n_name@1 = GERMANY
-    StatsExec: rows=25
-
-=== Stage 2 ===
-ShuffleWriterExec: partitioning: None
-  UnresolvedShuffleExec: stage=1, partitioning: Hash([n_nationkey@0], 16)
-
-=== Stage 3 ===
 SortShuffleWriterExec: partitioning=Hash([s_suppkey@0], 16)
   StatsExec: rows=1000000
 
-=== Stage 4 ===
+=== Stage 2 ===
 SortShuffleWriterExec: partitioning=Hash([l_suppkey@1], 16)
   FilterExec: l_shipdate@4 >= 1995-01-01 AND l_shipdate@4 <= 1996-12-31
     StatsExec: rows=600037902
 
-=== Stage 5 ===
+=== Stage 3 ===
 SortShuffleWriterExec: partitioning=Hash([l_orderkey@1], 16)
   ProjectionExec: expr=[s_nationkey@1 as s_nationkey, l_orderkey@2 as l_orderkey, l_extendedprice@4 as l_extendedprice, l_discount@5 as l_discount, l_shipdate@6 as l_shipdate]
     SortMergeJoinExec: join_type=Inner, on=[(s_suppkey@0, l_suppkey@1)]
       SortExec: expr=[s_suppkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=3, partitioning: Hash([s_suppkey@0], 16)
+        UnresolvedShuffleExec: stage=1, partitioning: Hash([s_suppkey@0], 16)
       SortExec: expr=[l_suppkey@1 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=4, partitioning: Hash([l_suppkey@1], 16)
+        UnresolvedShuffleExec: stage=2, partitioning: Hash([l_suppkey@1], 16)
 
-=== Stage 6 ===
+=== Stage 4 ===
 SortShuffleWriterExec: partitioning=Hash([o_orderkey@0], 16)
   StatsExec: rows=150000000
 
-=== Stage 7 ===
+=== Stage 5 ===
 SortShuffleWriterExec: partitioning=Hash([o_custkey@4], 16)
   ProjectionExec: expr=[s_nationkey@0 as s_nationkey, l_extendedprice@2 as l_extendedprice, l_discount@3 as l_discount, l_shipdate@4 as l_shipdate, o_custkey@6 as o_custkey]
     SortMergeJoinExec: join_type=Inner, on=[(l_orderkey@1, o_orderkey@0)]
       SortExec: expr=[l_orderkey@1 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=5, partitioning: Hash([l_orderkey@1], 16)
+        UnresolvedShuffleExec: stage=3, partitioning: Hash([l_orderkey@1], 16)
       SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=6, partitioning: Hash([o_orderkey@0], 16)
+        UnresolvedShuffleExec: stage=4, partitioning: Hash([o_orderkey@0], 16)
 
-=== Stage 8 ===
+=== Stage 6 ===
 SortShuffleWriterExec: partitioning=Hash([c_custkey@0], 16)
   StatsExec: rows=15000000
 
-=== Stage 9 ===
+=== Stage 7 ===
 SortShuffleWriterExec: partitioning=Hash([s_nationkey@0], 16)
   ProjectionExec: expr=[s_nationkey@0 as s_nationkey, l_extendedprice@1 as l_extendedprice, l_discount@2 as l_discount, l_shipdate@3 as l_shipdate, c_nationkey@6 as c_nationkey]
     SortMergeJoinExec: join_type=Inner, on=[(o_custkey@4, c_custkey@0)]
       SortExec: expr=[o_custkey@4 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=7, partitioning: Hash([o_custkey@4], 16)
+        UnresolvedShuffleExec: stage=5, partitioning: Hash([o_custkey@4], 16)
       SortExec: expr=[c_custkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=8, partitioning: Hash([c_custkey@0], 16)
+        UnresolvedShuffleExec: stage=6, partitioning: Hash([c_custkey@0], 16)
 
-=== Stage 10 ===
+=== Stage 8 ===
+SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
+  FilterExec: n_name@1 = FRANCE OR n_name@1 = GERMANY
+    StatsExec: rows=25
+
+=== Stage 9 ===
 SortShuffleWriterExec: partitioning=Hash([c_nationkey@3], 16)
   ProjectionExec: expr=[l_extendedprice@1 as l_extendedprice, l_discount@2 as l_discount, l_shipdate@3 as l_shipdate, c_nationkey@4 as c_nationkey, n_name@6 as n_name]
-    ProjectionExec: expr=[s_nationkey@2 as s_nationkey, l_extendedprice@3 as l_extendedprice, l_discount@4 as l_discount, l_shipdate@5 as l_shipdate, c_nationkey@6 as c_nationkey, n_nationkey@0 as n_nationkey, n_name@1 as n_name]
-      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@0)]
-        UnresolvedShuffleExec: stage=2, broadcast=true, upstream_partitions: 16
-        UnresolvedShuffleExec: stage=9, partitioning: Hash([s_nationkey@0], 16)
+    SortMergeJoinExec: join_type=Inner, on=[(s_nationkey@0, n_nationkey@0)]
+      SortExec: expr=[s_nationkey@0 ASC], preserve_partitioning=[true]
+        UnresolvedShuffleExec: stage=7, partitioning: Hash([s_nationkey@0], 16)
+      SortExec: expr=[n_nationkey@0 ASC], preserve_partitioning=[true]
+        UnresolvedShuffleExec: stage=8, partitioning: Hash([n_nationkey@0], 16)
 
-=== Stage 11 ===
-ShuffleWriterExec: partitioning: None
-  UnresolvedShuffleExec: stage=10, partitioning: Hash([c_nationkey@3], 16)
-
-=== Stage 12 ===
+=== Stage 10 ===
 SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
   FilterExec: n_name@1 = GERMANY OR n_name@1 = FRANCE
     StatsExec: rows=25
 
-=== Stage 13 ===
+=== Stage 11 ===
 SortShuffleWriterExec: partitioning=Hash([supp_nation@0, cust_nation@1, l_year@2], 16)
   AggregateExec: mode=Partial, gby=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year], aggr=[sum(shipping.volume)]
     ProjectionExec: expr=[n_name@4 as supp_nation, n_name@6 as cust_nation, date_part(YEAR, l_shipdate@2) as l_year, l_extendedprice@0 * (Some(1),20,0 - l_discount@1) as volume]
-      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c_nationkey@3, n_nationkey@0)], filter=n_name@0 = FRANCE AND n_name@1 = GERMANY OR n_name@0 = GERMANY AND n_name@1 = FRANCE
-        UnresolvedShuffleExec: stage=11, broadcast=true, upstream_partitions: 16
-        UnresolvedShuffleExec: stage=12, partitioning: Hash([n_nationkey@0], 16)
+      SortMergeJoinExec: join_type=Inner, on=[(c_nationkey@3, n_nationkey@0)], filter=n_name@0 = FRANCE AND n_name@1 = GERMANY OR n_name@0 = GERMANY AND n_name@1 = FRANCE
+        SortExec: expr=[c_nationkey@3 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=9, partitioning: Hash([c_nationkey@3], 16)
+        SortExec: expr=[n_nationkey@0 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=10, partitioning: Hash([n_nationkey@0], 16)
 
-=== Stage 14 ===
+=== Stage 12 ===
 ShuffleWriterExec: partitioning: None
   SortExec: expr=[supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST], preserve_partitioning=[true]
     ProjectionExec: expr=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year, sum(shipping.volume)@3 as revenue]
       AggregateExec: mode=FinalPartitioned, gby=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year], aggr=[sum(shipping.volume)]
-        UnresolvedShuffleExec: stage=13, partitioning: Hash([supp_nation@0, cust_nation@1, l_year@2], 16)
+        UnresolvedShuffleExec: stage=11, partitioning: Hash([supp_nation@0, cust_nation@1, l_year@2], 16)
 
-=== Stage 15 ===
+=== Stage 13 ===
 ShuffleWriterExec: partitioning: None
   SortPreservingMergeExec: [supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST]
-    UnresolvedShuffleExec: stage=14, partitioning: Hash([supp_nation@0, cust_nation@1, l_year@2], 16)
+    UnresolvedShuffleExec: stage=12, partitioning: Hash([supp_nation@0, cust_nation@1, l_year@2], 16)

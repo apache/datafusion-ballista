@@ -960,14 +960,6 @@ mod supported {
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
-        // Exercise the plain sort-merge-join execution path: disable the
-        // default SortMergeJoinExec broadcast conversion so the join stays a
-        // SortMergeJoinExec in the distributed plan.
-        ctx.sql("SET ballista.optimizer.broadcast_sort_merge_join_enabled = false")
-            .await?
-            .collect()
-            .await?;
-
         ctx.register_parquet(
             "t0",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -1200,7 +1192,7 @@ mod supported {
             "|                   |           PlaceholderRowExec, metrics=[...]                                                                                                                                                                                                                                                                                                                                                       |",
             "|                   |                                                                                                                                                                                                                                                                                                                                                                                                   |",
             "|                   | =========SuccessfulStage[stage_id=2, partitions=16]=========                                                                                                                                                                                                                                                                                                                                      |",
-            "|                   | ShuffleWriterExec: partitioning: None, metrics=[output_rows=..., input_rows=..., repart_time=..., write_time=...]                                                                                                                                                                                                                                                                                 |",
+            "|                   | ShuffleWriterExec: partitioning: None, metrics=[output_rows=..., input_rows=..., write_time=...]                                                                                                                                                                                                                                                                                                  |",
             "|                   |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., expr_0_eval_time=..., expr_1_eval_time=...]                                                                                                                                                                                              |",
             "|                   |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., spill_count=..., spilled_bytes=..., spilled_rows=..., peak_mem_used=..., aggregate_arguments_time=..., aggregation_time=..., emitting_time=..., time_calculating_group_ids=...]                                          |",
             "|                   |       ShuffleReaderExec: upstream_stage: 1, partitioning: Hash([id@0], 16), metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., decoded_bytes=..., fetch_requests=..., fetch_retries=..., local_partitions=..., remote_partitions=..., fetch_time=..., local_read_time=..., permit_wait_time=...]                                                                |",

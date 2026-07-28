@@ -27,13 +27,23 @@ use lru::LruCache;
 use parking_lot::Mutex;
 
 /// Derives a task's runtime from a shared base [`RuntimeEnv`] by installing a
-/// fresh per-task memory pool. The base's object-store registry and the cache
-/// manager's underlying file-metadata (footer) cache are preserved via
+/// fresh per-task memory pool sized to the task's vcore claim. The base's
+/// object-store registry and the cache manager's underlying file-metadata
+/// (footer) cache are preserved via
 /// [`RuntimeEnvBuilder::from_runtime_env`](datafusion::execution::runtime_env::RuntimeEnvBuilder::from_runtime_env)
 /// — the outer `CacheManager` is rebuilt around that same inner cache — so
 /// read-side state is shared while the memory pool stays per task.
+///
+/// `vcores_consumed` is the number of vcores this task claims from the
+/// executor's budget (`min(input_partition_ids.len(), budget)` for non-collapse
+/// stages, `1` for collapse). The policy scales the pool proportionally so a
+/// task claiming N/total vcores gets N/total of the executor's memory budget.
 pub type MemoryPoolPolicy = Arc<
-    dyn Fn(Arc<RuntimeEnv>, &SessionConfig) -> datafusion::error::Result<Arc<RuntimeEnv>>
+    dyn Fn(
+            Arc<RuntimeEnv>,
+            &SessionConfig,
+            u32,
+        ) -> datafusion::error::Result<Arc<RuntimeEnv>>
         + Send
         + Sync,
 >;
@@ -47,11 +57,13 @@ pub type MemoryPoolPolicy = Arc<
 /// [`DefaultSessionRuntimeCache`] is the built-in implementation — provide a
 /// custom one to change the caching/sharing strategy.
 pub trait SessionRuntimeCache: Send + Sync {
-    /// Returns the per-task runtime for `session_id`.
+    /// Returns the per-task runtime for `session_id`, sized to `vcores_consumed`
+    /// vcores of the executor's memory budget.
     fn produce_runtime(
         &self,
         session_id: &str,
         config: &SessionConfig,
+        vcores_consumed: u32,
     ) -> datafusion::error::Result<Arc<RuntimeEnv>>;
 }
 
@@ -103,6 +115,7 @@ impl SessionRuntimeCache for DefaultSessionRuntimeCache {
         &self,
         session_id: &str,
         config: &SessionConfig,
+        vcores_consumed: u32,
     ) -> datafusion::error::Result<Arc<RuntimeEnv>> {
         let base = match &self.cache {
             None => (self.base_producer)(config)?,
@@ -121,7 +134,7 @@ impl SessionRuntimeCache for DefaultSessionRuntimeCache {
                 }
             }
         };
-        (self.pool_policy)(base, config)
+        (self.pool_policy)(base, config, vcores_consumed)
     }
 }
 
@@ -137,13 +150,13 @@ mod tests {
 
     /// Identity policy: the task shares the base env unchanged (no pool swap).
     fn identity_policy() -> MemoryPoolPolicy {
-        Arc::new(|base, _| Ok(base))
+        Arc::new(|base, _, _| Ok(base))
     }
 
     /// Rebuilding policy: mimics production — a fresh per-task pool layered onto
     /// the shared base, preserving the base's read-side state.
     fn per_task_pool_policy() -> MemoryPoolPolicy {
-        Arc::new(|base, _| {
+        Arc::new(|base, _, _| {
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(Arc::new(GreedyMemoryPool::new(1024)))
                 .build_arc()
@@ -155,8 +168,8 @@ mod tests {
         let cache =
             DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 4);
         let cfg = SessionConfig::new();
-        let e1 = cache.produce_runtime("s1", &cfg).unwrap();
-        let e2 = cache.produce_runtime("s1", &cfg).unwrap();
+        let e1 = cache.produce_runtime("s1", &cfg, 1).unwrap();
+        let e2 = cache.produce_runtime("s1", &cfg, 1).unwrap();
         assert!(Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
     }
 
@@ -165,8 +178,8 @@ mod tests {
         let cache =
             DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 4);
         let cfg = SessionConfig::new();
-        let e1 = cache.produce_runtime("s1", &cfg).unwrap();
-        let e2 = cache.produce_runtime("s2", &cfg).unwrap();
+        let e1 = cache.produce_runtime("s1", &cfg, 1).unwrap();
+        let e2 = cache.produce_runtime("s2", &cfg, 1).unwrap();
         assert!(!Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
     }
 
@@ -175,8 +188,8 @@ mod tests {
         let cache =
             DefaultSessionRuntimeCache::new(base_producer(), per_task_pool_policy(), 4);
         let cfg = SessionConfig::new();
-        let e1 = cache.produce_runtime("s1", &cfg).unwrap();
-        let e2 = cache.produce_runtime("s1", &cfg).unwrap();
+        let e1 = cache.produce_runtime("s1", &cfg, 1).unwrap();
+        let e2 = cache.produce_runtime("s1", &cfg, 1).unwrap();
         // Different runtime envs (fresh per-task pool)...
         assert!(!Arc::ptr_eq(&e1, &e2));
         // ...but the shared read-side state is reused: object-store registry
@@ -198,8 +211,8 @@ mod tests {
         let cache =
             DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 0);
         let cfg = SessionConfig::new();
-        let e1 = cache.produce_runtime("s1", &cfg).unwrap();
-        let e2 = cache.produce_runtime("s1", &cfg).unwrap();
+        let e1 = cache.produce_runtime("s1", &cfg, 1).unwrap();
+        let e2 = cache.produce_runtime("s1", &cfg, 1).unwrap();
         assert!(!Arc::ptr_eq(&e1.cache_manager, &e2.cache_manager));
     }
 
@@ -208,11 +221,11 @@ mod tests {
         let cache =
             DefaultSessionRuntimeCache::new(base_producer(), identity_policy(), 2);
         let cfg = SessionConfig::new();
-        let s1_a = cache.produce_runtime("s1", &cfg).unwrap();
-        cache.produce_runtime("s2", &cfg).unwrap();
+        let s1_a = cache.produce_runtime("s1", &cfg, 1).unwrap();
+        cache.produce_runtime("s2", &cfg, 1).unwrap();
         // Inserting s3 (capacity 2) evicts the least-recently-used, s1.
-        cache.produce_runtime("s3", &cfg).unwrap();
-        let s1_b = cache.produce_runtime("s1", &cfg).unwrap();
+        cache.produce_runtime("s3", &cfg, 1).unwrap();
+        let s1_b = cache.produce_runtime("s1", &cfg, 1).unwrap();
         assert!(!Arc::ptr_eq(&s1_a.cache_manager, &s1_b.cache_manager));
     }
 }

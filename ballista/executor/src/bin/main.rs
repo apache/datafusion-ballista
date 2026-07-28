@@ -18,6 +18,7 @@
 //! Ballista Rust executor binary.
 
 use ballista_core::config::LogRotationPolicy;
+use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     runtime_env_with_s3_support, session_config_with_s3_support,
 };
@@ -25,8 +26,10 @@ use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
     ExecutorProcessConfig, start_executor_process,
 };
+use ballista_executor::health::spawn_health_server;
 use clap::Parser;
 use std::env;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -38,6 +41,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 async fn main() -> ballista_core::error::Result<()> {
     // parse command-line arguments
     let opt = Config::parse();
+    let bind_host = opt.bind_host.clone();
+    let bind_health_port = opt.bind_health_port;
 
     let mut config: ExecutorProcessConfig = opt.try_into()?;
     config.override_config_producer = Some(Arc::new(session_config_with_s3_support));
@@ -76,5 +81,25 @@ async fn main() -> ballista_core::error::Result<()> {
         tracing.init();
     }
 
-    start_executor_process(Arc::new(config)).await
+    // Kubernetes-style health probes are a concern of the standalone binary,
+    // not of the library, so wire them here on top of the config's shared
+    // ExecutorHealth handle. `/healthz` is process-liveness, `/readyz`
+    // reflects heartbeat state (see `ballista_executor::health`).
+    let health = config.health.clone();
+    let health_addr: SocketAddr = format!("{bind_host}:{bind_health_port}")
+        .parse()
+        .map_err(|e| {
+            BallistaError::General(format!("invalid --bind-health-port address: {e}"))
+        })?;
+    let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::oneshot::channel();
+    let health_handle = spawn_health_server(health_addr, health, health_shutdown_rx);
+
+    let result = start_executor_process(Arc::new(config)).await;
+
+    // Ask the health server to shut down so the process can exit cleanly.
+    let _ = health_shutdown_tx.send(());
+    if let Err(e) = health_handle.await {
+        log::warn!("health server task join error: {e}");
+    }
+    result
 }
