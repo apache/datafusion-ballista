@@ -119,6 +119,15 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
 pub const BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES: &str =
     "ballista.optimizer.hash_join_max_build_partition_bytes";
 
+/// Configuration key controlling the logical rewrite of uncorrelated
+/// `NOT IN (subquery)` filter predicates into a plain anti join plus a
+/// one-row count aggregate. The rewrite avoids DataFusion's null-aware hash
+/// join, which Ballista must otherwise execute in a single task. Enabled by
+/// default; set to `false` to keep the null-aware join and its single-task
+/// lowering.
+pub const BALLISTA_NOT_IN_SUBQUERY_REWRITE: &str =
+    "ballista.optimizer.not_in_subquery_rewrite";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -278,6 +287,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          which makes AQE use a hash join regardless of build size.".to_string(),
                          DataType::UInt64,
                          Some((64 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_NOT_IN_SUBQUERY_REWRITE.to_string(),
+                         "Rewrites uncorrelated NOT IN (subquery) filter predicates into a \
+                         plain anti join plus a one-row count aggregate during logical \
+                         optimization. The rewrite avoids DataFusion's null-aware hash join, \
+                         which Ballista must otherwise execute in a single task. Set to false \
+                         to keep the null-aware join and its single-task lowering.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
@@ -670,6 +687,13 @@ impl BallistaConfig {
     /// Maximum per-partition hash-join build-side bytes before falling back to SMJ.
     pub fn hash_join_max_build_partition_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES)
+    }
+
+    /// Whether uncorrelated `NOT IN (subquery)` filter predicates are rewritten
+    /// into a plain anti join plus a one-row count aggregate during logical
+    /// optimization, avoiding the single-task null-aware hash join.
+    pub fn not_in_subquery_rewrite_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
