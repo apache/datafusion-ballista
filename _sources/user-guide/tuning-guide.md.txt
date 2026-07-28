@@ -273,7 +273,11 @@ implemented:
   fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
   Null-aware anti joins use `CollectLeft` with a single probe task because their
   state cannot be coordinated across executors. A known oversized build side is
-  rejected instead of producing an incorrect distributed result.
+  rejected instead of producing an incorrect distributed result. In practice
+  most `NOT IN (subquery)` predicates never plan a null-aware join at all:
+  `ballista.optimizer.not_in_subquery_rewrite` (enabled by default) rewrites
+  them into a fully distributable anti join plus a one-row count aggregate
+  during logical optimization.
 - **Empty stage elimination.** When a completed stage produces zero rows, its
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.

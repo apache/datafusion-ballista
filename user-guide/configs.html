@@ -552,47 +552,52 @@ standard DataFusion settings.</p>
 <td><p>67108864</p></td>
 <td><p>Maximum per-partition hash-join build-side bytes for a Partitioned hash join under AQE. A build partition larger than this falls back to SortMergeJoin (spillable). Defaults to 64 MiB; 0 disables the check, which makes AQE use a hash join regardless of build size.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.adaptive.enabled</p></td>
+<tr class="row-even"><td><p>ballista.optimizer.not_in_subquery_rewrite</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Rewrites uncorrelated NOT IN (subquery) filter predicates into a plain anti join plus a one-row count aggregate during logical optimization. The rewrite avoids DataFusion’s null-aware hash join, which Ballista must otherwise execute in a single task. Set to false to keep the null-aware join and its single-task lowering.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.adaptive.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
 <td><p>Enables Adaptive Query Planning (EXPERIMENTAL)</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.adaptive_join.enabled</p></td>
+<tr class="row-even"><td><p>ballista.planner.adaptive_join.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Enables the AQE dynamic join-selection rule (SelectJoinRule). When true (default), DynamicJoinSelectionExec nodes are resolved to concrete HashJoin or CollectLeft join implementations at runtime. Disable only for debugging.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.coalesce.enabled</p></td>
+<tr class="row-odd"><td><p>ballista.planner.coalesce.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
 <td><p>Enables the AQE coalesce-shuffle-partitions rule. Disabled by default — opt in when fewer/larger downstream tasks matter more than parallelism.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.coalesce.merged_partition_factor</p></td>
+<tr class="row-even"><td><p>ballista.planner.coalesce.merged_partition_factor</p></td>
 <td><p>Float64</p></td>
 <td><p>1.2</p></td>
 <td><p>Two adjacent partitions are merged when their combined size is below target_partition_bytes times this factor. Mirrors Spark’s legacy coalesce semantics.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.coalesce.small_partition_factor</p></td>
+<tr class="row-odd"><td><p>ballista.planner.coalesce.small_partition_factor</p></td>
 <td><p>Float64</p></td>
 <td><p>0.2</p></td>
 <td><p>A coalesced partition smaller than target_partition_bytes times this factor counts as small and is merged into its neighbour. Mirrors Spark’s legacy coalesce semantics.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.coalesce.target_partition_bytes</p></td>
+<tr class="row-even"><td><p>ballista.planner.coalesce.target_partition_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>67108864</p></td>
 <td><p>Target post-coalesce partition size in bytes. Mirrors Spark’s advisoryPartitionSizeInBytes.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.propagate_empty.enabled</p></td>
+<tr class="row-odd"><td><p>ballista.planner.propagate_empty.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Enables the AQE propagate-empty-relation rule. Injects EmptyExec into the plan where an input is known to be empty, such as one side of a join, allowing downstream work to be skipped.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
+<tr class="row-even"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
 <td><p>UInt64</p></td>
 <td><p>1</p></td>
 <td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">1</span></code> (default) means one task per input partition. Raise to enable multi-partition tasks (fewer tasks, parallel-sort / parallel-join wins); <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded — the scheduler fills each task up to the executor’s free vcore count. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.standalone.parallelism</p></td>
+<tr class="row-odd"><td><p>ballista.standalone.parallelism</p></td>
 <td><p>UInt16</p></td>
 <td><p>number of available CPU cores</p></td>
 <td><p>Number of concurrent tasks a standalone in-process executor will run.</p></td>

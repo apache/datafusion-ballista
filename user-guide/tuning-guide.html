@@ -667,7 +667,11 @@ smaller side drives the join.</p></li>
 fallback), the smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) instead of shuffled.
 Null-aware anti joins use <code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code> with a single probe task because their
 state cannot be coordinated across executors. A known oversized build side is
-rejected instead of producing an incorrect distributed result.</p></li>
+rejected instead of producing an incorrect distributed result. In practice
+most <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span> <span class="pre">(subquery)</span></code> predicates never plan a null-aware join at all:
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.not_in_subquery_rewrite</span></code> (enabled by default) rewrites
+them into a fully distributable anti join plus a one-row count aggregate
+during logical optimization.</p></li>
 <li><p><strong>Empty stage elimination.</strong> When a completed stage produces zero rows, its
 downstream exchange is replaced with an empty execution node, and emptiness
 is propagated up the plan so downstream stages are skipped entirely.</p></li>
