@@ -52,14 +52,30 @@ on:
 
 jobs:
   tpcds-sf1:
-    name: TPC-DS SF1 (all queries, static planner)
+    name: TPC-DS SF1 (static planner, ${{ matrix.label }})
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
-    # A passing run takes ~7 minutes. Cap the job well under the 6-hour
+    # A passing leg takes ~7 minutes. Cap the job well under the 6-hour
     # default so a hung query fails fast and frees the runner rather than
     # sitting for hours with no useful signal.
     timeout-minutes: 45
+    strategy:
+      # One red leg must not cancel the other; the two task-packing modes are
+      # independent signals.
+      fail-fast: false
+      matrix:
+        include:
+          - label: "1 partition per task"
+            task_args: ""
+            slug: "mpt1"
+          # 4 rather than a larger cap because the scheduler clamps the slice to
+          # the executor's free vcores (`budget.vcores.min(cap)`), and the
+          # executor below runs `--concurrent-tasks 4`. A higher cap would be
+          # unreachable and the label would overstate what is covered.
+          - label: "4 partitions per task"
+            task_args: "-c ballista.scheduler.max_partitions_per_task=4"
+            slug: "mpt4"
     steps:
       - name: Install dependencies
         run: |
@@ -76,6 +92,10 @@ jobs:
           rust-version: stable
 
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+        with:
+          # Share the build cache across all matrix legs — the compiled
+          # binaries are identical; only the per-suite CLI args differ.
+          shared-key: tpcds-sf1
 
       - name: Build Ballista binaries
         run: |
@@ -157,27 +177,22 @@ jobs:
           done
           nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
 
-          # Run the suite under the default (static) planner. The tpcds binary
-          # internally loops all non-skipped queries and exits non-zero on any
-          # failure, so a single invocation covers the whole suite.
+          # This matrix leg runs the suite under the default (static) planner at
+          # one task-packing setting. The tpcds binary internally loops all
+          # non-skipped queries and exits non-zero on any failure, so a single
+          # invocation covers the whole suite. The other leg runs in parallel.
           #
-          # Coverage for the adaptive planner (AQE on) and for single-partition
-          # execution is being added separately; both currently fail on
-          # pre-existing bugs.
-          run_suite() {
-            local label="$1"; shift
-            echo "::group::[$label] TPC-DS suite"
-            ./target/tpch-ci/tpcds \
-              --host 127.0.0.1 --port 50050 \
-              --path "$DATA_DIR" \
-              --partitions 16 \
-              --verify \
-              "$@"
-            echo "::endgroup::"
-          }
-
-          run_suite "static planner" \
-            -c datafusion.optimizer.prefer_hash_join=false
+          # Coverage for the adaptive planner (AQE on) is being added
+          # separately; it currently fails on pre-existing bugs.
+          echo "::group::[static planner, ${{ matrix.label }}] TPC-DS suite"
+          ./target/tpch-ci/tpcds \
+            --host 127.0.0.1 --port 50050 \
+            --path "$DATA_DIR" \
+            --partitions 16 \
+            --verify \
+            -c datafusion.optimizer.prefer_hash_join=false \
+            ${{ matrix.task_args }}
+          echo "::endgroup::"
 
       - name: Upload cluster logs on failure
         # `!success()` rather than `failure()` so a timed-out or cancelled
@@ -186,7 +201,7 @@ jobs:
         if: ${{ !success() }}
         uses: actions/upload-artifact@v7
         with:
-          name: tpcds-sf1-cluster-logs
+          name: tpcds-sf1-cluster-logs-${{ matrix.slug }}
           retention-days: 14
           path: |
             ${{ runner.temp }}/scheduler.log
