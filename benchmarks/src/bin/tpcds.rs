@@ -247,9 +247,16 @@ async fn run_one_query(
     let ctx = SessionContext::remote_with_state(address, state)
         .await
         .map_err(|e| DataFusionError::Execution(format!("connect: {e}")))?;
-    register_parquet_tables(&ctx, TABLES, opt.path.as_str(), opt.debug)
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("register-tables: {e}")))?;
+    let empty_tables_overrides = std::collections::HashMap::new();
+    register_parquet_tables(
+        &ctx,
+        TABLES,
+        opt.path.as_str(),
+        &empty_tables_overrides,
+        opt.debug,
+    )
+    .await
+    .map_err(|e| DataFusionError::Execution(format!("register-tables: {e}")))?;
 
     // Run the query on the cluster, capturing the answer statement's result.
     let answer_idx = answer_statement_index(&sqls);
@@ -316,7 +323,15 @@ async fn main() -> Result<()> {
             .with_target_partitions(opt.partitions)
             .with_batch_size(opt.batch_size);
         let ctx = SessionContext::new_with_config(cfg);
-        register_parquet_tables(&ctx, TABLES, opt.path.as_str(), opt.debug).await?;
+        let empty_tables_overrides = std::collections::HashMap::new();
+        register_parquet_tables(
+            &ctx,
+            TABLES,
+            opt.path.as_str(),
+            &empty_tables_overrides,
+            opt.debug,
+        )
+        .await?;
         Some(ctx)
     } else {
         None
