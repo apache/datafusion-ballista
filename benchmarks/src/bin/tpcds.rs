@@ -19,13 +19,14 @@ use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
 use ballista_benchmarks::{
     answer_statement_index, compare_results, execute_query_capturing_answer,
-    register_parquet_tables,
+    parse_empty_tables, prepare_empty_tables, register_parquet_tables,
 };
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use std::collections::HashMap;
 use std::fs;
 use std::time::Instant;
 use structopt::StructOpt;
@@ -132,6 +133,12 @@ struct Opt {
     /// Verify each Ballista result against single-process DataFusion.
     #[structopt(long = "verify")]
     verify: bool,
+
+    /// Comma-separated table names to register as zero-row tables (schema
+    /// preserved) in both the Ballista and oracle contexts, forcing empty
+    /// intermediate stages through the distributed planner.
+    #[structopt(long = "empty-tables")]
+    empty_tables: Option<String>,
 }
 
 /// Split a query file into statements, dropping full-line `--` comments and
@@ -222,6 +229,7 @@ async fn run_one_query(
     opt: &Opt,
     address: &str,
     oracle_ctx: Option<&SessionContext>,
+    overrides: &HashMap<String, String>,
     query: usize,
 ) -> Result<()> {
     let sqls = get_query_sql(query)
@@ -247,16 +255,9 @@ async fn run_one_query(
     let ctx = SessionContext::remote_with_state(address, state)
         .await
         .map_err(|e| DataFusionError::Execution(format!("connect: {e}")))?;
-    let empty_tables_overrides = std::collections::HashMap::new();
-    register_parquet_tables(
-        &ctx,
-        TABLES,
-        opt.path.as_str(),
-        &empty_tables_overrides,
-        opt.debug,
-    )
-    .await
-    .map_err(|e| DataFusionError::Execution(format!("register-tables: {e}")))?;
+    register_parquet_tables(&ctx, TABLES, opt.path.as_str(), overrides, opt.debug)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("register-tables: {e}")))?;
 
     // Run the query on the cluster, capturing the answer statement's result.
     let answer_idx = answer_statement_index(&sqls);
@@ -316,6 +317,18 @@ async fn main() -> Result<()> {
     let opt = Opt::from_args();
     let address = format!("df://{}:{}", opt.host, opt.port);
 
+    // Zero-row mirrors are built once and shared by every query's Ballista
+    // session and by the oracle, so both sides see identical empty tables.
+    let empty_overrides = match &opt.empty_tables {
+        Some(spec) => {
+            let names = parse_empty_tables(spec, TABLES)?;
+            let dir = std::env::temp_dir()
+                .join(format!("tpcds-empty-tables-{}", std::process::id()));
+            prepare_empty_tables(&opt.path, &names, &dir).await?
+        }
+        None => std::collections::HashMap::new(),
+    };
+
     // Oracle context (single-process DataFusion), built once when verifying.
     // Not per-query, so a failure here is genuinely fatal to the whole run.
     let oracle_ctx = if opt.verify {
@@ -323,12 +336,11 @@ async fn main() -> Result<()> {
             .with_target_partitions(opt.partitions)
             .with_batch_size(opt.batch_size);
         let ctx = SessionContext::new_with_config(cfg);
-        let empty_tables_overrides = std::collections::HashMap::new();
         register_parquet_tables(
             &ctx,
             TABLES,
             opt.path.as_str(),
-            &empty_tables_overrides,
+            &empty_overrides,
             opt.debug,
         )
         .await?;
@@ -340,7 +352,10 @@ async fn main() -> Result<()> {
     let mut failures: Vec<(usize, String)> = vec![];
 
     for query in selected_queries(opt.query, SKIP) {
-        if let Err(e) = run_one_query(&opt, &address, oracle_ctx.as_ref(), query).await {
+        if let Err(e) =
+            run_one_query(&opt, &address, oracle_ctx.as_ref(), &empty_overrides, query)
+                .await
+        {
             eprintln!("Query {query} FAILED: {e}");
             failures.push((query, e.to_string()));
         }
