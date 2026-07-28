@@ -330,11 +330,11 @@ mod tests {
 
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
-        common::{ColumnStatistics, JoinType, NullEquality, Statistics},
+        common::{ColumnStatistics, JoinType, NullEquality, ScalarValue, Statistics},
         physical_expr::aggregate::AggregateExprBuilder,
         physical_plan::{
             aggregates::{AggregateMode, PhysicalGroupBy},
-            expressions::Column,
+            expressions::{Column, Literal},
             joins::PartitionMode,
             test::exec::StatisticsExec,
         },
@@ -943,6 +943,26 @@ mod tests {
             Arc::new(EmptyExec::new(schema())),
             PhysicalGroupBy::default(),
             AggregateMode::Partial,
+        );
+        assert_untouched(&transform(plan));
+    }
+
+    #[test]
+    fn aggregate_grouping_sets_with_empty_subset_over_empty_is_preserved() {
+        // `ROLLUP(a)` / `GROUPING SETS ((a), ())` lowers to a non-empty `expr`
+        // list plus a `groups` mask containing the all-null (empty) subset.
+        // Over zero input rows, that empty subset still emits one all-NULL row
+        // — matches DataFusion's logical `has_empty_grouping_set` guard.
+        let group_by = PhysicalGroupBy::new(
+            vec![(Arc::new(Column::new("a", 0)), "a".into())],
+            vec![(Arc::new(Literal::new(ScalarValue::Int32(None))), "a".into())],
+            vec![vec![false], vec![true]],
+            true,
+        );
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            group_by,
+            AggregateMode::Single,
         );
         assert_untouched(&transform(plan));
     }
