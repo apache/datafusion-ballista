@@ -35,7 +35,7 @@
 //! ```
 //!
 //! Format is a single Arrow IPC file with one RecordBatch of length L
-//! (leaves), schema `[first_row: UInt64 NOT NULL, expr_0: <type>, ...]`,
+//! (leaves), schema `[sampled_row: UInt64 NOT NULL, expr_0: <type>, ...]`,
 //! and schema metadata: `version="1"`, `total_row_count="<u64>"`,
 //! `row_index_scheme="full_address"`.
 
@@ -112,7 +112,7 @@ impl ValueIndexExec {
         let order_by: Vec<PhysicalSortExpr> = ordering.iter().cloned().collect();
 
         let input_schema = plan.schema();
-        let mut fields = vec![Field::new("first_row", DataType::UInt64, false)];
+        let mut fields = vec![Field::new("sampled_row", DataType::UInt64, false)];
         for (expr_idx, sort_expr) in order_by.iter().enumerate() {
             let dtype = sort_expr.expr.data_type(&input_schema)?;
             let nullable = sort_expr.expr.nullable(&input_schema)?;
@@ -343,7 +343,7 @@ impl Stream for ValueIndexStream {
         match ready!(self.input.poll_next_unpin(cx)) {
             Some(Ok(batch)) if batch.num_rows() > 0 => {
                 let sampled_row = self.rows_seen;
-                let values = match sample_first_row(&batch, &self.order_by) {
+                let values = match sample_row(&batch, &self.order_by, 0) {
                     Ok(values) => values,
                     Err(err) => return Poll::Ready(Some(Err(err))),
                 };
@@ -395,10 +395,10 @@ impl ValueIndexStream {
             metadata,
         ));
 
-        let first_row_arr: ArrayRef =
+        let sampled_row_arr: ArrayRef =
             Arc::new(UInt64Array::from(std::mem::take(&mut self.sampled_rows)));
         let mut arrays = Vec::with_capacity(self.sampled_values.len() + 1);
-        arrays.push(first_row_arr);
+        arrays.push(sampled_row_arr);
         for col_values in std::mem::take(&mut self.sampled_values) {
             arrays.push(ScalarValue::iter_to_array(col_values)?);
         }
@@ -423,11 +423,13 @@ impl RecordBatchStream for ValueIndexStream {
     }
 }
 
-/// Evaluate each ORDER BY expression on `batch` and return the row-0 value
-/// of each, in order.
-fn sample_first_row(
+/// Evaluate each ORDER BY expression on `batch` and return the value at
+/// `row`, in order. `row` is a batch-local index; callers translate from
+/// their own sampling policy (batch-boundary today, stride tomorrow).
+fn sample_row(
     batch: &RecordBatch,
     order_by: &[PhysicalSortExpr],
+    row: usize,
 ) -> Result<Vec<ScalarValue>> {
     let mut out = Vec::with_capacity(order_by.len());
     for sort_expr in order_by {
@@ -435,7 +437,7 @@ fn sample_first_row(
             .expr
             .evaluate(batch)?
             .into_array(batch.num_rows())?;
-        out.push(ScalarValue::try_from_array(&arr, 0)?);
+        out.push(ScalarValue::try_from_array(&arr, row)?);
     }
     Ok(out)
 }
@@ -636,9 +638,9 @@ mod tests {
                 md.get(TOTAL_ROW_COUNT_KEY).unwrap().parse().unwrap();
             total_indexed_rows += per_partition_rows;
 
-            // Columns: first_row (UInt64) + expr_0 (Float64 for our v2).
+            // Columns: sampled_row (UInt64) + expr_0 (Float64 for our v2).
             assert_eq!(file_schema.fields().len(), 2);
-            assert_eq!(file_schema.field(0).name(), "first_row");
+            assert_eq!(file_schema.field(0).name(), "sampled_row");
             assert_eq!(file_schema.field(0).data_type(), &DataType::UInt64);
             assert_eq!(file_schema.field(1).name(), "expr_0");
             assert_eq!(file_schema.field(1).data_type(), &DataType::Float64);
@@ -648,7 +650,7 @@ mod tests {
             let leaf = &leaves[0];
             assert!(leaf.num_rows() >= 1, "partition {p} produced zero leaves");
 
-            let first_rows = leaf
+            let sampled_rows = leaf
                 .column(0)
                 .as_any()
                 .downcast_ref::<UInt64Array>()
@@ -659,12 +661,12 @@ mod tests {
                 .downcast_ref::<Float64Array>()
                 .unwrap();
 
-            // first_row starts at 0 and is strictly increasing.
-            assert_eq!(first_rows.value(0), 0);
+            // sampled_row starts at 0 and is strictly increasing.
+            assert_eq!(sampled_rows.value(0), 0);
             for i in 1..leaf.num_rows() {
                 assert!(
-                    first_rows.value(i) > first_rows.value(i - 1),
-                    "first_row must be strictly increasing"
+                    sampled_rows.value(i) > sampled_rows.value(i - 1),
+                    "sampled_row must be strictly increasing"
                 );
             }
             // Value column is monotonically ascending (ORDER BY asc).
