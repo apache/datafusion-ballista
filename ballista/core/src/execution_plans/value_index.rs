@@ -41,13 +41,15 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::array::{ArrayRef, RecordBatch, UInt64Array};
+use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::ipc::writer::FileWriter;
 use datafusion::common::{
     DataFusionError, Result, ScalarValue, Statistics, internal_err,
@@ -70,6 +72,7 @@ const VERSION_VALUE: &str = "1";
 const TOTAL_ROW_COUNT_KEY: &str = "total_row_count";
 const ROW_INDEX_SCHEME_KEY: &str = "row_index_scheme";
 const ROW_INDEX_SCHEME_FULL_ADDRESS: &str = "full_address";
+const SAMPLED_ROW_COLUMN: &str = "sampled_row";
 
 /// Passthrough tap that samples the input's ORDER BY expression at
 /// batch boundaries and writes a `.value.idx` file next to the
@@ -112,7 +115,7 @@ impl ValueIndexExec {
         let order_by: Vec<PhysicalSortExpr> = ordering.iter().cloned().collect();
 
         let input_schema = plan.schema();
-        let mut fields = vec![Field::new("sampled_row", DataType::UInt64, false)];
+        let mut fields = vec![Field::new(SAMPLED_ROW_COLUMN, DataType::UInt64, false)];
         for (expr_idx, sort_expr) in order_by.iter().enumerate() {
             let dtype = sort_expr.expr.data_type(&input_schema)?;
             let nullable = sort_expr.expr.nullable(&input_schema)?;
@@ -442,6 +445,134 @@ fn sample_row(
     Ok(out)
 }
 
+/// Reader for a `.value.idx` file produced by [`ValueIndexExec`].
+///
+/// Opens the file eagerly, validates the schema envelope (version,
+/// row-index scheme, `sampled_row` column shape), and holds the leaves
+/// in memory. Files are KB-scale by design.
+pub struct ValueIndexReader {
+    /// One row per leaf. Column 0 is the `sampled_row` UInt64 column;
+    /// columns 1.. are the ORDER BY value columns, in declaration order.
+    leaves: RecordBatch,
+    /// Total rows in the sorted stream this index describes. Bounds the
+    /// last leaf's implicit row range.
+    total_row_count: u64,
+}
+
+impl ValueIndexReader {
+    /// Open and validate a `.value.idx` file. Fails on missing / unknown
+    /// version metadata, unknown row-index scheme, or a first column
+    /// that doesn't match `sampled_row: UInt64`.
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = std::fs::File::open(path).map_err(|e| {
+            DataFusionError::Execution(format!(
+                "ValueIndexReader: open({}) failed: {e}",
+                path.display()
+            ))
+        })?;
+        let reader = FileReader::try_new(file, None)?;
+        let schema = reader.schema();
+        let md = schema.metadata();
+
+        match md.get(VERSION_KEY).map(String::as_str) {
+            Some(VERSION_VALUE) => {}
+            Some(other) => {
+                return internal_err!(
+                    "ValueIndexReader: unsupported version `{other}`, expected `{VERSION_VALUE}`"
+                );
+            }
+            None => {
+                return internal_err!(
+                    "ValueIndexReader: missing `{VERSION_KEY}` metadata"
+                );
+            }
+        }
+        match md.get(ROW_INDEX_SCHEME_KEY).map(String::as_str) {
+            Some(ROW_INDEX_SCHEME_FULL_ADDRESS) => {}
+            Some(other) => {
+                return internal_err!(
+                    "ValueIndexReader: unsupported `{ROW_INDEX_SCHEME_KEY}` `{other}`"
+                );
+            }
+            None => {
+                return internal_err!(
+                    "ValueIndexReader: missing `{ROW_INDEX_SCHEME_KEY}` metadata"
+                );
+            }
+        }
+        let total_row_count: u64 = md
+            .get(TOTAL_ROW_COUNT_KEY)
+            .ok_or_else(|| {
+                DataFusionError::Internal(format!(
+                    "ValueIndexReader: missing `{TOTAL_ROW_COUNT_KEY}` metadata"
+                ))
+            })?
+            .parse()
+            .map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "ValueIndexReader: invalid `{TOTAL_ROW_COUNT_KEY}`: {e}"
+                ))
+            })?;
+
+        let field0 = schema.field(0);
+        if field0.name() != SAMPLED_ROW_COLUMN || field0.data_type() != &DataType::UInt64
+        {
+            return internal_err!(
+                "ValueIndexReader: expected column 0 `{SAMPLED_ROW_COLUMN}: UInt64`, got `{}: {:?}`",
+                field0.name(),
+                field0.data_type()
+            );
+        }
+
+        let batches: Vec<RecordBatch> = reader.collect::<std::result::Result<_, _>>()?;
+        let leaves = concat_batches(&schema, &batches)?;
+
+        Ok(Self {
+            leaves,
+            total_row_count,
+        })
+    }
+
+    /// Total rows in the sorted stream this index describes.
+    pub fn total_row_count(&self) -> u64 {
+        self.total_row_count
+    }
+
+    /// Number of leaf entries in the index.
+    pub fn num_leaves(&self) -> usize {
+        self.leaves.num_rows()
+    }
+
+    /// The raw leaf batch: column 0 is `sampled_row: UInt64`, columns
+    /// 1.. are the ORDER BY value columns.
+    pub fn leaf_batch(&self) -> &RecordBatch {
+        &self.leaves
+    }
+
+    /// Typed accessor for the `sampled_row` column.
+    pub fn sampled_rows(&self) -> &UInt64Array {
+        self.leaves
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("column 0 validated as UInt64 by open()")
+    }
+
+    /// Row range `[start, end)` covered by leaf `idx`. `end` is either
+    /// the next leaf's `sampled_row` or `total_row_count` for the last
+    /// leaf. Panics if `idx >= num_leaves()`.
+    pub fn leaf_row_range(&self, idx: usize) -> (u64, u64) {
+        let sampled = self.sampled_rows();
+        let start = sampled.value(idx);
+        let end = if idx + 1 < sampled.len() {
+            sampled.value(idx + 1)
+        } else {
+            self.total_row_count
+        };
+        (start, end)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,7 +580,6 @@ mod tests {
         OrderedRangeRepartitionExec, RuntimeStatsExec, ShuffleWriterExec,
     };
     use datafusion::arrow::array::{Float64Array, Int64Array, StructArray};
-    use datafusion::arrow::ipc::reader::FileReader;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::physical_expr::expressions::col;
     use datafusion::physical_plan::sorts::sort::SortExec;
@@ -623,39 +753,20 @@ mod tests {
                 idx_path.display()
             );
 
-            let file = std::fs::File::open(&idx_path)?;
-            let reader = FileReader::try_new(file, None)?;
-            let file_schema = reader.schema();
+            let idx = ValueIndexReader::open(&idx_path)?;
+            total_indexed_rows += idx.total_row_count();
+            assert!(idx.num_leaves() >= 1, "partition {p} produced zero leaves");
 
-            // Schema metadata carries version, total_row_count, scheme.
-            let md = file_schema.metadata();
-            assert_eq!(md.get(VERSION_KEY).unwrap(), VERSION_VALUE);
-            assert_eq!(
-                md.get(ROW_INDEX_SCHEME_KEY).unwrap(),
-                ROW_INDEX_SCHEME_FULL_ADDRESS
-            );
-            let per_partition_rows: u64 =
-                md.get(TOTAL_ROW_COUNT_KEY).unwrap().parse().unwrap();
-            total_indexed_rows += per_partition_rows;
+            // Value column shape: reader validated column 0 already; check
+            // the ORDER BY value column landed as declared.
+            let leaf_schema = idx.leaf_batch().schema();
+            assert_eq!(leaf_schema.fields().len(), 2);
+            assert_eq!(leaf_schema.field(1).name(), "expr_0");
+            assert_eq!(leaf_schema.field(1).data_type(), &DataType::Float64);
 
-            // Columns: sampled_row (UInt64) + expr_0 (Float64 for our v2).
-            assert_eq!(file_schema.fields().len(), 2);
-            assert_eq!(file_schema.field(0).name(), "sampled_row");
-            assert_eq!(file_schema.field(0).data_type(), &DataType::UInt64);
-            assert_eq!(file_schema.field(1).name(), "expr_0");
-            assert_eq!(file_schema.field(1).data_type(), &DataType::Float64);
-
-            let leaves: Vec<RecordBatch> = reader.collect::<Result<_, _>>()?;
-            assert_eq!(leaves.len(), 1, "expected a single leaf batch");
-            let leaf = &leaves[0];
-            assert!(leaf.num_rows() >= 1, "partition {p} produced zero leaves");
-
-            let sampled_rows = leaf
-                .column(0)
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .unwrap();
-            let values = leaf
+            let sampled_rows = idx.sampled_rows();
+            let values = idx
+                .leaf_batch()
                 .column(1)
                 .as_any()
                 .downcast_ref::<Float64Array>()
@@ -663,19 +774,22 @@ mod tests {
 
             // sampled_row starts at 0 and is strictly increasing.
             assert_eq!(sampled_rows.value(0), 0);
-            for i in 1..leaf.num_rows() {
+            for i in 1..idx.num_leaves() {
                 assert!(
                     sampled_rows.value(i) > sampled_rows.value(i - 1),
                     "sampled_row must be strictly increasing"
                 );
             }
             // Value column is monotonically ascending (ORDER BY asc).
-            for i in 1..leaf.num_rows() {
+            for i in 1..idx.num_leaves() {
                 assert!(
                     values.value(i) >= values.value(i - 1),
                     "value column must be monotonically ascending"
                 );
             }
+            // Last leaf's range ends at total_row_count (sentinel).
+            let (_, last_end) = idx.leaf_row_range(idx.num_leaves() - 1);
+            assert_eq!(last_end, idx.total_row_count());
         }
         assert_eq!(
             total_indexed_rows, expected_rows,

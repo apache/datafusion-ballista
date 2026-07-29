@@ -57,7 +57,7 @@ pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
 pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
-pub use value_index::ValueIndexExec;
+pub use value_index::{ValueIndexExec, ValueIndexReader};
 
 use crate::JobId;
 
