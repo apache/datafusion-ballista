@@ -46,29 +46,34 @@
 //!
 //! ```text
 //!   data-0.value.idx  (KB-scale, opened first)
-//!   ┌─────────────┬────────────┬────────────┐
-//!   │ sampled_row │ last_name  │ first_name │
-//!   ├─────────────┼────────────┼────────────┤
-//!   │       0     │ "Adams"    │ "Aaron"    │
-//!   │    1,024    │ "Baker"    │ "Beth"     │◀── binary_search_by_value
-//!   │    2,048    │ "Chen"     │ "Carla"    │      (("Baker","*")) → leaf 1
-//!   │    3,072    │ "Diaz"     │ "Diana"    │      (("Chen","*"))  → leaf 2
-//!   └─────────────┴────────────┴────────────┘
+//!   ┌─────────────┬────────────┬────────────┐   Rows per leaf are implicit:
+//!   │ sampled_row │ last_name  │ first_name │   leaf k covers rows
+//!   ├─────────────┼────────────┼────────────┤   [sampled_row[k],
+//!   │       0     │ "Adams"    │ "Aaron"    │    sampled_row[k+1]) — so
+//!   │    1,024    │ "Baker"    │ "Beth"     │◀── leaf 1 covers rows
+//!   │    2,048    │ "Chen"     │ "Carla"    │    [1024, 2048). Value cols
+//!   │    3,072    │ "Diaz"     │ "Diana"    │    are what binary_search
+//!   └─────────────┴────────────┴────────────┘    consults.
 //!            │
-//!            │  today's sampling policy: leaf_idx == batch_idx,
-//!            │  so leaves [1, 2) → batches [1, 2)
+//!            │  binary_search_by_value(("Baker","*")) → leaf 1
+//!            │  binary_search_by_value(("Chen","*"))  → leaf 2
+//!            │
+//!            │  Under today's sampling policy (one sample per non-empty
+//!            │  batch), leaf_idx == batch_idx — asserted as an invariant
+//!            │  in the e2e test. Row range comes from the value index;
+//!            │  the footer only supplies bytes.
 //!            ▼
 //!   data-0.arrow  (Arrow IPC file footer, one range-GET on S3)
-//!   ┌───────┬──────────┬─────────┐
-//!   │ batch │  offset  │  length │
-//!   ├───────┼──────────┼─────────┤
-//!   │   0   │      42  │  8,192  │        rows [0,     1024)
-//!   │   1   │   8,234  │  9,001  │  ◀──   rows [1024,  2048)  set_index(1)
-//!   │   2   │  17,235  │  8,500  │        rows [2048,  3072)
-//!   │   3   │  25,735  │  7,000  │        rows [3072,  4000)
-//!   └───────┴──────────┴─────────┘
-//!            │
-//!            │  range GET([8234, 8234+9001))
+//!   ┌───────┬─────────────┬─────────────┐   Arrow's `Block`, all in bytes
+//!   │ batch │ byte_offset │ byte_length │   (collapsing metadata_length +
+//!   ├───────┼─────────────┼─────────────┤    body_length for brevity).
+//!   │   0   │         42  │      8,192  │   The footer has *no* row
+//!   │   1   │      8,234  │      9,001  │◀── info — per-batch row counts
+//!   │   2   │     17,235  │      8,500  │    live in each batch's IPC
+//!   │   3   │     25,735  │      7,000  │    metadata flatbuffer, which
+//!   └───────┴─────────────┴─────────────┘    we don't need today thanks
+//!            │                                to leaf_idx == batch_idx.
+//!            │  set_index(1) → range GET([8234, 8234+9001))
 //!            ▼
 //!   data-0.arrow body
 //!   ┌────────────────────────────────────────────────┐
