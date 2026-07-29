@@ -58,21 +58,9 @@ const TABLES: &[&str] = &[
     "web_site",
 ];
 
-/// Queries excluded from the correctness gate, with the reason. The gate runs
-/// under the default (static) planner; this list reflects that configuration.
+/// Queries excluded from the correctness gate, with the reason.
 /// Remove an entry as the underlying cause is fixed.
 const SKIP: &[(usize, &str)] = &[
-    // Distributed execution diverges from single-process DataFusion on the same
-    // data (confirmed reproducible; DataFusion is correct under both join modes).
-    // See https://github.com/apache/datafusion-ballista/issues/2046
-    (
-        38,
-        "distributed INTERSECT diverges from DataFusion (issue #2046)",
-    ),
-    (
-        87,
-        "distributed EXCEPT diverges from DataFusion (issue #2046)",
-    ),
     // Non-deterministic: LIMIT/ORDER BY ties without a total order make the
     // result vary run-to-run in both engines, so a row-by-row diff is unstable.
     (31, "non-deterministic (ORDER BY ties; varies run-to-run)"),
@@ -80,17 +68,30 @@ const SKIP: &[(usize, &str)] = &[
         71,
         "non-deterministic (ORDER BY ext_price ties; varies run-to-run)",
     ),
-    // tpcgen-cli's TPC-DS schema uses column names that differ from the
-    // DataFusion (branch-54) query text, so these fail at plan time. Not a
-    // Ballista issue (e.g. cr_return_amount_inc_tax vs cr_return_amt_inc_tax).
-    (64, "tpcgen-cli schema column-name mismatch with query text"),
-    (81, "tpcgen-cli schema column-name mismatch with query text"),
-    (84, "tpcgen-cli schema column-name mismatch with query text"),
-    (85, "tpcgen-cli schema column-name mismatch with query text"),
-    (93, "tpcgen-cli schema column-name mismatch with query text"),
-    // Note: the adaptive planner (AQE on) additionally fails many queries with an
-    // `EmptyExec invalid partition` assertion (issue #2047); the gate runs the
-    // static planner, so those are not listed here.
+];
+
+/// Column renames applied to the query text before planning, as
+/// `(query text, tpcgen-cli)` pairs.
+///
+/// `tpcgen-cli` names three columns differently from the TPC-DS spec, and the
+/// DataFusion query text follows the spec, so these queries would otherwise
+/// fail at plan time with "column not found". These are pure renames -- the
+/// data is present under the other name -- so rewriting the reference is
+/// enough. The identical rewrite is applied to the Ballista and oracle runs,
+/// so the comparison stays apples-to-apples.
+///
+/// This is applied at load time rather than by editing the files under
+/// `benchmarks/queries-tpcds/`, because `dev/vendor-tpcds-queries.sh`
+/// re-downloads all 99 queries and would clobber any local edit.
+///
+/// Drop a pair once `tpcgen-cli` renames the column to its spec name.
+const COLUMN_RENAMES: &[(&str, &str)] = &[
+    // income_band: affects q64, q84.
+    ("ib_income_band_sk", "ib_income_band_id"),
+    // reason: affects q85, q93.
+    ("r_reason_desc", "r_reason_description"),
+    // catalog_returns: affects q81.
+    ("cr_return_amt_inc_tax", "cr_return_amount_inc_tax"),
 ];
 
 #[derive(Debug, StructOpt)]
@@ -149,6 +150,38 @@ fn split_statements(contents: &str) -> Vec<String> {
         .collect()
 }
 
+/// Replace whole-word occurrences of `from` with `to`.
+///
+/// A plain `str::replace` is not safe here: `r_reason_desc` is a prefix of
+/// `r_reason_description`, so a substring replace would corrupt an already
+/// correct reference. A character is part of a word if it is alphanumeric or
+/// `_`, which matches how SQL identifiers are spelled in these queries.
+fn replace_word(haystack: &str, from: &str, to: &str) -> String {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(haystack.len());
+    let mut rest = haystack;
+    while let Some(pos) = rest.find(from) {
+        let (before, after) = rest.split_at(pos);
+        let tail = &after[from.len()..];
+        let boundary_ok = !before.chars().next_back().is_some_and(is_word)
+            && !tail.chars().next().is_some_and(is_word);
+        out.push_str(before);
+        out.push_str(if boundary_ok { to } else { from });
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Rewrite spec column names to the names `tpcgen-cli` actually emits.
+fn apply_column_renames(sql: &str) -> String {
+    COLUMN_RENAMES
+        .iter()
+        .fold(sql.to_string(), |acc, (from, to)| {
+            replace_word(&acc, from, to)
+        })
+}
+
 fn get_query_sql(query: usize) -> Result<Vec<String>> {
     let possibilities = [
         format!("queries-tpcds/q{query}.sql"),
@@ -157,7 +190,9 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
     let mut errors = vec![];
     for filename in &possibilities {
         match fs::read_to_string(filename) {
-            Ok(contents) => return Ok(split_statements(&contents)),
+            Ok(contents) => {
+                return Ok(split_statements(&apply_column_renames(&contents)));
+            }
             Err(e) => errors.push(format!("{filename}: {e}")),
         }
     }
@@ -337,5 +372,54 @@ mod tests {
     fn explicit_query_overrides_skiplist() {
         let skip: &[(usize, &str)] = &[(1, "should be overridden")];
         assert_eq!(selected_queries(Some(1), skip), vec![1]);
+    }
+
+    #[test]
+    fn replace_word_only_matches_whole_identifiers() {
+        assert_eq!(
+            replace_word("a.r_reason_desc, b", "r_reason_desc", "x"),
+            "a.x, b"
+        );
+        // A longer identifier that merely contains the needle is left alone.
+        assert_eq!(
+            replace_word("r_reason_desc_2", "r_reason_desc", "x"),
+            "r_reason_desc_2"
+        );
+        assert_eq!(
+            replace_word("my_r_reason_desc", "r_reason_desc", "x"),
+            "my_r_reason_desc"
+        );
+    }
+
+    #[test]
+    fn column_renames_are_idempotent() {
+        // `r_reason_desc` is a prefix of its replacement, so a second pass must
+        // not extend it again.
+        let once = apply_column_renames("select r_reason_desc from reason");
+        assert_eq!(once, "select r_reason_description from reason");
+        assert_eq!(apply_column_renames(&once), once);
+    }
+
+    #[test]
+    fn column_renames_cover_every_spec_name() {
+        let sql = "ib_income_band_sk, r_reason_desc, cr_return_amt_inc_tax";
+        assert_eq!(
+            apply_column_renames(sql),
+            "ib_income_band_id, r_reason_description, cr_return_amount_inc_tax"
+        );
+    }
+
+    #[test]
+    fn renames_are_applied_when_loading_a_query() {
+        // q93 references `r_reason_desc`; after loading, only the tpcgen-cli
+        // spelling should remain. Guards against the rewrite being dropped
+        // from the load path.
+        let Ok(sqls) = get_query_sql(93) else {
+            // Query files are not present in every build context.
+            return;
+        };
+        let joined = sqls.join(" ");
+        assert!(joined.contains("r_reason_description"));
+        assert!(!replace_word(&joined, "r_reason_desc", "?").contains('?'));
     }
 }

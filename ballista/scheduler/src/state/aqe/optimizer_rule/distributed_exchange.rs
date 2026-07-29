@@ -19,6 +19,7 @@ use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{ExecutionPlan, execution_plan};
@@ -45,6 +46,40 @@ impl DistributedExchangeRule {
         &self,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        // DataFusion's null-aware hash join coordinates visited rows and
+        // probe-side NULL state with in-process atomics. A CollectLeft join
+        // running once per probe partition therefore produces duplicate or
+        // incorrect output. This is the final plan-mutating rule, so enforce an
+        // explicit probe-side coalesce here after DataFusion's optimizers have
+        // finished. Add an exchange when the subtree has no existing boundary.
+        if let Some(hash_join) = execution_plan.downcast_ref::<HashJoinExec>()
+            && hash_join.null_aware
+            && *hash_join.partition_mode() == PartitionMode::CollectLeft
+            && hash_join
+                .right()
+                .downcast_ref::<CoalescePartitionsExec>()
+                .is_none()
+        {
+            let left = hash_join.left().clone();
+            let right = hash_join.right().clone();
+            let right = if right.downcast_ref::<ExchangeExec>().is_none()
+                && !matches!(nearest_exchange_status(&right), ExchangeStatus::Unresolved)
+            {
+                Arc::new(ExchangeExec::new(
+                    right,
+                    None,
+                    self.plan_id_generator
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                )) as Arc<dyn ExecutionPlan>
+            } else {
+                right
+            };
+            let right = Arc::new(CoalescePartitionsExec::new(right));
+            return Ok(Transformed::yes(
+                execution_plan.with_new_children(vec![left, right])?,
+            ));
+        }
+
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = coalesce.input();
             if input.downcast_ref::<ExchangeExec>().is_none()
@@ -206,6 +241,44 @@ mod tests {
         let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("a", 0)));
         let ordering = LexOrdering::new(vec![sort_expr]).unwrap();
         Arc::new(SortPreservingMergeExec::new(ordering, input))
+    }
+
+    #[test]
+    fn null_aware_join_coalesces_probe_after_other_optimizers() {
+        use datafusion::common::{JoinType, NullEquality};
+
+        let left = leaf_exec();
+        let right = leaf_exec();
+        let join = Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                vec![(
+                    Arc::new(Column::new("a", 0)) as _,
+                    Arc::new(Column::new("a", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let result = DistributedExchangeRule::default()
+            .optimize(join, &config())
+            .unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)]
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+                StatisticsExec: col_count=1, row_count=Absent
+        ");
     }
 
     // --- CoalescePartitionsExec ---

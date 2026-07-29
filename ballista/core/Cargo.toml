@@ -51,6 +51,7 @@ aws-credential-types = { version = "1.2.0", optional = true }
 chrono = { version = "0.4", default-features = false }
 clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
+datafusion-functions-aggregate-common = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
 datafusion-spark = { workspace = true, optional = true, features = ["datafusion"] }

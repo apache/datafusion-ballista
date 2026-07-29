@@ -151,10 +151,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                             // at this point we know there are two exchanges
                             // as we added them beforehand
                             JoinSelectionAction::LateCollectLeft(hash_join_exec) => {
-                                if Self::supports_swap_join_order(
-                                    hash_join_exec.left.as_ref(),
-                                    hash_join_exec.right.as_ref(),
-                                )? {
+                                if !hash_join_exec.null_aware
+                                    && Self::supports_swap_join_order(
+                                        hash_join_exec.left.as_ref(),
+                                        hash_join_exec.right.as_ref(),
+                                    )?
+                                {
                                     let left = hash_join_exec.left.clone();
                                     let right = hash_join_exec.right.clone();
 
@@ -199,10 +201,11 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                             }
 
                             JoinSelectionAction::CollectLeft(hash_join_exec) => {
-                                let plan = if Self::supports_swap_join_order(
-                                    hash_join_exec.left.as_ref(),
-                                    hash_join_exec.right.as_ref(),
-                                )? {
+                                let plan = if !hash_join_exec.null_aware
+                                    && Self::supports_swap_join_order(
+                                        hash_join_exec.left.as_ref(),
+                                        hash_join_exec.right.as_ref(),
+                                    )? {
                                     hash_join_exec
                                         .swap_inputs(PartitionMode::CollectLeft)?
                                 } else {
@@ -293,10 +296,11 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                 Ok(Transformed::yes(dynamic_join))
                             }
                             JoinSelectionAction::Hash(hash_join_exec) => {
-                                let hash_join_exec = if Self::supports_swap_join_order(
-                                    hash_join_exec.left.as_ref(),
-                                    hash_join_exec.right.as_ref(),
-                                )? {
+                                let hash_join_exec = if !hash_join_exec.null_aware
+                                    && Self::supports_swap_join_order(
+                                        hash_join_exec.left.as_ref(),
+                                        hash_join_exec.right.as_ref(),
+                                    )? {
                                     hash_join_exec
                                         .swap_inputs(*hash_join_exec.partition_mode())?
                                 } else {
@@ -608,6 +612,130 @@ mod tests {
             .unwrap();
 
         assert_plan!(optimized.as_ref(), @ "DataSourceExec: partitions=1, partition_sizes=[1]");
+    }
+
+    #[test]
+    fn null_aware_anti_join_is_not_swapped_by_aqe() {
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::{
+            arrow::datatypes::{DataType, Field, Schema},
+            common::{
+                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
+            },
+            physical_plan::{
+                Partitioning,
+                joins::{HashJoinExec, PartitionMode},
+                repartition::RepartitionExec,
+                test::exec::StatisticsExec,
+            },
+        };
+
+        fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
+            Arc::new(StatisticsExec::new(
+                Statistics {
+                    num_rows: Precision::Inexact(bytes / 4),
+                    total_byte_size: Precision::Inexact(bytes),
+                    column_statistics: vec![ColumnStatistics::new_unknown()],
+                },
+                Schema::new(vec![Field::new(name, DataType::Int32, true)]),
+            ))
+        }
+
+        // A normal join would swap these inputs to build from the smaller right
+        // side. Doing that to a null-aware LeftAnti creates an invalid
+        // null-aware RightAnti join.
+        let left = stats_exec("big_key", 1024 * 1024);
+        let right = Arc::new(
+            RepartitionExec::try_new(
+                stats_exec("small_key", 1024),
+                Partitioning::RoundRobinBatch(4),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let join = HashJoinExec::try_new(
+            Arc::clone(&left),
+            Arc::clone(&right),
+            vec![(
+                Arc::new(Column::new("big_key", 0)) as _,
+                Arc::new(Column::new("small_key", 0)) as _,
+            )],
+            None,
+            &JoinType::LeftAnti,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            true,
+        )
+        .unwrap();
+        let dynamic = DynamicJoinSelectionExec::from_hash_join(&join, 0).unwrap()
+            as Arc<dyn ExecutionPlan>;
+
+        let resolved = SelectJoinRule::default()
+            .optimize(dynamic, &ConfigOptions::default())
+            .expect("AQE must not swap a null-aware LeftAnti join");
+        let hash_join = resolved
+            .downcast_ref::<HashJoinExec>()
+            .expect("AQE should resolve to HashJoinExec");
+
+        assert_eq!(*hash_join.join_type(), JoinType::LeftAnti);
+        assert_eq!(*hash_join.partition_mode(), PartitionMode::CollectLeft);
+        assert!(hash_join.null_aware);
+        assert_eq!(hash_join.left().schema().field(0).name(), "big_key");
+        assert_eq!(hash_join.right().schema().field(0).name(), "small_key");
+    }
+
+    #[test]
+    fn null_aware_anti_join_rejects_known_oversized_build_side_in_aqe() {
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::{
+            arrow::datatypes::{DataType, Field, Schema},
+            common::{
+                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
+            },
+            physical_plan::{
+                joins::{HashJoinExec, PartitionMode},
+                test::exec::StatisticsExec,
+            },
+        };
+
+        fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
+            Arc::new(StatisticsExec::new(
+                Statistics {
+                    num_rows: Precision::Inexact(bytes / 4),
+                    total_byte_size: Precision::Inexact(bytes),
+                    column_statistics: vec![ColumnStatistics::new_unknown()],
+                },
+                Schema::new(vec![Field::new(name, DataType::Int32, true)]),
+            ))
+        }
+
+        let join = HashJoinExec::try_new(
+            stats_exec("big_key", 20 * 1024 * 1024),
+            stats_exec("small_key", 1024),
+            vec![(
+                Arc::new(Column::new("big_key", 0)) as _,
+                Arc::new(Column::new("small_key", 0)) as _,
+            )],
+            None,
+            &JoinType::LeftAnti,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            true,
+        )
+        .unwrap();
+        let dynamic = DynamicJoinSelectionExec::from_hash_join(&join, 0).unwrap()
+            as Arc<dyn ExecutionPlan>;
+
+        let error = SelectJoinRule::default()
+            .optimize(dynamic, &ConfigOptions::default())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "build side does not fit ballista.optimizer.broadcast_join_threshold_bytes"
+            ),
+            "{error}"
+        );
     }
 
     /// When `ballista.planner.adaptive_join.enabled = false` the `DelayJoinSelectionRule`

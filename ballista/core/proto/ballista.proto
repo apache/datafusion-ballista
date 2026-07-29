@@ -51,7 +51,86 @@ message BallistaPhysicalPlanNode {
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
     SortShuffleWriterExecNode sort_shuffle_writer = 4;
     ChaosExecNode chaos_exec = 5;
+    RuntimeStatsExecNode runtime_stats = 6;
+    BufferExecNode buffer = 7;
+    UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
+    OrderedRangeRepartitionExecNode ordered_range_repartition = 9;
+    PerPartitionFilterExecNode per_partition_filter = 10;
   }
+}
+
+// Value-range router over N locally-sorted overlapping input partitions.
+// Redistributes them into K range-disjoint output partitions where each
+// output is fully sorted on the routing expression. Uses N × K scatter
+// channels feeding K per-output k-way merges (via DataFusion's SPM
+// internals). Discovery of cut boundaries is identical to the unordered
+// variant — walk the child subtree for a matching `RuntimeStatsExec`, snap
+// its T-Digest.
+message OrderedRangeRepartitionExecNode {
+  // Lexicographic ORDER BY. Routing keys off the first entry; the full
+  // ordering is preserved for downstream operators. Must match the
+  // input's declared `output_ordering` at plan time.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+  // K — number of output partitions. Must be ≥ 2.
+  uint32 output_partitions = 2;
+}
+
+// Runtime-stats tap. Passes batches through unmodified while accumulating:
+//   * per-partition row counts (always)
+//   * a quantile sketch over the first ORDER BY expression's Float64 values
+//     (only when order_by is non-empty)
+// Downstream operators inside the same Ballista task read the stats via a
+// child-tree walk. The child plan is plumbed by the framework as `inputs[0]`.
+message RuntimeStatsExecNode {
+  // Optional lexicographic ORDER BY. Empty means row-count-only mode
+  // (no sketch allocated). When non-empty, the first entry drives the
+  // sketch and the rest are preserved for downstream operators
+  // (SortExec, BoundedWindowAggExec) that need the full ordering.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+}
+
+// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
+// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
+// centroid_means..., centroid_weights....
+message QuantileSketchState {
+  repeated datafusion_common.ScalarValue state = 1;
+}
+
+// Flow-control operator with an operator-mode enum. The child plan is
+// plumbed by the framework as `inputs[0]` during decode.
+message BufferExecNode {
+  BufferMode mode = 1;
+}
+
+enum BufferMode {
+  // Buffers input while a MemoryReservation grows against the runtime's
+  // MemoryPool; the dam breaks when `try_grow` refuses further allocation.
+  BUFFER_MODE_DAM = 0;
+  // Future modes: PASS_THROUGH, BUFFER_ALL, SPILL_ON_PRESSURE, ...
+  // Add here as they land in Rust.
+}
+
+// Value-range router over unordered inputs. Reads P input partitions with
+// no sort assumption, evaluates the first ORDER BY expression per row, and
+// routes each row to one of K output partitions using cuts discovered at
+// runtime from a sibling RuntimeStatsExec's quantile sketch. The child
+// plan is plumbed by the framework as `inputs[0]`.
+message UnorderedRangeRepartitionExecNode {
+  // Lexicographic ORDER BY carried through from the wrapping window
+  // operator. Routing keys off the first entry today; the full ordering is
+  // preserved so downstream operators (SortExec, BWAG) that need it keep
+  // working.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+  // K — number of output partitions. Must be ≥ 2.
+  uint32 output_partitions = 2;
+}
+
+// Filter with per-input-partition predicates. `predicates[k]` is the
+// boolean expression applied to input partition `k`. Requires
+// `predicates.len() == input_partition_count`. The child plan is
+// plumbed by the framework as `inputs[0]` during decode.
+message PerPartitionFilterExecNode {
+  repeated datafusion.PhysicalExprNode predicates = 1;
 }
 
 message ChaosExecNode {
@@ -522,6 +601,40 @@ message SuccessfulTask {
   // TODO tasks are currently always shuffle writes but this will not always be the case
   // so we might want to think about some refactoring of the task definitions
   repeated ShuffleWritePartition partitions = 2;
+  // Reports from `RuntimeStatsExec` operators in this task's plan that
+  // are still valid at the plan's output (walked from the top through
+  // distribution-preserving nodes only — see
+  // `range_repartition_common::preserves_distribution`). Empty when the
+  // plan has no such stats-taps. Currently reports one entry per
+  // executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
+  // to combine reports across tasks/executors.
+  repeated RuntimeStatsReport runtime_stats = 3;
+}
+
+// One report per `RuntimeStatsExec` in the executed plan.
+message RuntimeStatsReport {
+  // What the operator was sampling. Empty = row-count-only mode. When
+  // non-empty, the first entry identifies which routing expression this
+  // sketch describes; the scheduler groups sketches by this tag to
+  // combine samples across tasks that were sampling the same expression.
+  repeated datafusion.PhysicalSortExprNode order_by = 1;
+  // Per-partition observations. Interpretation depends on the operator's
+  // position in the plan — pre-repartition gets one entry per input
+  // partition, post-repartition gets one per output sub-partition. The
+  // scheduler groups by `order_by` tag and aggregates.
+  repeated RuntimeStatsPartitionEntry partitions = 2;
+}
+
+// One partition's observations from a `RuntimeStatsExec`.
+message RuntimeStatsPartitionEntry {
+  uint32 partition_id = 1;
+  uint64 row_count = 2;
+  // Present when the `RuntimeStatsExec` was in sketch mode AND this
+  // partition observed at least one non-null routing value.
+  optional QuantileSketchState sketch = 3;
+  // TODO: `optional MinMaxState min_max` — for a lighter post-repartition
+  // mode where the bin-packer just needs (min, max, count) per
+  // sub-partition and a full T-Digest is overkill.
 }
 
 message ExecutionError {
