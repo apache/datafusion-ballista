@@ -21,8 +21,8 @@ use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionStats;
 
 use datafusion::arrow::ipc::CompressionType;
+use datafusion::arrow::ipc::writer::FileWriter;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
-use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{SessionConfig, SessionState};
@@ -190,7 +190,12 @@ pub fn create_write_options(
         })
 }
 
-/// Stream data to disk in Arrow IPC format.
+/// Stream data to disk in Arrow IPC file format.
+///
+/// Uses `FileWriter` (not `StreamWriter`) so the resulting file carries
+/// a footer with a block index — required by `ValueIndexReader`'s
+/// range-download path to translate row indices to byte offsets without
+/// walking every message.
 ///
 /// Batches are read from the async stream and forwarded through a bounded
 /// channel to a `spawn_blocking` task that performs all synchronous file I/O,
@@ -217,7 +222,7 @@ pub async fn write_stream_to_disk(
         let options = create_write_options(compression_type)?;
 
         let mut writer =
-            StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
+            FileWriter::try_new_with_options(file, schema.as_ref(), options)?;
 
         while let Some(batch) = rx.blocking_recv() {
             let timer = write_metric.timer();

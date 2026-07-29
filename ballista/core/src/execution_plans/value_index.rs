@@ -28,7 +28,7 @@
 //! [`ValueIndexExec::try_new`], not at execute time.
 //!
 //! File layout (matches the file-naming convention `ShuffleWriterExec`
-//! uses so the sidecar sits next to the data file it describes):
+//! uses so the index sits next to the data file it describes):
 //!
 //! ```text
 //! {work_dir}/{job_id}/{stage_id}/{partition_id}/data-{task_id}.value.idx
@@ -101,7 +101,7 @@ impl ValueIndexExec {
     /// Constructor signature mirrors [`super::ShuffleWriterExec::try_new`] so
     /// the scheduler/executor can stamp the same `job_id`, `stage_id`,
     /// `work_dir` values that name the corresponding data file — the
-    /// sidecar path is derived deterministically from them.
+    /// index path is derived deterministically from them.
     pub fn try_new(
         job_id: JobId,
         stage_id: usize,
@@ -193,9 +193,9 @@ impl ValueIndexExec {
         &self.order_by
     }
 
-    /// Derive the sidecar path for a given local output partition. The
-    /// data file's path is what `create_shuffle_path` produces; the
-    /// sidecar simply swaps `.arrow` for `.value.idx`.
+    /// Derive the index-file path for a given local output partition.
+    /// The data file's path is what `create_shuffle_path` produces; the
+    /// index file swaps `.arrow` for `.value.idx`.
     fn resolve_output_path(&self, partition: usize) -> Result<PathBuf> {
         let global_partition = self.global_output_partition_ids[partition];
         let data_path = create_shuffle_path(
@@ -1075,6 +1075,126 @@ mod tests {
             total_indexed_rows, expected_rows,
             "sum of per-partition total_row_count must equal total input rows"
         );
+        Ok(())
+    }
+
+    /// End-to-end: given a target value, use `ValueIndexReader` to pick a
+    /// leaf, then use `FileReader::set_index` (footer-driven random
+    /// access) to pull just that batch from the shuffle data file.
+    /// Verifies the target value is present in the extracted batch.
+    ///
+    /// Under today's sampling policy (one sample per non-empty batch),
+    /// `leaf_idx == batch_idx` is an invariant; stride sampling will
+    /// need chunk-metadata translation instead.
+    #[tokio::test]
+    async fn range_download_via_value_index_and_footer() -> Result<()> {
+        let schema = schema_v2_id();
+        let input_batches: Vec<Vec<RecordBatch>> = vec![
+            vec![batch(&schema, vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 3, 4])],
+            vec![batch(&schema, vec![1.5, 2.5, 3.5, 4.5], vec![5, 6, 7, 8])],
+        ];
+        let source =
+            MemorySourceConfig::try_new_exec(&input_batches, schema.clone(), None)?;
+
+        let sort_expr = asc(&schema, "v2");
+        let sort_lex = LexOrdering::new(vec![sort_expr.clone()]).unwrap();
+        let sorted: Arc<dyn ExecutionPlan> =
+            Arc::new(SortExec::new(sort_lex, source).with_preserve_partitioning(true));
+        let stats: Arc<dyn ExecutionPlan> = Arc::new(RuntimeStatsExec::try_new(
+            sorted,
+            Some(vec![sort_expr.clone()]),
+        )?);
+        let k_output = 3;
+        let orre: Arc<dyn ExecutionPlan> = Arc::new(
+            OrderedRangeRepartitionExec::try_new(stats, vec![sort_expr], k_output)?,
+        );
+
+        let work_dir = TempDir::new()?;
+        let job_id = JobId::new("range-download-test");
+        let stage_id = 0;
+        let work_dir_str = work_dir.path().to_str().unwrap().to_owned();
+
+        let tap: Arc<dyn ExecutionPlan> = Arc::new(ValueIndexExec::try_new(
+            job_id.clone(),
+            stage_id,
+            orre,
+            work_dir_str.clone(),
+        )?);
+        let writer = Arc::new(ShuffleWriterExec::try_new(
+            job_id.clone(),
+            stage_id,
+            tap,
+            work_dir_str,
+        )?);
+
+        // Drive all partitions to completion so both data files and
+        // index files land on disk.
+        let ctx = Arc::new(SessionContext::new()).task_ctx();
+        let mut handles = Vec::with_capacity(k_output);
+        for p in 0..k_output {
+            let writer = writer.clone();
+            let ctx = ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = writer.execute(p, ctx)?;
+                while (futures::StreamExt::next(&mut stream).await)
+                    .transpose()?
+                    .is_some()
+                {}
+                Ok::<_, DataFusionError>(())
+            }));
+        }
+        for h in handles {
+            h.await.unwrap()?;
+        }
+
+        // For each output partition, pick a target value we know is in
+        // the data, look up its leaf, and pull just that batch via the
+        // FileReader footer.
+        let targets_per_partition = [1.0_f64, 2.0, 3.5];
+        let opts = vec![SortOptions::default()];
+        for (p, &target_val) in targets_per_partition.iter().enumerate() {
+            let partition_dir = work_dir
+                .path()
+                .join(job_id.as_str())
+                .join(stage_id.to_string())
+                .join(p.to_string());
+            let data_path = partition_dir.join("data-0.arrow");
+            let idx_path = partition_dir.join("data-0.value.idx");
+
+            let idx = ValueIndexReader::open(&idx_path)?;
+            let leaf_idx = idx
+                .binary_search_by_value(
+                    &[Arc::new(Float64Array::from(vec![target_val])) as ArrayRef],
+                    &opts,
+                )?
+                .expect("target should land in a leaf");
+
+            let file = std::fs::File::open(&data_path)?;
+            let mut reader =
+                datafusion::arrow::ipc::reader::FileReader::try_new(file, None)?;
+
+            // Today's sampling policy: one sample per non-empty batch,
+            // so leaf_idx == batch_idx and num_leaves == num_batches.
+            // Locks the invariant so a future stride-sampling change
+            // trips this test rather than silently producing wrong
+            // reads.
+            assert_eq!(idx.num_leaves(), reader.num_batches());
+
+            // Footer-driven random access — seek straight to the batch,
+            // no linear walk.
+            reader.set_index(leaf_idx)?;
+            let batch = reader.next().expect("set_index positioned at a batch")?;
+            let v2 = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            let found = (0..batch.num_rows()).any(|i| v2.value(i) == target_val);
+            assert!(
+                found,
+                "target {target_val} missing from batch {leaf_idx} of partition {p}"
+            );
+        }
         Ok(())
     }
 }
