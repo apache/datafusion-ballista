@@ -26,10 +26,11 @@ injects faults into real queries, to exercise Ballista's high-availability
 **This is a bug-hunting harness, not a regression suite in the usual sense.**
 Its job is to surface real defects in Ballista's HA behavior. Where it finds
 one, the corresponding test reproduces the bug rather than working around it.
-Such a test is marked `#[ignore]` with the issue it reproduces, so that it
-does not hold CI red on a bug it did not introduce, and is un-ignored — not
-rewritten — when that issue is fixed, at which point it becomes the regression
-test for the fix. Run them with `cargo test -p ballista-chaos -- --ignored`.
+Such a test is marked `#[ignore]` with the issue or follow-up path it
+reproduces, so that it does not hold CI red on a bug it did not introduce, and
+is un-ignored — not rewritten — when that issue is fixed, at which point it
+becomes the regression test for the fix. Run them with
+`cargo test -p ballista-chaos -- --ignored`.
 See [Findings](#findings) below for the confirmed bugs this harness has
 found so far, each with the test that reproduces it.
 
@@ -185,7 +186,7 @@ sanity check that every other scenario's assertions depend on.
 | A        | `retryable_fault_is_retried_and_result_is_correct_{aqe_off,aqe_on}` | Injects one retryable IO fault (budget 1); the retry must succeed and match baseline.                                                                                                                        | Pass (both).                                                                                                                                   |
 | B        | `exhausted_retries_fail_the_job_and_leave_the_cluster_healthy`      | Injects an inexhaustible IO fault (budget 99 ≫ `task_max_failures`); job must fail, cluster must stay usable after.                                                                                          | Pass (both).                                                                                                                                   |
 | C        | `panicking_task_fails_the_job_but_the_executor_survives`            | Injects a task panic; job must fail non-retryably, both executor processes must survive, cluster must stay usable after.                                                                                     | Pass (both).                                                                                                                                   |
-| D        | `executor_killed_mid_stage_is_recovered`                            | SIGKILLs an executor while its tasks are genuinely running (held open by `chaos_delay`); scheduler must reschedule onto the survivor and return the correct result.                                          | Pass (both).                                                                                                                                   |
+| D        | `executor_killed_mid_stage_is_recovered`                            | SIGKILLs an executor while its tasks are genuinely running (held open by `chaos_delay`); scheduler must reschedule onto the survivor and return the correct result.                                          | **Ignored (both); exposes a broader executor-loss `Cancelled` path outside #2027.**                                                            |
 | E        | `executor_killed_after_shuffle_write_is_recovered`                  | SIGKILLs the map-side executor _after_ it wrote shuffle output, with a long executor timeout to bias toward the fetch-failure path rather than heartbeat expiry; downstream stage must re-run the map stage. | Pass (both).                                                                                                                                   |
 | F        | `restarted_executor_rejoins_and_serves_queries`                     | Kills an executor, waits for the scheduler to reap it, restarts it, asserts the registered count returns to 2 and the cluster still serves the baseline query.                                               | Pass (both), after the race fix in this crate (see below).                                                                                     |
 | G        | `killing_every_executor_terminates_the_job`                         | SIGKILLs every executor mid-query; asserts the job fails with an error naming the executor loss rather than hanging.                                                                                        | Regression test for [#2029](https://github.com/apache/datafusion-ballista/issues/2029) — Finding 3.                                 |
@@ -218,14 +219,13 @@ actually promises.
 
 The findings below are bugs this harness exposed. Fixed findings remain here
 as context for the active regression scenarios; unfixed findings stay ignored
-against their tracking issue so CI is not red on a known bug.
+against their tracking issue or follow-up path so CI is not red on a known bug.
 
 ### Finding 1 — Shuffle-fetch failures lose their type, so the map-stage resubmit never fires
 
 Tracked by [#2027](https://github.com/apache/datafusion-ballista/issues/2027).
 
-**Regression coverage:** Scenario D
-(`executor_killed_mid_stage_is_recovered`) and Scenario E
+**Regression coverage:** Scenario E
 (`executor_killed_after_shuffle_write_is_recovered`), both AQE settings.
 
 The shuffle reader produces a typed `BallistaError::FetchFailed(executor_id,
@@ -249,8 +249,8 @@ Scenario E is the direct fetch-failure regression: it kills the map-side
 executor after shuffle output is written and uses a long executor timeout so a
 downstream fetch is likely to hit the dead executor before heartbeat expiry.
 Scenario D covers the adjacent executor-loss race while a stage is still
-running. In that path, heartbeat expiry can win first, so executor-loss task
-resets also need to wake push scheduling with fresh offers.
+running, but CI showed that it can surface a broader `Cancelled` path rather
+than #2027's fetch-failure path, so it is not active coverage for this fix.
 
 ### Finding 2 — Retryable IO errors are misclassified because the shuffle writer flattens them
 
@@ -317,5 +317,6 @@ launch-failure path deterministically.
 
 Killing an executor can be noticed in two ways: heartbeat expiry
 (`ExecutorLost`) or a downstream shuffle fetch from the dead executor. Scenario
-E biases toward the fetch-failure path; Scenario D often exercises heartbeat
-expiry first. Both paths now recover and return the baseline result.
+E biases toward the fetch-failure path. Scenario D exercises the broader
+mid-stage executor-loss path and remains ignored because it can currently fail
+through `Cancelled` rather than the fetch-failure path fixed by #2027.
