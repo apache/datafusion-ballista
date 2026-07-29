@@ -1118,6 +1118,7 @@ dependencies = [
  "datafusion-proto",
  "datafusion-proto-common",
  "datafusion-spark",
+ "env_logger",
  "futures",
  "itertools 0.15.0",
  "log",
