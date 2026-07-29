@@ -24,6 +24,7 @@ members = [
     "ballista/executor",
     "ballista/scheduler",
     "benchmarks",
+    "chaos-testing",
     "examples",
 ]
 resolver = "3"
