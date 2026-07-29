@@ -47,10 +47,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::array::{ArrayRef, RecordBatch, UInt64Array};
-use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::compute::{SortOptions, concat_batches};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::ipc::writer::FileWriter;
+use datafusion::arrow::row::{RowConverter, SortField};
 use datafusion::common::{
     DataFusionError, Result, ScalarValue, Statistics, internal_err,
 };
@@ -571,6 +572,85 @@ impl ValueIndexReader {
         };
         (start, end)
     }
+
+    /// Return the leaf index whose value range contains `target`, i.e.
+    /// `values[i] <= target < values[i+1]` under the caller-supplied
+    /// `sort_options` (the last leaf's implicit upper bound is +∞).
+    ///
+    /// `target` is one length-1 `ArrayRef` per ORDER BY column, in the
+    /// same order the writer declared. `sort_options` mirrors the
+    /// ORDER BY declaration — per-column asc/desc and null placement.
+    /// Both slices must match the number of value columns
+    /// (`num_columns() - 1`).
+    ///
+    /// Returns `None` when `target` sorts strictly below the first
+    /// leaf's value (no leaf covers it).
+    pub fn binary_search_by_value(
+        &self,
+        target: &[ArrayRef],
+        sort_options: &[SortOptions],
+    ) -> Result<Option<usize>> {
+        let num_value_cols = self.leaves.num_columns().saturating_sub(1);
+        if target.len() != num_value_cols || sort_options.len() != num_value_cols {
+            return internal_err!(
+                "binary_search_by_value: expected {num_value_cols} target columns and options, got target={} options={}",
+                target.len(),
+                sort_options.len()
+            );
+        }
+        if self.num_leaves() == 0 {
+            return Ok(None);
+        }
+        let leaf_schema = self.leaves.schema();
+        let sort_fields: Vec<SortField> = (0..num_value_cols)
+            .map(|col_idx| {
+                SortField::new_with_options(
+                    leaf_schema.field(col_idx + 1).data_type().clone(),
+                    sort_options[col_idx],
+                )
+            })
+            .collect();
+        let converter = RowConverter::new(sort_fields)?;
+
+        let leaf_value_cols: Vec<ArrayRef> = (1..self.leaves.num_columns())
+            .map(|col_idx| self.leaves.column(col_idx).clone())
+            .collect();
+        let leaf_rows = converter.convert_columns(&leaf_value_cols)?;
+        let target_rows = converter.convert_columns(target)?;
+        let target_row = target_rows.row(0);
+
+        // First index where leaf_rows[i] > target — one past the leaf
+        // we want. `Row: Ord` respects the SortOptions we baked into
+        // the converter.
+        let num_leaves = self.num_leaves();
+        let mut lo = 0usize;
+        let mut hi = num_leaves;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if leaf_rows.row(mid) <= target_row {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 { Ok(None) } else { Ok(Some(lo - 1)) }
+    }
+
+    /// Return the leaf index whose row range contains `target`, i.e.
+    /// `sampled_rows[i] <= target < sampled_rows[i+1]` (with
+    /// `total_row_count` bounding the last leaf).
+    ///
+    /// Returns `None` when `target` falls outside the indexed range:
+    /// before the first leaf's `sampled_row` (sampling gap at the
+    /// start), or at/past `total_row_count`.
+    pub fn binary_search_by_sampled_row(&self, target: u64) -> Option<usize> {
+        if target >= self.total_row_count {
+            return None;
+        }
+        let values: &[u64] = self.sampled_rows().values();
+        let point = values.partition_point(|&v| v <= target);
+        if point == 0 { None } else { Some(point - 1) }
+    }
 }
 
 #[cfg(test)]
@@ -610,6 +690,206 @@ mod tests {
             expr: col(name, schema).unwrap(),
             options: SortOptions::default(),
         }
+    }
+
+    /// Write a minimal `.value.idx` file with an arbitrary sampled_rows
+    /// column and arbitrary value columns. Lets search tests exercise
+    /// the reader without running the whole operator pipeline.
+    fn write_value_idx(
+        path: &Path,
+        sampled: Vec<u64>,
+        value_columns: Vec<(&str, ArrayRef)>,
+        total_row_count: u64,
+    ) -> Result<()> {
+        let mut fields = vec![Field::new(SAMPLED_ROW_COLUMN, DataType::UInt64, false)];
+        for (name, arr) in &value_columns {
+            fields.push(Field::new(
+                *name,
+                arr.data_type().clone(),
+                arr.is_nullable(),
+            ));
+        }
+        let md = HashMap::from([
+            (VERSION_KEY.to_string(), VERSION_VALUE.to_string()),
+            (TOTAL_ROW_COUNT_KEY.to_string(), total_row_count.to_string()),
+            (
+                ROW_INDEX_SCHEME_KEY.to_string(),
+                ROW_INDEX_SCHEME_FULL_ADDRESS.to_string(),
+            ),
+        ]);
+        let schema = Arc::new(Schema::new_with_metadata(fields, md));
+        let mut columns: Vec<ArrayRef> = vec![Arc::new(UInt64Array::from(sampled))];
+        columns.extend(value_columns.into_iter().map(|(_, arr)| arr));
+        let batch = RecordBatch::try_new(schema.clone(), columns)?;
+        let file = std::fs::File::create(path).map_err(DataFusionError::from)?;
+        let mut writer = FileWriter::try_new(file, schema.as_ref())?;
+        writer.write(&batch)?;
+        writer.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_by_sampled_row_hits_and_misses() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let path = tmp.path().join("t.value.idx");
+        // Leaves at rows 0, 100, 250; stream ends at row 400.
+        write_value_idx(
+            &path,
+            vec![0, 100, 250],
+            vec![(
+                "v",
+                Arc::new(Int64Array::from(vec![10i64, 20, 30])) as ArrayRef,
+            )],
+            400,
+        )?;
+        let idx = ValueIndexReader::open(&path)?;
+
+        assert_eq!(idx.binary_search_by_sampled_row(0), Some(0));
+        assert_eq!(idx.binary_search_by_sampled_row(50), Some(0));
+        assert_eq!(idx.binary_search_by_sampled_row(99), Some(0));
+        assert_eq!(idx.binary_search_by_sampled_row(100), Some(1));
+        assert_eq!(idx.binary_search_by_sampled_row(200), Some(1));
+        assert_eq!(idx.binary_search_by_sampled_row(250), Some(2));
+        assert_eq!(idx.binary_search_by_sampled_row(399), Some(2));
+        assert_eq!(idx.binary_search_by_sampled_row(400), None);
+        assert_eq!(idx.binary_search_by_sampled_row(500), None);
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_by_sampled_row_gap_before_first_leaf() -> Result<()> {
+        // First sampled_row is 100 — rows [0, 100) exist in the stream
+        // but no leaf covers them; expect None.
+        let tmp = TempDir::new()?;
+        let path = tmp.path().join("t.value.idx");
+        write_value_idx(
+            &path,
+            vec![100, 250],
+            vec![("v", Arc::new(Int64Array::from(vec![10i64, 20])) as ArrayRef)],
+            400,
+        )?;
+        let idx = ValueIndexReader::open(&path)?;
+
+        assert_eq!(idx.binary_search_by_sampled_row(0), None);
+        assert_eq!(idx.binary_search_by_sampled_row(99), None);
+        assert_eq!(idx.binary_search_by_sampled_row(100), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_by_value_int64_asc() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let path = tmp.path().join("t.value.idx");
+        write_value_idx(
+            &path,
+            vec![0, 100, 250],
+            vec![(
+                "v",
+                Arc::new(Int64Array::from(vec![10i64, 20, 30])) as ArrayRef,
+            )],
+            400,
+        )?;
+        let idx = ValueIndexReader::open(&path)?;
+        let opts = vec![SortOptions::default()];
+
+        let search = |v: i64| -> Result<Option<usize>> {
+            idx.binary_search_by_value(
+                &[Arc::new(Int64Array::from(vec![v])) as ArrayRef],
+                &opts,
+            )
+        };
+        assert_eq!(search(5)?, None); // before first
+        assert_eq!(search(10)?, Some(0)); // exact hit on first
+        assert_eq!(search(15)?, Some(0)); // between 0 and 1
+        assert_eq!(search(20)?, Some(1)); // exact hit on second
+        assert_eq!(search(25)?, Some(1));
+        assert_eq!(search(30)?, Some(2)); // exact hit on last
+        assert_eq!(search(100)?, Some(2)); // past last → last leaf
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_by_value_composite() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let path = tmp.path().join("t.value.idx");
+        // Leaves sorted by (a asc, b asc): (1,"a"), (1,"m"), (2,"a")
+        write_value_idx(
+            &path,
+            vec![0, 100, 250],
+            vec![
+                (
+                    "a",
+                    Arc::new(Int64Array::from(vec![1i64, 1, 2])) as ArrayRef,
+                ),
+                (
+                    "b",
+                    Arc::new(datafusion::arrow::array::StringArray::from(vec![
+                        "a", "m", "a",
+                    ])) as ArrayRef,
+                ),
+            ],
+            400,
+        )?;
+        let idx = ValueIndexReader::open(&path)?;
+        let opts = vec![SortOptions::default(), SortOptions::default()];
+
+        let search = |a: i64, b: &str| -> Result<Option<usize>> {
+            idx.binary_search_by_value(
+                &[
+                    Arc::new(Int64Array::from(vec![a])) as ArrayRef,
+                    Arc::new(datafusion::arrow::array::StringArray::from(vec![b]))
+                        as ArrayRef,
+                ],
+                &opts,
+            )
+        };
+        assert_eq!(search(0, "z")?, None); // strictly below first
+        assert_eq!(search(1, "a")?, Some(0));
+        assert_eq!(search(1, "b")?, Some(0));
+        assert_eq!(search(1, "m")?, Some(1));
+        assert_eq!(search(1, "z")?, Some(1));
+        assert_eq!(search(2, "a")?, Some(2));
+        assert_eq!(search(9, "z")?, Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_by_value_int64_desc() -> Result<()> {
+        // Values stored monotonically descending.
+        let tmp = TempDir::new()?;
+        let path = tmp.path().join("t.value.idx");
+        write_value_idx(
+            &path,
+            vec![0, 100, 250],
+            vec![(
+                "v",
+                Arc::new(Int64Array::from(vec![30i64, 20, 10])) as ArrayRef,
+            )],
+            400,
+        )?;
+        let idx = ValueIndexReader::open(&path)?;
+        let opts = vec![SortOptions {
+            descending: true,
+            nulls_first: false,
+        }];
+
+        let search = |v: i64| -> Result<Option<usize>> {
+            idx.binary_search_by_value(
+                &[Arc::new(Int64Array::from(vec![v])) as ArrayRef],
+                &opts,
+            )
+        };
+        // Under desc ordering, "leaf whose range contains target" means
+        // the target sorts <= this leaf's value and > the next leaf's
+        // value.
+        assert_eq!(search(100)?, None); // sorts above the max (30) under desc
+        assert_eq!(search(30)?, Some(0));
+        assert_eq!(search(25)?, Some(0));
+        assert_eq!(search(20)?, Some(1));
+        assert_eq!(search(15)?, Some(1));
+        assert_eq!(search(10)?, Some(2));
+        assert_eq!(search(0)?, Some(2)); // past the min → last leaf
+        Ok(())
     }
 
     #[test]
