@@ -575,7 +575,12 @@ impl ShuffleWriterExec {
                         compression_type,
                     )
                     .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                    .map_err(|e| {
+                        DataFusionError::ArrowError(
+                            Box::new(ArrowError::ExternalError(Box::new(e))),
+                            None,
+                        )
+                    })?;
                     let rows = stats.num_rows.unwrap_or(0) as usize;
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
@@ -738,15 +743,12 @@ impl ExecutionPlan for ShuffleWriterExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema,
             futures::stream::once(async move {
-                let summaries = rx
-                    .await
-                    .map_err(|_| {
-                        DataFusionError::Internal(
-                            "ShuffleWriterExec coordinator dropped without sending"
-                                .to_owned(),
-                        )
-                    })?
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                let summaries = rx.await.map_err(|_| {
+                    DataFusionError::Internal(
+                        "ShuffleWriterExec coordinator dropped without sending"
+                            .to_owned(),
+                    )
+                })??;
                 summaries_to_batch(
                     summaries,
                     schema_captured,
@@ -847,15 +849,20 @@ async fn run_coordinator(
             }
         }
         Err(e) => {
-            let msg = format!("{e:?}");
+            // The stage driver drains output partition 0 first. Move the
+            // structural error there; later streams only need to unblock.
+            let msg = e.to_string();
+            let mut first_error = Some(e);
             for (i, slot) in senders.iter_mut().enumerate() {
                 if let Some(sender) = slot.take() {
-                    let err_msg = if i == 0 {
-                        msg.clone()
+                    let err = if let Some(e) = first_error.take() {
+                        e
                     } else {
-                        format!("shuffle writer failed: {msg}")
+                        DataFusionError::Execution(format!(
+                            "shuffle writer failed for output partition {i}: {msg}"
+                        ))
                     };
-                    let _ = sender.send(Err(DataFusionError::Execution(err_msg)));
+                    let _ = sender.send(Err(err));
                 }
             }
         }

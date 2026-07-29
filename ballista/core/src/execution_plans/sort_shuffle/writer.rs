@@ -958,15 +958,12 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema,
             futures::stream::once(async move {
-                let summaries = rx
-                    .await
-                    .map_err(|_| {
-                        DataFusionError::Internal(
-                            "SortShuffleWriterExec coordinator dropped without sending"
-                                .to_owned(),
-                        )
-                    })?
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                let summaries = rx.await.map_err(|_| {
+                    DataFusionError::Internal(
+                        "SortShuffleWriterExec coordinator dropped without sending"
+                            .to_owned(),
+                    )
+                })??;
                 summaries_to_batch(
                     summaries,
                     schema_captured,
@@ -1049,7 +1046,7 @@ async fn run_coordinator(
 
     let mut grouped: Vec<Vec<ShuffleWritePartition>> =
         (0..k).map(|_| Vec::new()).collect();
-    let mut first_error: Option<String> = None;
+    let mut first_error: Option<DataFusionError> = None;
     for handle in handles {
         match handle.await {
             Ok(Ok(summaries)) => {
@@ -1061,24 +1058,31 @@ async fn run_coordinator(
                 }
             }
             Ok(Err(e)) => {
-                first_error.get_or_insert_with(|| format!("{e:?}"));
+                first_error.get_or_insert(e);
             }
             Err(join_err) => {
-                first_error
-                    .get_or_insert_with(|| format!("write task panicked: {join_err}"));
+                first_error.get_or_insert_with(|| {
+                    DataFusionError::Execution(format!("write task panicked: {join_err}"))
+                });
             }
         }
     }
 
-    if let Some(msg) = first_error {
+    if let Some(e) = first_error {
+        // The stage driver drains output partition 0 first. Move the
+        // structural error there; later streams only need to unblock.
+        let msg = e.to_string();
+        let mut first_error = Some(e);
         for (i, slot) in senders.iter_mut().enumerate() {
             if let Some(sender) = slot.take() {
-                let err_msg = if i == 0 {
-                    msg.clone()
+                let err = if let Some(e) = first_error.take() {
+                    e
                 } else {
-                    format!("sort shuffle writer failed: {msg}")
+                    DataFusionError::Execution(format!(
+                        "sort shuffle writer failed for output partition {i}: {msg}"
+                    ))
                 };
-                let _ = sender.send(Err(DataFusionError::Execution(err_msg)));
+                let _ = sender.send(Err(err));
             }
         }
         return;
