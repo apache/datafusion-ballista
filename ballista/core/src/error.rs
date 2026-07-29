@@ -24,7 +24,9 @@ use std::{
 };
 
 use crate::serde::protobuf::failed_task::FailedReason;
-use crate::serde::protobuf::{ExecutionError, FailedTask, FetchPartitionError, IoError};
+use crate::serde::protobuf::{
+    ExecutionError, FailedTask, FetchPartitionError, IoError, TaskKilled,
+};
 use datafusion::error::DataFusionError;
 use datafusion::{arrow::error::ArrowError, sql::sqlparser::parser};
 use futures::future::Aborted;
@@ -265,6 +267,12 @@ impl From<BallistaError> for FailedTask {
             };
         }
         match e {
+            BallistaError::Cancelled => FailedTask {
+                error: "Task cancelled".to_string(),
+                retryable: true,
+                count_to_failures: false,
+                failed_reason: Some(FailedReason::TaskKilled(TaskKilled {})),
+            },
             BallistaError::IoError(io) => {
                 FailedTask {
                     error: format!("Task failed due to Ballista IO error: {io:?}"),
@@ -367,6 +375,17 @@ mod tests {
         assert!(matches!(
             task.failed_reason,
             Some(FailedReason::ExecutionError(_))
+        ));
+    }
+
+    #[test]
+    fn cancelled_task_is_retryable_without_counting_to_failures() {
+        let task = FailedTask::from(BallistaError::Cancelled);
+        assert!(task.retryable);
+        assert!(!task.count_to_failures);
+        assert!(matches!(
+            task.failed_reason,
+            Some(FailedReason::TaskKilled(_))
         ));
     }
 

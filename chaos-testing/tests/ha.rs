@@ -194,7 +194,6 @@ use std::time::Duration;
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
-#[ignore = "exposes a broader executor-loss Cancelled path outside #2027"]
 async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
     let mut run = ChaosRun::start(aqe, 2).await;
     let expected = run.local_baseline().await;
