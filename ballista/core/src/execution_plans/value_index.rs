@@ -38,6 +38,56 @@
 //! (leaves), schema `[sampled_row: UInt64 NOT NULL, expr_0: <type>, ...]`,
 //! and schema metadata: `version="1"`, `total_row_count="<u64>"`,
 //! `row_index_scheme="full_address"`.
+//!
+//! # End-to-end read path
+//!
+//! Consumer wants everyone with `(last_name, first_name)` in
+//! `["Baker", "Chen")`. Given `ORDER BY last_name, first_name`:
+//!
+//! ```text
+//!   data-0.value.idx  (KB-scale, opened first)
+//!   ┌─────────────┬────────────┬────────────┐
+//!   │ sampled_row │ last_name  │ first_name │
+//!   ├─────────────┼────────────┼────────────┤
+//!   │       0     │ "Adams"    │ "Aaron"    │
+//!   │    1,024    │ "Baker"    │ "Beth"     │◀── binary_search_by_value
+//!   │    2,048    │ "Chen"     │ "Carla"    │      (("Baker","*")) → leaf 1
+//!   │    3,072    │ "Diaz"     │ "Diana"    │      (("Chen","*"))  → leaf 2
+//!   └─────────────┴────────────┴────────────┘
+//!            │
+//!            │  today's sampling policy: leaf_idx == batch_idx,
+//!            │  so leaves [1, 2) → batches [1, 2)
+//!            ▼
+//!   data-0.arrow  (Arrow IPC file footer, one range-GET on S3)
+//!   ┌───────┬──────────┬─────────┐
+//!   │ batch │  offset  │  length │
+//!   ├───────┼──────────┼─────────┤
+//!   │   0   │      42  │  8,192  │        rows [0,     1024)
+//!   │   1   │   8,234  │  9,001  │  ◀──   rows [1024,  2048)  set_index(1)
+//!   │   2   │  17,235  │  8,500  │        rows [2048,  3072)
+//!   │   3   │  25,735  │  7,000  │        rows [3072,  4000)
+//!   └───────┴──────────┴─────────┘
+//!            │
+//!            │  range GET([8234, 8234+9001))
+//!            ▼
+//!   data-0.arrow body
+//!   ┌────────────────────────────────────────────────┐
+//!   │ ...  batch 1's IPC message (fetched)  ...       │
+//!   └────────────────────────────────────────────────┘
+//! ```
+//!
+//! Under sketch imprecision it's common for a producer file's advertised
+//! `[min, max]` to overlap the consumer's cut range but for no actual
+//! rows to fall inside — `binary_search_by_value(cut_lo) ==
+//! binary_search_by_value(cut_hi) + 1` reports "no leaf covers this
+//! range" and the consumer skips fetching *any* batch bodies from that
+//! file. That's the read-amp win the design memo is chasing.
+//!
+//! Straddling rows in the first/last fetched batch (values that fall
+//! before `cut_lo` or at/after `cut_hi`) are trimmed downstream by
+//! `PerPartitionFilterExec`. The value index narrows the fetch to
+//! batches with at least one row in range; the filter is the row-level
+//! safety net.
 
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
