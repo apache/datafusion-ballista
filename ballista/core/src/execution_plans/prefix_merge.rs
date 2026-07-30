@@ -31,9 +31,9 @@
 //! - **Scheduler (global step):** collects each upstream task's finalized
 //!   [`Accumulator::state`] via task-status transport, then computes the
 //!   prefix-merge — for each partition `k`, combining the individual states
-//!   of partitions `[0..k)` into a single already-merged state per PARTITION
-//!   BY key and per window expression. This is the step that requires global
-//!   visibility across tasks; only the scheduler has it.
+//!   of partitions `[0..k)` into a single already-merged state per window
+//!   expression. This is the step that requires global visibility across
+//!   tasks; only the scheduler has it.
 //! - **Executor (local step, this operator):** receives the *already-merged*
 //!   state for its partition in its constructor and folds it row-wise into
 //!   the window-aggregate columns. Aggregate-agnostic by construction — the
@@ -64,12 +64,15 @@
 //!
 //! # Prefix-state input
 //!
-//! [`FinalizedPartitionState`] — one map per input partition, holding
-//! *pre-merged* [`Accumulator::state`] for every (PARTITION BY key, window
-//! expression) pair. Only consumed by [`WindowApply::Aggregate`] entries;
-//! [`WindowApply::Scalar`] carries its own offsets inline. The scheduler
-//! bakes both when it constructs the downstream stage after the upstream
-//! stage's tasks complete.
+//! [`FinalizedPartitionState`] — one entry per input partition, holding
+//! the *pre-merged* [`Accumulator::state`] for each aggregate window
+//! expression (indexed by position in `BoundedWindowAggExec::window_expr()`).
+//! Only consumed by [`WindowApply::Aggregate`] entries;
+//! [`WindowApply::Scalar`] carries its own offsets inline. The DF-side getter
+//! already commits to at-most-one PARTITION BY group per DF partition (see
+//! `apache/datafusion#24007`), so no per-key dimension is exposed here. The
+//! scheduler bakes the state when it constructs the downstream stage after
+//! the upstream stage's tasks complete.
 //!
 //! **Status.** Both apply paths are implemented.
 //!
@@ -80,9 +83,10 @@
 //!   arrow kernels — `numeric::add` for `Add`, `cmp::lt_eq`/`gt_eq` + `zip`
 //!   for `Min`/`Max`, and a constant-fill for `Overwrite`.
 //!
-//! Assumes at most one PARTITION BY key per input partition (matches the
-//! AQE synthetic-PARTITION-BY pattern); multi-key handling can grow when a
-//! workload needs it.
+//! Inherits the DF-side getter's at-most-one-PARTITION-BY-group scoping
+//! (matches the AQE synthetic-PARTITION-BY pattern) — multi-key queries
+//! are handled by DataFusion's normal key-partitioned distribution and
+//! don't route through this operator.
 //!
 //! # Relation to DataFusion
 //!
@@ -105,7 +109,6 @@ use datafusion::common::{Result, ScalarValue, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Accumulator, AggregateUDF};
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
-use datafusion::physical_expr::window::PartitionKey;
 use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::{
@@ -113,19 +116,20 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream,
 };
 use futures::{Stream, StreamExt, ready};
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// A single already-prefix-merged window-aggregate state, keyed by PARTITION
-/// BY tuple. The inner `Vec` is indexed by window expression (same order the
-/// upstream `BoundedWindowAggExec` reports in `window_expr()`); `None` at a
-/// slot indicates a non-aggregate window function (`row_number`, `rank`,
-/// `lead`/`lag`, ...) which contributes no state.
+/// A single already-prefix-merged window-aggregate state. Indexed by window
+/// expression (same order the upstream `BoundedWindowAggExec` reports in
+/// `window_expr()`); `None` at a slot indicates a non-aggregate window
+/// function (`row_number`, `rank`, `lead`/`lag`, ...) that contributes no
+/// state. The inner `Vec<ScalarValue>` is whatever `Accumulator::state()`
+/// returned for that aggregate (1 for SUM/COUNT/MIN/MAX, 2 for AVG's
+/// `(sum, count)`, N for sketch-backed / higher-moment aggregates).
 ///
 /// The scheduler produces one of these per input partition, having already
 /// combined the individual states from every prior partition into one merged
-/// value per (key, window expr) — see the [module-level docs][self] for the
+/// value per window expression — see the [module-level docs][self] for the
 /// division of labor. This operator applies it; it does not compute it.
 ///
 /// The type mirrors `datafusion::physical_plan::windows::FinalizedPartitionState`
@@ -133,7 +137,7 @@ use std::task::{Context, Poll};
 /// this crate compiles against stable DataFusion 54 until that PR lands.
 ///
 /// [apache/datafusion#24007]: https://github.com/apache/datafusion/pull/24007
-pub type FinalizedPartitionState = HashMap<PartitionKey, Vec<Option<Vec<ScalarValue>>>>;
+pub type FinalizedPartitionState = Vec<Option<Vec<ScalarValue>>>;
 
 /// How to combine each row's existing value in an output column with a
 /// scheduler-provided scalar offset. The result overwrites the column.
@@ -427,21 +431,11 @@ impl ExecutionPlan for PrefixMergeExec {
         let input_schema = self.input.schema();
         let output_schema = self.schema();
 
-        // Pick this partition's pre-merged state. For the AQE synthetic-
-        // PARTITION-BY case each task carries exactly one key; multi-key
-        // handling can grow when a real workload needs it.
-        let state = &self.per_partition_state[partition];
-        let key_state: Option<&Vec<Option<Vec<ScalarValue>>>> = match state.len() {
-            0 => None,
-            1 => state.values().next(),
-            n => {
-                return internal_err!(
-                    "PrefixMergeExec: {n} PARTITION BY keys in the state map \
-                     for partition {partition}; multi-key apply is not yet \
-                     implemented"
-                );
-            }
-        };
+        // The DF-side getter (BoundedWindowAggExec::finalized_partition_state)
+        // already commits to at-most-one PARTITION BY group per DF partition,
+        // so this operator receives the state indexed only by window
+        // expression — no PARTITION BY dimension to project away.
+        let key_state = &self.per_partition_state[partition];
 
         let mut appliers: Vec<PreparedApply> = Vec::with_capacity(self.applies.len());
         for (i, apply) in self.applies.iter().enumerate() {
@@ -453,7 +447,7 @@ impl ExecutionPlan for PrefixMergeExec {
                     window_expr_index,
                 } => {
                     let offset_state: Option<&Vec<ScalarValue>> = key_state
-                        .and_then(|per_expr| per_expr.get(*window_expr_index))
+                        .get(*window_expr_index)
                         .and_then(|slot| slot.as_ref());
                     appliers.push(PreparedApply::Aggregate(AggregateApply::new(
                         i,
@@ -703,9 +697,7 @@ mod tests {
     }
 
     fn empty_state(partitions: usize) -> Vec<FinalizedPartitionState> {
-        (0..partitions)
-            .map(|_| FinalizedPartitionState::new())
-            .collect()
+        (0..partitions).map(|_| Vec::new()).collect()
     }
 
     /// Mismatched state length surfaces as an error rather than a panic at
@@ -713,9 +705,8 @@ mod tests {
     #[test]
     fn try_new_rejects_state_length_mismatch() {
         let input = partitioned_source(2, 3);
-        let err =
-            PrefixMergeExec::try_new(input, vec![], vec![FinalizedPartitionState::new()])
-                .expect_err("length mismatch must surface as an error");
+        let err = PrefixMergeExec::try_new(input, vec![], vec![Vec::new()])
+            .expect_err("length mismatch must surface as an error");
         assert!(
             err.to_string()
                 .contains("does not match input partition count"),
@@ -837,12 +828,11 @@ mod tests {
             &Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)])),
             &[1, 2, 3],
         )?;
-        // Assemble the per-partition state maps. PARTITION BY tuple is empty
-        // (global window); one aggregate at window_expr_index 0.
-        let empty_key: PartitionKey = vec![];
-        let mut state_p1 = FinalizedPartitionState::new();
-        state_p1.insert(empty_key.clone(), vec![Some(p0_state)]);
-        let per_partition_state = vec![FinalizedPartitionState::new(), state_p1];
+        // Partition 1 gets partition 0's HLL state at the one aggregate slot
+        // (window_expr_index 0). Partition 0 gets an empty state — nothing
+        // to merge in.
+        let per_partition_state: Vec<FinalizedPartitionState> =
+            vec![vec![], vec![Some(p0_state)]];
 
         let apply = WindowApply::Aggregate {
             udf: Arc::clone(&udf),
@@ -963,10 +953,10 @@ mod tests {
             acc.update_batch(&[arr])?;
             acc.state()?
         };
-        let empty_key: PartitionKey = vec![];
-        let mut state_p1 = FinalizedPartitionState::new();
-        state_p1.insert(empty_key.clone(), vec![Some(p0_state)]);
-        let per_partition_state = vec![FinalizedPartitionState::new(), state_p1];
+        // Partition 1 gets partition 0's (sum, count) state at the one
+        // aggregate slot; partition 0 has nothing to merge in.
+        let per_partition_state: Vec<FinalizedPartitionState> =
+            vec![vec![], vec![Some(p0_state)]];
 
         let apply = WindowApply::Aggregate {
             udf: Arc::clone(&udf),
