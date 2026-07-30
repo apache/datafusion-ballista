@@ -24,29 +24,48 @@
 //! slice but not across slices — task `k`'s running SUM starts at zero, not
 //! at the sum of everything in partitions `[0..k)`.
 //!
-//! This operator closes that gap by merging the accumulated state from all
-//! earlier partitions into partition `k`'s output. Each row's contribution
-//! from prior partitions is folded in via [`Accumulator::merge_batch`]-shaped
-//! composition — the same operation the group-by `Partial → Final` protocol
-//! already uses to combine per-group state. Aggregate-agnostic by
-//! construction: SUM adds, MIN/MAX take the extreme, sketches (KLL, TDigest,
-//! HLL) merge as sketches.
+//! # Division of labor
+//!
+//! The prefix-merge splits cleanly across the scheduler/executor boundary:
+//!
+//! - **Scheduler (global step):** collects each upstream task's finalized
+//!   [`Accumulator::state`] via task-status transport, then computes the
+//!   prefix-merge — for each partition `k`, combining the individual states
+//!   of partitions `[0..k)` into a single already-merged state per PARTITION
+//!   BY key and per window expression. This is the step that requires global
+//!   visibility across tasks; only the scheduler has it.
+//! - **Executor (local step, this operator):** receives the *already-merged*
+//!   state for its partition in its constructor and folds it row-wise into
+//!   the window-aggregate columns. Aggregate-agnostic by construction — the
+//!   fold is the same [`Accumulator::merge_batch`]-shaped composition the
+//!   group-by `Partial → Final` protocol uses, so SUM adds, MIN/MAX take the
+//!   extreme, sketches (KLL, TDigest, HLL) merge as sketches, without this
+//!   operator knowing which aggregate is which.
+//!
+//! For scalar aggregates whose apply reduces to arithmetic (SUM, COUNT,
+//! MIN/MAX, and AVG once decomposed to SUM + COUNT + division) the scheduler
+//! can instead emit a plain `ProjectionExec` with the offset as a literal,
+//! and this operator isn't needed. It exists for cases where the apply is
+//! not expressible as a per-row scalar expression — the operator gives an
+//! aggregate-agnostic escape hatch that avoids inventing a per-aggregate
+//! projection form.
 //!
 //! Input shape (per input partition `k`, provided in [`Self::try_new`]):
-//! [`FinalizedPartitionState`] — a snapshot of every window aggregate's
-//! finalized [`Accumulator::state`] for every PARTITION BY key seen while
-//! draining partitions `[0..k)`. The scheduler bakes this in at plan time
-//! after collecting per-task state from the upstream stage via task-status
-//! transport.
+//! [`FinalizedPartitionState`] — the *pre-merged* state, one
+//! [`Accumulator::state`] value per (PARTITION BY key, window expression),
+//! ready to be folded directly into partition `k`'s rows. The scheduler
+//! bakes this in when it constructs the downstream stage after the upstream
+//! stage's tasks complete.
 //!
 //! **This is scaffolding.** `execute` currently forwards batches unchanged.
-//! The merge itself lands in a follow-up. The shape is committed to now so
+//! The row-wise fold lands in a follow-up. The shape is committed to now so
 //! the surrounding plumbing (scheduler collection, per-task state injection,
 //! plan-rule placement) can be built against a stable signature.
 //!
 //! # Relation to DataFusion
 //!
-//! The per-input-partition input this operator expects is produced by
+//! The upstream tasks' finalized state — which the scheduler prefix-merges
+//! before handing the result to this operator — is produced by
 //! `BoundedWindowAggExec::finalized_partition_state`, added in
 //! [apache/datafusion#24007]. Until that lands, callers can pass empty maps
 //! (the operator forwards batches regardless) to exercise the plumbing.
@@ -70,30 +89,38 @@ use datafusion::physical_plan::{
 };
 use std::collections::HashMap;
 
-/// One input partition's finalized window-aggregate state, keyed by PARTITION
+/// A single already-prefix-merged window-aggregate state, keyed by PARTITION
 /// BY tuple. The inner `Vec` is indexed by window expression (same order the
 /// upstream `BoundedWindowAggExec` reports in `window_expr()`); `None` at a
 /// slot indicates a non-aggregate window function (`row_number`, `rank`,
 /// `lead`/`lag`, ...) which contributes no state.
 ///
-/// Must mirror `datafusion::physical_plan::windows::FinalizedPartitionState`
-/// once [apache/datafusion#24007] lands; the type alias here is a local
-/// stand-in so this crate can compile against stable DataFusion 54.
+/// The scheduler produces one of these per input partition, having already
+/// combined the individual states from every prior partition into one merged
+/// value per (key, window expr) — see the [module-level docs][self] for the
+/// division of labor. This operator applies it; it does not compute it.
+///
+/// The type mirrors `datafusion::physical_plan::windows::FinalizedPartitionState`
+/// from [apache/datafusion#24007]; the alias here is a local stand-in so
+/// this crate compiles against stable DataFusion 54 until that PR lands.
 ///
 /// [apache/datafusion#24007]: https://github.com/apache/datafusion/pull/24007
 pub type FinalizedPartitionState = HashMap<PartitionKey, Vec<Option<Vec<ScalarValue>>>>;
 
-/// Merge finalized window-aggregate state from earlier partitions into each
-/// partition's output. See the [module-level docs][self] for the shape of
-/// the input and the AQE pipeline this fits into.
+/// Apply pre-merged window-aggregate state (computed by the scheduler) to
+/// each row of the current partition's output. See the [module-level
+/// docs][self] for the division of labor between scheduler and executor and
+/// the AQE pipeline this fits into.
 ///
-/// **Scaffolding.** `execute` forwards batches unchanged; the merge itself
+/// **Scaffolding.** `execute` forwards batches unchanged; the row-wise fold
 /// lands in a follow-up.
 pub struct PrefixMergeExec {
     input: Arc<dyn ExecutionPlan>,
-    /// `per_partition_state[k]` is the accumulated finalized state from every
-    /// input partition in `[0..k)`, ready to be merged into partition `k`'s
-    /// output. Length equals `input.output_partitioning().partition_count()`.
+    /// `per_partition_state[k]` is the scheduler-provided *already-merged*
+    /// state summarising every input partition in `[0..k)`. This operator
+    /// folds it into partition `k`'s rows; it does not perform the merge
+    /// itself (the scheduler already did). Length equals
+    /// `input.output_partitioning().partition_count()`.
     per_partition_state: Vec<FinalizedPartitionState>,
     properties: Arc<PlanProperties>,
 }
@@ -225,9 +252,10 @@ impl ExecutionPlan for PrefixMergeExec {
         CardinalityEffect::Equal
     }
 
-    /// **Scaffolding.** Forwards the input stream unchanged. The merge itself
-    /// — folding `self.per_partition_state[partition]` into each row's
-    /// window-aggregate columns — lands in a follow-up.
+    /// **Scaffolding.** Forwards the input stream unchanged. The row-wise
+    /// fold — applying `self.per_partition_state[partition]` (already merged
+    /// upstream by the scheduler) to each row's window-aggregate columns —
+    /// lands in a follow-up.
     fn execute(
         &self,
         partition: usize,
