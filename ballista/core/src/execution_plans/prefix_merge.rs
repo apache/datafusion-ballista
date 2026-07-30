@@ -819,6 +819,127 @@ mod tests {
         Ok(())
     }
 
+    /// AVG's per-row output (`sum / count`) also isn't a valid partial state:
+    /// you can't recover `(sum, count)` from a single mean, so a naive
+    /// `ProjectionExec` adding a scalar offset would give the wrong answer.
+    /// The seeded-`Accumulator` re-run handles it uniformly — same code path
+    /// that worked for APPROX_DISTINCT.
+    ///
+    /// Setup mirrors the APPROX_DISTINCT test:
+    /// - Partition 0's mock upstream output: `[(10, 10.0), (20, 15.0),
+    ///   (30, 20.0)]` — v and the local running mean.
+    /// - Partition 1's mock upstream output: `[(40, 40.0), (50, 45.0),
+    ///   (60, 50.0)]` — again local, so wrong globally.
+    /// - Partition 1's offset = AVG's terminal state after ingesting
+    ///   `{10, 20, 30}` = `(sum=60, count=3)`.
+    ///
+    /// Expected corrected partition-1 running mean:
+    /// - `(60+40)/(3+1) = 25.0`
+    /// - `(100+50)/(4+1) = 30.0`
+    /// - `(150+60)/(5+1) = 35.0`
+    ///
+    /// Which is what a single BWAG on the concatenated `[10..60 step 10]`
+    /// would produce.
+    #[tokio::test]
+    async fn avg_corrects_running_mean_across_partitions() -> Result<()> {
+        use datafusion::arrow::array::Float64Array;
+        use datafusion::functions_aggregate::average::avg_udaf;
+        use datafusion::physical_expr::expressions::Column;
+
+        // DataFusion's `AvgAccumulator` is only wired up for Float64 (and
+        // decimal / duration) inputs — the planner casts Int64 to Float64
+        // before AVG in a real query. Use Float64 directly so the test
+        // hits the standard accumulator without stitching a cast in.
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Float64, false),
+            Field::new("running_avg", DataType::Float64, false),
+        ]));
+        let batch = |vs: &[f64], means: &[f64]| -> RecordBatch {
+            let v_col = Arc::new(Float64Array::from_iter_values(vs.iter().copied()));
+            let m_col = Arc::new(Float64Array::from_iter_values(means.iter().copied()));
+            RecordBatch::try_new(schema.clone(), vec![v_col, m_col]).unwrap()
+        };
+        // Local (wrong-globally) BWAG output per partition.
+        let p0 = batch(&[10.0, 20.0, 30.0], &[10.0, 15.0, 20.0]);
+        let p1 = batch(&[40.0, 50.0, 60.0], &[40.0, 45.0, 50.0]);
+        let source =
+            MemorySourceConfig::try_new(&[vec![p0], vec![p1]], schema.clone(), None)?;
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(source)));
+
+        let udf = avg_udaf();
+        // Partition 1's offset = AVG's terminal state after ingesting
+        // partition 0's values. Constructed inline (not through the
+        // Int64-only helper the APPROX_DISTINCT test uses) because AVG needs
+        // Float64 args.
+        let single_col_schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let p0_state = {
+            let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+            let agg_expr = AggregateExprBuilder::new(Arc::clone(&udf), vec![column])
+                .schema(single_col_schema)
+                .alias("avg_state_helper")
+                .build()?;
+            let mut acc = agg_expr.create_accumulator()?;
+            let arr: ArrayRef =
+                Arc::new(Float64Array::from_iter_values([10.0, 20.0, 30.0]));
+            acc.update_batch(&[arr])?;
+            acc.state()?
+        };
+        let empty_key: PartitionKey = vec![];
+        let mut state_p1 = FinalizedPartitionState::new();
+        state_p1.insert(empty_key.clone(), vec![Some(p0_state)]);
+        let per_partition_state = vec![FinalizedPartitionState::new(), state_p1];
+
+        let apply = WindowApply::Aggregate {
+            udf: Arc::clone(&udf),
+            args: vec![Arc::new(Column::new("v", 0))],
+            output_column: 1,
+            window_expr_index: 0,
+        };
+        let exec = Arc::new(PrefixMergeExec::try_new(
+            input,
+            vec![apply],
+            per_partition_state,
+        )?);
+
+        let ctx = SessionContext::new().task_ctx();
+
+        // Partition 0: no offset, output preserved.
+        let out_p0: Vec<RecordBatch> =
+            exec.execute(0, ctx.clone())?.try_collect().await?;
+        let p0_avg = out_p0[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(
+            p0_avg,
+            vec![10.0, 15.0, 20.0],
+            "partition 0 with empty offset should preserve local running mean"
+        );
+
+        // Partition 1: seeded with (sum=60, count=3), corrected per row.
+        let out_p1: Vec<RecordBatch> =
+            exec.execute(1, ctx.clone())?.try_collect().await?;
+        let p1_avg = out_p1[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(
+            p1_avg,
+            vec![25.0, 30.0, 35.0],
+            "partition 1 seeded with partition-0 AVG state should show \
+             global-cumulative running mean"
+        );
+        Ok(())
+    }
+
     /// The Scalar apply variant is still passthrough — its output column is
     /// left untouched by execute. This test guards against silent behavior
     /// change until the Scalar path is implemented.
