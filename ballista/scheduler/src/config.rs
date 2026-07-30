@@ -173,6 +173,14 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)appear after the
+    /// cluster has lost its last executor before failing the running jobs.
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Set to 0 to fail as soon as the loss is observed."
+    )]
+    pub no_executors_grace_period_seconds: u64,
     /// Minimum number of registered executors before /readyz returns 200
     #[arg(
         long,
@@ -260,6 +268,12 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)register after the
+    /// cluster has lost its last executor before failing the running jobs. This
+    /// bounds the otherwise-unbounded wait so that a total executor loss fails
+    /// the affected jobs instead of hanging forever. Set to 0 to fail as soon as
+    /// the loss is observed.
+    pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
     /// [SessionBuilder] override option
@@ -309,6 +323,7 @@ impl Default for SchedulerConfig {
             grpc_server_max_encoding_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            no_executors_grace_period_seconds: 30,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
@@ -411,6 +426,13 @@ impl SchedulerConfig {
     /// Sets the executor termination grace period in seconds.
     pub fn with_remove_executor_wait_secs(mut self, value: u64) -> Self {
         self.executor_termination_grace_period = value;
+        self
+    }
+
+    /// Sets the grace period, in seconds, to wait for an executor to (re)register
+    /// after the last executor is lost before failing running jobs.
+    pub fn with_no_executors_grace_period_seconds(mut self, value: u64) -> Self {
+        self.no_executors_grace_period_seconds = value;
         self
     }
 
@@ -542,6 +564,7 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            no_executors_grace_period_seconds: opt.no_executors_grace_period_seconds,
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,

@@ -92,6 +92,7 @@ pub struct TestClusterBuilder {
     task_max_failures: usize,
     stage_max_failures: usize,
     concurrent_tasks: usize,
+    no_executors_grace_seconds: u64,
 }
 
 impl Default for TestClusterBuilder {
@@ -105,6 +106,9 @@ impl Default for TestClusterBuilder {
             task_max_failures: 4,
             stage_max_failures: 4,
             concurrent_tasks: 4,
+            // Ballista's default is 30s. A short grace makes the total-loss
+            // scenario fail the job a second or so after the reap.
+            no_executors_grace_seconds: 1,
         }
     }
 }
@@ -120,6 +124,13 @@ impl TestClusterBuilder {
     /// FetchPartitionError path from the ExecutorLost path.
     pub fn executor_timeout_seconds(mut self, seconds: u64) -> Self {
         self.executor_timeout_seconds = seconds;
+        self
+    }
+
+    /// How long the scheduler waits, after losing its last executor, for one to
+    /// (re)register before failing the running jobs (see #2029).
+    pub fn no_executors_grace_seconds(mut self, seconds: u64) -> Self {
+        self.no_executors_grace_seconds = seconds;
         self
     }
 
@@ -181,6 +192,10 @@ impl TestClusterBuilder {
             .env(
                 "CHAOS_STAGE_MAX_FAILURES",
                 self.stage_max_failures.to_string(),
+            )
+            .env(
+                "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
+                self.no_executors_grace_seconds.to_string(),
             )
             .env(
                 "RUST_LOG",
@@ -467,6 +482,44 @@ impl TestCluster {
     ) -> Result<(), String> {
         self.await_stage_task_state(job_id, stage_id, "Running")
             .await
+    }
+
+    /// Block until any task in any stage is Running.
+    ///
+    /// Planner-agnostic sync point: the static and adaptive (AQE) planners
+    /// number and materialize stages differently, so rather than target a
+    /// specific stage id we wait until the job is genuinely executing a task
+    /// somewhere. Used where the scenario only needs a kill to land mid-flight.
+    pub async fn await_any_stage_running(&self, job_id: &str) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let stages = self.stages(job_id).await?;
+            let running =
+                stages
+                    .get("stages")
+                    .and_then(|s| s.as_array())
+                    .is_some_and(|stages| {
+                        stages.iter().any(|stage| {
+                            stage.get("tasks").and_then(|t| t.as_array()).is_some_and(
+                                |tasks| {
+                                    tasks.iter().any(|t| {
+                                        t.get("status").and_then(|s| s.as_str())
+                                            == Some("Running")
+                                    })
+                                },
+                            )
+                        })
+                    });
+            if running {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(
+                    "timed out waiting for any stage to start running".to_string()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Block until every task in `stage_id` is Successful.

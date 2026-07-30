@@ -543,6 +543,32 @@ impl SchedulerTest {
             .await
     }
 
+    /// Simulates the loss of an executor: deregisters it from the executor
+    /// manager and posts the `ExecutorLost` event. This mirrors the reaper's
+    /// `remove_executor` path without waiting out the heartbeat timeout.
+    pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
+        let reason = Some("test: executor lost".to_owned());
+        self.scheduler
+            .state
+            .executor_manager
+            .remove_executor(executor_id, reason.clone())
+            .await?;
+        self.post_scheduler_event(QueryStageSchedulerEvent::ExecutorLost(
+            executor_id.to_owned(),
+            reason,
+        ))
+        .await
+    }
+
+    /// Returns the current status of a job, if known.
+    pub async fn job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
+        self.scheduler
+            .state
+            .task_manager
+            .get_job_status(job_id)
+            .await
+    }
+
     /// Waits for job completion with a timeout in milliseconds.
     pub async fn await_completion_timeout(
         &self,
