@@ -71,10 +71,16 @@
 //! bakes both when it constructs the downstream stage after the upstream
 //! stage's tasks complete.
 //!
-//! **This is scaffolding.** `execute` currently forwards batches unchanged.
-//! The row-wise fold lands in a follow-up. The shape is committed to now so
-//! the surrounding plumbing (scheduler collection, per-task state injection,
-//! plan-rule placement) can be built against a stable signature.
+//! **Status.** The [`WindowApply::Aggregate`] path is implemented: for each
+//! partition it builds a fresh `Accumulator`, seeds it via `merge_batch` from
+//! the offset state, and replays each row through `update_batch` + `evaluate`
+//! to overwrite the output column. Assumes at most one PARTITION BY key per
+//! input partition (matches the AQE synthetic-PARTITION-BY pattern);
+//! multi-key handling can grow when a workload needs it.
+//!
+//! The [`WindowApply::Scalar`] path is still a passthrough — those output
+//! columns are left untouched. Applying the scalar op via arrow kernels
+//! lands in a follow-up.
 //!
 //! # Relation to DataFusion
 //!
@@ -91,18 +97,23 @@
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
 
+use datafusion::arrow::array::{ArrayRef, RecordBatch};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, ScalarValue, Statistics, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::AggregateUDF;
+use datafusion::logical_expr::{Accumulator, AggregateUDF};
+use datafusion::physical_expr::aggregate::AggregateExprBuilder;
 use datafusion::physical_expr::window::PartitionKey;
 use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    SendableRecordBatchStream,
+    ColumnarValue, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties, RecordBatchStream, SendableRecordBatchStream,
 };
+use futures::{Stream, StreamExt, ready};
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 /// A single already-prefix-merged window-aggregate state, keyed by PARTITION
 /// BY tuple. The inner `Vec` is indexed by window expression (same order the
@@ -218,8 +229,9 @@ impl WindowApply {
 /// docs][self] for the division of labor between scheduler and executor and
 /// the AQE pipeline this fits into.
 ///
-/// **Scaffolding.** `execute` forwards batches unchanged; the row-wise fold
-/// lands in a follow-up.
+/// [`WindowApply::Aggregate`] entries are applied per row via a seeded
+/// `Accumulator`; [`WindowApply::Scalar`] entries are currently passthrough
+/// (their apply lands in a follow-up).
 pub struct PrefixMergeExec {
     input: Arc<dyn ExecutionPlan>,
     /// One entry per window-function output column that needs cross-partition
@@ -398,10 +410,6 @@ impl ExecutionPlan for PrefixMergeExec {
         CardinalityEffect::Equal
     }
 
-    /// **Scaffolding.** Forwards the input stream unchanged. The row-wise
-    /// fold — applying `self.per_partition_state[partition]` (already merged
-    /// upstream by the scheduler) to each row's window-aggregate columns —
-    /// lands in a follow-up.
     fn execute(
         &self,
         partition: usize,
@@ -414,7 +422,176 @@ impl ExecutionPlan for PrefixMergeExec {
                 self.per_partition_state.len()
             );
         }
-        self.input.execute(partition, ctx)
+        let input_schema = self.input.schema();
+        let output_schema = self.schema();
+
+        // Pick this partition's pre-merged state. For the AQE synthetic-
+        // PARTITION-BY case each task carries exactly one key; multi-key
+        // handling can grow when a real workload needs it.
+        let state = &self.per_partition_state[partition];
+        let key_state: Option<&Vec<Option<Vec<ScalarValue>>>> = match state.len() {
+            0 => None,
+            1 => state.values().next(),
+            n => {
+                return internal_err!(
+                    "PrefixMergeExec: {n} PARTITION BY keys in the state map \
+                     for partition {partition}; multi-key apply is not yet \
+                     implemented"
+                );
+            }
+        };
+
+        let mut aggregate_appliers: Vec<AggregateApply> = Vec::new();
+        for (i, apply) in self.applies.iter().enumerate() {
+            match apply {
+                WindowApply::Aggregate {
+                    udf,
+                    args,
+                    output_column,
+                    window_expr_index,
+                } => {
+                    let offset_state: Option<&Vec<ScalarValue>> = key_state
+                        .and_then(|per_expr| per_expr.get(*window_expr_index))
+                        .and_then(|slot| slot.as_ref());
+                    aggregate_appliers.push(AggregateApply::new(
+                        i,
+                        udf,
+                        args,
+                        *output_column,
+                        &input_schema,
+                        offset_state,
+                    )?);
+                }
+                WindowApply::Scalar { .. } => {
+                    // Scalar variant application lands in a follow-up. Its
+                    // output column is left untouched for now (passthrough).
+                }
+            }
+        }
+
+        let input = self.input.execute(partition, ctx)?;
+        let stream = ApplyStream {
+            input,
+            appliers: aggregate_appliers,
+            schema: Arc::clone(&output_schema),
+        };
+        Ok(Box::pin(stream))
+    }
+}
+
+/// A single [`WindowApply::Aggregate`] prepared for a specific input
+/// partition: the Accumulator has already been seeded from the offset state.
+struct AggregateApply {
+    /// Position of the source `WindowApply` in the exec's `applies` list —
+    /// carried through so error messages can point at the offender.
+    apply_index: usize,
+    accumulator: Box<dyn Accumulator>,
+    args: Vec<Arc<dyn PhysicalExpr>>,
+    output_column: usize,
+}
+
+impl AggregateApply {
+    fn new(
+        apply_index: usize,
+        udf: &Arc<AggregateUDF>,
+        args: &[Arc<dyn PhysicalExpr>],
+        output_column: usize,
+        input_schema: &SchemaRef,
+        offset_state: Option<&Vec<ScalarValue>>,
+    ) -> Result<Self> {
+        let agg_expr = AggregateExprBuilder::new(Arc::clone(udf), args.to_vec())
+            .schema(Arc::clone(input_schema))
+            .alias(format!("prefix_merge_apply_{apply_index}"))
+            .build()?;
+        let mut accumulator = agg_expr.create_accumulator()?;
+        if let Some(state_scalars) = offset_state {
+            let offset_arrays: Vec<ArrayRef> = state_scalars
+                .iter()
+                .map(|s| s.to_array_of_size(1))
+                .collect::<Result<Vec<_>>>()?;
+            accumulator.merge_batch(&offset_arrays)?;
+        }
+        Ok(Self {
+            apply_index,
+            accumulator,
+            args: args.to_vec(),
+            output_column,
+        })
+    }
+
+    /// Evaluate `args` against `batch`, replay them through `accumulator`
+    /// row by row, and overwrite `output_column` with the accumulator's
+    /// per-row `evaluate()` result.
+    fn apply(&mut self, batch: RecordBatch) -> Result<RecordBatch> {
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(batch);
+        }
+        let arg_arrays: Vec<ArrayRef> = self
+            .args
+            .iter()
+            .map(|expr| match expr.evaluate(&batch)? {
+                ColumnarValue::Array(a) => Ok(a),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows),
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut new_values: Vec<ScalarValue> = Vec::with_capacity(num_rows);
+        for i in 0..num_rows {
+            let row_args: Vec<ArrayRef> =
+                arg_arrays.iter().map(|a| a.slice(i, 1)).collect();
+            self.accumulator.update_batch(&row_args)?;
+            new_values.push(self.accumulator.evaluate()?);
+        }
+        let new_column = ScalarValue::iter_to_array(new_values)?;
+
+        if self.output_column >= batch.num_columns() {
+            return internal_err!(
+                "PrefixMergeExec: applies[{}] output_column {} out of range \
+                 at execute time (batch has {} columns)",
+                self.apply_index,
+                self.output_column,
+                batch.num_columns()
+            );
+        }
+        let mut columns = batch.columns().to_vec();
+        columns[self.output_column] = new_column;
+        Ok(RecordBatch::try_new(batch.schema(), columns)?)
+    }
+}
+
+struct ApplyStream {
+    input: SendableRecordBatchStream,
+    appliers: Vec<AggregateApply>,
+    schema: SchemaRef,
+}
+
+impl Stream for ApplyStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match ready!(self.input.poll_next_unpin(cx)) {
+            Some(Ok(mut batch)) => {
+                for applier in &mut self.appliers {
+                    batch = match applier.apply(batch) {
+                        Ok(b) => b,
+                        Err(e) => return Poll::Ready(Some(Err(e))),
+                    };
+                }
+                Poll::Ready(Some(Ok(batch)))
+            }
+            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+impl RecordBatchStream for ApplyStream {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
     }
 }
 
@@ -504,9 +681,147 @@ mod tests {
         );
     }
 
-    /// While the merge is unimplemented, `execute` behaves as a passthrough
-    /// even with `applies` populated: each partition's rows are forwarded
-    /// verbatim regardless of what the descriptors say.
+    /// Runs the accumulator to completion over `values`, then returns the
+    /// state — the shape a real upstream `BoundedWindowAggExec` reports for
+    /// this window aggregate at partition close.
+    fn approx_distinct_state(
+        udf: &Arc<AggregateUDF>,
+        input_schema: &SchemaRef,
+        values: &[i64],
+    ) -> Result<Vec<ScalarValue>> {
+        let column: Arc<dyn PhysicalExpr> =
+            Arc::new(datafusion::physical_expr::expressions::Column::new("v", 0));
+        let agg_expr = AggregateExprBuilder::new(Arc::clone(udf), vec![column])
+            .schema(Arc::clone(input_schema))
+            .alias("state_helper")
+            .build()?;
+        let mut acc = agg_expr.create_accumulator()?;
+        let arr: ArrayRef =
+            Arc::new(Int64Array::from_iter_values(values.iter().copied()));
+        acc.update_batch(&[arr])?;
+        acc.state()
+    }
+
+    /// End-to-end demonstration on the sketch case that motivates this whole
+    /// design: cumulative APPROX_DISTINCT across a range-shuffled ordered
+    /// stream, corrected per row by re-running the HLL accumulator seeded
+    /// with the pre-merged state of every prior partition.
+    ///
+    /// Setup:
+    /// - Partition 0's mock upstream output: `[(1,1), (2,2), (3,3)]` — v and
+    ///   the local running distinct count.
+    /// - Partition 1's mock upstream output: `[(4,1), (5,2), (6,3)]` — again
+    ///   local, so wrong globally: the running distinct at the last row
+    ///   should be 6, not 3.
+    /// - The scheduler collects partition 0's terminal Accumulator state
+    ///   (HLL registers seeded with {1,2,3}) and hands it to partition 1 as
+    ///   its offset. Partition 0 gets an empty offset (nothing before it).
+    ///
+    /// Expected corrected output: `[(1,1),(2,2),(3,3)]` on partition 0 and
+    /// `[(4,4),(5,5),(6,6)]` on partition 1 — matches what a single BWAG on
+    /// the concatenated `[1..6]` would produce.
+    ///
+    /// This is the case that a two-pass halo scheme can't handle without
+    /// emitting HLL registers on every output row: recovering state from
+    /// a running distinct-count scalar is not tractable. The side-channel
+    /// design routes state around the data stream and applies it per row
+    /// here.
+    #[tokio::test]
+    async fn approx_distinct_corrects_running_distinct_across_partitions() -> Result<()> {
+        use datafusion::functions_aggregate::approx_distinct::approx_distinct_udaf;
+        use datafusion::physical_expr::expressions::Column;
+
+        // BWAG's output schema: original argument column + the running
+        // approx-distinct column that the aggregate produced.
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("running_distinct", DataType::UInt64, false),
+        ]));
+        let batch = |vs: &[i64], rs: &[u64]| -> RecordBatch {
+            let v_col = Arc::new(Int64Array::from_iter_values(vs.iter().copied()));
+            let r_col =
+                Arc::new(datafusion::arrow::array::UInt64Array::from_iter_values(
+                    rs.iter().copied(),
+                ));
+            RecordBatch::try_new(schema.clone(), vec![v_col, r_col]).unwrap()
+        };
+        // Local (wrong-globally) BWAG output per partition.
+        let p0 = batch(&[1, 2, 3], &[1, 2, 3]);
+        let p1 = batch(&[4, 5, 6], &[1, 2, 3]);
+        let source =
+            MemorySourceConfig::try_new(&[vec![p0], vec![p1]], schema.clone(), None)?;
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(source)));
+
+        let udf = approx_distinct_udaf();
+        // Partition 1's offset = the HLL state after ingesting {1,2,3}.
+        let p0_state = approx_distinct_state(
+            &udf,
+            &Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)])),
+            &[1, 2, 3],
+        )?;
+        // Assemble the per-partition state maps. PARTITION BY tuple is empty
+        // (global window); one aggregate at window_expr_index 0.
+        let empty_key: PartitionKey = vec![];
+        let mut state_p1 = FinalizedPartitionState::new();
+        state_p1.insert(empty_key.clone(), vec![Some(p0_state)]);
+        let per_partition_state = vec![FinalizedPartitionState::new(), state_p1];
+
+        let apply = WindowApply::Aggregate {
+            udf: Arc::clone(&udf),
+            // Feed the accumulator with the original argument column `v`
+            // from the batch (not the already-computed running_distinct).
+            args: vec![Arc::new(Column::new("v", 0))],
+            output_column: 1,
+            window_expr_index: 0,
+        };
+        let exec = Arc::new(PrefixMergeExec::try_new(
+            input,
+            vec![apply],
+            per_partition_state,
+        )?);
+
+        let ctx = SessionContext::new().task_ctx();
+
+        // Partition 0: offset is empty, running_distinct output unchanged.
+        let out_p0: Vec<RecordBatch> =
+            exec.execute(0, ctx.clone())?.try_collect().await?;
+        let p0_running = out_p0[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::UInt64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(
+            p0_running,
+            vec![1, 2, 3],
+            "partition 0 with empty offset should preserve local running distinct"
+        );
+
+        // Partition 1: seeded with partition 0's HLL, running_distinct
+        // corrected to the global cumulative count.
+        let out_p1: Vec<RecordBatch> =
+            exec.execute(1, ctx.clone())?.try_collect().await?;
+        let p1_running = out_p1[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::UInt64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(
+            p1_running,
+            vec![4, 5, 6],
+            "partition 1 seeded with partition-0 state should show \
+             global-cumulative running distinct"
+        );
+        Ok(())
+    }
+
+    /// The Scalar apply variant is still passthrough — its output column is
+    /// left untouched by execute. This test guards against silent behavior
+    /// change until the Scalar path is implemented.
     #[tokio::test]
     async fn scaffold_forwards_input_rows_unchanged() -> Result<()> {
         let input = partitioned_source(2, 3);
