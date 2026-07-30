@@ -29,8 +29,8 @@ use std::time::Instant;
 use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::{
-    OrderedRangeRepartitionExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    create_shuffle_path,
+    ObservedWindowState, OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, create_shuffle_path,
 };
 use crate::extension::SessionConfigExt;
 use crate::utils;
@@ -498,6 +498,46 @@ impl ShuffleWriterExec {
         &self.global_output_partition_ids
     }
 
+    /// Drain every window-state collector in this stage, translating each
+    /// capture's task-local partition index to its global one.
+    ///
+    /// The translation belongs here rather than at the operator that captured
+    /// the state: a task's plan is restricted to a partition slice, so an
+    /// operator mid-plan only ever sees local indices, while this writer is
+    /// handed `global_output_partition_ids` by the scheduler. Reassembling the
+    /// order downstream instead would mean the scheduler re-deriving a mapping
+    /// it already computed, and a prefix scan fed a permuted order is wrong
+    /// with no error to show for it.
+    ///
+    /// Errors rather than dropping a capture it cannot place. Unlike runtime
+    /// stats, which are an optimization input, this state is load-bearing:
+    /// the downstream stage's prefix merge is arithmetically wrong without
+    /// every partition's contribution, and wrong in a way no later check
+    /// catches. Failing the task surfaces it while it is still a failure
+    /// rather than a wrong answer.
+    pub fn collect_window_state(&self) -> Result<Vec<(usize, ObservedWindowState)>> {
+        let mut found: Vec<&PartitionedBoundedWindowAggExec> = Vec::new();
+        collect_window_state_operators(&self.plan, &mut found);
+        found
+            .into_iter()
+            .flat_map(|op| op.observed_window_state())
+            .map(|observation| {
+                let global = self
+                    .global_output_partition_ids
+                    .get(observation.partition_idx)
+                    .copied()
+                    .ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "ShuffleWriterExec: window state for local partition {} \
+                             has no global id (slice covers {:?})",
+                            observation.partition_idx, self.global_output_partition_ids
+                        ))
+                    })?;
+                Ok((global, observation))
+            })
+            .collect()
+    }
+
     /// Get the Job ID for this query stage
     pub fn job_id(&self) -> &JobId {
         &self.job_id
@@ -952,6 +992,28 @@ pub(crate) fn summaries_to_batch(
     debug!("SHUFFLE PARTITION METADATA:\n{batch:?}");
 
     MemoryStream::try_new(vec![batch], schema, None)
+}
+
+/// Collect every [`PartitionedBoundedWindowAggExec`] reachable from `plan`.
+///
+/// Walks the whole subtree rather than a partition-preserving spine: an
+/// operator holding window state is worth draining wherever it sits, and the
+/// writer translates indices against its own slice regardless of depth.
+///
+/// TODO: retarget when `PartitionedBoundedWindowAggExec` collapses. Whatever
+/// ends up holding the `BoundedWindowAggExec` — a bare BWAG once DataFusion
+/// can declare a non-single input distribution, or a small node planted above
+/// it — is what this should look for.
+fn collect_window_state_operators<'a>(
+    plan: &'a Arc<dyn ExecutionPlan>,
+    out: &mut Vec<&'a PartitionedBoundedWindowAggExec>,
+) {
+    if let Some(op) = plan.downcast_ref::<PartitionedBoundedWindowAggExec>() {
+        out.push(op);
+    }
+    for child in plan.children() {
+        collect_window_state_operators(child, out);
+    }
 }
 
 #[cfg(test)]

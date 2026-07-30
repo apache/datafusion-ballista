@@ -100,6 +100,26 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
         Vec::new()
     }
+
+    /// Drain finalized window-aggregate state captured during this task,
+    /// already stamped with the global partition each capture belongs to.
+    /// Called at task completion, like
+    /// [`Self::collect_runtime_stats_reports`], and rides the same
+    /// `SuccessfulTask` message.
+    ///
+    /// Empty for every plan without an ever-expanding-frame window, which is
+    /// nearly all of them. Default returns empty — implementers with real
+    /// plans override to drain their writer.
+    ///
+    /// Errors fail the task. This state is load-bearing for the downstream
+    /// stage's prefix merge, so losing a report yields a wrong answer rather
+    /// than a degraded one — unlike
+    /// [`Self::collect_runtime_stats_reports`], which is telemetry.
+    fn collect_window_state_reports(
+        &self,
+    ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Default execution engine using DataFusion's ShuffleWriterExec.
@@ -339,6 +359,27 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 Vec::new()
             }
         }
+    }
+
+    fn collect_window_state_reports(
+        &self,
+    ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
+        // Only the passthrough writer can sit over a window: the sort writer
+        // is Hash-partitioned by construction, which the prefix rewrite never
+        // plants.
+        let captured = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => writer.collect_window_state()?,
+            ShuffleWriterVariant::Sort(_) => return Ok(Vec::new()),
+        };
+        captured
+            .iter()
+            .map(|(global_partition, observed)| {
+                ballista_core::execution_plans::window_state_to_proto(
+                    *global_partition,
+                    observed,
+                )
+            })
+            .collect()
     }
 }
 

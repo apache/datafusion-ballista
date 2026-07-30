@@ -29,8 +29,8 @@ use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::{
-    RangeFilterExec, cut_partitions, merge_runtime_stats_reports,
-    repartition_routing_expr,
+    PartitionedBoundedWindowAggExec, PrefixMergeExec, RangeFilterExec, cut_partitions,
+    merge_runtime_stats_reports, prefix_merge_window_state, repartition_routing_expr,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -39,10 +39,12 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::prelude::SessionConfig;
 use datafusion::scalar::ScalarValue;
 use log::{debug, error, info, warn};
@@ -359,6 +361,65 @@ impl AdaptiveExecutionGraph {
         }))
     }
 
+    /// Prefix-merge the window state a completed stage reported, and bind the
+    /// result to the `PrefixMergeExec` waiting on it downstream.
+    ///
+    /// No-op for the overwhelming majority of stages, which report no window
+    /// state at all. When a stage did report, failing to find its consumer is
+    /// an error rather than a skip: the state exists precisely because a
+    /// `PrefixMergeExec` downstream cannot produce correct values without it.
+    fn resolve_prefix_merge_state(
+        &self,
+        stage_id: usize,
+    ) -> ballista_core::error::Result<()> {
+        let Some(ExecutionStage::Running(stage)) = self.stages.get(&stage_id) else {
+            return Ok(());
+        };
+        if stage.window_state_reports.is_empty() {
+            return Ok(());
+        }
+        let reports = stage.window_state_reports.clone();
+        let mut resolved = 0usize;
+        self.planner
+            .plan
+            .apply(|node| {
+                let Some(prefix_merge) = node.downcast_ref::<PrefixMergeExec>() else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                // Each PrefixMergeExec consumes exactly one upstream stage —
+                // the one behind the state-sync boundary directly below it.
+                if descend_to_boundary_stage_id(prefix_merge.input()) != Some(stage_id) {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                let window_expr = descend_to_window_expr(prefix_merge.input())
+                    .ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "PrefixMergeExec over stage {stage_id} has no window \
+                             operator below it to interpret its state against"
+                        ))
+                    })?;
+                let partition_count = prefix_merge
+                    .input()
+                    .properties()
+                    .output_partitioning()
+                    .partition_count();
+                let prefixes =
+                    prefix_merge_window_state(&reports, &window_expr, partition_count)?;
+                prefix_merge.resolve_state(prefixes)?;
+                resolved += 1;
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .map_err(|e| BallistaError::General(e.to_string()))?;
+        if resolved == 0 {
+            return Err(BallistaError::General(format!(
+                "stage {stage_id} reported {} window-state entries but no \
+                 PrefixMergeExec consumes them; the correction would be dropped",
+                reports.len()
+            )));
+        }
+        Ok(())
+    }
+
     /// Return a Vec of stages to cancel
     fn update_stage_progress(
         &mut self,
@@ -378,6 +439,7 @@ impl AdaptiveExecutionGraph {
                 debug!("ignoring completion for superseded stage {stage_id}");
                 return Ok(HashSet::new());
             }
+            self.resolve_prefix_merge_state(stage_id)?;
             let partitions = self.planner.take_stage_output_partitions(stage_id)?;
 
             // Range-repartition stages need overlap-based remap of their partitions
@@ -913,6 +975,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             let ballista_core::serde::protobuf::SuccessfulTask {
                                 partitions,
                                 runtime_stats,
+                                window_state,
                                 ..
                             } = successful_task;
                             debug!(
@@ -924,6 +987,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             );
                             running_stage
                                 .append_runtime_stats_reports(task_id, runtime_stats);
+                            running_stage
+                                .append_window_state_reports(task_id, window_state);
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
@@ -1523,4 +1588,49 @@ fn downstream_halos(
              downstream partial aggregates. Check the rule that planted this ORRE."
         ))
     })
+}
+
+/// Descend the single-child spine below a `PrefixMergeExec` to its
+/// state-sync `ExchangeExec` and return that boundary's stage id.
+///
+/// `None` when the boundary has no stage id yet (the upstream stage has not
+/// been assigned one), or when the spine forks before reaching it — a
+/// prefix merge only pairs with a single upstream stage.
+fn descend_to_boundary_stage_id(start: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    let mut node = Arc::clone(start);
+    loop {
+        if let Some(exchange) = node.downcast_ref::<ExchangeExec>() {
+            return exchange.stage_id();
+        }
+        let children = node.children();
+        let [child] = children.as_slice() else {
+            return None;
+        };
+        node = Arc::clone(*child);
+    }
+}
+
+/// Find the window operator below a `PrefixMergeExec` and return its window
+/// expressions, which the reported state is indexed against.
+///
+/// Walks the whole subtree rather than the spine: the operator sits below the
+/// state-sync boundary, whose input subtree the exchange retains even once
+/// resolved.
+///
+/// TODO: retarget when `PartitionedBoundedWindowAggExec` collapses, alongside
+/// the collector's own walk in `shuffle_writer`.
+fn descend_to_window_expr(
+    start: &Arc<dyn ExecutionPlan>,
+) -> Option<Vec<Arc<dyn WindowExpr>>> {
+    let mut found = None;
+    start
+        .apply(|node| {
+            if let Some(op) = node.downcast_ref::<PartitionedBoundedWindowAggExec>() {
+                found = Some(op.window_expr().to_vec());
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .ok()?;
+    found
 }

@@ -59,6 +59,7 @@ message BallistaPhysicalPlanNode {
     PartitionedBoundedWindowAggExecNode partitioned_bounded_window_agg = 11;
     RangeShuffleReaderExecNode range_shuffle_reader = 12;
     RangeFilterExecNode range_filter = 13;
+    PrefixMergeExecNode prefix_merge = 14;
   }
 }
 
@@ -211,6 +212,72 @@ message SortOptions {
 message RangeBound {
   datafusion_common.ScalarValue lo = 1;
   datafusion_common.ScalarValue hi = 2;
+}
+
+// Applies scheduler-computed prefix state to a window-aggregate column, so
+// each range-disjoint task's local running aggregate becomes a global one.
+message PrefixMergeExecNode {
+  // One entry per output column needing correction. Empty makes the operator
+  // a passthrough.
+  repeated WindowApplyNode applies = 1;
+  // Resolved prefix state, one entry per input partition, `[k]` summarising
+  // every partition before `k`. Encoding refuses while unresolved — an
+  // over-the-wire plan always ships with state bound, since an executor has
+  // no way to obtain it.
+  repeated FinalizedPartitionStateNode per_partition_state = 2;
+}
+
+// How to correct one window-function output column.
+message WindowApplyNode {
+  oneof apply {
+    ScalarWindowApplyNode scalar = 1;
+    AggregateWindowApplyNode aggregate = 2;
+  }
+}
+
+// Fast path: combine each row's value with a per-partition scalar.
+message ScalarWindowApplyNode {
+  ScalarOpNode op = 1;
+  // One scalar per input partition.
+  repeated datafusion_common.ScalarValue offset = 2;
+  uint32 output_column = 3;
+}
+
+// How a scalar offset combines with a row's existing value.
+enum ScalarOpNode {
+  SCALAR_OP_NODE_ADD = 0;
+  SCALAR_OP_NODE_MIN = 1;
+  SCALAR_OP_NODE_MAX = 2;
+  // Ignores the row's value entirely.
+  SCALAR_OP_NODE_OVERWRITE = 3;
+}
+
+// Fallback path: seed a fresh accumulator from the prefix state and replay
+// each row through it. Needed where a row's output is not itself a valid
+// partial state — AVG, and sketch-backed aggregates like approx_distinct.
+message AggregateWindowApplyNode {
+  // Resolved from the executor's function registry on decode.
+  string udf_name = 1;
+  repeated datafusion.PhysicalExprNode args = 2;
+  uint32 output_column = 3;
+  // Position in the upstream window operator's `window_expr()` list, which
+  // is what indexes into each FinalizedPartitionStateNode.
+  uint32 window_expr_index = 4;
+}
+
+// Prefix state for one input partition: one slot per window expression.
+message FinalizedPartitionStateNode {
+  repeated AggregateStateSlotNode slots = 1;
+}
+
+message AggregateStateSlotNode {
+  // Unset when that window expression published no state — a non-aggregate
+  // window function. Distinct from a present-but-empty state.
+  AggregateStateNode state = 1;
+}
+
+message AggregateStateNode {
+  repeated datafusion_common.ScalarValue values = 1;
 }
 
 // Wrapper for `BoundedWindowAggExec` that overrides
@@ -713,6 +780,48 @@ message SuccessfulTask {
   // executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
   // to combine reports across tasks/executors.
   repeated RuntimeStatsReport runtime_stats = 3;
+  // Finalized window-aggregate state captured during this task, one entry
+  // per (output partition, window expression, PARTITION BY group) that
+  // closed. Empty unless the plan contains an ever-expanding-frame window
+  // (`UNBOUNDED PRECEDING`), which is the only shape DataFusion will
+  // publish accumulator state for. The scheduler prefix-merges these across
+  // tasks and bakes the result into a downstream `PrefixMergeExec`.
+  //
+  // TODO: watch the size of this. Task completion is a hot, frequent
+  // message, and sketch-backed aggregates make the payload unbounded in a
+  // way row counts and quantile sketches are not — an HLL or KLL state is
+  // kilobytes per window expression per partition, and a task covering a
+  // wide partition slice carries one of each. If it stops being small,
+  // write the state as a sidecar next to the shuffle files instead, the way
+  // sort-shuffle already writes `<data>.arrow.index` beside its data
+  // (`sort_shuffle::get_index_path`), and send only a reference here. That
+  // keeps the completion message fixed-size regardless of aggregate.
+  repeated WindowStateReport window_state = 4;
+}
+
+// One finalized window-aggregate state from a task's
+// `BoundedWindowAggExec`.
+message WindowStateReport {
+  // The stage's *global* output partition this state belongs to.
+  //
+  // DataFusion reports a task-local index, because a task's plan is
+  // restricted to a partition slice. The producing `ShuffleWriterExec`
+  // translates it through the `global_output_partition_ids` the scheduler
+  // stamped on it, so what crosses the wire is already global — the
+  // scheduler must not re-derive it.
+  uint32 global_partition_id = 1;
+  // Position in the window operator's `window_expr()` list. Indexes window
+  // expressions, not partitions.
+  uint32 window_expr_index = 2;
+  // The PARTITION BY tuple that closed. Empty for a window with no
+  // PARTITION BY, which is the only shape the prefix rewrite plants today.
+  repeated datafusion_common.ScalarValue partition_key = 3;
+  // `Accumulator::state` for the closed group: one element for SUM / COUNT /
+  // MIN / MAX, two for AVG's (sum, count), one opaque Binary for
+  // sketch-backed aggregates like approx_distinct. Carried as ScalarValue
+  // rather than a numeric field so non-decomposable aggregates work
+  // unchanged.
+  repeated datafusion_common.ScalarValue state = 4;
 }
 
 // One report per `RuntimeStatsExec` in the executed plan.
