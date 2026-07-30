@@ -212,7 +212,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
-                         Some((128 * 1024 * 1024).to_string())),
+                         Some((16 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_CONNECT_TIMEOUT_SECONDS.to_string(),
                          "Connection timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
@@ -934,7 +934,7 @@ mod tests {
     #[test]
     fn default_config() -> Result<()> {
         let config = BallistaConfig::default();
-        assert_eq!(134217728, config.grpc_client_max_message_size());
+        assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
     }
 
@@ -950,8 +950,7 @@ mod tests {
         let mut config = SessionConfig::new_with_ballista();
         assert_eq!(
             config.ballista_config().grpc_client_max_message_size(),
-            128 * 1024 * 1024,
-            "unexpected default (did the bump land?)",
+            16 * 1024 * 1024,
         );
 
         let r = config

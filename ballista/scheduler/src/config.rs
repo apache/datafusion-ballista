@@ -148,14 +148,14 @@ pub struct Config {
     /// Maximum size of decoded gRPC messages.
     #[arg(
         long,
-        default_value_t = 134217728,
+        default_value_t = 16777216,
         help = "The maximum size of a decoded message at the grpc server side."
     )]
     pub grpc_server_max_decoding_message_size: u32,
     /// Maximum size of encoded gRPC messages.
     #[arg(
         long,
-        default_value_t = 134217728,
+        default_value_t = 16777216,
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
@@ -165,7 +165,7 @@ pub struct Config {
     /// succeed with big encoded plans.
     #[arg(
         long,
-        default_value_t = 134217728,
+        default_value_t = 16777216,
         help = "The maximum size of a message sent by the scheduler's outbound gRPC clients (in bytes)."
     )]
     pub grpc_client_max_message_size: u32,
@@ -317,9 +317,9 @@ impl Default for SchedulerConfig {
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
             scheduler_event_expected_processing_duration: 0,
-            grpc_server_max_decoding_message_size: 134217728,
-            grpc_server_max_encoding_message_size: 134217728,
-            grpc_client_max_message_size: 134217728,
+            grpc_server_max_decoding_message_size: 16777216,
+            grpc_server_max_encoding_message_size: 16777216,
+            grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
             override_config_producer: None,

@@ -169,17 +169,17 @@ pub struct Config {
         help = "Tracing log rotation policy."
     )]
     pub log_rotation_policy: ballista_core::config::LogRotationPolicy,
-    /// Maximum size of incoming gRPC messages in bytes (default: 128MiB).
+    /// Maximum size of incoming gRPC messages in bytes (default: 16MiB).
     #[arg(
         long,
-        default_value_t = 134217728,
+        default_value_t = 16777216,
         help = "The maximum size of a decoded message at the grpc server side."
     )]
     pub grpc_server_max_decoding_message_size: u32,
-    /// Maximum size of outgoing gRPC messages in bytes (default: 128MiB).
+    /// Maximum size of outgoing gRPC messages in bytes (default: 16MiB).
     #[arg(
         long,
-        default_value_t = 134217728,
+        default_value_t = 16777216,
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,

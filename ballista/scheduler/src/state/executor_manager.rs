@@ -561,7 +561,13 @@ impl ExecutorManager {
             }
 
             let connection = endpoint.connect().await?;
-            let client = ExecutorGrpcClient::new(connection);
+            // Message-size limits are tonic codec settings, not `Endpoint`
+            // settings, so `create_grpc_client_endpoint` cannot apply them.
+            // Without this the configured `max_message_size` is silently
+            // ignored and task assignment falls back to tonic's own defaults.
+            let client = ExecutorGrpcClient::new(connection)
+                .max_encoding_message_size(grpc_client_config.max_message_size)
+                .max_decoding_message_size(grpc_client_config.max_message_size);
 
             {
                 self.clients.insert(executor_id.to_owned(), client.clone());
@@ -588,5 +594,51 @@ impl ExecutorManager {
     #[cfg(test)]
     async fn test_connectivity(_metadata: &ExecutorMetadata) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::test_cluster_context;
+    use ballista_core::extension::SessionConfigExt;
+    use datafusion::prelude::SessionConfig;
+
+    #[test]
+    fn grpc_client_max_message_size_flag_reaches_client_config() {
+        let config = Arc::new(
+            SchedulerConfig::default()
+                .with_grpc_client_max_message_size(64 * 1024 * 1024),
+        );
+        let manager =
+            ExecutorManager::new(test_cluster_context().cluster_state(), config);
+
+        assert_eq!(
+            manager.grpc_client_config.max_message_size,
+            64 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn config_producer_still_wins_over_the_flag() {
+        let config = Arc::new(
+            SchedulerConfig::default()
+                .with_grpc_client_max_message_size(64 * 1024 * 1024)
+                .with_override_config_producer(Arc::new(|| {
+                    let mut session_config = SessionConfig::new_with_ballista();
+                    session_config
+                        .options_mut()
+                        .set("ballista.client.grpc_max_message_size", "33554432")
+                        .expect("valid setting");
+                    session_config
+                })),
+        );
+        let manager =
+            ExecutorManager::new(test_cluster_context().cluster_state(), config);
+
+        assert_eq!(
+            manager.grpc_client_config.max_message_size,
+            32 * 1024 * 1024
+        );
     }
 }
