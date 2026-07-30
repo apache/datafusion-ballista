@@ -71,16 +71,18 @@
 //! bakes both when it constructs the downstream stage after the upstream
 //! stage's tasks complete.
 //!
-//! **Status.** The [`WindowApply::Aggregate`] path is implemented: for each
-//! partition it builds a fresh `Accumulator`, seeds it via `merge_batch` from
-//! the offset state, and replays each row through `update_batch` + `evaluate`
-//! to overwrite the output column. Assumes at most one PARTITION BY key per
-//! input partition (matches the AQE synthetic-PARTITION-BY pattern);
-//! multi-key handling can grow when a workload needs it.
+//! **Status.** Both apply paths are implemented.
 //!
-//! The [`WindowApply::Scalar`] path is still a passthrough — those output
-//! columns are left untouched. Applying the scalar op via arrow kernels
-//! lands in a follow-up.
+//! - [`WindowApply::Aggregate`] builds a fresh `Accumulator` per partition,
+//!   seeds it via `merge_batch` from the offset state, and replays each row
+//!   through `update_batch` + `evaluate` to overwrite the output column.
+//! - [`WindowApply::Scalar`] applies the [`ScalarOp`] batch-at-a-time via
+//!   arrow kernels — `numeric::add` for `Add`, `cmp::lt_eq`/`gt_eq` + `zip`
+//!   for `Min`/`Max`, and a constant-fill for `Overwrite`.
+//!
+//! Assumes at most one PARTITION BY key per input partition (matches the
+//! AQE synthetic-PARTITION-BY pattern); multi-key handling can grow when a
+//! workload needs it.
 //!
 //! # Relation to DataFusion
 //!
@@ -230,8 +232,8 @@ impl WindowApply {
 /// the AQE pipeline this fits into.
 ///
 /// [`WindowApply::Aggregate`] entries are applied per row via a seeded
-/// `Accumulator`; [`WindowApply::Scalar`] entries are currently passthrough
-/// (their apply lands in a follow-up).
+/// `Accumulator`; [`WindowApply::Scalar`] entries are applied per batch via
+/// arrow kernels.
 pub struct PrefixMergeExec {
     input: Arc<dyn ExecutionPlan>,
     /// One entry per window-function output column that needs cross-partition
@@ -441,7 +443,7 @@ impl ExecutionPlan for PrefixMergeExec {
             }
         };
 
-        let mut aggregate_appliers: Vec<AggregateApply> = Vec::new();
+        let mut appliers: Vec<PreparedApply> = Vec::with_capacity(self.applies.len());
         for (i, apply) in self.applies.iter().enumerate() {
             match apply {
                 WindowApply::Aggregate {
@@ -453,18 +455,26 @@ impl ExecutionPlan for PrefixMergeExec {
                     let offset_state: Option<&Vec<ScalarValue>> = key_state
                         .and_then(|per_expr| per_expr.get(*window_expr_index))
                         .and_then(|slot| slot.as_ref());
-                    aggregate_appliers.push(AggregateApply::new(
+                    appliers.push(PreparedApply::Aggregate(AggregateApply::new(
                         i,
                         udf,
                         args,
                         *output_column,
                         &input_schema,
                         offset_state,
-                    )?);
+                    )?));
                 }
-                WindowApply::Scalar { .. } => {
-                    // Scalar variant application lands in a follow-up. Its
-                    // output column is left untouched for now (passthrough).
+                WindowApply::Scalar {
+                    op,
+                    offset,
+                    output_column,
+                } => {
+                    appliers.push(PreparedApply::Scalar(ScalarApply {
+                        apply_index: i,
+                        op: *op,
+                        offset: offset[partition].clone(),
+                        output_column: *output_column,
+                    }));
                 }
             }
         }
@@ -472,10 +482,77 @@ impl ExecutionPlan for PrefixMergeExec {
         let input = self.input.execute(partition, ctx)?;
         let stream = ApplyStream {
             input,
-            appliers: aggregate_appliers,
+            appliers,
             schema: Arc::clone(&output_schema),
         };
         Ok(Box::pin(stream))
+    }
+}
+
+/// One [`WindowApply`] entry prepared for a specific input partition: the
+/// scheduler's offset has been resolved down to a single value (or a seeded
+/// `Accumulator`) that can be applied per batch.
+enum PreparedApply {
+    Scalar(ScalarApply),
+    Aggregate(AggregateApply),
+}
+
+impl PreparedApply {
+    fn apply(&mut self, batch: RecordBatch) -> Result<RecordBatch> {
+        match self {
+            PreparedApply::Scalar(s) => s.apply(batch),
+            PreparedApply::Aggregate(a) => a.apply(batch),
+        }
+    }
+}
+
+/// A single [`WindowApply::Scalar`] prepared for one input partition: the
+/// scheduler's per-partition offset has been narrowed down to a single
+/// [`ScalarValue`] and the combining `op` is applied batch-at-a-time via
+/// arrow kernels.
+struct ScalarApply {
+    apply_index: usize,
+    op: ScalarOp,
+    offset: ScalarValue,
+    output_column: usize,
+}
+
+impl ScalarApply {
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        use datafusion::arrow::compute::kernels::{cmp, numeric, zip};
+
+        if self.output_column >= batch.num_columns() {
+            return internal_err!(
+                "PrefixMergeExec: applies[{}] output_column {} out of range \
+                 at execute time (batch has {} columns)",
+                self.apply_index,
+                self.output_column,
+                batch.num_columns()
+            );
+        }
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(batch);
+        }
+        let col = batch.column(self.output_column);
+        let offset_arr: ArrayRef = self.offset.to_array_of_size(num_rows)?;
+        let new_col: ArrayRef = match self.op {
+            ScalarOp::Add => numeric::add(col, &offset_arr)?,
+            ScalarOp::Min => {
+                // element-wise min: keep `col` where col ≤ offset, else offset
+                let mask = cmp::lt_eq(col, &offset_arr)?;
+                zip::zip(&mask, col, &offset_arr)?
+            }
+            ScalarOp::Max => {
+                // element-wise max: keep `col` where col ≥ offset, else offset
+                let mask = cmp::gt_eq(col, &offset_arr)?;
+                zip::zip(&mask, col, &offset_arr)?
+            }
+            ScalarOp::Overwrite => offset_arr,
+        };
+        let mut columns = batch.columns().to_vec();
+        columns[self.output_column] = new_col;
+        Ok(RecordBatch::try_new(batch.schema(), columns)?)
     }
 }
 
@@ -562,7 +639,7 @@ impl AggregateApply {
 
 struct ApplyStream {
     input: SendableRecordBatchStream,
-    appliers: Vec<AggregateApply>,
+    appliers: Vec<PreparedApply>,
     schema: SchemaRef,
 }
 
@@ -940,16 +1017,44 @@ mod tests {
         Ok(())
     }
 
-    /// The Scalar apply variant is still passthrough — its output column is
-    /// left untouched by execute. This test guards against silent behavior
-    /// change until the Scalar path is implemented.
+    /// The scalar case — SUM, applied via the fast path (`WindowApply::Scalar`
+    /// with `ScalarOp::Add`, no `Accumulator` reconstructed). Rounds out the
+    /// demo trio (SUM/AVG/APPROX_DISTINCT), covers the operator's arrow-kernel
+    /// batch-arithmetic path, and shows the same shape of test works whether
+    /// the aggregate needs a seeded accumulator or a plain add.
+    ///
+    /// - Partition 0's mock upstream output: `[(1,1),(2,3),(3,6)]` — v and
+    ///   the local running sum.
+    /// - Partition 1's mock upstream output: `[(4,4),(5,9),(6,15)]` — again
+    ///   local, so wrong globally.
+    /// - Partition offsets: `[0, 6]` — the scheduler prefix-summed the
+    ///   per-task terminal sums (partition 0 had none prior; partition 1
+    ///   inherits partition 0's total).
+    ///
+    /// Expected corrected running sums: partition 0 unchanged `[1,3,6]`,
+    /// partition 1 corrected `[10,15,21]`.
     #[tokio::test]
-    async fn scaffold_forwards_input_rows_unchanged() -> Result<()> {
-        let input = partitioned_source(2, 3);
+    async fn sum_corrects_running_sum_across_partitions() -> Result<()> {
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("running_sum", DataType::Int64, false),
+        ]));
+        let batch = |vs: &[i64], sums: &[i64]| -> RecordBatch {
+            let v_col = Arc::new(Int64Array::from_iter_values(vs.iter().copied()));
+            let s_col = Arc::new(Int64Array::from_iter_values(sums.iter().copied()));
+            RecordBatch::try_new(schema.clone(), vec![v_col, s_col]).unwrap()
+        };
+        let p0 = batch(&[1, 2, 3], &[1, 3, 6]);
+        let p1 = batch(&[4, 5, 6], &[4, 9, 15]);
+        let source =
+            MemorySourceConfig::try_new(&[vec![p0], vec![p1]], schema.clone(), None)?;
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(source)));
+
         let apply = WindowApply::Scalar {
             op: ScalarOp::Add,
-            offset: vec![ScalarValue::Int64(Some(100)); 2],
-            output_column: 0,
+            offset: vec![ScalarValue::Int64(Some(0)), ScalarValue::Int64(Some(6))],
+            output_column: 1,
         };
         let exec = Arc::new(PrefixMergeExec::try_new(
             input,
@@ -958,22 +1063,36 @@ mod tests {
         )?);
 
         let ctx = SessionContext::new().task_ctx();
-        for k in 0..2 {
-            let batches: Vec<RecordBatch> =
-                exec.execute(k, ctx.clone())?.try_collect().await?;
-            assert_eq!(batches.len(), 1);
-            let arr = batches[0]
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("Int64 column");
-            let expected: Vec<i64> = ((k * 3) as i64..((k + 1) * 3) as i64).collect();
-            assert_eq!(
-                arr.values(),
-                &expected,
-                "scaffold must not apply the offset yet"
-            );
-        }
+
+        let out_p0: Vec<RecordBatch> =
+            exec.execute(0, ctx.clone())?.try_collect().await?;
+        let p0_sum = out_p0[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(
+            p0_sum,
+            vec![1, 3, 6],
+            "partition 0 with offset 0 should preserve local running sum"
+        );
+
+        let out_p1: Vec<RecordBatch> =
+            exec.execute(1, ctx.clone())?.try_collect().await?;
+        let p1_sum = out_p1[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(
+            p1_sum,
+            vec![10, 15, 21],
+            "partition 1 with offset 6 should show global-cumulative running sum"
+        );
         Ok(())
     }
 }
