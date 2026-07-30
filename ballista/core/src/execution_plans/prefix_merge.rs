@@ -42,19 +42,33 @@
 //!   extreme, sketches (KLL, TDigest, HLL) merge as sketches, without this
 //!   operator knowing which aggregate is which.
 //!
-//! For scalar aggregates whose apply reduces to arithmetic (SUM, COUNT,
-//! MIN/MAX, and AVG once decomposed to SUM + COUNT + division) the scheduler
-//! can instead emit a plain `ProjectionExec` with the offset as a literal,
-//! and this operator isn't needed. It exists for cases where the apply is
-//! not expressible as a per-row scalar expression — the operator gives an
-//! aggregate-agnostic escape hatch that avoids inventing a per-aggregate
-//! projection form.
+//! # Apply descriptors
 //!
-//! Input shape (per input partition `k`, provided in [`Self::try_new`]):
-//! [`FinalizedPartitionState`] — the *pre-merged* state, one
-//! [`Accumulator::state`] value per (PARTITION BY key, window expression),
-//! ready to be folded directly into partition `k`'s rows. The scheduler
-//! bakes this in when it constructs the downstream stage after the upstream
+//! `try_new` takes a `Vec<`[`WindowApply`]`>` — one entry per output column
+//! that needs cross-partition correction, telling the operator *how* to
+//! rewrite that column. Two shapes:
+//!
+//! - [`WindowApply::Scalar`] — fast path. Combines each row's existing value
+//!   with a scheduler-provided scalar via [`ScalarOp`] (`Add`/`Min`/`Max` for
+//!   SUM/COUNT/MIN/MAX and `row_number`; `Overwrite` for `first_value` /
+//!   `last_value`). No `Accumulator` constructed.
+//! - [`WindowApply::Aggregate`] — fallback. Constructs a fresh `Accumulator`
+//!   seeded from the pre-merged state, feeds `args` per row, overwrites the
+//!   column with `evaluate()`. Fits AVG (without decomposition), sketch-backed
+//!   windows (APPROX_DISTINCT, APPROX_QUANTILE), and statistical aggregates.
+//!
+//! Non-corrected window functions don't appear in `applies` at all. `lead` /
+//! `lag` / `nth_value` are solved by halo rows in the shuffle layer.
+//! `rank` / `dense_rank` / `percent_rank` / `cume_dist` / `ntile` need a
+//! separate segment-tree-plus-broadcast design and are out of scope here.
+//!
+//! # Prefix-state input
+//!
+//! [`FinalizedPartitionState`] — one map per input partition, holding
+//! *pre-merged* [`Accumulator::state`] for every (PARTITION BY key, window
+//! expression) pair. Only consumed by [`WindowApply::Aggregate`] entries;
+//! [`WindowApply::Scalar`] carries its own offsets inline. The scheduler
+//! bakes both when it constructs the downstream stage after the upstream
 //! stage's tasks complete.
 //!
 //! **This is scaffolding.** `execute` currently forwards batches unchanged.
@@ -80,8 +94,9 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, ScalarValue, Statistics, internal_err};
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::AggregateUDF;
 use datafusion::physical_expr::window::PartitionKey;
-use datafusion::physical_expr::{Distribution, OrderingRequirements};
+use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -107,6 +122,97 @@ use std::collections::HashMap;
 /// [apache/datafusion#24007]: https://github.com/apache/datafusion/pull/24007
 pub type FinalizedPartitionState = HashMap<PartitionKey, Vec<Option<Vec<ScalarValue>>>>;
 
+/// How to combine each row's existing value in an output column with a
+/// scheduler-provided scalar offset. The result overwrites the column.
+///
+/// [`Overwrite`] ignores the row's existing value and just writes the offset;
+/// it's the shape needed for `first_value` / `last_value`, where the scheduler
+/// picks the correct global value once and every row gets a copy.
+///
+/// [`Overwrite`]: ScalarOp::Overwrite
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarOp {
+    /// `output := row_value + offset`. Fits SUM, COUNT, and ranking functions
+    /// like `row_number` (which are effectively `COUNT(*)`).
+    Add,
+    /// `output := min(row_value, offset)`. Fits MIN.
+    Min,
+    /// `output := max(row_value, offset)`. Fits MAX.
+    Max,
+    /// `output := offset`. Ignores `row_value`. Fits `first_value` /
+    /// `last_value`, where the scheduler picks a single global scalar and
+    /// every row gets the same corrected value.
+    Overwrite,
+}
+
+/// How to correct one window-function output column at row-apply time. Each
+/// entry describes exactly one column PrefixMergeExec should rewrite.
+///
+/// Two shapes are covered by construction; anything else is out of scope
+/// (`lead`/`lag`/`nth_value` are solved by halo rows in the shuffle layer, and
+/// ranking-family functions like `rank`/`percent_rank`/`ntile` want a separate
+/// segment-tree-plus-broadcast infrastructure).
+#[derive(Debug, Clone)]
+pub enum WindowApply {
+    /// Fast path: monoidal op between each row's existing value and a
+    /// scheduler-provided scalar. No `Accumulator` is constructed.
+    ///
+    /// Fits every aggregate whose per-row output is itself a valid partial
+    /// state that composes via a single scalar op — SUM, COUNT, MIN, MAX —
+    /// plus ranking functions like `row_number` (offset = prior row count)
+    /// and value-selection functions like `first_value` / `last_value`
+    /// (offset = scheduler-picked global value; op = [`ScalarOp::Overwrite`]).
+    Scalar {
+        /// Combining op between `row_value` and `offset`.
+        op: ScalarOp,
+        /// One scalar per input partition. `offset[k]` combines with every
+        /// row passing through partition `k`. Length must match the input's
+        /// output partition count.
+        offset: Vec<ScalarValue>,
+        /// Column overwritten with `op(row_value, offset[partition])`.
+        output_column: usize,
+    },
+    /// Fallback path: fresh `Accumulator` per partition, seeded with the
+    /// merged offset state via [`Accumulator::merge_batch`], updated per row
+    /// with `args` evaluated against that row, then [`Accumulator::evaluate`]
+    /// overwrites `output_column`.
+    ///
+    /// Fits aggregates whose per-row output isn't a valid partial state:
+    /// AVG (without decomposition), sketch-backed windows like
+    /// APPROX_DISTINCT and APPROX_QUANTILE, and statistical aggregates like
+    /// STDDEV / VAR / correlation whose state is a tuple of running moments.
+    ///
+    /// [`Accumulator::merge_batch`]: datafusion::logical_expr::Accumulator::merge_batch
+    /// [`Accumulator::evaluate`]: datafusion::logical_expr::Accumulator::evaluate
+    Aggregate {
+        /// UDF used to construct a fresh `Accumulator` per partition.
+        udf: Arc<AggregateUDF>,
+        /// Aggregate's argument expressions, evaluated against each input row
+        /// and fed to `Accumulator::update_batch`. For SUM/COUNT/MIN/MAX where
+        /// re-running the accumulator is redundant, prefer the [`Scalar`]
+        /// variant; this path is for cases where re-running is required.
+        ///
+        /// [`Scalar`]: WindowApply::Scalar
+        args: Vec<Arc<dyn PhysicalExpr>>,
+        /// Column overwritten with the accumulator's `evaluate()` result.
+        output_column: usize,
+        /// Position in the upstream `BoundedWindowAggExec`'s `window_expr()`
+        /// list — the index into the inner `Vec` inside
+        /// [`FinalizedPartitionState`] where this aggregate's merged offset
+        /// state lives.
+        window_expr_index: usize,
+    },
+}
+
+impl WindowApply {
+    fn output_column(&self) -> usize {
+        match self {
+            WindowApply::Scalar { output_column, .. }
+            | WindowApply::Aggregate { output_column, .. } => *output_column,
+        }
+    }
+}
+
 /// Apply pre-merged window-aggregate state (computed by the scheduler) to
 /// each row of the current partition's output. See the [module-level
 /// docs][self] for the division of labor between scheduler and executor and
@@ -116,22 +222,32 @@ pub type FinalizedPartitionState = HashMap<PartitionKey, Vec<Option<Vec<ScalarVa
 /// lands in a follow-up.
 pub struct PrefixMergeExec {
     input: Arc<dyn ExecutionPlan>,
+    /// One entry per window-function output column that needs cross-partition
+    /// correction. Non-corrected columns (e.g. `lead`/`lag` handled by halos,
+    /// or ranking functions left to segment-tree infrastructure) don't appear
+    /// here.
+    applies: Vec<WindowApply>,
     /// `per_partition_state[k]` is the scheduler-provided *already-merged*
-    /// state summarising every input partition in `[0..k)`. This operator
-    /// folds it into partition `k`'s rows; it does not perform the merge
-    /// itself (the scheduler already did). Length equals
+    /// state summarising every input partition in `[0..k)`. Only consumed by
+    /// [`WindowApply::Aggregate`] entries — [`WindowApply::Scalar`] carries
+    /// its own offsets. Length equals
     /// `input.output_partitioning().partition_count()`.
     per_partition_state: Vec<FinalizedPartitionState>,
     properties: Arc<PlanProperties>,
 }
 
 impl PrefixMergeExec {
-    /// Wrap `input` with per-input-partition prefix state.
+    /// Wrap `input` with per-column apply descriptors and per-input-partition
+    /// prefix state.
     ///
-    /// Errors if `per_partition_state.len()` doesn't match the input's
-    /// partition count.
+    /// Errors on any of:
+    /// - `per_partition_state.len()` != input's partition count.
+    /// - Any [`WindowApply::Scalar`]'s `offset.len()` != input's partition
+    ///   count.
+    /// - Any entry's `output_column` outside the input schema's field range.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
+        applies: Vec<WindowApply>,
         per_partition_state: Vec<FinalizedPartitionState>,
     ) -> Result<Self> {
         let partition_count = input.output_partitioning().partition_count();
@@ -143,6 +259,26 @@ impl PrefixMergeExec {
                 partition_count
             );
         }
+        let field_count = input.schema().fields().len();
+        for (i, apply) in applies.iter().enumerate() {
+            let col = apply.output_column();
+            if col >= field_count {
+                return internal_err!(
+                    "PrefixMergeExec: applies[{i}] output_column {col} out of \
+                     range (schema has {field_count} fields)"
+                );
+            }
+            if let WindowApply::Scalar { offset, .. } = apply
+                && offset.len() != partition_count
+            {
+                return internal_err!(
+                    "PrefixMergeExec: applies[{i}] Scalar offset.len() {} does \
+                     not match input partition count {}",
+                    offset.len(),
+                    partition_count
+                );
+            }
+        }
         let properties = Arc::new(PlanProperties::new(
             input.equivalence_properties().clone(),
             input.output_partitioning().clone(),
@@ -151,13 +287,20 @@ impl PrefixMergeExec {
         ));
         Ok(Self {
             input,
+            applies,
             per_partition_state,
             properties,
         })
     }
 
-    /// The prefix state carried per input partition.
-    /// `per_partition_state()[k]` is what will be merged into partition `k`.
+    /// Per-column apply descriptors. `applies()[i]` corresponds to one
+    /// output column that will be rewritten by the prefix-merge.
+    pub fn applies(&self) -> &[WindowApply] {
+        &self.applies
+    }
+
+    /// The prefix state carried per input partition. Only consumed by
+    /// [`WindowApply::Aggregate`] entries.
     pub fn per_partition_state(&self) -> &[FinalizedPartitionState] {
         &self.per_partition_state
     }
@@ -167,6 +310,7 @@ impl Debug for PrefixMergeExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("PrefixMergeExec")
             .field("partition_count", &self.per_partition_state.len())
+            .field("applies", &self.applies.len())
             .finish()
     }
 }
@@ -177,8 +321,9 @@ impl DisplayAs for PrefixMergeExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "PrefixMergeExec: partitions={}",
-                    self.per_partition_state.len()
+                    "PrefixMergeExec: partitions={}, applies={}",
+                    self.per_partition_state.len(),
+                    self.applies.len()
                 )
             }
             DisplayFormatType::TreeRender => {
@@ -217,6 +362,7 @@ impl ExecutionPlan for PrefixMergeExec {
         };
         Ok(Arc::new(PrefixMergeExec::try_new(
             input.clone(),
+            self.applies.clone(),
             self.per_partition_state.clone(),
         )?))
     }
@@ -302,13 +448,20 @@ mod tests {
         Arc::new(DataSourceExec::new(Arc::new(source)))
     }
 
+    fn empty_state(partitions: usize) -> Vec<FinalizedPartitionState> {
+        (0..partitions)
+            .map(|_| FinalizedPartitionState::new())
+            .collect()
+    }
+
     /// Mismatched state length surfaces as an error rather than a panic at
     /// runtime.
     #[test]
     fn try_new_rejects_state_length_mismatch() {
         let input = partitioned_source(2, 3);
-        let err = PrefixMergeExec::try_new(input, vec![FinalizedPartitionState::new()])
-            .expect_err("length mismatch must surface as an error");
+        let err =
+            PrefixMergeExec::try_new(input, vec![], vec![FinalizedPartitionState::new()])
+                .expect_err("length mismatch must surface as an error");
         assert!(
             err.to_string()
                 .contains("does not match input partition count"),
@@ -316,16 +469,57 @@ mod tests {
         );
     }
 
-    /// While the merge is unimplemented, `execute` behaves as a passthrough:
-    /// each partition's rows are forwarded verbatim.
+    /// A [`WindowApply::Scalar`] whose `offset.len()` doesn't match the
+    /// input partition count is caught at construction, before any rows flow.
+    #[test]
+    fn try_new_rejects_scalar_offset_length_mismatch() {
+        let input = partitioned_source(2, 3);
+        let apply = WindowApply::Scalar {
+            op: ScalarOp::Add,
+            offset: vec![ScalarValue::Int64(Some(0))], // only 1, need 2
+            output_column: 0,
+        };
+        let err = PrefixMergeExec::try_new(input, vec![apply], empty_state(2))
+            .expect_err("scalar offset length mismatch must surface as an error");
+        assert!(
+            err.to_string().contains("Scalar offset.len()"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An `output_column` past the input schema's field count errors.
+    #[test]
+    fn try_new_rejects_output_column_out_of_range() {
+        let input = partitioned_source(2, 3);
+        let apply = WindowApply::Scalar {
+            op: ScalarOp::Add,
+            offset: vec![ScalarValue::Int64(Some(0)); 2],
+            output_column: 5, // schema has 1 field
+        };
+        let err = PrefixMergeExec::try_new(input, vec![apply], empty_state(2))
+            .expect_err("out-of-range output_column must surface as an error");
+        assert!(
+            err.to_string().contains("output_column 5 out of range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// While the merge is unimplemented, `execute` behaves as a passthrough
+    /// even with `applies` populated: each partition's rows are forwarded
+    /// verbatim regardless of what the descriptors say.
     #[tokio::test]
     async fn scaffold_forwards_input_rows_unchanged() -> Result<()> {
         let input = partitioned_source(2, 3);
-        let state: Vec<FinalizedPartitionState> = vec![
-            FinalizedPartitionState::new(),
-            FinalizedPartitionState::new(),
-        ];
-        let exec = Arc::new(PrefixMergeExec::try_new(input, state)?);
+        let apply = WindowApply::Scalar {
+            op: ScalarOp::Add,
+            offset: vec![ScalarValue::Int64(Some(100)); 2],
+            output_column: 0,
+        };
+        let exec = Arc::new(PrefixMergeExec::try_new(
+            input,
+            vec![apply],
+            empty_state(2),
+        )?);
 
         let ctx = SessionContext::new().task_ctx();
         for k in 0..2 {
@@ -338,7 +532,11 @@ mod tests {
                 .downcast_ref::<Int64Array>()
                 .expect("Int64 column");
             let expected: Vec<i64> = ((k * 3) as i64..((k + 1) * 3) as i64).collect();
-            assert_eq!(arr.values(), &expected);
+            assert_eq!(
+                arr.values(),
+                &expected,
+                "scaffold must not apply the offset yet"
+            );
         }
         Ok(())
     }

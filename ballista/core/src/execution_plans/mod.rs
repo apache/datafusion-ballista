@@ -43,7 +43,7 @@ pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
 pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use per_partition_filter::PerPartitionFilterExec;
-pub use prefix_merge::{FinalizedPartitionState, PrefixMergeExec};
+pub use prefix_merge::{FinalizedPartitionState, PrefixMergeExec, ScalarOp, WindowApply};
 pub use runtime_stats::{
     MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
     collect_reports as collect_runtime_stats_reports, log_merged_runtime_stats,
