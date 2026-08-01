@@ -1,0 +1,112 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Fixture for the iceberg-ballista integration tests and the
+# standalone-iceberg-write example: an Iceberg REST catalog backed by MinIO.
+# Trimmed down from the iceberg-rust dev fixture — only the REST catalog is
+# exercised here, so the HMS / Glue / GCS / Spark services are omitted.
+#
+#   docker compose -f integrations/iceberg/dev/docker-compose.yaml up -d --wait
+#   cargo test -p iceberg-ballista --features integration-tests
+#   docker compose -f integrations/iceberg/dev/docker-compose.yaml down -v
+#
+# Note: `docker compose restart rest` on its own drops the REST -> MinIO network
+# alias and later table creations fail with an unknown-host error. Recreate the
+# whole set instead: `... up -d --force-recreate --wait`.
+
+networks:
+  iceberg_test:
+
+services:
+  # S3-compatible storage for table data and metadata.
+  minio:
+    image: minio/minio:RELEASE.2025-05-24T17-08-30Z
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    hostname: minio
+    networks:
+      iceberg_test:
+        # Alias for virtual-hosted style bucket access.
+        aliases:
+          - icebergdata.minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: ["server", "/data", "--console-address", ":9001"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Creates the warehouse bucket the REST catalog writes to.
+  mc:
+    depends_on:
+      minio:
+        condition: service_healthy
+    image: minio/mc:RELEASE.2025-05-21T01-59-54Z
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+        /usr/bin/mc alias set minio http://minio:9000 admin password;
+        /usr/bin/mc mb --ignore-existing minio/icebergdata;
+        /usr/bin/mc policy set public minio/icebergdata;
+        touch /tmp/buckets_ready;
+        echo 'Buckets created successfully';
+        tail -f /dev/null
+      "
+    networks:
+      iceberg_test:
+    # Without this, `up --wait` returns as soon as the container is *running* —
+    # which is before `mc mb` has finished — and the first create-table races
+    # the bucket into existence.
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f /tmp/buckets_ready ]"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # Iceberg REST catalog (JDBC catalog over in-memory SQLite).
+  rest:
+    image: apache/iceberg-rest-fixture:1.10.1
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog
+      - CATALOG_URI=jdbc:sqlite:file:/tmp/iceberg_rest_mode=memory
+      - CATALOG_WAREHOUSE=s3://icebergdata/demo
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      iceberg_test:
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s

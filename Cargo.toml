@@ -26,6 +26,7 @@ members = [
     "benchmarks",
     "chaos-testing",
     "examples",
+    "integrations/iceberg",
 ]
 resolver = "3"
 
@@ -50,6 +51,18 @@ datafusion-proto = "54"
 datafusion-proto-common = "54"
 datafusion-spark = "54"
 datafusion-substrait = "54"
+
+# iceberg-ballista (integrations/iceberg) needs iceberg-rust changes that are not
+# on crates.io yet: the catalog-config plumbing in `iceberg-datafusion` that lets
+# scan/write plan nodes be rebuilt on a remote executor. Until those land
+# upstream and are released, all five crates are pinned to the branch that
+# carries them — keep the git/branch identical across every entry so cargo
+# resolves them to a single checkout.
+iceberg = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
+iceberg-catalog-loader = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
+iceberg-catalog-rest = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
+iceberg-datafusion = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
+iceberg-storage-opendal = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
 
 ctor = { version = "1.0" }
 insta = "1.47"
