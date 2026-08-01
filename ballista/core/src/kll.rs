@@ -96,36 +96,40 @@
 //!
 //! # Deferred optimizations
 //!
-//! Ingest measured at ~3.7× TDigest for `T = OrderedFloat<f64>` and ~6.7×
-//! for `T = OwnedRow` on uniform 1M-row streams (see
-//! `benchmarks/benches/quantile_sketch.rs`). Three independent wins could
-//! close most of that gap:
+//! Ingest measured on uniform 1M-row streams (see
+//! `benchmarks/benches/quantile_sketch.rs`):
 //!
-//! 1. **Amortize `compact_all` across a batch.** `insert` calls
-//!    `compact_all` once per row, so 1M rows means 1M compact-driver
-//!    iterations — most just scan the levels vec and return. A batch-
-//!    oriented `absorb(&[T])` that extends level 0 by the whole batch (up
-//!    to its capacity) and calls `compact_all` only when level 0 fills
-//!    reduces that to ~1,250 driver calls for 1M rows at k=800. Helps
-//!    every `T`, so it's what closes the `KLL<OrderedFloat>` gap toward
-//!    TDigest.
+//! - `T = OrderedFloat<f64>` via `absorb_slice`: **2.1× TDigest** (down
+//!   from 3.7× on per-row `insert`).
+//! - `T = OwnedRow` via `absorb`: **5.8× TDigest** (down from 6.7× on
+//!   per-row `insert`).
+//!
+//! Item (1) below landed as `absorb` / `absorb_slice`. Two independent
+//! wins remain that could close the remaining gap:
+//!
+//! 1. ~~**Amortize `compact_all` across a batch.**~~ **Landed.** `absorb`
+//!    caches level 0's capacity and skips the `compact_all` O(L) scan
+//!    when no level is full. `absorb_slice` stacks a batch min/max and
+//!    `extend_from_slice` on top for `T: Copy`.
 //!
 //! 2. **Defer ownership at level 0.** For `T = OwnedRow` the caller pays
 //!    one heap allocation per input row via `row.owned()`, even though
 //!    ~half of level-0 items are coin-flipped out at the first compaction
 //!    and never promoted. Holding borrowed `Row<'_>` at level 0 within a
 //!    batch and materializing `OwnedRow` only on promotion to level 1
-//!    saves the alloc/free on the discarded half. Stacks with (1): the
-//!    batch-oriented API is what makes the borrow lifetime work out —
-//!    level 0 lives for the duration of `absorb`, compacts before the
-//!    caller's `Rows` buffer goes out of scope. Only helps `T = OwnedRow`.
+//!    saves the alloc/free on the discarded half. The batch-oriented
+//!    `absorb` API is what makes the borrow lifetime work out — level 0
+//!    lives for the duration of `absorb`, compacts before the caller's
+//!    `Rows` buffer goes out of scope. Only helps `T = OwnedRow`.
 //!
 //! 3. **Per-level sortedness invariant.** Apache DataSketches maintains
 //!    an `is_level_zero_sorted_` flag so `compact` skips the re-sort when
 //!    the level is already ordered, and two sketches merge via linear-
 //!    time merge-sort rather than concatenate-and-resort. Trades
 //!    bookkeeping in `insert`/`merge` for cheaper `compact` and cheaper
-//!    cross-sketch `merge`.
+//!    cross-sketch `merge` — the compaction sort dominates ingest time
+//!    once (1) is in place, so this is where the next 2× likely lives
+//!    for the Copy-T path.
 //!
 //! # Reference
 //!
