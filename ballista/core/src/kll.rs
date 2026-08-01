@@ -291,6 +291,13 @@ impl<T: Ord + Clone> KllSketch<T> {
     /// Output is bit-identical to `for x in xs { self.insert(x) }`: the
     /// compaction trigger points, coin flips, and min/max tracking are all
     /// preserved.
+    ///
+    /// TODO: retire once **Deferred optimizations** item (2) lands. The
+    /// borrowed-row ingest path there takes an arrow `Rows` directly and
+    /// holds `Row<'_>` at level 0 — a specialized API, not a generalization
+    /// of this one. This function exists as a modest speedup for the
+    /// interim OwnedRow path (~14% over `insert`-in-loop on 1M rows) and
+    /// has no other production caller.
     pub fn absorb<I: IntoIterator<Item = T>>(&mut self, xs: I) {
         // Cache level 0's capacity; recompute whenever compaction may have
         // grown the stack (which shrinks per-level capacities).
