@@ -1033,6 +1033,7 @@ dependencies = [
  "clap 4.6.3",
  "criterion",
  "datafusion",
+ "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "env_logger",
  "futures",
