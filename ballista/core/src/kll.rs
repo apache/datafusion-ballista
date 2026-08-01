@@ -130,6 +130,15 @@
 //!    two sortedness flags — cross-sketch merge-extend is a further
 //!    deferred win.
 //!
+//! 4. **Sorted-input ingest via a caller-side plan-shape change.** The
+//!    `absorb_sorted_slice` API exists but is not yet called from
+//!    production. When wired into an ORRE plan shape where a `SortExec`
+//!    is placed upstream of `RuntimeStatsExec` (with a `DamExec` between
+//!    stats and the router), level 0 stays permanently sorted and
+//!    compaction skips *every* sort — not just those at levels 1+. That
+//!    kills the largest remaining ingest cost on the `T: Copy` path.
+//!    The sketch side is free; the win requires the planner-side move.
+//!
 //! # Reference
 //!
 //! Karnin, Lang, Liberty. *Optimal Quantile Approximation in Streams.*
@@ -366,6 +375,61 @@ impl<T: Ord + Clone> KllSketch<T> {
             let take = (xs.len() - i).min(room);
             self.levels[0].extend_from_slice(&xs[i..i + take]);
             self.sorted[0] = false;
+            i += take;
+            if self.levels[0].len() >= cap {
+                self.compact_all();
+            }
+        }
+    }
+
+    /// Slice-ingest variant that assumes the input is already sorted
+    /// ascending — the caller is downstream of a `SortExec` or otherwise
+    /// producing sorted output. Keeps level 0 permanently sorted by
+    /// merge-extending each chunk into it, so `compact_level(0)` never
+    /// pays a `sort_unstable`. That's the largest remaining cost on the
+    /// `T: Copy` ingest path once the per-level sortedness invariant is
+    /// in place.
+    ///
+    /// The min/max scan is also skipped — for sorted input the extremes
+    /// are `xs[0]` and `xs[last]`.
+    ///
+    /// Precondition: `xs` is sorted ascending. Unchecked in release
+    /// builds; a `debug_assert!` catches unsorted input in tests.
+    /// Violating the precondition silently corrupts the sketch — the
+    /// sort-skip is unconditional.
+    ///
+    /// Prefer this whenever the caller can cheaply provide sorted input:
+    /// the ORRE plan shape `Scan -> Sort -> RuntimeStats -> DamExec ->
+    /// ORRE` is the motivating case, since `SortExec` already runs
+    /// upstream of `ORRE` and moving it above `RuntimeStats` costs
+    /// nothing plan-wise.
+    pub fn absorb_sorted_slice(&mut self, xs: &[T]) {
+        if xs.is_empty() {
+            return;
+        }
+        debug_assert!(
+            xs.windows(2).all(|w| w[0] <= w[1]),
+            "absorb_sorted_slice: input not sorted ascending"
+        );
+        // Sorted input: extremes are the first and last elements. No scan.
+        let batch_min = &xs[0];
+        let batch_max = &xs[xs.len() - 1];
+        if self.min.as_ref().is_none_or(|m| batch_min < m) {
+            self.min = Some(batch_min.clone());
+        }
+        if self.max.as_ref().is_none_or(|m| batch_max > m) {
+            self.max = Some(batch_max.clone());
+        }
+        // Chunk-merge sorted `xs` into (sorted) level 0. Level 0 stays
+        // sorted through the whole ingest — `sorted[0]` never flips false.
+        let mut i = 0;
+        while i < xs.len() {
+            let cap = level_capacity(self.k, self.levels.len(), 0);
+            let room = cap.saturating_sub(self.levels[0].len());
+            let take = (xs.len() - i).min(room);
+            let incoming = xs[i..i + take].to_vec();
+            let existing = std::mem::take(&mut self.levels[0]);
+            self.levels[0] = merge_sorted(existing, incoming);
             i += take;
             if self.levels[0].len() >= cap {
                 self.compact_all();
@@ -1020,6 +1084,45 @@ mod tests {
         assert_eq!(via_insert.quantile(0.5), via_absorb_slice.quantile(0.5));
         assert_eq!(via_insert.quantile(1.0), via_absorb.quantile(1.0));
         assert_eq!(via_insert.quantile(1.0), via_absorb_slice.quantile(1.0));
+    }
+
+    #[test]
+    fn absorb_sorted_slice_matches_absorb_slice_on_sorted_input() {
+        // absorb_sorted_slice's trick is to skip the compact-time sort by
+        // keeping level 0 sorted via merge-extend. On sorted input its
+        // output is bit-identical to absorb_slice because sort_unstable on
+        // an already-sorted array of distinct items is the identity, so
+        // both paths produce the same halved subsequence at each
+        // compaction.
+        let seed = 42u64;
+        let n = 10_000u32;
+        let sorted_stream: Vec<u32> = (1..=n).collect();
+
+        let mut via_absorb_slice: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb_slice.absorb_slice(&sorted_stream);
+
+        let mut via_sorted: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_sorted.absorb_sorted_slice(&sorted_stream);
+
+        for probe in (1..=n).step_by(100) {
+            assert_eq!(
+                via_absorb_slice.rank(&probe),
+                via_sorted.rank(&probe),
+                "rank({probe}) diverged"
+            );
+        }
+        assert_eq!(via_absorb_slice.quantile(0.0), via_sorted.quantile(0.0));
+        assert_eq!(via_absorb_slice.quantile(0.5), via_sorted.quantile(0.5));
+        assert_eq!(via_absorb_slice.quantile(1.0), via_sorted.quantile(1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "not sorted ascending")]
+    fn absorb_sorted_slice_debug_asserts_on_unsorted() {
+        // The precondition is unchecked in release, but debug builds
+        // (including cargo test) must catch caller bugs.
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(200, 0);
+        sketch.absorb_sorted_slice(&[3u32, 1, 2]);
     }
 
     #[test]

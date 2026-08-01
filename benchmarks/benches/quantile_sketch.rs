@@ -81,6 +81,19 @@ fn build_batches(n: usize) -> Vec<Float64Array> {
     batches
 }
 
+/// Same underlying stream as `build_batches`, sorted globally before
+/// batching. Consecutive batches are monotonically increasing — matches
+/// what a `SortExec` upstream of `RuntimeStatsExec` would feed the sketch
+/// in the ORRE plan shape.
+fn build_globally_sorted_batches(n: usize) -> Vec<Float64Array> {
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let mut all: Vec<f64> = (0..n).map(|_| rng.random::<f64>()).collect();
+    all.sort_by(f64::total_cmp);
+    all.chunks(BATCH_SIZE)
+        .map(|chunk| Float64Array::from(chunk.to_vec()))
+        .collect()
+}
+
 /// Production TDigest ingest path — one `Vec<f64>` per batch through
 /// `merge_unsorted_f64`. This mirrors `runtime_stats::StreamState::record`
 /// modulo the null-flatten and partition-slot lookup.
@@ -139,6 +152,23 @@ fn ingest_kll_ordered_float_absorb_slice(
         let vals: Vec<OrderedFloat<f64>> =
             arr.values().iter().copied().map(OrderedFloat).collect();
         sketch.absorb_slice(&vals);
+    }
+    sketch
+}
+
+/// Same shape as `ingest_kll_ordered_float_absorb_slice`, but consumes
+/// pre-sorted batches via `absorb_sorted_slice` — measures the sketch
+/// side of the ORRE-plan-shape follow-up, where a `SortExec` upstream of
+/// `RuntimeStatsExec` guarantees sorted input and lets the sketch skip
+/// every compaction sort (not just those above level 0).
+fn ingest_kll_ordered_float_absorb_sorted_slice(
+    batches: &[Float64Array],
+) -> KllSketch<OrderedFloat<f64>> {
+    let mut sketch = KllSketch::<OrderedFloat<f64>>::new(KLL_K);
+    for arr in batches {
+        let vals: Vec<OrderedFloat<f64>> =
+            arr.values().iter().copied().map(OrderedFloat).collect();
+        sketch.absorb_sorted_slice(&vals);
     }
     sketch
 }
@@ -208,6 +238,15 @@ fn bench_ingest(c: &mut Criterion) {
             b.iter_batched(
                 || batches.clone(),
                 |bs| ingest_kll_ordered_float_absorb_slice(&bs),
+                BatchSize::LargeInput,
+            );
+        });
+
+        let sorted_batches = build_globally_sorted_batches(n);
+        group.bench_function(format!("kll_ordered_float_absorb_sorted_slice/{n}"), |b| {
+            b.iter_batched(
+                || sorted_batches.clone(),
+                |bs| ingest_kll_ordered_float_absorb_sorted_slice(&bs),
                 BatchSize::LargeInput,
             );
         });
