@@ -702,55 +702,114 @@ mod tests {
         2.296 / (k as f64).powf(0.9723)
     }
 
-    /// One trial: insert a shuffled `1..=n` stream, probe rank at 9
-    /// interior quantiles, return the max normalized rank error observed.
-    fn worst_rank_error_uniform(k: usize, n: u32, seed: u64) -> f64 {
-        use rand::seq::SliceRandom;
-        let mut shuffle_rng = StdRng::seed_from_u64(seed);
-        // Sketch RNG derived from a different sub-seed so the shuffle and
-        // the compaction coin flips aren't drawn from correlated streams.
-        let mut sketch: KllSketch<u32> =
-            KllSketch::with_seed(k, seed.wrapping_add(0x9E37_79B9));
-        let mut stream: Vec<u32> = (1..=n).collect();
-        stream.shuffle(&mut shuffle_rng);
-        for x in &stream {
+    /// Insert `stream` into a KLL sketch at capacity `k`, probe rank at 9
+    /// interior quantiles picked from a sorted copy of the stream, and
+    /// return the worst normalized rank error observed.
+    fn worst_rank_error(stream: &[u32], k: usize, sketch_seed: u64) -> f64 {
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(k, sketch_seed);
+        for x in stream {
             sketch.insert(*x);
         }
+        let mut sorted = stream.to_vec();
+        sorted.sort_unstable();
+        let n = stream.len();
         (1..10)
             .map(|i| {
-                let q = i as f64 / 10.0;
-                let probe = ((q * n as f64) as u32).max(1);
-                // For a shuffled stream of `1..=n`, the true count strictly
-                // less than `probe` is `probe - 1`.
-                let true_rank = (probe as f64 - 1.0) / n as f64;
-                let est_rank = sketch.rank(&probe) as f64 / n as f64;
-                (est_rank - true_rank).abs()
+                let idx = (i as f64 / 10.0 * n as f64) as usize;
+                let probe = sorted[idx.min(n - 1)];
+                // True rank: count of items strictly less than probe.
+                // partition_point on the sorted stream gives it in O(log n).
+                let true_rank_frac =
+                    sorted.partition_point(|x| *x < probe) as f64 / n as f64;
+                let est_rank_frac = sketch.rank(&probe) as f64 / n as f64;
+                (est_rank_frac - true_rank_frac).abs()
             })
             .fold(0.0_f64, f64::max)
     }
 
-    #[test]
-    fn rank_error_meets_datasketches_bound_across_seeds() {
-        // The DataSketches epsilon is empirically fit to the P99 max
-        // error, so ≤1% of trials should exceed it in a correct
-        // implementation. Assert ≤5% fail rate — leaves slack for tail
-        // luck without letting a real regression slip through; an
-        // optimization bug that biases the error distribution up by a few
-        // percent pushes the fail rate well past 5%.
+    /// Shuffled `1..=n` — every distinct value appears exactly once.
+    fn uniform_stream(n: u32, rng: &mut StdRng) -> Vec<u32> {
+        use rand::seq::SliceRandom;
+        let mut v: Vec<u32> = (1..=n).collect();
+        v.shuffle(rng);
+        v
+    }
+
+    /// 90% of items in the bottom 1% of the value range, remainder spread
+    /// over the rest. Cuts near the low quantiles land inside the dense
+    /// cluster; cuts near the high quantiles land in the sparse tail.
+    fn clustered_stream(n: u32, rng: &mut StdRng) -> Vec<u32> {
+        use rand::seq::SliceRandom;
+        let hot_max = (n / 100).max(2);
+        let hot = n * 9 / 10;
+        let cold = n - hot;
+        let mut v = Vec::with_capacity(n as usize);
+        for _ in 0..hot {
+            v.push(rng.random_range(1u32..=hot_max));
+        }
+        for _ in 0..cold {
+            v.push(rng.random_range(hot_max + 1..=n));
+        }
+        v.shuffle(rng);
+        v
+    }
+
+    /// Only 100 distinct values, each ~n/100 times. Exercises the sort +
+    /// coin-flip halving under degenerate orderings and confirms that
+    /// ties don't shift rank estimates.
+    fn tied_stream(n: u32, rng: &mut StdRng) -> Vec<u32> {
+        (0..n).map(|_| rng.random_range(1u32..=100)).collect()
+    }
+
+    /// Sweep `trials` seeds building a fresh stream per trial and assert
+    /// the DataSketches bound holds in ≥95% of them.
+    fn assert_ds_bound_holds(
+        distribution: &str,
+        stream_fn: impl Fn(u32, &mut StdRng) -> Vec<u32>,
+    ) {
         let k = 200;
         let n = 10_000u32;
         let bound = normalized_rank_error_ss(k);
         let trials = 100u64;
         let failures = (0..trials)
-            .filter(|&seed| worst_rank_error_uniform(k, n, seed) > bound)
+            .filter(|&seed| {
+                let mut shuffle_rng = StdRng::seed_from_u64(seed);
+                let stream = stream_fn(n, &mut shuffle_rng);
+                // Sketch RNG derived from a different sub-seed so the
+                // stream construction and the compaction coin flips aren't
+                // drawn from correlated streams.
+                let sketch_seed = seed.wrapping_add(0x9E37_79B9);
+                worst_rank_error(&stream, k, sketch_seed) > bound
+            })
             .count();
         let fail_rate = failures as f64 / trials as f64;
+        // The DataSketches eps is a P99 empirical fit, so ≤1% of trials
+        // should exceed it in a correct implementation. 5% slack absorbs
+        // tail luck without letting a real distribution shift slip
+        // through — an optimization bug that biases the error
+        // distribution up by a few percent pushes the fail rate well
+        // past 5%.
         assert!(
             fail_rate <= 0.05,
-            "rank error exceeded DataSketches bound {bound:.4} in \
-             {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
+            "{distribution}: rank error exceeded DataSketches bound \
+             {bound:.4} in {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
             fail_rate * 100.0
         );
+    }
+
+    #[test]
+    fn rank_error_bound_uniform_distribution() {
+        assert_ds_bound_holds("uniform", uniform_stream);
+    }
+
+    #[test]
+    fn rank_error_bound_clustered_distribution() {
+        assert_ds_bound_holds("clustered", clustered_stream);
+    }
+
+    #[test]
+    fn rank_error_bound_heavy_ties() {
+        assert_ds_bound_holds("heavy-ties", tied_stream);
     }
 
     #[test]
@@ -781,9 +840,7 @@ mod tests {
 
             let shard_size = n as usize / 4;
             let mut shards: Vec<KllSketch<u32>> = (0..4u64)
-                .map(|i| {
-                    KllSketch::with_seed(k, seed.wrapping_add(0xB504_F334 + i))
-                })
+                .map(|i| KllSketch::with_seed(k, seed.wrapping_add(0xB504_F334 + i)))
                 .collect();
             for (i, x) in stream.iter().enumerate() {
                 shards[(i / shard_size).min(3)].insert(*x);

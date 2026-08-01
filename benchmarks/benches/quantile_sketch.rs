@@ -37,9 +37,7 @@
 use std::sync::Arc;
 
 use ballista_core::kll::KllSketch;
-use criterion::{
-    BatchSize, Criterion, Throughput, criterion_group, criterion_main,
-};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{ArrayRef, Float64Array};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::row::{OwnedRow, RowConverter, SortField};
@@ -101,7 +99,10 @@ fn ingest_tdigest(batches: &[Float64Array]) -> TDigest {
 /// arrow row converter, then push per-row `OwnedRow` into a
 /// `KllSketch<OwnedRow>`. The heap alloc per `owned()` is what the
 /// level-0 borrowed-row optimization would eliminate.
-fn ingest_kll_row(batches: &[Float64Array], converter: &RowConverter) -> KllSketch<OwnedRow> {
+fn ingest_kll_row(
+    batches: &[Float64Array],
+    converter: &RowConverter,
+) -> KllSketch<OwnedRow> {
     let mut sketch = KllSketch::<OwnedRow>::new(KLL_K);
     for arr in batches {
         let col: ArrayRef = Arc::new(arr.clone());
@@ -133,8 +134,7 @@ fn bench_ingest(c: &mut Criterion) {
     // the ratios we care about and keeps the harness under a minute.
     group.sample_size(10);
 
-    let converter =
-        RowConverter::new(vec![SortField::new(DataType::Float64)]).unwrap();
+    let converter = RowConverter::new(vec![SortField::new(DataType::Float64)]).unwrap();
 
     for &n in ROW_COUNTS {
         let batches = build_batches(n);
