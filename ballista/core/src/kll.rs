@@ -250,6 +250,97 @@ impl<T: Ord + Clone> KllSketch<T> {
         self.compact_all();
     }
 
+    /// Add many items in one call, amortizing the per-item overhead of
+    /// `insert`.
+    ///
+    /// `insert` invokes `compact_all` after every row, and each call scans
+    /// every level asking "is anyone full?" That's an `O(L)` scan per row
+    /// even when the answer is universally "no." `absorb` caches level 0's
+    /// capacity once, checks a single length per row, and only fires
+    /// `compact_all` when level 0 actually reaches capacity.
+    ///
+    /// Owned-value ingest — takes items by value, no `T: Clone` needed on
+    /// the incoming stream. Prefer this for heap-heavy `T` (e.g.
+    /// `OwnedRow`) where cloning would double the allocation cost. For
+    /// `T: Copy` prefer `absorb_slice` — it uses `extend_from_slice` +
+    /// batch min/max for a memcpy-friendly hot loop.
+    ///
+    /// Output is bit-identical to `for x in xs { self.insert(x) }`: the
+    /// compaction trigger points, coin flips, and min/max tracking are all
+    /// preserved.
+    pub fn absorb<I: IntoIterator<Item = T>>(&mut self, xs: I) {
+        // Cache level 0's capacity; recompute whenever compaction may have
+        // grown the stack (which shrinks per-level capacities).
+        let mut level_0_cap = level_capacity(self.k, self.levels.len(), 0);
+        for x in xs {
+            if self.min.as_ref().is_none_or(|m| x < *m) {
+                self.min = Some(x.clone());
+            }
+            if self.max.as_ref().is_none_or(|m| x > *m) {
+                self.max = Some(x.clone());
+            }
+            self.levels[0].push(x);
+            if self.levels[0].len() >= level_0_cap {
+                self.compact_all();
+                level_0_cap = level_capacity(self.k, self.levels.len(), 0);
+            }
+        }
+    }
+
+    /// Slice-ingest variant that trades one clone per item for two extra
+    /// wins on top of `absorb`'s compact_all amortization:
+    ///
+    /// 1. Batch min/max in a single tight scan of `xs`, updating `self.min`
+    ///    / `self.max` at most once per call instead of at most once per
+    ///    row.
+    /// 2. `Vec::extend_from_slice` for chunk-fills of level 0 — one memcpy
+    ///    per chunk for `T: Copy`, potentially SIMD-vectorized by LLVM.
+    ///
+    /// Prefer this for `T: Copy` (e.g. `OrderedFloat<f64>`, `i64`) where
+    /// the clone is free. Avoid for heap-heavy `T` (e.g. `OwnedRow`) —
+    /// there the extend_from_slice clone allocates on top of whatever the
+    /// caller already paid to construct the value; `absorb` moves instead.
+    ///
+    /// Output is bit-identical to `for x in xs { self.insert(x.clone()) }`.
+    pub fn absorb_slice(&mut self, xs: &[T]) {
+        if xs.is_empty() {
+            return;
+        }
+        // One scan across xs for min/max; a single Option update per batch
+        // regardless of how many progressive extremes appear in xs.
+        let (batch_min, batch_max) = {
+            let mut min = &xs[0];
+            let mut max = &xs[0];
+            for x in &xs[1..] {
+                if x < min {
+                    min = x;
+                }
+                if x > max {
+                    max = x;
+                }
+            }
+            (min, max)
+        };
+        if self.min.as_ref().is_none_or(|m| batch_min < m) {
+            self.min = Some(batch_min.clone());
+        }
+        if self.max.as_ref().is_none_or(|m| batch_max > m) {
+            self.max = Some(batch_max.clone());
+        }
+        // Chunk-fill level 0 via memcpy-style extend; compact when it fills.
+        let mut i = 0;
+        while i < xs.len() {
+            let cap = level_capacity(self.k, self.levels.len(), 0);
+            let room = cap.saturating_sub(self.levels[0].len());
+            let take = (xs.len() - i).min(room);
+            self.levels[0].extend_from_slice(&xs[i..i + take]);
+            i += take;
+            if self.levels[0].len() >= cap {
+                self.compact_all();
+            }
+        }
+    }
+
     /// Return the estimated number of items strictly less than `x`.
     ///
     /// Sum over levels `h` of `2^h · | { y ∈ levels[h] : y < x } |`.
@@ -795,6 +886,54 @@ mod tests {
              {bound:.4} in {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
             fail_rate * 100.0
         );
+    }
+
+    #[test]
+    fn absorb_apis_match_per_row_insert() {
+        // Both `absorb` and `absorb_slice` only skip work that per-row
+        // `insert` provably would have skipped too — the compaction
+        // trigger points, coin flips, and final min/max are all preserved.
+        // Three sketches seeded identically and fed the same stream via
+        // the three APIs must agree on every rank probe.
+        use rand::seq::SliceRandom;
+        let seed = 12345u64;
+        let mut shuffle_rng = StdRng::seed_from_u64(seed);
+        let n = 10_000u32;
+        let mut stream: Vec<u32> = (1..=n).collect();
+        stream.shuffle(&mut shuffle_rng);
+
+        let mut via_insert: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        for x in &stream {
+            via_insert.insert(*x);
+        }
+
+        let mut via_absorb: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb.absorb(stream.iter().copied());
+
+        let mut via_absorb_slice: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb_slice.absorb_slice(&stream);
+
+        // Probe every 100 to keep the test cheap; the space is dense
+        // enough that any drift would surface within these probes.
+        for probe in (1..=n).step_by(100) {
+            let r_insert = via_insert.rank(&probe);
+            let r_absorb = via_absorb.rank(&probe);
+            let r_absorb_slice = via_absorb_slice.rank(&probe);
+            assert_eq!(
+                r_insert, r_absorb,
+                "rank({probe}) diverged: insert={r_insert} absorb={r_absorb}"
+            );
+            assert_eq!(
+                r_insert, r_absorb_slice,
+                "rank({probe}) diverged: insert={r_insert} absorb_slice={r_absorb_slice}"
+            );
+        }
+        assert_eq!(via_insert.quantile(0.0), via_absorb.quantile(0.0));
+        assert_eq!(via_insert.quantile(0.0), via_absorb_slice.quantile(0.0));
+        assert_eq!(via_insert.quantile(0.5), via_absorb.quantile(0.5));
+        assert_eq!(via_insert.quantile(0.5), via_absorb_slice.quantile(0.5));
+        assert_eq!(via_insert.quantile(1.0), via_absorb.quantile(1.0));
+        assert_eq!(via_insert.quantile(1.0), via_absorb_slice.quantile(1.0));
     }
 
     #[test]

@@ -128,6 +128,38 @@ fn ingest_kll_ordered_float(batches: &[Float64Array]) -> KllSketch<OrderedFloat<
     sketch
 }
 
+/// Same as `ingest_kll_ordered_float` but batches each Arrow batch into
+/// `absorb_slice` — measures the batch-oriented ingest optimization
+/// (amortized compact_all + batch min/max + memcpy-style extend).
+fn ingest_kll_ordered_float_absorb_slice(
+    batches: &[Float64Array],
+) -> KllSketch<OrderedFloat<f64>> {
+    let mut sketch = KllSketch::<OrderedFloat<f64>>::new(KLL_K);
+    for arr in batches {
+        let vals: Vec<OrderedFloat<f64>> =
+            arr.values().iter().copied().map(OrderedFloat).collect();
+        sketch.absorb_slice(&vals);
+    }
+    sketch
+}
+
+/// Same as `ingest_kll_row` but batches each Arrow batch into `absorb`
+/// (owned-iter variant) — measures the compact_all amortization win on the
+/// `OwnedRow` path without the extra clone that `absorb_slice` would
+/// force.
+fn ingest_kll_row_absorb(
+    batches: &[Float64Array],
+    converter: &RowConverter,
+) -> KllSketch<OwnedRow> {
+    let mut sketch = KllSketch::<OwnedRow>::new(KLL_K);
+    for arr in batches {
+        let col: ArrayRef = Arc::new(arr.clone());
+        let rows = converter.convert_columns(&[col]).unwrap();
+        sketch.absorb(rows.iter().map(|r| r.owned()));
+    }
+    sketch
+}
+
 fn bench_ingest(c: &mut Criterion) {
     let mut group = c.benchmark_group("runtime_stats_ingest");
     // Ingest is CPU-bound and single-threaded; ten samples is enough for
@@ -156,10 +188,26 @@ fn bench_ingest(c: &mut Criterion) {
             );
         });
 
+        group.bench_function(format!("kll_row_absorb/{n}"), |b| {
+            b.iter_batched(
+                || batches.clone(),
+                |bs| ingest_kll_row_absorb(&bs, &converter),
+                BatchSize::LargeInput,
+            );
+        });
+
         group.bench_function(format!("kll_ordered_float/{n}"), |b| {
             b.iter_batched(
                 || batches.clone(),
                 |bs| ingest_kll_ordered_float(&bs),
+                BatchSize::LargeInput,
+            );
+        });
+
+        group.bench_function(format!("kll_ordered_float_absorb_slice/{n}"), |b| {
+            b.iter_batched(
+                || batches.clone(),
+                |bs| ingest_kll_ordered_float_absorb_slice(&bs),
                 BatchSize::LargeInput,
             );
         });
