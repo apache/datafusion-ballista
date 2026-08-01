@@ -694,4 +694,125 @@ mod tests {
         assert_eq!(sketch.rank(&10_001), 10_000);
         assert_eq!(sketch.rank(&1), 0);
     }
+
+    /// Apache DataSketches' single-sided normalized rank error, fit to the
+    /// P99 max error across thousands of empirical trials. Source:
+    /// `datasketches-cpp/kll/include/kll_sketch_impl.hpp:619`.
+    fn normalized_rank_error_ss(k: usize) -> f64 {
+        2.296 / (k as f64).powf(0.9723)
+    }
+
+    /// One trial: insert a shuffled `1..=n` stream, probe rank at 9
+    /// interior quantiles, return the max normalized rank error observed.
+    fn worst_rank_error_uniform(k: usize, n: u32, seed: u64) -> f64 {
+        use rand::seq::SliceRandom;
+        let mut shuffle_rng = StdRng::seed_from_u64(seed);
+        // Sketch RNG derived from a different sub-seed so the shuffle and
+        // the compaction coin flips aren't drawn from correlated streams.
+        let mut sketch: KllSketch<u32> =
+            KllSketch::with_seed(k, seed.wrapping_add(0x9E37_79B9));
+        let mut stream: Vec<u32> = (1..=n).collect();
+        stream.shuffle(&mut shuffle_rng);
+        for x in &stream {
+            sketch.insert(*x);
+        }
+        (1..10)
+            .map(|i| {
+                let q = i as f64 / 10.0;
+                let probe = ((q * n as f64) as u32).max(1);
+                // For a shuffled stream of `1..=n`, the true count strictly
+                // less than `probe` is `probe - 1`.
+                let true_rank = (probe as f64 - 1.0) / n as f64;
+                let est_rank = sketch.rank(&probe) as f64 / n as f64;
+                (est_rank - true_rank).abs()
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    #[test]
+    fn rank_error_meets_datasketches_bound_across_seeds() {
+        // The DataSketches epsilon is empirically fit to the P99 max
+        // error, so ≤1% of trials should exceed it in a correct
+        // implementation. Assert ≤5% fail rate — leaves slack for tail
+        // luck without letting a real regression slip through; an
+        // optimization bug that biases the error distribution up by a few
+        // percent pushes the fail rate well past 5%.
+        let k = 200;
+        let n = 10_000u32;
+        let bound = normalized_rank_error_ss(k);
+        let trials = 100u64;
+        let failures = (0..trials)
+            .filter(|&seed| worst_rank_error_uniform(k, n, seed) > bound)
+            .count();
+        let fail_rate = failures as f64 / trials as f64;
+        assert!(
+            fail_rate <= 0.05,
+            "rank error exceeded DataSketches bound {bound:.4} in \
+             {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
+            fail_rate * 100.0
+        );
+    }
+
+    #[test]
+    fn merge_matches_single_sketch_within_bound() {
+        // Insert the same shuffled `1..=n` stream two ways:
+        //   Path A: straight into one sketch.
+        //   Path B: split into 4 shards, one sketch each, merged pairwise.
+        // Both carry O(ε) rank error individually, so any single quantile
+        // probe differs by at most ~2ε in expectation. Bounds any merge
+        // bug that would shift ranks by more than the sum of the two
+        // sketches' inherent errors.
+        use rand::seq::SliceRandom;
+        let k = 200;
+        let n = 10_000u32;
+        let bound = 2.0 * normalized_rank_error_ss(k);
+        let trials = 100u64;
+        let mut failures = 0;
+        for seed in 0..trials {
+            let mut shuffle_rng = StdRng::seed_from_u64(seed);
+            let mut stream: Vec<u32> = (1..=n).collect();
+            stream.shuffle(&mut shuffle_rng);
+
+            let mut single: KllSketch<u32> =
+                KllSketch::with_seed(k, seed.wrapping_add(0x9E37_79B9));
+            for x in &stream {
+                single.insert(*x);
+            }
+
+            let shard_size = n as usize / 4;
+            let mut shards: Vec<KllSketch<u32>> = (0..4u64)
+                .map(|i| {
+                    KllSketch::with_seed(k, seed.wrapping_add(0xB504_F334 + i))
+                })
+                .collect();
+            for (i, x) in stream.iter().enumerate() {
+                shards[(i / shard_size).min(3)].insert(*x);
+            }
+            let mut merged = shards.remove(0);
+            for s in shards {
+                merged.merge(s);
+            }
+
+            let worst_diff = (1..10)
+                .map(|i| {
+                    let q = i as f64 / 10.0;
+                    let probe = ((q * n as f64) as u32).max(1);
+                    let ra = single.rank(&probe) as f64 / n as f64;
+                    let rb = merged.rank(&probe) as f64 / n as f64;
+                    (ra - rb).abs()
+                })
+                .fold(0.0_f64, f64::max);
+
+            if worst_diff > bound {
+                failures += 1;
+            }
+        }
+        let fail_rate = failures as f64 / trials as f64;
+        assert!(
+            fail_rate <= 0.05,
+            "merge vs single quantile diff exceeded {bound:.4} in \
+             {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
+            fail_rate * 100.0
+        );
+    }
 }
