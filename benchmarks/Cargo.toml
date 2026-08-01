@@ -57,6 +57,7 @@ tokio = { version = "^1.52", features = [
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+ordered-float = "4"
 
 [[bench]]
 harness = false

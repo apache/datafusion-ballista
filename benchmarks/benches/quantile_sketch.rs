@@ -16,7 +16,13 @@
 // under the License.
 
 //! Ingest throughput: TDigest (production RuntimeStatsExec path) vs KLL
-//! over `OwnedRow` (production-swap path).
+//! over `OwnedRow` (multi-column-capable swap path) vs KLL over
+//! `OrderedFloat<f64>` (single-column-native-Ord fast path).
+//!
+//! The three variants isolate the cost of the arrow-row encoding: TDigest
+//! is the incumbent baseline, KLL<OwnedRow> pays for `RowConverter` +
+//! per-row `owned()` heap alloc, KLL<OrderedFloat<f64>> skips both and
+//! measures the sketch algorithm on its own.
 //!
 //! Merge and quantile query are excluded: for N=1M rows at P=64 partitions
 //! and K=64 cuts, both are 3+ orders of magnitude cheaper than ingest and
@@ -38,6 +44,7 @@ use datafusion::arrow::array::{ArrayRef, Float64Array};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion_functions_aggregate_common::tdigest::TDigest;
+use ordered_float::OrderedFloat;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -90,17 +97,31 @@ fn ingest_tdigest(batches: &[Float64Array]) -> TDigest {
     sketch
 }
 
-/// Production-swap KLL ingest path — encode each batch through the arrow
-/// row converter, then push per-row `OwnedRow` into a `KllSketch<OwnedRow>`.
-/// The heap alloc per `owned()` is what the level-0 borrowed-row
-/// optimization would eliminate.
-fn ingest_kll(batches: &[Float64Array], converter: &RowConverter) -> KllSketch<OwnedRow> {
+/// Multi-column-capable KLL ingest path — encode each batch through the
+/// arrow row converter, then push per-row `OwnedRow` into a
+/// `KllSketch<OwnedRow>`. The heap alloc per `owned()` is what the
+/// level-0 borrowed-row optimization would eliminate.
+fn ingest_kll_row(batches: &[Float64Array], converter: &RowConverter) -> KllSketch<OwnedRow> {
     let mut sketch = KllSketch::<OwnedRow>::new(KLL_K);
     for arr in batches {
         let col: ArrayRef = Arc::new(arr.clone());
         let rows = converter.convert_columns(&[col]).unwrap();
         for row in rows.iter() {
             sketch.insert(row.owned());
+        }
+    }
+    sketch
+}
+
+/// Single-column native-`Ord` KLL fast path — bypasses arrow-row entirely
+/// by using `OrderedFloat<f64>` as the sketch item type. Answers "what
+/// does KLL cost when we dispatch by column type instead of routing
+/// everything through OwnedRow?"
+fn ingest_kll_ordered_float(batches: &[Float64Array]) -> KllSketch<OrderedFloat<f64>> {
+    let mut sketch = KllSketch::<OrderedFloat<f64>>::new(KLL_K);
+    for arr in batches {
+        for v in arr.values() {
+            sketch.insert(OrderedFloat(*v));
         }
     }
     sketch
@@ -127,10 +148,18 @@ fn bench_ingest(c: &mut Criterion) {
             );
         });
 
-        group.bench_function(format!("kll/{n}"), |b| {
+        group.bench_function(format!("kll_row/{n}"), |b| {
             b.iter_batched(
                 || batches.clone(),
-                |bs| ingest_kll(&bs, &converter),
+                |bs| ingest_kll_row(&bs, &converter),
+                BatchSize::LargeInput,
+            );
+        });
+
+        group.bench_function(format!("kll_ordered_float/{n}"), |b| {
+            b.iter_batched(
+                || batches.clone(),
+                |bs| ingest_kll_ordered_float(&bs),
                 BatchSize::LargeInput,
             );
         });
