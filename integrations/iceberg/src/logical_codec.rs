@@ -24,7 +24,6 @@
 //! table providers) is delegated to an inner codec (by default Ballista's
 //! [`BallistaLogicalExtensionCodec`]).
 
-use std::fmt::Debug;
 use std::sync::Arc;
 
 use ballista_core::serde::BallistaLogicalExtensionCodec;
@@ -37,15 +36,15 @@ use datafusion::logical_expr::{Extension, LogicalPlan};
 use datafusion::sql::TableReference;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use iceberg::TableIdent;
-use iceberg::inspect::MetadataTableType;
 use iceberg_datafusion::{
     IcebergMetadataTableProvider, IcebergTableProvider, to_datafusion_error,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    CatalogConfigWire, Frame, TAG_DELEGATED, block_on, encode_blob, get_catalog,
-    load_table, split_frame, to_df_err,
+    CatalogConfigWire, Frame, TAG_DELEGATED, block_on, build_metadata_provider,
+    encode_blob, get_catalog, json_err, missing_catalog_config_err,
+    missing_table_config_err, split_frame,
 };
 
 /// Wire representation of an Iceberg table provider. Carries enough to rebuild
@@ -123,7 +122,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 .try_decode_table_provider(rest, table_ref, schema, ctx),
             Frame::Iceberg(rest) => {
                 let wire: IcebergProviderWire =
-                    serde_json::from_slice(rest).map_err(to_df_err)?;
+                    serde_json::from_slice(rest).map_err(json_err)?;
                 match wire {
                     IcebergProviderWire::Table {
                         catalog,
@@ -145,7 +144,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                             )
                             .await?;
                             match snapshot_id {
-                                Some(_) => unpinned.with_snapshot_id(snapshot_id).await,
+                                Some(id) => unpinned.with_snapshot_id(Some(id)).await,
                                 None => Ok(unpinned),
                             }
                         })
@@ -156,15 +155,11 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                         catalog,
                         table,
                         metadata_type,
-                    } => {
-                        let config = catalog.into();
-                        let (_, table_obj) = load_table(&config, &table)?;
-                        let kind = MetadataTableType::try_from(metadata_type.as_str())
-                            .map_err(DataFusionError::Internal)?;
-                        let provider = IcebergMetadataTableProvider::new(table_obj, kind)
-                            .with_catalog_config(Some(config));
-                        Ok(Arc::new(provider))
-                    }
+                    } => Ok(Arc::new(build_metadata_provider(
+                        catalog,
+                        &table,
+                        &metadata_type,
+                    )?)),
                 }
             }
         }
@@ -177,15 +172,9 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
         buf: &mut Vec<u8>,
     ) -> Result<(), DataFusionError> {
         if let Some(provider) = node.downcast_ref::<IcebergTableProvider>() {
-            let config = provider.config().ok_or_else(|| {
-                DataFusionError::Internal(
-                    "IcebergTableProvider has no IcebergCatalogConfig and cannot be \
-                     distributed; register it with \
-                     IcebergTableProvider::try_new_with_config (see \
-                     iceberg_ballista::register_iceberg_table)."
-                        .to_string(),
-                )
-            })?;
+            let config = provider
+                .config()
+                .ok_or_else(|| missing_table_config_err("IcebergTableProvider"))?;
             let wire = IcebergProviderWire::Table {
                 catalog: config.into(),
                 table: provider.table_ident().clone(),
@@ -195,12 +184,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
         }
         if let Some(provider) = node.downcast_ref::<IcebergMetadataTableProvider>() {
             let config = provider.catalog_config().ok_or_else(|| {
-                DataFusionError::Internal(
-                    "IcebergMetadataTableProvider has no IcebergCatalogConfig and cannot be \
-                     distributed; register the catalog with \
-                     IcebergCatalogProvider::try_new_with_config so its tables carry it."
-                        .to_string(),
-                )
+                missing_catalog_config_err("IcebergMetadataTableProvider")
             })?;
             let wire = IcebergProviderWire::Metadata {
                 catalog: config.into(),

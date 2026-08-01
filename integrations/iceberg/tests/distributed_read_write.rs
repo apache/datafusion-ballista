@@ -167,13 +167,37 @@ async fn ensure_namespace(catalog: &impl Catalog) -> NamespaceIdent {
     namespace
 }
 
-async fn create_table(
+/// Creates `table_name` with `schema` (optionally partitioned) in the shared
+/// test namespace and returns that namespace.
+async fn create_table_with(
     props: &HashMap<String, String>,
     table_name: &str,
+    schema: Schema,
+    partition_spec: Option<UnboundPartitionSpec>,
 ) -> NamespaceIdent {
     let catalog = build_rest_catalog(props).await;
     let namespace = ensure_namespace(&catalog).await;
 
+    let builder = TableCreation::builder()
+        .name(table_name.to_string())
+        .schema(schema)
+        .properties(HashMap::new());
+    let creation = match partition_spec {
+        Some(spec) => builder.partition_spec(spec).build(),
+        None => builder.build(),
+    };
+    catalog
+        .create_table(&namespace, creation)
+        .await
+        .expect("create table");
+
+    namespace
+}
+
+async fn create_table(
+    props: &HashMap<String, String>,
+    table_name: &str,
+) -> NamespaceIdent {
     let schema = Schema::builder()
         .with_schema_id(0)
         .with_fields(vec![
@@ -183,17 +207,7 @@ async fn create_table(
         ])
         .build()
         .unwrap();
-    let creation = TableCreation::builder()
-        .name(table_name.to_string())
-        .schema(schema)
-        .properties(HashMap::new())
-        .build();
-    catalog
-        .create_table(&namespace, creation)
-        .await
-        .expect("create table");
-
-    namespace
+    create_table_with(props, table_name, schema, None).await
 }
 
 /// Column names of a result set, in order.
@@ -231,9 +245,6 @@ async fn create_partitioned_table(
     props: &HashMap<String, String>,
     table_name: &str,
 ) -> NamespaceIdent {
-    let catalog = build_rest_catalog(props).await;
-    let namespace = ensure_namespace(&catalog).await;
-
     // Optional (nullable) fields so the schema matches the nullable columns a
     // `VALUES` source produces; the partitioned-write path checks nullability.
     let schema = Schema::builder()
@@ -247,8 +258,8 @@ async fn create_partitioned_table(
         .unwrap();
     let partition_spec = UnboundPartitionSpec::builder()
         .with_spec_id(0)
-        // The REST catalog requires an explicit partition field-id; the in-memory
-        // catalog used elsewhere assigns one automatically, but REST does not.
+        // The REST catalog requires an explicit partition field-id (some
+        // catalogs assign one automatically; REST does not).
         .add_partition_fields([UnboundPartitionField {
             source_id: 2,
             field_id: Some(1000),
@@ -257,18 +268,7 @@ async fn create_partitioned_table(
         }])
         .unwrap()
         .build();
-    let creation = TableCreation::builder()
-        .name(table_name.to_string())
-        .schema(schema)
-        .partition_spec(partition_spec)
-        .properties(HashMap::new())
-        .build();
-    catalog
-        .create_table(&namespace, creation)
-        .await
-        .expect("create partitioned table");
-
-    namespace
+    create_table_with(props, table_name, schema, Some(partition_spec)).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -399,10 +399,19 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
         .expect("start scheduler");
     let scheduler_url = format!("http://localhost:{}", scheduler_addr.port());
 
+    // Bounded so a scheduler that never comes up fails the test instead of
+    // hanging it.
+    let mut attempts = 0;
     let scheduler_client = loop {
         match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
             Ok(client) => break client,
-            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(e) if attempts >= 100 => {
+                panic!("scheduler at {scheduler_url} unreachable after 10s: {e}")
+            }
+            Err(_) => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         }
     };
 

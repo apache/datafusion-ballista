@@ -37,18 +37,46 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use datafusion::common::DataFusionError;
+use iceberg::inspect::MetadataTableType;
 use iceberg::table::Table;
 use iceberg::{Catalog, Error, ErrorKind, TableIdent};
-use iceberg_datafusion::{IcebergCatalogConfig, to_datafusion_error};
+use iceberg_datafusion::{
+    IcebergCatalogConfig, IcebergMetadataTableProvider, to_datafusion_error,
+};
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use serde::{Deserialize, Serialize};
 
-/// Converts a non-Iceberg error (serde, etc.) into a [`DataFusionError`].
-/// Iceberg errors use [`to_datafusion_error`], the workspace's conversion.
-pub(crate) fn to_df_err<E: std::error::Error + Send + Sync + 'static>(
-    e: E,
-) -> DataFusionError {
+/// Converts a serde error into a [`DataFusionError`]. Deliberately concrete:
+/// Iceberg errors must go through [`to_datafusion_error`] instead, so they keep
+/// their error kind rather than collapsing into `External`.
+pub(crate) fn json_err(e: serde_json::Error) -> DataFusionError {
     DataFusionError::External(Box::new(e))
+}
+
+fn missing_config(node: &str, remedy: &str) -> DataFusionError {
+    DataFusionError::Internal(format!(
+        "{node} has no IcebergCatalogConfig and cannot be distributed; {remedy}."
+    ))
+}
+
+/// Error for a table-level node/provider that carries no
+/// [`IcebergCatalogConfig`] and therefore cannot be rebuilt on a remote node.
+pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
+    missing_config(
+        node,
+        "register the table with IcebergTableProvider::try_new_with_config (see \
+         iceberg_ballista::register_iceberg_table)",
+    )
+}
+
+/// [`missing_table_config_err`], but for metadata-table nodes/providers, whose
+/// config normally arrives via catalog registration.
+pub(crate) fn missing_catalog_config_err(node: &str) -> DataFusionError {
+    missing_config(
+        node,
+        "register the catalog with IcebergCatalogProvider::try_new_with_config so \
+         its tables carry it (see iceberg_ballista::register_iceberg_catalog)",
+    )
 }
 
 /// Dedicated process-lived runtime that drives all Iceberg catalog I/O.
@@ -116,7 +144,7 @@ static CATALOGS: LazyLock<Mutex<HashMap<CatalogConfigWire, Arc<dyn Catalog>>>> =
 /// Storage is provided by [`OpenDalResolvingStorageFactory`], which picks the
 /// object-store backend (S3, GCS, Azure, local fs, …) from each file's path
 /// scheme, configured from the same `props`. So a single code path covers every
-/// catalog/storage combination the workspace supports.
+/// catalog/storage combination the iceberg crates support.
 pub(crate) async fn build_catalog(
     config: &IcebergCatalogConfig,
 ) -> Result<Arc<dyn Catalog>, DataFusionError> {
@@ -172,8 +200,8 @@ fn is_retryable(err: &Error) -> bool {
 /// Returning the catalog matters for that retry: a caller that needs both (the
 /// commit node holds a catalog handle) must get the *rebuilt* catalog, not the
 /// stale one a separate [`get_catalog`] call before the eviction would have
-/// returned. Callers that only want the table ignore it: `let (_, table) = …`.
-pub(crate) fn load_table(
+/// returned. Callers that only want the table use [`load_table`].
+pub(crate) fn load_table_with_catalog(
     config: &IcebergCatalogConfig,
     ident: &TableIdent,
 ) -> Result<(Arc<dyn Catalog>, Table), DataFusionError> {
@@ -188,6 +216,31 @@ pub(crate) fn load_table(
         }
         Err(e) => Err(to_datafusion_error(e)),
     }
+}
+
+/// [`load_table_with_catalog`] for the callers that only want the table.
+pub(crate) fn load_table(
+    config: &IcebergCatalogConfig,
+    ident: &TableIdent,
+) -> Result<Table, DataFusionError> {
+    Ok(load_table_with_catalog(config, ident)?.1)
+}
+
+/// Rebuilds an [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`) from its
+/// wire parts, re-attaching the config so the provider can be re-encoded on the
+/// next hop. Shared by the logical and physical codecs, whose wire formats both
+/// carry exactly these fields.
+pub(crate) fn build_metadata_provider(
+    catalog: CatalogConfigWire,
+    table: &TableIdent,
+    metadata_type: &str,
+) -> Result<IcebergMetadataTableProvider, DataFusionError> {
+    let config = catalog.into();
+    let table_obj = load_table(&config, table)?;
+    let kind =
+        MetadataTableType::try_from(metadata_type).map_err(DataFusionError::Internal)?;
+    Ok(IcebergMetadataTableProvider::new(table_obj, kind)
+        .with_catalog_config(Some(config)))
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +264,7 @@ pub(crate) fn encode_blob<T: Serialize>(
     payload: &T,
 ) -> Result<(), DataFusionError> {
     buf.push(TAG_ICEBERG);
-    buf.extend_from_slice(&serde_json::to_vec(payload).map_err(to_df_err)?);
+    buf.extend_from_slice(&serde_json::to_vec(payload).map_err(json_err)?);
     Ok(())
 }
 

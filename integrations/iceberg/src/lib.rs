@@ -29,7 +29,6 @@
 //!
 //! ```ignore
 //! use std::collections::HashMap;
-//! use std::sync::Arc;
 //!
 //! use iceberg_ballista::{register_iceberg_codecs, register_iceberg_table, IcebergCatalogConfig};
 //! use ballista_core::extension::SessionConfigExt;

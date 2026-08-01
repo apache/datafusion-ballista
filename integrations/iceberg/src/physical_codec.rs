@@ -23,7 +23,6 @@
 //! Ballista's own [`BallistaPhysicalExtensionCodec`]), so shuffle and other
 //! Ballista plan nodes keep working.
 
-use std::fmt::Debug;
 use std::sync::Arc;
 
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
@@ -35,20 +34,18 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use iceberg::TableIdent;
 use iceberg::expr::Predicate;
-use iceberg::inspect::MetadataTableType;
 use iceberg::spec::{PartitionSpec, Schema};
 use iceberg_datafusion::physical_plan::{
     IcebergCommitExec, IcebergMetadataScan, IcebergTableScan, IcebergWriteExec,
     PartitionExpr,
 };
-use iceberg_datafusion::{
-    IcebergMetadataTableProvider, snapshot_arrow_schema, to_datafusion_error,
-};
+use iceberg_datafusion::{snapshot_arrow_schema, to_datafusion_error};
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    CatalogConfigWire, Frame, TAG_DELEGATED, encode_blob, load_table, split_frame,
-    to_df_err,
+    CatalogConfigWire, Frame, TAG_DELEGATED, build_metadata_provider, encode_blob,
+    json_err, load_table, load_table_with_catalog, missing_catalog_config_err,
+    missing_table_config_err, split_frame,
 };
 
 /// Wire representation of an Iceberg physical plan node.
@@ -115,14 +112,6 @@ impl IcebergPhysicalCodec {
     }
 }
 
-fn missing_config_err(node: &str) -> DataFusionError {
-    DataFusionError::Internal(format!(
-        "{node} has no IcebergCatalogConfig and cannot be distributed. Register the \
-         table with IcebergTableProvider::try_new_with_config (see \
-         iceberg_ballista::register_iceberg_table)."
-    ))
-}
-
 impl PhysicalExtensionCodec for IcebergPhysicalCodec {
     fn try_decode(
         &self,
@@ -135,8 +124,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             Frame::Iceberg(rest) => rest,
         };
 
-        let node: IcebergPhysicalNode =
-            serde_json::from_slice(rest).map_err(to_df_err)?;
+        let node: IcebergPhysicalNode = serde_json::from_slice(rest).map_err(json_err)?;
 
         match node {
             IcebergPhysicalNode::Scan {
@@ -148,7 +136,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 predicates,
             } => {
                 let config = catalog.into();
-                let (_, table_obj) = load_table(&config, &table)?;
+                let table_obj = load_table(&config, &table)?;
                 // A pinned scan must use the schema that snapshot was written
                 // under — the table's schema may have changed since, and the
                 // current one would describe historical rows incorrectly.
@@ -174,7 +162,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             }
             IcebergPhysicalNode::Write { catalog, table } => {
                 let config = catalog.into();
-                let (_, table_obj) = load_table(&config, &table)?;
+                let table_obj = load_table(&config, &table)?;
                 // Writes always target the current schema — a snapshot-pinned
                 // provider is read-only.
                 let arrow_schema = snapshot_arrow_schema(&table_obj, None)
@@ -186,7 +174,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             }
             IcebergPhysicalNode::Commit { catalog, table } => {
                 let config = catalog.into();
-                let (cat, table_obj) = load_table(&config, &table)?;
+                let (cat, table_obj) = load_table_with_catalog(&config, &table)?;
                 let arrow_schema = snapshot_arrow_schema(&table_obj, None)
                     .map_err(to_datafusion_error)?;
                 let input = single_input(inputs, "IcebergCommitExec")?;
@@ -198,15 +186,11 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 catalog,
                 table,
                 metadata_type,
-            } => {
-                let config = catalog.into();
-                let (_, table_obj) = load_table(&config, &table)?;
-                let kind = MetadataTableType::try_from(metadata_type.as_str())
-                    .map_err(DataFusionError::Internal)?;
-                let provider = IcebergMetadataTableProvider::new(table_obj, kind)
-                    .with_catalog_config(Some(config));
-                Ok(Arc::new(IcebergMetadataScan::new(provider)))
-            }
+            } => Ok(Arc::new(IcebergMetadataScan::new(build_metadata_provider(
+                catalog,
+                &table,
+                &metadata_type,
+            )?))),
         }
     }
 
@@ -218,7 +202,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         if let Some(scan) = node.downcast_ref::<IcebergTableScan>() {
             let config = scan
                 .catalog_config()
-                .ok_or_else(|| missing_config_err("IcebergTableScan"))?;
+                .ok_or_else(|| missing_table_config_err("IcebergTableScan"))?;
             // Pin the snapshot at encode (planning) time. The executor reloads
             // table metadata independently, so an unpinned scan would read
             // whatever snapshot is current when each task decodes — concurrent
@@ -242,7 +226,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         if let Some(write) = node.downcast_ref::<IcebergWriteExec>() {
             let config = write
                 .catalog_config()
-                .ok_or_else(|| missing_config_err("IcebergWriteExec"))?;
+                .ok_or_else(|| missing_table_config_err("IcebergWriteExec"))?;
             let node = IcebergPhysicalNode::Write {
                 catalog: config.into(),
                 table: write.table().identifier().clone(),
@@ -253,7 +237,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         if let Some(commit) = node.downcast_ref::<IcebergCommitExec>() {
             let config = commit
                 .catalog_config()
-                .ok_or_else(|| missing_config_err("IcebergCommitExec"))?;
+                .ok_or_else(|| missing_table_config_err("IcebergCommitExec"))?;
             let node = IcebergPhysicalNode::Commit {
                 catalog: config.into(),
                 table: commit.table().identifier().clone(),
@@ -265,7 +249,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             let provider = meta.provider();
             let config = provider
                 .catalog_config()
-                .ok_or_else(|| missing_config_err("IcebergMetadataScan"))?;
+                .ok_or_else(|| missing_catalog_config_err("IcebergMetadataScan"))?;
             let node = IcebergPhysicalNode::Metadata {
                 catalog: config.into(),
                 table: provider.table().identifier().clone(),
@@ -305,7 +289,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             Frame::Delegated(rest) => self.inner.try_decode_expr(rest, inputs),
             Frame::Iceberg(rest) => {
                 let wire: PartitionExprWire =
-                    serde_json::from_slice(rest).map_err(to_df_err)?;
+                    serde_json::from_slice(rest).map_err(json_err)?;
                 let expr = PartitionExpr::try_new(
                     Arc::new(wire.partition_spec),
                     Arc::new(wire.schema),
