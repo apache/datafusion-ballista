@@ -99,13 +99,13 @@
 //! Ingest measured on uniform 1M-row streams (see
 //! `benchmarks/benches/quantile_sketch.rs`):
 //!
-//! - `T = OrderedFloat<f64>` via `absorb_slice`: **2.1× TDigest** (down
-//!   from 3.7× on per-row `insert`).
-//! - `T = OwnedRow` via `absorb`: **5.8× TDigest** (down from 6.7× on
+//! - `T = OrderedFloat<f64>` via `absorb_slice`: **1.8× TDigest** (down
+//!   from 3.7× on per-row `insert` with no batch API).
+//! - `T = OwnedRow` via `absorb`: **5.7× TDigest** (down from 6.8× on
 //!   per-row `insert`).
 //!
-//! Item (1) below landed as `absorb` / `absorb_slice`. Two independent
-//! wins remain that could close the remaining gap:
+//! Items (1) and (3) below have landed. One deferred win remains, and
+//! it's the one that matters for the OwnedRow path:
 //!
 //! 1. ~~**Amortize `compact_all` across a batch.**~~ **Landed.** `absorb`
 //!    caches level 0's capacity and skips the `compact_all` O(L) scan
@@ -122,14 +122,13 @@
 //!    lives for the duration of `absorb`, compacts before the caller's
 //!    `Rows` buffer goes out of scope. Only helps `T = OwnedRow`.
 //!
-//! 3. **Per-level sortedness invariant.** Apache DataSketches maintains
-//!    an `is_level_zero_sorted_` flag so `compact` skips the re-sort when
-//!    the level is already ordered, and two sketches merge via linear-
-//!    time merge-sort rather than concatenate-and-resort. Trades
-//!    bookkeeping in `insert`/`merge` for cheaper `compact` and cheaper
-//!    cross-sketch `merge` — the compaction sort dominates ingest time
-//!    once (1) is in place, so this is where the next 2× likely lives
-//!    for the Copy-T path.
+//! 3. ~~**Per-level sortedness invariant.**~~ **Landed.** `KllSketch`
+//!    carries a `sorted: Vec<bool>` parallel to `levels`. `compact_level`
+//!    skips the sort when the level is already ordered, and promoted
+//!    items merge-extend the next level in linear time when it too was
+//!    sorted. `KllSketch::merge` (across sketches) does not yet fold the
+//!    two sortedness flags — cross-sketch merge-extend is a further
+//!    deferred win.
 //!
 //! # Reference
 //!
@@ -153,6 +152,14 @@ const MIN_LEVEL_WIDTH: usize = 8;
 pub struct KllSketch<T: Ord + Clone> {
     /// One buffer per level; `levels[h]` is the level-`h` compactor.
     levels: Vec<Vec<T>>,
+    /// `sorted[h] == true` iff `levels[h]` is in ascending order. Same
+    /// length as `levels`, kept in lockstep with every mutation.
+    /// Compaction reads this to skip the re-sort when a level was left
+    /// sorted by an earlier promotion; promotions extend the destination
+    /// level via linear-time merge instead of concatenate-then-sort when
+    /// the destination is already sorted. Matches DataSketches'
+    /// `is_level_zero_sorted_` bookkeeping, generalized per-level.
+    sorted: Vec<bool>,
     /// Nominal compactor capacity — the top level's capacity. Lower
     /// levels shrink geometrically toward `MIN_LEVEL_WIDTH`.
     k: usize,
@@ -198,6 +205,8 @@ impl<T: Ord + Clone> KllSketch<T> {
     pub fn with_seed(k: usize, seed: u64) -> Self {
         Self {
             levels: vec![Vec::new()],
+            // An empty level is trivially sorted.
+            sorted: vec![true],
             k,
             rng: StdRng::seed_from_u64(seed),
             min: None,
@@ -231,11 +240,19 @@ impl<T: Ord + Clone> KllSketch<T> {
             (None, b) => b,
         };
         // Extend same-height compactors, growing the stack as needed.
+        // Cross-sketch extend does not preserve any per-level sortedness
+        // — the concatenation of two sorted runs is not sorted, and we
+        // don't yet fold the sortedness flags of two sketches into a
+        // merge-extend. `compact_all` will sort on demand.
         for (h, level) in other.levels.into_iter().enumerate() {
             if h == self.levels.len() {
                 self.levels.push(Vec::new());
+                self.sorted.push(true);
             }
-            self.levels[h].extend(level);
+            if !level.is_empty() {
+                self.levels[h].extend(level);
+                self.sorted[h] = false;
+            }
         }
         self.compact_all();
     }
@@ -251,6 +268,8 @@ impl<T: Ord + Clone> KllSketch<T> {
             self.max = Some(x.clone());
         }
         self.levels[0].push(x);
+        // Arbitrary insertion breaks any existing sort order at level 0.
+        self.sorted[0] = false;
         self.compact_all();
     }
 
@@ -284,6 +303,7 @@ impl<T: Ord + Clone> KllSketch<T> {
                 self.max = Some(x.clone());
             }
             self.levels[0].push(x);
+            self.sorted[0] = false;
             if self.levels[0].len() >= level_0_cap {
                 self.compact_all();
                 level_0_cap = level_capacity(self.k, self.levels.len(), 0);
@@ -338,6 +358,7 @@ impl<T: Ord + Clone> KllSketch<T> {
             let room = cap.saturating_sub(self.levels[0].len());
             let take = (xs.len() - i).min(room);
             self.levels[0].extend_from_slice(&xs[i..i + take]);
+            self.sorted[0] = false;
             i += take;
             if self.levels[0].len() >= cap {
                 self.compact_all();
@@ -428,7 +449,8 @@ impl<T: Ord + Clone> KllSketch<T> {
         }
     }
 
-    /// Sort level `h`, coin-flip, promote every other item to level `h+1`.
+    /// Sort level `h` (or reuse an existing sort), coin-flip, promote every
+    /// other item to level `h+1`.
     ///
     /// On odd-length levels the smallest item stays behind at level `h`
     /// with its original weight — the algorithm requires an even-length
@@ -436,13 +458,25 @@ impl<T: Ord + Clone> KllSketch<T> {
     /// current weight is what preserves the total-weight invariant across
     /// compaction. Matches Apache DataSketches' `general_compress`
     /// odd-pop handling.
+    ///
+    /// Sortedness bookkeeping: promoted items form a sorted subsequence
+    /// (every other element of a sorted array). If the destination level
+    /// was already sorted (which it is by default when previously touched
+    /// only by this function), we merge-extend in linear time instead of
+    /// concatenate-then-sort. The saving compounds up the stack — for
+    /// large streams, levels 1+ are always sorted going into compaction,
+    /// so the `sort_unstable` at level 0 is the only one paid.
     fn compact_level(&mut self, h: usize) {
         let level_len = self.levels[h].len();
         if level_len < 2 {
             return;
         }
         let mut buf = std::mem::take(&mut self.levels[h]);
-        buf.sort_unstable();
+        if !self.sorted[h] {
+            buf.sort_unstable();
+        }
+        // levels[h] is now empty and thus trivially sorted.
+        self.sorted[h] = true;
         let leftover = if level_len % 2 == 1 {
             Some(buf.remove(0))
         } else {
@@ -457,12 +491,53 @@ impl<T: Ord + Clone> KllSketch<T> {
             .collect();
         if h + 1 == self.levels.len() {
             self.levels.push(Vec::new());
+            self.sorted.push(true);
         }
-        self.levels[h + 1].extend(promoted);
+        // If the destination is already sorted, linear-time merge preserves
+        // its sortedness. Otherwise fall back to append; the next compaction
+        // at h+1 will pay the sort.
+        if self.sorted[h + 1] {
+            let existing = std::mem::take(&mut self.levels[h + 1]);
+            self.levels[h + 1] = merge_sorted(existing, promoted);
+        } else {
+            self.levels[h + 1].extend(promoted);
+        }
         if let Some(x) = leftover {
+            // Single-item level is trivially sorted.
             self.levels[h].push(x);
         }
     }
+}
+
+/// Merge two sorted vectors into one sorted vector in linear time.
+/// Preserves ties in source order (`a` before `b`) — matters only for
+/// non-unique `T`, where downstream halving still picks half the items
+/// but may pick different specific copies than `sort_unstable(a ++ b)`.
+fn merge_sorted<T: Ord>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let mut ai = a.into_iter().peekable();
+    let mut bi = b.into_iter().peekable();
+    loop {
+        match (ai.peek(), bi.peek()) {
+            (Some(av), Some(bv)) => {
+                if av <= bv {
+                    out.push(ai.next().unwrap());
+                } else {
+                    out.push(bi.next().unwrap());
+                }
+            }
+            (Some(_), None) => {
+                out.extend(ai);
+                break;
+            }
+            (None, Some(_)) => {
+                out.extend(bi);
+                break;
+            }
+            (None, None) => break,
+        }
+    }
+    out
 }
 
 #[cfg(test)]
