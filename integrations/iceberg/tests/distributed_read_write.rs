@@ -35,8 +35,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arrow::array::{AsArray, Int64Array, RecordBatch};
-use arrow::datatypes::Int32Type;
+use arrow::array::RecordBatch;
+use ballista::datafusion::assert_batches_eq;
 use ballista::datafusion::execution::{SessionState, SessionStateBuilder};
 use ballista::datafusion::prelude::{SessionConfig, SessionContext};
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
@@ -91,42 +91,6 @@ async fn run_sql(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
         .collect()
         .await
         .expect("run sql")
-}
-
-/// Extracts the single `i64` value of the first column (a COUNT result).
-fn single_i64(batches: &[RecordBatch]) -> i64 {
-    batches
-        .iter()
-        .find_map(|b| {
-            b.column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .map(|a| a.value(0))
-        })
-        .expect("i64 column")
-}
-
-/// Flattens the first column of every batch into a `Vec<i32>`.
-fn i32_values(batches: &[RecordBatch]) -> Vec<i32> {
-    batches
-        .iter()
-        .flat_map(|b| b.column(0).as_primitive::<Int32Type>().values().to_vec())
-        .collect()
-}
-
-/// Flattens a named string column across all batches, preserving nulls.
-fn string_values(batches: &[RecordBatch], column: &str) -> Vec<Option<String>> {
-    batches
-        .iter()
-        .flat_map(|b| {
-            let idx = b.schema().index_of(column).expect("column present");
-            b.column(idx)
-                .as_string::<i32>()
-                .iter()
-                .map(|v| v.map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }
 
 fn catalog_props() -> HashMap<String, String> {
@@ -208,18 +172,6 @@ async fn create_table(
         .build()
         .unwrap();
     create_table_with(props, table_name, schema, None).await
-}
-
-/// Column names of a result set, in order.
-fn column_names(batches: &[RecordBatch]) -> Vec<String> {
-    batches
-        .first()
-        .expect("at least one batch")
-        .schema()
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .collect()
 }
 
 /// Loads the table from the catalog and returns its current snapshot id.
@@ -304,8 +256,10 @@ async fn distributed_insert_and_read() {
     // meaningful: it forces the registered provider through a full plan/scan
     // cycle while the table is still empty, so a provider that froze its table
     // metadata here would keep returning this empty snapshot forever.
-    let count = single_i64(&run_sql(&ctx, "SELECT count(*) AS n FROM events").await);
-    assert_eq!(count, 0, "table is empty before the first insert");
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 0 |", "+---+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM events").await
+    );
 
     run_sql(
         &ctx,
@@ -313,11 +267,23 @@ async fn distributed_insert_and_read() {
     )
     .await;
 
-    let count = single_i64(&run_sql(&ctx, "SELECT count(*) AS n FROM events").await);
-    assert_eq!(count, 3, "expected 3 rows after distributed insert");
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 3 |", "+---+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM events").await
+    );
 
-    let rows = run_sql(&ctx, "SELECT id, name FROM events ORDER BY id").await;
-    assert_eq!(i32_values(&rows), vec![1, 2, 3]);
+    assert_batches_eq!(
+        [
+            "+----+-------+",
+            "| id | name  |",
+            "+----+-------+",
+            "| 1  | alice |",
+            "| 2  | bob   |",
+            "| 3  | carol |",
+            "+----+-------+",
+        ],
+        &run_sql(&ctx, "SELECT id, name FROM events ORDER BY id").await
+    );
 
     // Insert again through the same registration and re-read. `scan` reloads
     // table metadata from the catalog every time, so each query plans against
@@ -326,14 +292,26 @@ async fn distributed_insert_and_read() {
     // the first read would still report 3 rows here.
     run_sql(&ctx, "INSERT INTO events VALUES (4, 'dave'), (5, 'erin')").await;
 
-    let count = single_i64(&run_sql(&ctx, "SELECT count(*) AS n FROM events").await);
-    assert_eq!(count, 5, "re-read must observe the interposed insert");
+    // The re-read must observe the interposed insert: both the original and the
+    // newly inserted rows.
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 5 |", "+---+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM events").await
+    );
 
-    let rows = run_sql(&ctx, "SELECT id, name FROM events ORDER BY id").await;
-    assert_eq!(
-        i32_values(&rows),
-        vec![1, 2, 3, 4, 5],
-        "re-read returns both the original and the newly inserted rows"
+    assert_batches_eq!(
+        [
+            "+----+-------+",
+            "| id | name  |",
+            "+----+-------+",
+            "| 1  | alice |",
+            "| 2  | bob   |",
+            "| 3  | carol |",
+            "| 4  | dave  |",
+            "| 5  | erin  |",
+            "+----+-------+",
+        ],
+        &run_sql(&ctx, "SELECT id, name FROM events ORDER BY id").await
     );
 
     // Catalog-level registration: mount the whole Iceberg catalog and read the
@@ -347,14 +325,14 @@ async fn distributed_insert_and_read() {
     )
     .await
     .expect("register iceberg catalog");
-    let count = single_i64(
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 5 |", "+---+"],
         &run_sql(
             &ctx,
             &format!("SELECT count(*) AS n FROM ice.ballista_it.{table_name}"),
         )
-        .await,
+        .await
     );
-    assert_eq!(count, 5, "catalog-qualified distributed read");
 }
 
 /// Distributed correctness on a real multi-executor cluster, writing a
@@ -495,31 +473,35 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
         "partitioned write should produce multiple data files, got {data_files}"
     );
 
-    // (3) Every row landed exactly once.
-    let count = single_i64(&run_sql(&ctx, "SELECT count(*) AS n FROM target").await);
-    assert_eq!(count as i32, TOTAL_ROWS, "row count after parallel insert");
+    // (3) Every row landed exactly once: the exact id set 1..=TOTAL_ROWS, no
+    // lost or duplicated rows.
+    assert_batches_eq!(
+        ["+----+", "| n  |", "+----+", "| 12 |", "+----+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM target").await
+    );
 
-    let ids = i32_values(&run_sql(&ctx, "SELECT id FROM target ORDER BY id").await);
-    assert_eq!(
-        ids,
-        (1..=TOTAL_ROWS).collect::<Vec<_>>(),
-        "exact id set after parallel insert (no lost or duplicated rows)"
+    assert_batches_eq!(
+        [
+            "+----+", "| id |", "+----+", "| 1  |", "| 2  |", "| 3  |", "| 4  |",
+            "| 5  |", "| 6  |", "| 7  |", "| 8  |", "| 9  |", "| 10 |", "| 11 |",
+            "| 12 |", "+----+",
+        ],
+        &run_sql(&ctx, "SELECT id FROM target ORDER BY id").await
     );
 
     // (4) Predicate pushdown survives serialization: a WHERE clause is pushed into
     // the distributed scan (and re-applied above it), and the result is correct.
     let half = TOTAL_ROWS / 2;
-    let filtered_ids = i32_values(
+    assert_batches_eq!(
+        [
+            "+----+", "| id |", "+----+", "| 1  |", "| 2  |", "| 3  |", "| 4  |",
+            "| 5  |", "| 6  |", "+----+",
+        ],
         &run_sql(
             &ctx,
             &format!("SELECT id FROM target WHERE id <= {half} ORDER BY id"),
         )
-        .await,
-    );
-    assert_eq!(
-        filtered_ids,
-        (1..=half).collect::<Vec<_>>(),
-        "predicate-filtered distributed read"
+        .await
     );
 }
 
@@ -621,14 +603,23 @@ async fn distributed_time_travel_pins_snapshot_schema() {
     .await;
     let snapshot_2 = current_snapshot_id(&props, &namespace, &table_name).await;
 
-    // The current distributed read sees all six rows under the evolved schema.
-    let current = run_sql(&ctx, "SELECT * FROM events_v2 ORDER BY id").await;
-    assert_eq!(
-        column_names(&current),
-        vec!["id", "name", "email"],
-        "phase 2: current read exposes the evolved schema"
+    // Phase 2: the current distributed read sees all six rows under the evolved
+    // schema (the header row asserts the schema; rows 1-3 predate `email`).
+    assert_batches_eq!(
+        [
+            "+----+-------+--------------+",
+            "| id | name  | email        |",
+            "+----+-------+--------------+",
+            "| 1  | alice |              |",
+            "| 2  | bob   |              |",
+            "| 3  | carol |              |",
+            "| 4  | dave  | dave@x.test  |",
+            "| 5  | erin  | erin@x.test  |",
+            "| 6  | frank | frank@x.test |",
+            "+----+-------+--------------+",
+        ],
+        &run_sql(&ctx, "SELECT * FROM events_v2 ORDER BY id").await
     );
-    assert_eq!(i32_values(&current), vec![1, 2, 3, 4, 5, 6]);
 
     // Phase 3 — pin to snapshot 1, which has no `email` while the table does.
     // Must run before the drop below, or the two schemas match again and the
@@ -647,17 +638,19 @@ async fn distributed_time_travel_pins_snapshot_schema() {
     ctx.register_table("events_v1", Arc::new(pinned_v1))
         .expect("register provider pinned to snapshot 1");
 
-    // The pinned read returns that snapshot's rows under that snapshot's schema.
-    let pinned = run_sql(&ctx, "SELECT * FROM events_v1 ORDER BY id").await;
-    assert_eq!(
-        column_names(&pinned),
-        vec!["id", "name"],
-        "phase 3: pinned read exposes the schema in effect at that snapshot"
-    );
-    assert_eq!(
-        i32_values(&pinned),
-        vec![1, 2, 3],
-        "phase 3: exact historical row set from the pinned snapshot"
+    // The pinned read returns that snapshot's exact historical rows under the
+    // schema in effect at that snapshot — no `email` column.
+    assert_batches_eq!(
+        [
+            "+----+-------+",
+            "| id | name  |",
+            "+----+-------+",
+            "| 1  | alice |",
+            "| 2  | bob   |",
+            "| 3  | carol |",
+            "+----+-------+",
+        ],
+        &run_sql(&ctx, "SELECT * FROM events_v1 ORDER BY id").await
     );
 
     // Phase 4 — drop `name`, leaving {id, email}. Snapshot 2 keeps referencing
@@ -698,13 +691,22 @@ async fn distributed_time_travel_pins_snapshot_schema() {
     ctx.register_table("events_v3", Arc::new(dropped))
         .expect("register provider after drop");
 
-    let current = run_sql(&ctx, "SELECT * FROM events_v3 ORDER BY id").await;
-    assert_eq!(
-        column_names(&current),
-        vec!["id", "email"],
-        "phase 4: current read reflects the dropped column"
+    // The current read reflects the dropped column: `name` is gone.
+    assert_batches_eq!(
+        [
+            "+----+--------------+",
+            "| id | email        |",
+            "+----+--------------+",
+            "| 1  |              |",
+            "| 2  |              |",
+            "| 3  |              |",
+            "| 4  | dave@x.test  |",
+            "| 5  | erin@x.test  |",
+            "| 6  | frank@x.test |",
+            "+----+--------------+",
+        ],
+        &run_sql(&ctx, "SELECT * FROM events_v3 ORDER BY id").await
     );
-    assert_eq!(i32_values(&current), vec![1, 2, 3, 4, 5, 6]);
 
     // Phase 5 — pin to snapshot 2, which still has the `name` the table just
     // lost. An executor using the current schema has no `name` to project, so
@@ -723,31 +725,22 @@ async fn distributed_time_travel_pins_snapshot_schema() {
     ctx.register_table("events_v2_pinned", Arc::new(pinned_v2))
         .expect("register provider pinned to snapshot 2");
 
-    let pinned = run_sql(&ctx, "SELECT * FROM events_v2_pinned ORDER BY id").await;
-    assert_eq!(
-        column_names(&pinned),
-        vec!["id", "name", "email"],
-        "phase 5: pinned read exposes the column that existed at that snapshot"
-    );
-    assert_eq!(i32_values(&pinned), vec![1, 2, 3, 4, 5, 6]);
-    assert_eq!(
-        string_values(&pinned, "name"),
-        ["alice", "bob", "carol", "dave", "erin", "frank"]
-            .map(|s| Some(s.to_string()))
-            .to_vec(),
-        "phase 5: the dropped column's values still read back from the pinned \
-         snapshot"
-    );
-    assert_eq!(
-        string_values(&pinned, "email"),
-        vec![
-            None,
-            None,
-            None,
-            Some("dave@x.test".to_string()),
-            Some("erin@x.test".to_string()),
-            Some("frank@x.test".to_string()),
+    // The pinned read exposes the `name` column that existed at that snapshot,
+    // with the dropped column's values still reading back — and rows written
+    // before `email` existed read back null.
+    assert_batches_eq!(
+        [
+            "+----+-------+--------------+",
+            "| id | name  | email        |",
+            "+----+-------+--------------+",
+            "| 1  | alice |              |",
+            "| 2  | bob   |              |",
+            "| 3  | carol |              |",
+            "| 4  | dave  | dave@x.test  |",
+            "| 5  | erin  | erin@x.test  |",
+            "| 6  | frank | frank@x.test |",
+            "+----+-------+--------------+",
         ],
-        "phase 5: rows written before `email` existed read back null"
+        &run_sql(&ctx, "SELECT * FROM events_v2_pinned ORDER BY id").await
     );
 }
