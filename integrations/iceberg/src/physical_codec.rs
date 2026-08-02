@@ -43,8 +43,8 @@ use iceberg_datafusion::{snapshot_arrow_schema, to_datafusion_error};
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    CatalogConfigWire, Frame, TAG_DELEGATED, build_metadata_provider, encode_blob,
-    json_err, load_table, load_table_with_catalog, missing_catalog_config_err,
+    Frame, TAG_DELEGATED, TableRefWire, build_metadata_provider, encode_blob, json_err,
+    load_table, load_table_pinned, load_table_with_catalog, missing_catalog_config_err,
     missing_table_config_err, split_frame,
 };
 
@@ -54,8 +54,8 @@ use crate::bridge::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 enum IcebergPhysicalNode {
     Scan {
-        catalog: CatalogConfigWire,
-        table: TableIdent,
+        #[serde(flatten)]
+        table_ref: TableRefWire,
         snapshot_id: Option<i64>,
         projection: Option<Vec<String>>,
         limit: Option<usize>,
@@ -65,16 +65,16 @@ enum IcebergPhysicalNode {
         predicates: Option<Predicate>,
     },
     Write {
-        catalog: CatalogConfigWire,
-        table: TableIdent,
+        #[serde(flatten)]
+        table_ref: TableRefWire,
     },
     Commit {
-        catalog: CatalogConfigWire,
-        table: TableIdent,
+        #[serde(flatten)]
+        table_ref: TableRefWire,
     },
     Metadata {
-        catalog: CatalogConfigWire,
-        table: TableIdent,
+        #[serde(flatten)]
+        table_ref: TableRefWire,
         /// The metadata table kind, as its lowercase string name.
         metadata_type: String,
     },
@@ -128,15 +128,16 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
 
         match node {
             IcebergPhysicalNode::Scan {
-                catalog,
-                table,
+                table_ref,
                 snapshot_id,
                 projection,
                 limit,
                 predicates,
             } => {
-                let config = catalog.into();
-                let table_obj = load_table(&config, &table)?;
+                let (config, table) = table_ref.into_parts();
+                // Pinned loads are cached: every task of the stage decodes the
+                // same pin, so only the first pays the catalog round trip.
+                let table_obj = load_table_pinned(&config, &table, snapshot_id)?;
                 // A pinned scan must use the schema that snapshot was written
                 // under — the table's schema may have changed since, and the
                 // current one would describe historical rows incorrectly.
@@ -160,8 +161,8 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .with_catalog_config(Some(config));
                 Ok(Arc::new(scan))
             }
-            IcebergPhysicalNode::Write { catalog, table } => {
-                let config = catalog.into();
+            IcebergPhysicalNode::Write { table_ref } => {
+                let (config, table) = table_ref.into_parts();
                 let table_obj = load_table(&config, &table)?;
                 // Writes always target the current schema — a snapshot-pinned
                 // provider is read-only.
@@ -172,8 +173,8 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                     .with_catalog_config(Some(config));
                 Ok(Arc::new(write))
             }
-            IcebergPhysicalNode::Commit { catalog, table } => {
-                let config = catalog.into();
+            IcebergPhysicalNode::Commit { table_ref } => {
+                let (config, table) = table_ref.into_parts();
                 let (cat, table_obj) = load_table_with_catalog(&config, &table)?;
                 let arrow_schema = snapshot_arrow_schema(&table_obj, None)
                     .map_err(to_datafusion_error)?;
@@ -183,12 +184,10 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 Ok(Arc::new(commit))
             }
             IcebergPhysicalNode::Metadata {
-                catalog,
-                table,
+                table_ref,
                 metadata_type,
             } => Ok(Arc::new(IcebergMetadataScan::new(build_metadata_provider(
-                catalog,
-                &table,
+                table_ref,
                 &metadata_type,
             )?))),
         }
@@ -213,8 +212,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .snapshot_id()
                 .or_else(|| scan.table().metadata().current_snapshot_id());
             let node = IcebergPhysicalNode::Scan {
-                catalog: config.into(),
-                table: scan.table().identifier().clone(),
+                table_ref: TableRefWire::new(config, scan.table().identifier()),
                 snapshot_id,
                 projection: scan.projection().map(|s| s.to_vec()),
                 limit: scan.limit(),
@@ -228,8 +226,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .catalog_config()
                 .ok_or_else(|| missing_table_config_err("IcebergWriteExec"))?;
             let node = IcebergPhysicalNode::Write {
-                catalog: config.into(),
-                table: write.table().identifier().clone(),
+                table_ref: TableRefWire::new(config, write.table().identifier()),
             };
             return encode_blob(buf, &node);
         }
@@ -239,8 +236,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .catalog_config()
                 .ok_or_else(|| missing_table_config_err("IcebergCommitExec"))?;
             let node = IcebergPhysicalNode::Commit {
-                catalog: config.into(),
-                table: commit.table().identifier().clone(),
+                table_ref: TableRefWire::new(config, commit.table().identifier()),
             };
             return encode_blob(buf, &node);
         }
@@ -251,8 +247,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .catalog_config()
                 .ok_or_else(|| missing_catalog_config_err("IcebergMetadataScan"))?;
             let node = IcebergPhysicalNode::Metadata {
-                catalog: config.into(),
-                table: provider.table().identifier().clone(),
+                table_ref: TableRefWire::new(config, provider.table().identifier()),
                 metadata_type: provider.metadata_type().as_str().to_string(),
             };
             return encode_blob(buf, &node);
@@ -360,18 +355,21 @@ fn single_input(
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::bridge::TAG_ICEBERG;
+    use crate::bridge::{CatalogConfigWire, TAG_ICEBERG};
 
     use super::*;
 
-    fn sample_catalog() -> CatalogConfigWire {
-        CatalogConfigWire {
-            r#type: "rest".to_string(),
-            name: "rest".to_string(),
-            props: BTreeMap::from([
-                ("uri".to_string(), "http://localhost:8181".to_string()),
-                ("warehouse".to_string(), "s3://bucket/wh".to_string()),
-            ]),
+    fn sample_table_ref() -> TableRefWire {
+        TableRefWire {
+            catalog: CatalogConfigWire {
+                r#type: "rest".to_string(),
+                name: "rest".to_string(),
+                props: BTreeMap::from([
+                    ("uri".to_string(), "http://localhost:8181".to_string()),
+                    ("warehouse".to_string(), "s3://bucket/wh".to_string()),
+                ]),
+            },
+            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
         }
     }
 
@@ -385,8 +383,7 @@ mod tests {
     #[test]
     fn scan_node_roundtrips() {
         let node = IcebergPhysicalNode::Scan {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             snapshot_id: Some(42),
             projection: Some(vec!["a".to_string(), "b".to_string()]),
             limit: Some(10),
@@ -401,8 +398,7 @@ mod tests {
         use iceberg::spec::Datum;
 
         let node = IcebergPhysicalNode::Scan {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             snapshot_id: None,
             projection: None,
             limit: None,
@@ -422,8 +418,7 @@ mod tests {
             .and(Reference::new("b").is_null())
             .or(Reference::new("c").is_in([Datum::string("x"), Datum::string("y")]));
         let node = IcebergPhysicalNode::Scan {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             snapshot_id: None,
             projection: None,
             limit: None,
@@ -439,8 +434,7 @@ mod tests {
 
         // `predicates` is `#[serde(default)]`: a payload missing the key still decodes.
         let node = IcebergPhysicalNode::Scan {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             snapshot_id: Some(7),
             projection: None,
             limit: None,
@@ -504,8 +498,7 @@ mod tests {
     #[test]
     fn metadata_node_roundtrips() {
         let node = IcebergPhysicalNode::Metadata {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             metadata_type: "snapshots".to_string(),
         };
         assert_eq!(node, roundtrip(&node));
@@ -514,19 +507,37 @@ mod tests {
     #[test]
     fn write_node_roundtrips() {
         let node = IcebergPhysicalNode::Write {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
         };
         assert_eq!(node, roundtrip(&node));
     }
 
     #[test]
     fn commit_node_roundtrips() {
+        // Multi-level namespace, so the ident round-trip is exercised beyond
+        // the single-level `ns.tbl` the other tests use.
         let node = IcebergPhysicalNode::Commit {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["a", "b", "tbl"]).unwrap(),
+            table_ref: TableRefWire {
+                table: TableIdent::from_strs(["a", "b", "tbl"]).unwrap(),
+                ..sample_table_ref()
+            },
         };
         assert_eq!(node, roundtrip(&node));
+    }
+
+    #[test]
+    fn table_ref_flattens_to_inline_catalog_and_table_keys() {
+        // Wire compat: `TableRefWire` must serialize as inline `catalog` and
+        // `table` keys, exactly as when the variants spelled the two fields
+        // out — never nested under a `table_ref` object.
+        let node = IcebergPhysicalNode::Write {
+            table_ref: sample_table_ref(),
+        };
+        let value = serde_json::to_value(&node).unwrap();
+        let obj = value["Write"].as_object().unwrap();
+        assert!(obj.contains_key("catalog"), "{value}");
+        assert!(obj.contains_key("table"), "{value}");
+        assert!(!obj.contains_key("table_ref"), "{value}");
     }
 
     #[test]

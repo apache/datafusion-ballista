@@ -42,9 +42,9 @@ use iceberg_datafusion::{
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    CatalogConfigWire, Frame, TAG_DELEGATED, block_on, build_metadata_provider,
-    encode_blob, get_catalog, json_err, missing_catalog_config_err,
-    missing_table_config_err, split_frame,
+    Frame, TAG_DELEGATED, TableRefWire, block_on, build_metadata_provider, encode_blob,
+    get_catalog, json_err, missing_catalog_config_err, missing_table_config_err,
+    split_frame,
 };
 
 /// Wire representation of an Iceberg table provider. Carries enough to rebuild
@@ -54,16 +54,16 @@ use crate::bridge::{
 enum IcebergProviderWire {
     /// The catalog-backed [`IcebergTableProvider`].
     Table {
-        catalog: CatalogConfigWire,
-        table: TableIdent,
+        #[serde(flatten)]
+        table_ref: TableRefWire,
         /// Pinned snapshot for time-travel reads, if any.
         #[serde(default)]
         snapshot_id: Option<i64>,
     },
     /// An [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`).
     Metadata {
-        catalog: CatalogConfigWire,
-        table: TableIdent,
+        #[serde(flatten)]
+        table_ref: TableRefWire,
         /// The metadata table kind, as its lowercase string name.
         metadata_type: String,
     },
@@ -125,11 +125,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                     serde_json::from_slice(rest).map_err(json_err)?;
                 match wire {
                     IcebergProviderWire::Table {
-                        catalog,
-                        table,
+                        table_ref,
                         snapshot_id,
                     } => {
-                        let config = catalog.into();
+                        let (config, table) = table_ref.into_parts();
                         let cat = get_catalog(&config)?;
                         let TableIdent { namespace, name } = table;
                         // Both steps run on the catalog runtime: `with_snapshot_id`
@@ -152,12 +151,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                         Ok(Arc::new(provider))
                     }
                     IcebergProviderWire::Metadata {
-                        catalog,
-                        table,
+                        table_ref,
                         metadata_type,
                     } => Ok(Arc::new(build_metadata_provider(
-                        catalog,
-                        &table,
+                        table_ref,
                         &metadata_type,
                     )?)),
                 }
@@ -176,8 +173,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 .config()
                 .ok_or_else(|| missing_table_config_err("IcebergTableProvider"))?;
             let wire = IcebergProviderWire::Table {
-                catalog: config.into(),
-                table: provider.table_ident().clone(),
+                table_ref: TableRefWire::new(config, provider.table_ident()),
                 snapshot_id: provider.snapshot_id(),
             };
             return encode_blob(buf, &wire);
@@ -187,8 +183,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 missing_catalog_config_err("IcebergMetadataTableProvider")
             })?;
             let wire = IcebergProviderWire::Metadata {
-                catalog: config.into(),
-                table: provider.table().identifier().clone(),
+                table_ref: TableRefWire::new(config, provider.table().identifier()),
                 metadata_type: provider.metadata_type().as_str().to_string(),
             };
             return encode_blob(buf, &wire);
@@ -222,18 +217,21 @@ mod tests {
     use datafusion::datasource::empty::EmptyTable;
     use datafusion::prelude::SessionContext;
 
-    use crate::bridge::TAG_ICEBERG;
+    use crate::bridge::{CatalogConfigWire, TAG_ICEBERG};
 
     use super::*;
 
-    fn sample_catalog() -> CatalogConfigWire {
-        CatalogConfigWire {
-            r#type: "rest".to_string(),
-            name: "rest".to_string(),
-            props: BTreeMap::from([(
-                "uri".to_string(),
-                "http://localhost:8181".to_string(),
-            )]),
+    fn sample_table_ref() -> TableRefWire {
+        TableRefWire {
+            catalog: CatalogConfigWire {
+                r#type: "rest".to_string(),
+                name: "rest".to_string(),
+                props: BTreeMap::from([(
+                    "uri".to_string(),
+                    "http://localhost:8181".to_string(),
+                )]),
+            },
+            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
         }
     }
 
@@ -247,8 +245,7 @@ mod tests {
     #[test]
     fn table_provider_wire_roundtrips() {
         let wire = IcebergProviderWire::Table {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             snapshot_id: Some(42),
         };
         assert_eq!(wire, roundtrip(&wire));
@@ -257,19 +254,33 @@ mod tests {
     #[test]
     fn metadata_provider_wire_roundtrips() {
         let wire = IcebergProviderWire::Metadata {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             metadata_type: "snapshots".to_string(),
         };
         assert_eq!(wire, roundtrip(&wire));
     }
 
     #[test]
+    fn table_ref_flattens_to_inline_catalog_and_table_keys() {
+        // Wire compat: `TableRefWire` must serialize as inline `catalog` and
+        // `table` keys, exactly as when the variants spelled the two fields
+        // out — never nested under a `table_ref` object.
+        let wire = IcebergProviderWire::Table {
+            table_ref: sample_table_ref(),
+            snapshot_id: Some(42),
+        };
+        let value = serde_json::to_value(&wire).unwrap();
+        let obj = value["Table"].as_object().unwrap();
+        assert!(obj.contains_key("catalog"), "{value}");
+        assert!(obj.contains_key("table"), "{value}");
+        assert!(!obj.contains_key("table_ref"), "{value}");
+    }
+
+    #[test]
     fn table_provider_without_snapshot_id_decodes_to_none() {
         // `snapshot_id` is `#[serde(default)]`: a payload missing the key still decodes.
         let wire = IcebergProviderWire::Table {
-            catalog: sample_catalog(),
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
+            table_ref: sample_table_ref(),
             snapshot_id: Some(99),
         };
         let mut value = serde_json::to_value(&wire).unwrap();

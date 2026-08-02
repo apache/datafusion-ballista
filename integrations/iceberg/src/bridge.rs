@@ -226,17 +226,68 @@ pub(crate) fn load_table(
     Ok(load_table_with_catalog(config, ident)?.1)
 }
 
+/// Most recent snapshot-pinned [`Table`] per (catalog, table), serving scan
+/// decodes.
+///
+/// The scheduler pins every scan to a snapshot at encode time and each task of
+/// the stage decodes that same pin, so one query otherwise triggers
+/// tasks-per-stage identical `load_table` round trips. Everything a scan
+/// consumes — schema, manifests, data files — derives from the immutable pinned
+/// snapshot, so serving the table loaded for that pin from a cache cannot go
+/// stale. Keeping only the latest pin per table bounds the cache: a later query
+/// pins a newer snapshot and replaces the entry.
+#[expect(clippy::type_complexity, reason = "local cache type, never escapes")]
+static PINNED_TABLES: LazyLock<
+    Mutex<HashMap<(CatalogConfigWire, TableIdent), (i64, Table)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Loads the [`Table`] for a snapshot-pinned scan, served from
+/// [`PINNED_TABLES`] when the pin matches the cached entry.
+///
+/// Only scans may use this. An unpinned scan (`snapshot_id` = `None`, a table
+/// with no snapshot yet) means "current state" and falls through to a fresh
+/// load — as must writes, commits, and metadata tables, which have to observe
+/// current metadata and use [`load_table`] / [`load_table_with_catalog`]
+/// directly.
+pub(crate) fn load_table_pinned(
+    config: &IcebergCatalogConfig,
+    ident: &TableIdent,
+    snapshot_id: Option<i64>,
+) -> Result<Table, DataFusionError> {
+    let Some(pin) = snapshot_id else {
+        return load_table(config, ident);
+    };
+    let key = (CatalogConfigWire::from(config), ident.clone());
+    if let Some((cached_pin, table)) = PINNED_TABLES.lock().unwrap().get(&key)
+        && *cached_pin == pin
+    {
+        return Ok(table.clone());
+    }
+    let table = load_table(config, ident)?;
+    // Cache only when the loaded metadata actually contains the pin. It
+    // normally does — the pin came from a load the scheduler did moments ago —
+    // but a lagging catalog could serve metadata from before the snapshot, and
+    // caching that would pin the staleness for every later task instead of
+    // letting retries see the snapshot appear.
+    if table.metadata().snapshot_by_id(pin).is_some() {
+        PINNED_TABLES
+            .lock()
+            .unwrap()
+            .insert(key, (pin, table.clone()));
+    }
+    Ok(table)
+}
+
 /// Rebuilds an [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`) from its
 /// wire parts, re-attaching the config so the provider can be re-encoded on the
 /// next hop. Shared by the logical and physical codecs, whose wire formats both
 /// carry exactly these fields.
 pub(crate) fn build_metadata_provider(
-    catalog: CatalogConfigWire,
-    table: &TableIdent,
+    table_ref: TableRefWire,
     metadata_type: &str,
 ) -> Result<IcebergMetadataTableProvider, DataFusionError> {
-    let config = catalog.into();
-    let table_obj = load_table(&config, table)?;
+    let (config, table) = table_ref.into_parts();
+    let table_obj = load_table(&config, &table)?;
     let kind =
         MetadataTableType::try_from(metadata_type).map_err(DataFusionError::Internal)?;
     Ok(IcebergMetadataTableProvider::new(table_obj, kind)
@@ -321,6 +372,29 @@ impl From<&IcebergCatalogConfig> for CatalogConfigWire {
 impl From<CatalogConfigWire> for IcebergCatalogConfig {
     fn from(p: CatalogConfigWire) -> Self {
         IcebergCatalogConfig::new(p.r#type, p.name, p.props.into_iter().collect())
+    }
+}
+
+/// The `(catalog, table)` header every Iceberg wire payload begins with.
+///
+/// `#[serde(flatten)]`ed into each wire variant, so the JSON is identical to
+/// spelling the two fields inline — this is a code-dedup device, not a wire
+/// change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TableRefWire {
+    pub catalog: CatalogConfigWire,
+    pub table: TableIdent,
+}
+
+impl TableRefWire {
+    pub(crate) fn new(config: &IcebergCatalogConfig, table: &TableIdent) -> Self {
+        Self {
+            catalog: config.into(),
+            table: table.clone(),
+        }
+    }
+    pub(crate) fn into_parts(self) -> (IcebergCatalogConfig, TableIdent) {
+        (self.catalog.into(), self.table)
     }
 }
 
