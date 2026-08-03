@@ -92,6 +92,51 @@ pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLoca
     vec![vec![location]]
 }
 
+/// Build a `Vec<Vec<PartitionLocation>>` of length `per_partition_bytes.len()`
+/// with one location per upstream partition. `Some(n)` reports `n` bytes;
+/// `None` reports no size at all, which is what the coalesce rule treats as
+/// unusable statistics.
+pub(crate) fn partitions_with_optional_byte_sizes(
+    per_partition_bytes: &[Option<u64>],
+) -> Vec<Vec<PartitionLocation>> {
+    per_partition_bytes
+        .iter()
+        .enumerate()
+        .map(|(idx, &bytes)| {
+            vec![PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: "".into(),
+                    stage_id: 0,
+                    partition_id: idx,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: "".to_string(),
+                    host: "".to_string(),
+                    port: 0,
+                    grpc_port: 0,
+                    specification: ExecutorSpecification::default().with_vcores(0),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                partition_stats: PartitionStats::new(Some(1), None, bytes),
+                file_id: None,
+                is_sort_shuffle: false,
+            }]
+        })
+        .collect()
+}
+
+/// Build a `Vec<Vec<PartitionLocation>>` where every upstream partition reports
+/// the given byte size. The coalesce rule sums `partition_stats.num_bytes`
+/// across leaves before bin-packing, so that is the only field these tests vary.
+pub(crate) fn partitions_with_byte_sizes(
+    per_partition_bytes: &[u64],
+) -> Vec<Vec<PartitionLocation>> {
+    let optional: Vec<Option<u64>> =
+        per_partition_bytes.iter().copied().map(Some).collect();
+    partitions_with_optional_byte_sizes(&optional)
+}
+
 /// Returns schema with three columns (a,b,c) all of [DataType::Int32] type
 pub(crate) fn mock_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
