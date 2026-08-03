@@ -1295,13 +1295,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     /// Convert unresolved stage to be resolved
     fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
-        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
-            self.stages.insert(
-                stage_id,
-                ExecutionStage::Resolved(
-                    stage.to_resolved(self.session_config.options())?,
-                ),
-            );
+        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.get(&stage_id) {
+            let resolved_stage = stage.to_resolved(self.session_config.options())?;
+            self.stages
+                .insert(stage_id, ExecutionStage::Resolved(resolved_stage));
             Ok(true)
         } else {
             warn!(
@@ -1353,7 +1350,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         stage_id: usize,
         failure_reasons: HashSet<String>,
     ) -> Result<Vec<RunningTaskInfo>> {
-        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.get(&stage_id) {
             let running_tasks = stage
                 .running_tasks()
                 .into_iter()
@@ -1364,10 +1361,9 @@ impl ExecutionGraph for StaticExecutionGraph {
                     executor_id,
                 })
                 .collect();
-            self.stages.insert(
-                stage_id,
-                ExecutionStage::UnResolved(stage.to_unresolved(failure_reasons)?),
-            );
+            let unresolved_stage = stage.to_unresolved(failure_reasons)?;
+            self.stages
+                .insert(stage_id, ExecutionStage::UnResolved(unresolved_stage));
             Ok(running_tasks)
         } else {
             warn!(
@@ -1381,9 +1377,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     /// Convert resolved stage to be unresolved
     fn rollback_resolved_stage(&mut self, stage_id: usize) -> Result<bool> {
-        if let Some(ExecutionStage::Resolved(stage)) = self.stages.remove(&stage_id) {
+        if let Some(ExecutionStage::Resolved(stage)) = self.stages.get(&stage_id) {
+            let unresolved_stage = stage.to_unresolved()?;
             self.stages
-                .insert(stage_id, ExecutionStage::UnResolved(stage.to_unresolved()?));
+                .insert(stage_id, ExecutionStage::UnResolved(unresolved_stage));
             Ok(true)
         } else {
             warn!(
@@ -1819,12 +1816,19 @@ pub(crate) fn partition_to_location(
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
         TaskKilled, failed_task, job_status, task_status,
+    };
+    use datafusion::common::{DataFusionError, Result as DataFusionResult};
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        SendableRecordBatchStream,
     };
 
     use crate::state::execution_graph::ExecutionGraph;
@@ -1836,6 +1840,60 @@ mod test {
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
+
+    #[derive(Debug)]
+    struct FailingPlanRewriteExec {
+        input: Arc<dyn ExecutionPlan>,
+    }
+
+    impl DisplayAs for FailingPlanRewriteExec {
+        fn fmt_as(
+            &self,
+            _t: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            write!(f, "FailingPlanRewriteExec")
+        }
+    }
+
+    impl ExecutionPlan for FailingPlanRewriteExec {
+        fn name(&self) -> &str {
+            "FailingPlanRewriteExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.input.properties()
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![&self.input]
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+            Err(DataFusionError::Internal(
+                "forced plan rewrite failure".to_owned(),
+            ))
+        }
+
+        fn execute(
+            &self,
+            partition: usize,
+            context: Arc<TaskContext>,
+        ) -> DataFusionResult<SendableRecordBatchStream> {
+            self.input.execute(partition, context)
+        }
+    }
+
+    fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
+            input: Arc::clone(plan),
+        });
+        *plan = Arc::clone(&failing_plan);
+        failing_plan
+    }
 
     #[tokio::test]
     async fn test_intermediate_stage_ids() {
@@ -1862,6 +1920,123 @@ mod test {
             let stage = graph.stages().get(&(*id as usize)).unwrap();
             assert!(!stage.output_links().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_stage_preserves_stage_on_plan_rewrite_error() -> Result<()> {
+        let mut graph = test_aggregation_plan(4).await;
+        let stage_id = graph
+            .stages
+            .iter()
+            .find_map(|(stage_id, stage)| {
+                matches!(stage, ExecutionStage::UnResolved(_)).then_some(*stage_id)
+            })
+            .expect("expected an unresolved stage");
+        let stage_count = graph.stage_count();
+        let original_plan = match graph.stages.get_mut(&stage_id) {
+            Some(ExecutionStage::UnResolved(stage)) => {
+                for input in stage.inputs.values_mut() {
+                    input.complete = true;
+                }
+                assert!(stage.resolvable());
+                fail_plan_rewrites(&mut stage.plan)
+            }
+            _ => unreachable!(),
+        };
+
+        assert!(graph.resolve_stage(stage_id).is_err());
+        assert_eq!(graph.stage_count(), stage_count);
+        match graph.stages.get(&stage_id) {
+            Some(ExecutionStage::UnResolved(stage)) => {
+                assert!(Arc::ptr_eq(&stage.plan, &original_plan));
+            }
+            _ => panic!("expected the original unresolved stage"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rollback_resolved_stage_preserves_stage_on_plan_rewrite_error()
+    -> Result<()> {
+        let mut graph = test_aggregation_plan(4).await;
+        revive_graph_and_complete_next_stage(&mut graph)?;
+        let stage_id = graph
+            .stages
+            .iter()
+            .find_map(|(stage_id, stage)| {
+                matches!(stage, ExecutionStage::Resolved(stage) if !stage.inputs.is_empty())
+                    .then_some(*stage_id)
+            })
+            .expect("expected a resolved stage with inputs");
+        let stage_count = graph.stage_count();
+        let (original_plan, original_attempt) = match graph.stages.get_mut(&stage_id) {
+            Some(ExecutionStage::Resolved(stage)) => {
+                (fail_plan_rewrites(&mut stage.plan), stage.stage_attempt_num)
+            }
+            _ => unreachable!(),
+        };
+
+        assert!(graph.rollback_resolved_stage(stage_id).is_err());
+        assert_eq!(graph.stage_count(), stage_count);
+        match graph.stages.get(&stage_id) {
+            Some(ExecutionStage::Resolved(stage)) => {
+                assert_eq!(stage.stage_attempt_num, original_attempt);
+                assert!(Arc::ptr_eq(&stage.plan, &original_plan));
+            }
+            _ => panic!("expected the original resolved stage"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rollback_running_stage_preserves_stage_on_plan_rewrite_error()
+    -> Result<()> {
+        let mut graph = test_aggregation_plan(4).await;
+        revive_graph_and_complete_next_stage(&mut graph)?;
+        let stage_id = graph
+            .stages
+            .iter()
+            .find_map(|(stage_id, stage)| {
+                matches!(stage, ExecutionStage::Resolved(stage) if !stage.inputs.is_empty())
+                    .then_some(*stage_id)
+            })
+            .expect("expected a resolved stage with inputs");
+        assert!(graph.revive());
+        assert!(graph.pop_next_task("executor-id")?.is_some());
+        let stage_count = graph.stage_count();
+        let (original_plan, original_attempt, original_pending, original_tasks) =
+            match graph.stages.get_mut(&stage_id) {
+                Some(ExecutionStage::Running(stage)) => (
+                    fail_plan_rewrites(&mut stage.plan),
+                    stage.stage_attempt_num,
+                    stage.available_tasks(),
+                    stage.running_tasks(),
+                ),
+                _ => unreachable!(),
+            };
+
+        assert!(
+            graph
+                .rollback_running_stage(
+                    stage_id,
+                    HashSet::from(["executor-id".to_owned()]),
+                )
+                .is_err()
+        );
+        assert_eq!(graph.stage_count(), stage_count);
+        match graph.stages.get(&stage_id) {
+            Some(ExecutionStage::Running(stage)) => {
+                assert_eq!(stage.stage_attempt_num, original_attempt);
+                assert_eq!(stage.available_tasks(), original_pending);
+                assert_eq!(stage.running_tasks(), original_tasks);
+                assert!(Arc::ptr_eq(&stage.plan, &original_plan));
+            }
+            _ => panic!("expected the original running stage"),
+        }
+
+        Ok(())
     }
 
     #[tokio::test]
