@@ -16,7 +16,8 @@
 // under the License.
 
 //! Logical extension codec that serializes the catalog-backed
-//! [`IcebergTableProvider`] (its [`IcebergCatalogConfig`] + table identifier) so
+//! [`IcebergTableProvider`] (its [`IcebergCatalogConfig`](crate::IcebergCatalogConfig)
+//! + table identifier) so
 //! that the Ballista scheduler can rebuild the provider from a logical plan and
 //! perform physical planning (including `insert_into`) for Iceberg tables.
 //!
