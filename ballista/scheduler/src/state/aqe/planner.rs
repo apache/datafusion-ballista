@@ -22,7 +22,7 @@ use crate::state::aqe::execution_plan::{
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
-    PropagateEmptyExecRule, SelectJoinRule,
+    ParallelWindowRule, PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -554,6 +554,16 @@ impl AdaptivePlanner {
         // );
         //
         physical_optimizers.extend(Self::datafusion_optimizers());
+
+        // Rewrite bounded RANGE-frame windows into a range-shuffle so BWAG's
+        // single-partition constraint is not a serial bottleneck. Runs AFTER
+        // DataFusion's optimizer chain (EnforceSorting, RepartitionFileScans,
+        // …) so we see the fully-materialized SortExec placement — placement
+        // we peel and re-plant so RSE#1 sits *below* the pipeline-break Sort,
+        // letting the sketch fully report before ORRE routes. Must still run
+        // before DistributedExchangeRule — the rule emits an ORRE that DE
+        // picks up as the shuffle-boundary K-space source.
+        physical_optimizers.push(Arc::new(ParallelWindowRule));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers

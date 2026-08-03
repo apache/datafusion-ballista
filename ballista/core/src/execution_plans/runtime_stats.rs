@@ -874,6 +874,16 @@ pub fn repartition_routing_expr(
 /// confirms the file is empty (`Some(0)`). If the file has rows or the
 /// row count is unknown (`None`), silently skipping would lose data —
 /// error out instead.
+///
+/// TODO(halo-aware routing): when the downstream stage has a
+/// `RangeFilterExec` with non-zero halo (bounded RANGE-frame windows), each
+/// partition's *effective* read range is `[cuts[k-1] - halo_lo, cuts[k] +
+/// halo_hi)`. This function currently uses the raw cut range, so files
+/// straddling the halo boundary aren't routed to their halo-widened
+/// consumer. Boundary rows near cuts can be missing from downstream
+/// window sums — a correctness gap for RANGE frames that this refactor
+/// does not resolve. Fix requires reaching across stages to read the
+/// consumer RFE's halos and widening the overlap check here.
 pub fn cut_partitions(
     original_partitions: Vec<Vec<PartitionLocation>>,
     reports: &[TaskRuntimeStats],
@@ -1755,7 +1765,7 @@ mod overlap_remap_tests {
 
     /// A straddling sub-part — one whose sketched [min, max] spans the cut
     /// — appears in BOTH downstream partitions' lists. This is the case
-    /// PerPartitionFilterExec exists to clean up.
+    /// RangeFilterExec exists to clean up.
     #[test]
     fn overlap_remap_straddling_producer_appears_in_both_partitions() {
         // Producer 300 covers [5, 25) — straddles the cut at 15.
