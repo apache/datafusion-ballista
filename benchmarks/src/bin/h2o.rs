@@ -85,6 +85,10 @@ struct DataFusionBenchmarkOpt {
     /// Print plans and query text.
     #[structopt(short, long)]
     debug: bool,
+
+    /// Print the physical plan and exit without running the query.
+    #[structopt(long)]
+    explain: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -141,6 +145,10 @@ struct BallistaBenchmarkOpt {
     /// Print plans and query text.
     #[structopt(short, long)]
     debug: bool,
+
+    /// Print the physical plan and exit without running the query.
+    #[structopt(long)]
+    explain: bool,
 }
 
 #[derive(Debug, StructOpt)]
@@ -177,6 +185,10 @@ async fn run_datafusion(opt: DataFusionBenchmarkOpt) -> Result<()> {
         join_csv: opt.join_paths.clone(),
     };
     register_h2o_tables(&ctx, suite, &paths).await?;
+
+    if opt.explain {
+        return explain_queries(&ctx, &queries, query_range).await;
+    }
 
     run_queries(
         &ctx,
@@ -223,6 +235,10 @@ async fn run_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     };
     register_h2o_tables(&ctx, suite, &paths).await?;
 
+    if opt.explain {
+        return explain_queries(&ctx, &queries, query_range).await;
+    }
+
     run_queries(
         &ctx,
         &queries,
@@ -232,6 +248,24 @@ async fn run_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         "ballista",
     )
     .await
+}
+
+async fn explain_queries(
+    ctx: &SessionContext,
+    queries: &AllQueries,
+    query_range: std::ops::RangeInclusive<usize>,
+) -> Result<()> {
+    use datafusion::physical_plan::displayable;
+    for query_id in query_range {
+        let sql = queries.get(query_id)?;
+        println!("Q{query_id}: {sql}");
+        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+        println!(
+            "=== Physical plan (Q{query_id}) ===\n{}",
+            displayable(plan.as_ref()).indent(true)
+        );
+    }
+    Ok(())
 }
 
 async fn run_queries(
