@@ -234,7 +234,7 @@ async fn should_skip_coalesce_when_leaf_has_range_repartition_routing()
     // runnable cache — `finalise_stage_internal` will remove it. Mirrors
     // `SchedulerAqe`: `set_repartition_routing` runs before
     // `resolve_stage_partitions` at the boundary. 7 cuts → K=8, matching
-    // the hash-partitioning's M=8 so the adapter's `PerPartitionFilterExec`
+    // the hash-partitioning's M=8 so the adapter's `RangeFilterExec`
     // builds cleanly; the point of the test is the rule's bail decision,
     // not a realistic end-to-end range-repartition query.
     planner.set_repartition_routing(

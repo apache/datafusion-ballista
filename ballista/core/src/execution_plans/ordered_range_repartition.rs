@@ -178,25 +178,13 @@ impl OrderedRangeRepartitionExec {
                 routing.expr
             );
         }
-        // Input MUST claim to be sorted on our routing expression — otherwise
-        // the k-way merge produces garbled output. Sortedness of individual
-        // input partitions is enforced by the operator upstream (`SortExec`
-        // with `preserve_partitioning=true`); this check verifies the plan
-        // node declares that property.
-        let input_first_sort = input.output_ordering().map(|ordering| ordering.first());
-        let Some(input_first) = input_first_sort else {
-            return internal_err!(
-                "OrderedRangeRepartitionExec requires sorted input — child plan claims no ordering"
-            );
-        };
-        if input_first.expr.as_ref() != routing.expr.as_ref() {
-            return internal_err!(
-                "OrderedRangeRepartitionExec: input's first sort key `{}` does not match \
-                 routing expression `{}`",
-                input_first.expr,
-                routing.expr
-            );
-        }
+        // NB: input sortedness is NOT checked at try_new. The k-way merge in
+        // execute() needs each input partition sorted on the routing key, but
+        // that guarantee comes from `required_input_ordering()` below +
+        // `EnforceSorting`: DataFusion inserts a `SortExec` above the source
+        // when the declared requirement isn't satisfied. Checking at try_new
+        // races with rule-time construction (rules run before EnforceSorting),
+        // so the runtime check has moved to `execute()`.
         // Advertise each output partition as sorted on `order_by`. Downstream
         // operators (BWAG, HaloDrop) rely on this claim to skip redundant
         // Sort insertions.
@@ -362,6 +350,30 @@ impl ExecutionPlan for OrderedRangeRepartitionExec {
         partition: usize,
         ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        // Invariant: EnforceSorting must have satisfied our
+        // `required_input_ordering` — the k-way merge assumes each input
+        // partition is sorted on the routing key. Rules that emit ORRE run
+        // before EnforceSorting, so this check lives at execute-time rather
+        // than construction-time.
+        let input_first = self
+            .input
+            .output_ordering()
+            .map(|ordering| ordering.first())
+            .ok_or_else(|| {
+                internal_datafusion_err!(
+                    "OrderedRangeRepartitionExec: input claims no ordering at execute — \
+                     EnforceSorting should have planted a SortExec"
+                )
+            })?;
+        let routing = &self.order_by[0];
+        if input_first.expr.as_ref() != routing.expr.as_ref() {
+            return internal_err!(
+                "OrderedRangeRepartitionExec: input's first sort key `{}` does not \
+                 match routing expression `{}`",
+                input_first.expr,
+                routing.expr
+            );
+        }
         let mut state = self
             .state
             .lock()
@@ -756,17 +768,24 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_unsorted_input() {
+    fn execute_rejects_unsorted_input() {
+        // try_new no longer checks input ordering — EnforceSorting is
+        // trusted to plant a SortExec after rule-time construction. If
+        // the invariant is broken by the time we get to execute(), the
+        // runtime check fires.
         let schema = schema_v2_id();
-        // MemorySourceConfig with no declared ordering — output_ordering() is None.
-        let err = OrderedRangeRepartitionExec::try_new(
+        let orre = OrderedRangeRepartitionExec::try_new(
             empty_input(&schema),
             vec![asc(&schema, "v2")],
             4,
         )
-        .expect_err("input without ordering claim must be rejected");
+        .expect("construction succeeds; check moved to execute()");
+        let ctx = datafusion::prelude::SessionContext::new().task_ctx();
+        let Err(err) = orre.execute(0, ctx) else {
+            panic!("execute() should reject input without ordering claim");
+        };
         assert!(
-            err.to_string().contains("child plan claims no ordering"),
+            err.to_string().contains("input claims no ordering"),
             "got: {err}"
         );
     }
@@ -790,20 +809,24 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_mismatched_sort_key() {
+    fn execute_rejects_mismatched_sort_key() {
         let schema = schema_v2_id();
-        // Sort input on `id` (Int64); DRR tries to route on `v2`.
+        // Sort input on `id` (Int64); ORRE tries to route on `v2`.
         let source = empty_input(&schema);
         let id_sort = LexOrdering::new(vec![asc(&schema, "id")]).unwrap();
         let sorted_on_id =
             Arc::new(SortExec::new(id_sort, source).with_preserve_partitioning(true))
                 as Arc<dyn ExecutionPlan>;
-        let err = OrderedRangeRepartitionExec::try_new(
+        let orre = OrderedRangeRepartitionExec::try_new(
             sorted_on_id,
             vec![asc(&schema, "v2")],
             4,
         )
-        .expect_err("mismatched sort key must be rejected");
+        .expect("construction succeeds; check moved to execute()");
+        let ctx = datafusion::prelude::SessionContext::new().task_ctx();
+        let Err(err) = orre.execute(0, ctx) else {
+            panic!("execute() should reject mismatched sort key");
+        };
         assert!(
             err.to_string().contains("does not match routing"),
             "got: {err}"

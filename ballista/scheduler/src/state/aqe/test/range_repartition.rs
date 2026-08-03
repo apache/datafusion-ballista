@@ -19,7 +19,7 @@
 //! through `AdaptivePlanner` — DER inserts the boundary
 //! `ExchangeExec`, `set_repartition_routing` parks the recovered
 //! cuts on it, and `cut_partitions` duplicates straddlers so
-//! downstream can inject a `PerPartitionFilterExec` to trim them.
+//! downstream can inject a `RangeFilterExec` to trim them.
 
 use crate::state::aqe::execution_plan::RangeRepartitionRouting;
 use crate::state::aqe::planner::AdaptivePlanner;
@@ -169,7 +169,7 @@ async fn routing_parks_when_range_repartition_is_plan_root()
     assert!(
         plan_str.contains("range_repartition_cuts=1"),
         "cuts must be parked on the boundary ExchangeExec so downstream \
-         gets a PerPartitionFilterExec — actual plan:\n{plan_str}"
+         gets a RangeFilterExec — actual plan:\n{plan_str}"
     );
 
     Ok(())

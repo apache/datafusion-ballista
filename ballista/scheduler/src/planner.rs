@@ -27,8 +27,8 @@ use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleConfig;
 use ballista_core::{
     execution_plans::{
-        ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-        UnresolvedShuffleExec,
+        RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriterExec,
+        SortShuffleWriterExec, UnresolvedShuffleExec,
     },
     serde::scheduler::PartitionLocation,
 };
@@ -785,6 +785,11 @@ pub fn remove_unresolved_shuffles(
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
 /// Used when the input stages are finished but some partitions are missing due to executor lost.
 /// The entire stage need to be rolled back and rescheduled.
+///
+/// `RangeShuffleReaderExec` rolls back to a plain `UnresolvedShuffleExec` — its
+/// range-ness is a derived property of the child's declared ordering at plan
+/// time, not intrinsic reader metadata. Re-planning walks the adapter, which
+/// re-detects the ordering and plants a fresh `RangeShuffleReaderExec`.
 pub fn rollback_resolved_shuffles(
     stage: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -805,6 +810,14 @@ pub fn rollback_resolved_shuffles(
                     shuffle_reader.properties().partitioning.clone(),
                 ))
             };
+            new_children.push(unresolved);
+        } else if let Some(range_reader) = child.downcast_ref::<RangeShuffleReaderExec>()
+        {
+            let unresolved = Arc::new(UnresolvedShuffleExec::new(
+                range_reader.stage_id,
+                range_reader.schema(),
+                range_reader.properties().partitioning.clone(),
+            ));
             new_children.push(unresolved);
         } else {
             new_children.push(rollback_resolved_shuffles(child.clone())?);
@@ -2037,6 +2050,51 @@ order by
         assert!(unresolved.broadcast);
         assert_eq!(unresolved.upstream_partition_count, 3);
         assert_eq!(unresolved.output_partition_count, 1);
+
+        Ok(())
+    }
+
+    /// `RangeShuffleReaderExec` rolls back to a plain `UnresolvedShuffleExec`
+    /// (info-losing on the range-ness). Re-planning walks the adapter, which
+    /// re-detects the child's ordering and plants a fresh range reader.
+    #[tokio::test]
+    async fn rollback_resolved_shuffles_reduces_range_reader_to_plain_unresolved()
+    -> Result<(), BallistaError> {
+        use ballista_core::execution_plans::RangeShuffleReaderExec;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("v", 0)));
+        let merge_ordering = LexOrdering::new(vec![sort_expr]).unwrap();
+        let reader = Arc::new(
+            RangeShuffleReaderExec::try_new(
+                7,
+                vec![vec![]; 4],
+                schema.clone(),
+                merge_ordering,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let parent: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
+                reader,
+            ),
+        );
+
+        let rolled_back = crate::planner::rollback_resolved_shuffles(parent)?;
+        let child = rolled_back.children()[0].clone();
+        let unresolved = child
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("expected rolled-back UnresolvedShuffleExec");
+        // The range-ness is derived at plan time; the rolled-back node carries
+        // no ordering, no broadcast, no coalesce.
+        assert!(!unresolved.broadcast);
+        assert!(unresolved.coalesce.is_none());
+        assert_eq!(unresolved.stage_id, 7);
+        assert_eq!(unresolved.output_partition_count, 4);
 
         Ok(())
     }

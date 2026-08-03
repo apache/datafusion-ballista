@@ -38,7 +38,7 @@ use std::sync::{Arc, atomic::AtomicI64};
 /// of this exchange. Written after the range-repartition-producing stage
 /// completes and its runtime-stats sketches are merged; read at
 /// task-specialization time to build per-downstream-partition range filters
-/// (see `PerPartitionFilterExec`).
+/// (see `RangeFilterExec`).
 ///
 /// `cuts` are `K - 1` monotone `f64` boundaries expressed in the value space
 /// of `routing_expr`; downstream partition `k` owns `[cuts[k-1], cuts[k])`
@@ -98,7 +98,7 @@ pub struct ExchangeExec {
     /// range-repartition op (URRE or ORRE). Stored when
     /// the range-repartition-producing stage completes and its per-sub-part
     /// quantile sketches have been merged. Read at task-specialization time
-    /// to build `PerPartitionFilterExec` predicates for downstream stage `N+1`.
+    /// to build `RangeFilterExec` predicates for downstream stage `N+1`.
     ///
     /// `None` on any exchange that isn't downstream of a range repartition
     range_repartition_routing: Arc<Mutex<Option<RangeRepartitionRouting>>>,
@@ -484,7 +484,7 @@ mod range_repartition_routing_tests {
     //! writes here at range-repartition-stage completion; task
     //! specialization reads it back at
     //! `BallistaAdapter::transform_children` time to wrap the
-    //! ShuffleReader in a `PerPartitionFilterExec`. Neither side is
+    //! ShuffleReader in a `RangeFilterExec`. Neither side is
     //! exercised end-to-end without the URRE-inserting rule (a follow-up
     //! PR), so tests here cover the slot itself: roundtrip through
     //! `resolve_range_repartition_routing` → `range_repartition_routing()`,
