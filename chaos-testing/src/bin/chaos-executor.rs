@@ -38,10 +38,16 @@ async fn main() -> ballista_core::error::Result<()> {
     env_logger::init();
 
     let config = ExecutorProcessConfig {
-        bind_host: "127.0.0.1".to_string(),
+        // Loopback in the process harness; under Kubernetes the executor binds
+        // all interfaces, finds the scheduler by Service name, and advertises its
+        // own pod IP so the scheduler and peers can reach it for Arrow Flight.
+        bind_host: std::env::var("CHAOS_BIND_HOST")
+            .unwrap_or_else(|_| "127.0.0.1".into()),
+        external_host: std::env::var("CHAOS_EXECUTOR_EXTERNAL_HOST").ok(),
         port: env_u16("CHAOS_EXECUTOR_PORT"),
         grpc_port: env_u16("CHAOS_EXECUTOR_GRPC_PORT"),
-        scheduler_host: "127.0.0.1".to_string(),
+        scheduler_host: std::env::var("CHAOS_SCHEDULER_HOST")
+            .unwrap_or_else(|_| "127.0.0.1".into()),
         scheduler_port: env_u16("CHAOS_SCHEDULER_PORT"),
         vcores: std::env::var("CHAOS_CONCURRENT_TASKS")
             .ok()
