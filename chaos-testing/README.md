@@ -188,7 +188,7 @@ sanity check that every other scenario's assertions depend on.
 | D        | `executor_killed_mid_stage_is_recovered`                            | SIGKILLs an executor while its tasks are genuinely running (held open by `chaos_delay`); scheduler must reschedule onto the survivor and return the correct result.                                          | **Ignored (both), reproduces [#2027](https://github.com/apache/datafusion-ballista/issues/2027) — Finding 1.**                                 |
 | E        | `executor_killed_after_shuffle_write_is_recovered`                  | SIGKILLs the map-side executor _after_ it wrote shuffle output, with a long executor timeout to bias toward the fetch-failure path rather than heartbeat expiry; downstream stage must re-run the map stage. | **Ignored (both), reproduces [#2027](https://github.com/apache/datafusion-ballista/issues/2027) — Finding 1.**                                 |
 | F        | `restarted_executor_rejoins_and_serves_queries`                     | Kills an executor, waits for the scheduler to reap it, restarts it, asserts the registered count returns to 2 and the cluster still serves the baseline query.                                               | Pass (both), after the race fix in this crate (see below).                                                                                     |
-| G        | `killing_every_executor_terminates_the_job`                         | SIGKILLs every executor mid-query; the only requirement is that the job _terminates_ within 120s rather than hanging.                                                                                        | **Ignored (both), reproduces [#2029](https://github.com/apache/datafusion-ballista/issues/2029) — Finding 3.**                                 |
+| G        | `killing_every_executor_terminates_the_job`                         | SIGKILLs every executor mid-query; asserts the job fails with an error naming the executor loss rather than hanging.                                                                                        | Regression test for [#2029](https://github.com/apache/datafusion-ballista/issues/2029) — Finding 3.                                 |
 
 An ignored scenario above is not a defect in this harness, and its assertions
 have not been weakened to make it pass — it reproduces a real Ballista bug and
@@ -325,19 +325,20 @@ describes for `FetchFailed`, which is why both scenarios are ignored against
 shuffle output — which is every non-final stage — is classified non-retryable,
 turning what should be a retried task into an immediate job failure.
 
-### Finding 3 — Killing every executor hangs the job instead of failing it
+### Finding 3 — Killing every executor hung the job instead of failing it (fixed)
 
-Tracked by [#2029](https://github.com/apache/datafusion-ballista/issues/2029).
+Tracked by [#2029](https://github.com/apache/datafusion-ballista/issues/2029), fixed in that issue's PR.
 
-**Proven by:** Scenario G (`killing_every_executor_terminates_the_job`), both
-AQE settings, `#[ignore]`d against that issue.
+**Regression test:** Scenario G (`killing_every_executor_terminates_the_job`),
+both AQE settings, now enabled (no longer `#[ignore]`d).
 
 With every executor dead mid-query, there is nothing left to schedule tasks
-onto. The job does not terminate within the scenario's 120s timeout — the
-scheduler waits rather than failing the query once it can determine no
-executor can ever satisfy the remaining tasks. Note that this scenario
-deliberately asserts only _termination_, not success or a particular error; it
-is a hang detector, and what it detects is the hang itself.
+onto. Previously the job never terminated — the scheduler waited forever rather
+than failing the query. The fix makes the scheduler wait a bounded grace period
+(`no_executors_grace_period_seconds`) after losing its last executor and then
+fail the job with a clear error. The scenario turns that grace down via the
+cluster builder and asserts the query fails with an error naming the executor
+loss.
 
 ### For comparison: the heartbeat-expiry path does recover
 
