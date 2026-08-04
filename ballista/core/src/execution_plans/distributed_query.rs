@@ -46,6 +46,7 @@ use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
+use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{debug, error, info};
 use parking_lot::Mutex;
@@ -319,6 +320,91 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+}
+
+/// Submits an already-built physical plan directly to a Ballista scheduler for
+/// distributed execution, bypassing logical plan creation on the scheduler side.
+///
+/// This is a lower-level entry point than [DistributedQueryExec]: instead of a
+/// [LogicalPlan] that the scheduler turns into a physical plan itself, the caller
+/// supplies the physical plan up front - e.g. for plans containing custom
+/// operators that have no logical-plan representation.
+pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
+    scheduler_url: String,
+    config: &BallistaConfig,
+    physical_plan: Arc<dyn ExecutionPlan>,
+    codec: &dyn PhysicalExtensionCodec,
+    session_id: String,
+    session_config: SessionConfig,
+) -> Result<SendableRecordBatchStream> {
+    let plan_message =
+        U::try_from_physical_plan(physical_plan.clone(), codec).map_err(|e| {
+            DataFusionError::Internal(format!("failed to serialize physical plan: {e:?}"))
+        })?;
+    let mut buf: Vec<u8> = vec![];
+    plan_message.try_encode(&mut buf).map_err(|e| {
+        DataFusionError::Execution(format!("failed to encode physical plan: {e:?}"))
+    })?;
+
+    let settings = session_config
+        .options()
+        .entries()
+        .iter()
+        .map(
+            |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
+                key: key.to_owned(),
+                value: value.clone(),
+            },
+        )
+        .collect();
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let query = ExecuteQueryParams {
+        query: Some(Query::PhysicalPlan(buf)),
+        settings,
+        session_id: session_id.clone(),
+        operation_id,
+    };
+
+    let max_message_size = config.grpc_client_max_message_size();
+    let grpc_config = GrpcClientConfig::from(config);
+    let metrics = Arc::new(ExecutionPlanMetricsSet::new());
+    let job_id_handle = Arc::new(Mutex::new(None));
+    let partition = 0;
+
+    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>> =
+        if session_config.ballista_config().client_pull() {
+            Box::pin(
+                execute_query_pull(
+                    scheduler_url,
+                    session_id,
+                    query,
+                    max_message_size,
+                    grpc_config,
+                    metrics,
+                    job_id_handle,
+                    partition,
+                    session_config,
+                )
+                .await?,
+            )
+        } else {
+            Box::pin(
+                execute_query_push(
+                    scheduler_url,
+                    query,
+                    max_message_size,
+                    grpc_config,
+                    metrics,
+                    job_id_handle,
+                    partition,
+                    session_config,
+                )
+                .await?,
+            )
+        };
+
+    let schema = physical_plan.schema();
+    Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
 /// Client will periodically invoke scheduler to check
@@ -739,6 +825,8 @@ async fn fetch_partition(
         customize_endpoint,
         io_retries_times,
         io_retry_wait_time_ms,
+        0,
+        0,
     )
     .await
     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;

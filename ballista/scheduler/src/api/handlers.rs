@@ -22,9 +22,12 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
+use ballista_core::serde::protobuf::failed_task::FailedReason::{
+    ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
+};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    ExecutorMetric, executor_metric::Metric, task_status,
+    ExecutorMetric, FailedTask, executor_metric::Metric, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -141,8 +144,11 @@ pub struct TaskSummary {
     pub id: usize,
     /// Task status
     pub status: TaskStatus,
-    /// partition id
-    pub partition_id: u32,
+    /// Global partition ids covered by this task. For a single-partition
+    /// task this is a one-element list — JSON-compatible with the old
+    /// scalar `partition_id` for callers that read `partition_id[0]`, and
+    /// honestly plural for multi-partition tasks.
+    pub partition_id: Vec<u32>,
     /// Scheduler schedule time
     pub scheduled_time: u64,
     /// Scheduler launch time (ms since epoch)
@@ -165,14 +171,17 @@ pub struct TaskSummary {
 pub enum TaskStatus {
     Running,
     Successful,
-    Failed,
+    Failed { reason: String, error: String },
 }
 
 impl From<&task_status::Status> for TaskStatus {
     fn from(value: &task_status::Status) -> Self {
         match value {
             task_status::Status::Running(_) => TaskStatus::Running,
-            task_status::Status::Failed(_) => TaskStatus::Failed,
+            task_status::Status::Failed(failed) => TaskStatus::Failed {
+                reason: failed_reason(failed),
+                error: failed.error.clone(),
+            },
             task_status::Status::Successful(_) => TaskStatus::Successful,
         }
     }
@@ -558,35 +567,39 @@ pub async fn get_query_stages<
                         summary.tasks = running_stage
                             .task_infos
                             .iter()
-                            .enumerate()
-                            .map(|(partition_id, task_info)| {
-                                task_info.as_ref().map(|info| {
-                                    let (input_rows, output_rows) = running_stage
-                                        .stage_metrics
-                                        .as_deref()
-                                        .map(|metrics| {
-                                            get_partition_counts(metrics, partition_id)
-                                        })
-                                        .unwrap_or((0, 0));
+                            .map(|info| {
+                                let (input_rows, output_rows) = running_stage
+                                    .stage_metrics
+                                    .as_deref()
+                                    .map(|metrics| {
+                                        get_partition_counts(
+                                            metrics,
+                                            &info.global_input_partition_ids,
+                                        )
+                                    })
+                                    .unwrap_or((0, 0));
 
-                                    let start_exec_time = info.start_exec_time as u64;
-                                    let end_exec_time = info.end_exec_time as u64;
+                                let start_exec_time = info.start_exec_time as u64;
+                                let end_exec_time = info.end_exec_time as u64;
 
-                                    let task_status: TaskStatus = (&info.task_status).into();
+                                let task_status: TaskStatus = (&info.task_status).into();
 
-                                    TaskSummary {
-                                        id: info.task_id,
-                                        partition_id: partition_id as u32,
-                                        scheduled_time: info.scheduled_time as u64,
-                                        launch_time: info.launch_time as u64,
-                                        start_exec_time,
-                                        end_exec_time,
-                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
-                                        finish_time: info.finish_time as u64,
-                                        input_rows,
-                                        output_rows,
-                                        status: task_status
-                                    }
+                                Some(TaskSummary {
+                                    id: info.task_id,
+                                    partition_id: info
+                                        .global_input_partition_ids
+                                        .iter()
+                                        .map(|&p| p as u32)
+                                        .collect(),
+                                    scheduled_time: info.scheduled_time as u64,
+                                    launch_time: info.launch_time as u64,
+                                    start_exec_time,
+                                    end_exec_time,
+                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                    finish_time: info.finish_time as u64,
+                                    input_rows,
+                                    output_rows,
+                                    status: task_status
                                 })
                             })
                             .collect();
@@ -611,11 +624,10 @@ pub async fn get_query_stages<
                         summary.tasks = completed_stage
                             .task_infos
                             .iter()
-                            .enumerate()
-                            .map(|(partition_id, task_info)| {
+                            .map(|task_info| {
                                 let (input_rows, output_rows) = get_partition_counts(
                                     &completed_stage.stage_metrics,
-                                    partition_id,
+                                    &task_info.global_input_partition_ids,
                                 );
 
                                 let start_exec_time = task_info.start_exec_time as u64;
@@ -623,7 +635,11 @@ pub async fn get_query_stages<
                                 let task_status = (&task_info.task_status).into();
                                 Some(TaskSummary {
                                     id: task_info.task_id,
-                                    partition_id: partition_id as u32,
+                                    partition_id: task_info
+                                        .global_input_partition_ids
+                                        .iter()
+                                        .map(|&p| p as u32)
+                                        .collect(),
                                     scheduled_time: task_info.scheduled_time as u64,
                                     launch_time: task_info.launch_time as u64,
                                     start_exec_time,
@@ -633,6 +649,51 @@ pub async fn get_query_stages<
                                     input_rows,
                                     output_rows,
                                     status: task_status
+                                })
+                            })
+                            .collect();
+                    }
+                    ExecutionStage::Failed(failed_stage) => {
+                        let metrics = failed_stage.stage_metrics.as_deref().unwrap_or(&[]);
+                        summary.stage_plan = Some(match plan_format {
+                            PlanFormat::Default => displayable(failed_stage.plan.as_ref()).indent(false).to_string(),
+                            PlanFormat::Tree => displayable(failed_stage.plan.as_ref()).tree_render().to_string(),
+                            PlanFormat::Metrics => format_stage_metrics(failed_stage.plan.as_ref(), metrics),
+                        });
+                        summary.input_rows = get_combined_count(metrics, "input_rows");
+                        summary.output_rows = get_combined_count(metrics, "output_rows");
+                        summary.elapsed_compute =
+                            get_finished_stage_time(&failed_stage.task_infos);
+
+                        summary.tasks = failed_stage
+                            .task_infos
+                            .iter()
+                            .map(|info| {
+                                let (input_rows, output_rows) = get_partition_counts(
+                                    metrics,
+                                    &info.global_input_partition_ids,
+                                );
+
+                                let start_exec_time = info.start_exec_time as u64;
+                                let end_exec_time = info.end_exec_time as u64;
+                                let task_status: TaskStatus = (&info.task_status).into();
+
+                                Some(TaskSummary {
+                                    id: info.task_id,
+                                    partition_id: info
+                                        .global_input_partition_ids
+                                        .iter()
+                                        .map(|&p| p as u32)
+                                        .collect(),
+                                    scheduled_time: info.scheduled_time as u64,
+                                    launch_time: info.launch_time as u64,
+                                    start_exec_time,
+                                    end_exec_time,
+                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
+                                    finish_time: info.finish_time as u64,
+                                    input_rows,
+                                    output_rows,
+                                    status: task_status,
                                 })
                             })
                             .collect();
@@ -741,13 +802,10 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_running_stage_time(
-    task_infos: &[Option<TaskInfo>],
-    current_time: u128,
-) -> Option<String> {
+fn get_running_stage_time(task_infos: &[TaskInfo], current_time: u128) -> Option<String> {
     let min_start = task_infos
         .iter()
-        .flat_map(|t| t.as_ref().map(|t| t.start_exec_time))
+        .map(|t| t.start_exec_time)
         .filter(|t| *t > 0)
         .min();
 
@@ -759,6 +817,19 @@ fn get_running_stage_time(
         }
         _ => None,
     }
+}
+
+fn failed_reason(failed: &FailedTask) -> String {
+    match &failed.failed_reason {
+        Some(ExecutionError(_)) => "ExecutionError",
+        Some(FetchPartitionError(_)) => "FetchPartitionError",
+        Some(IoError(_)) => "IoError",
+        Some(ExecutorLost(_)) => "ExecutorLost",
+        Some(ResultLost(_)) => "ResultLost",
+        Some(TaskKilled(_)) => "TaskKilled",
+        None => "Failed",
+    }
+    .to_string()
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
@@ -784,20 +855,31 @@ fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
     }
 }
 
-fn get_partition_counts(metrics: &[MetricsSet], partition_id: usize) -> (usize, usize) {
-    let input_rows = get_partition_count(metrics, partition_id, "input_rows");
-    let output_rows = get_partition_count(metrics, partition_id, "output_rows");
+/// Sum a task's `input_rows` / `output_rows` across the global partitions the
+/// task owns. Metrics are keyed by global partition id — for single-partition
+/// tasks `partitions` is a one-element slice; for multi-partition tasks it is
+/// the task's `global_input_partition_ids`.
+fn get_partition_counts(metrics: &[MetricsSet], partitions: &[usize]) -> (usize, usize) {
+    let input_rows = get_partition_count(metrics, partitions, "input_rows");
+    let output_rows = get_partition_count(metrics, partitions, "output_rows");
     (input_rows, output_rows)
 }
 
-fn get_partition_count(metrics: &[MetricsSet], partition_id: usize, name: &str) -> usize {
+fn get_partition_count(
+    metrics: &[MetricsSet],
+    partitions: &[usize],
+    name: &str,
+) -> usize {
     metrics
         .iter()
         .flat_map(|vec| {
             vec.iter().map(|metric| {
                 let metric_value = metric.value();
-                if metric.partition() == Some(partition_id) && metric_value.name() == name
-                {
+                let owned_by_task = metric
+                    .partition()
+                    .map(|p| partitions.contains(&p))
+                    .unwrap_or(false);
+                if owned_by_task && metric_value.name() == name {
                     metric_value.as_usize()
                 } else {
                     0
@@ -957,6 +1039,8 @@ mod tests {
             end_exec_time: end,
             finish_time: 0,
             task_status: task_status::Status::Running(Default::default()),
+            global_input_partition_ids: vec![],
+            vcores_consumed: 0,
         }
     }
 
@@ -1016,15 +1100,15 @@ mod tests {
     }
 
     #[test]
-    fn test_running_all_none_returns_none() {
-        let tasks: Vec<Option<TaskInfo>> = vec![None, None];
+    fn test_running_all_zero_start_returns_none() {
+        let tasks: Vec<TaskInfo> = vec![make_task_info(0, 0), make_task_info(0, 0)];
         assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
     #[test]
     fn test_running_future_start_returns_none() {
         // start_exec_time beyond current time → elapsed clamped to 0
-        let tasks = vec![Some(make_task_info(u128::MAX, 0))];
+        let tasks = vec![make_task_info(u128::MAX, 0)];
         assert_eq!(get_running_stage_time(&tasks, 1000), None);
     }
 
@@ -1032,7 +1116,7 @@ mod tests {
     fn test_running_past_start_returns_some() {
         let now = 4_000;
         let start = 1_000;
-        let tasks = vec![Some(make_task_info(start, 0))];
+        let tasks = vec![make_task_info(start, 0)];
         assert_eq!(
             get_running_stage_time(&tasks, now),
             Some("3.00s".to_string())
@@ -1040,15 +1124,15 @@ mod tests {
     }
 
     #[test]
-    fn test_running_mixed_some_none_uses_earliest_some() {
+    fn test_running_mixed_zero_start_uses_earliest_nonzero() {
         let now = 3_000;
         let earlier = 1_000;
         let later = 2_000;
         let tasks = vec![
-            None,
-            Some(make_task_info(later, 0)),
-            Some(make_task_info(earlier, 0)),
-            None,
+            make_task_info(0, 0),
+            make_task_info(later, 0),
+            make_task_info(earlier, 0),
+            make_task_info(0, 0),
         ];
         let result = get_running_stage_time(&tasks, now);
         assert_eq!(result, Some("2.00s".to_string()));

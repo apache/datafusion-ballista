@@ -16,7 +16,9 @@
 // under the License.
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
-use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use crate::state::aqe::execution_plan::{
+    AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
+};
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
@@ -30,13 +32,14 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
 use datafusion::error::DataFusionError;
+#[cfg(test)]
+use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
-use datafusion::prelude::SessionConfig;
 use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
@@ -85,8 +88,7 @@ impl AdaptivePlanner {
     /// Creates a new `AdaptivePlanner` with the specified physical optimizer rules.
     ///
     /// # Arguments:
-    ///
-    /// * `session_config` - The session configuration for the job.
+    /// * `state_builder` -  Session state builder,
     /// * `plan` - The physical execution plan for the job.
     /// * `job_name` - The name of the job.
     /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
@@ -94,13 +96,13 @@ impl AdaptivePlanner {
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
     pub fn try_new_with_optimizers(
-        session_config: &SessionConfig,
+        state_builder: SessionStateBuilder,
         plan: Arc<dyn ExecutionPlan>,
         job_name: String,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
         let session_state =
-            Self::create_session_state(session_config, physical_optimizer_rules);
+            Self::create_session_state(state_builder, physical_optimizer_rules);
         let planner = DefaultPhysicalPlanner::default();
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
@@ -131,8 +133,10 @@ impl AdaptivePlanner {
         job_name: String,
     ) -> common::Result<Self> {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
+        let state_builder = SessionStateBuilder::new_with_default_features()
+            .with_config(session_config.clone());
         Self::try_new_with_optimizers(
-            session_config,
+            state_builder,
             plan,
             job_name,
             Self::default_optimizers(plan_id_generator),
@@ -159,12 +163,16 @@ impl AdaptivePlanner {
         // running standard set of optimizers, which will
         // after each stage.
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
-        let state = Self::create_session_state(
-            ctx.state().config(),
+
+        let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
+        let plan_preparation_state = Self::create_session_state(
+            plan_preparation_state_builder,
             Self::plan_preparation_optimizers(plan_id_generator.clone()),
         );
 
-        let plan = state.create_physical_plan(logical_plan).await?;
+        let plan = plan_preparation_state
+            .create_physical_plan(logical_plan)
+            .await?;
 
         // Note: the signature requires a JobId, but we are passing a JobName. The below is a
         // dirty fix but this seems like a bug or a design flaw.
@@ -173,8 +181,9 @@ impl AdaptivePlanner {
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
+        let state_builder = SessionStateBuilder::from(ctx.state());
         Self::try_new_with_optimizers(
-            ctx.state().config(),
+            state_builder,
             plan,
             job_name,
             Self::default_optimizers(plan_id_generator),
@@ -192,14 +201,37 @@ impl AdaptivePlanner {
         let _ = self.runnable_stage_cache.remove(&stage_id);
         Ok(())
     }
-    /// Resolves a stage by its ID and updates its partitions.
+
+    /// Attaches range-repartition-recovered range boundaries to the
+    /// boundary `ExchangeExec` for `stage_id`. Called right after the
+    /// completed range-repartition stage's partition mapping is resolved;
+    /// the routing carries the cuts + routing expression that downstream
+    /// task specialization needs to build per-partition range filters.
     ///
-    /// # Arguments
-    /// * `stage_id` - The ID of the stage to resolve.
-    /// * `partitions` - The resolved partitions for the stage.
-    ///
-    /// # Returns
-    /// A `Result` indicating success or failure.
+    /// Errors if `stage_id` has no `ExchangeExec` to park on — the caller
+    /// is responsible for ensuring the stage boundary is an `ExchangeExec`,
+    /// so downstream read-side filter injection has something to hook into.
+    pub(super) fn set_repartition_routing(
+        &mut self,
+        stage_id: usize,
+        routing: RangeRepartitionRouting,
+    ) -> common::Result<()> {
+        let stage = self.runnable_stage_cache.get(&stage_id).ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "set_repartition_routing: stage {stage_id} not in runnable cache"
+            ))
+        })?;
+        let exchange = stage.downcast_ref::<ExchangeExec>().ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "set_repartition_routing: stage {stage_id} boundary is {}, \
+                 not ExchangeExec — nowhere to park cuts for downstream filter",
+                stage.name()
+            ))
+        })?;
+        exchange.resolve_range_repartition_routing(routing);
+        Ok(())
+    }
+
     pub(super) fn finalise_stage_internal(
         &mut self,
         stage_id: usize,
@@ -254,9 +286,12 @@ impl AdaptivePlanner {
         }
     }
 
-    /// Once all tasks has been completed marks stage as resolved
-    /// and returns partition allocations
-    pub fn finalise_stage(
+    /// Once all tasks have completed, pop the accumulated stage output as a
+    /// K-shaped `Vec<Vec<PartitionLocation>>` (or the broadcast-shape variant)
+    /// *without* parking it on the ExchangeExec. Caller can post-process
+    /// (e.g. range-repartition overlap remap) before calling
+    /// [`resolve_stage_partitions`](Self::resolve_stage_partitions).
+    pub fn take_stage_output_partitions(
         &mut self,
         stage_id: usize,
     ) -> common::Result<Vec<Vec<PartitionLocation>>> {
@@ -286,8 +321,16 @@ impl AdaptivePlanner {
                 ))?
                 .partition_locations(output_partition_count)
         };
-        self.finalise_stage_internal(stage_id, stage_output.clone())?;
         Ok(stage_output)
+    }
+
+    /// Save the given partition list on the stage's ExchangeExec and trigger a replan.
+    pub fn resolve_stage_partitions(
+        &mut self,
+        stage_id: usize,
+        partitions: Vec<Vec<PartitionLocation>>,
+    ) -> common::Result<()> {
+        self.finalise_stage_internal(stage_id, partitions)
     }
 
     /// Replans the stages by applying physical optimizations.
@@ -539,20 +582,20 @@ impl AdaptivePlanner {
     /// Creates a session state with the given configuration and optimizer rules.
     ///
     /// # Arguments
-    /// * `session_config` - The session configuration.
+    /// * `session_builder` - The session builder.
     /// * `physical_optimizers` - A list of physical optimizer rules.
     ///
     /// # Returns
     /// A new `SessionState` instance.
     fn create_session_state(
-        session_config: &SessionConfig,
+        builder: SessionStateBuilder,
         physical_optimizers: Vec<PhysicalOptimizerRuleRef>,
     ) -> SessionState {
-        SessionStateBuilder::new_with_default_features()
+        builder
             .with_physical_optimizer_rules(physical_optimizers)
-            .with_config(session_config.clone())
             .build()
     }
+
     /// Recursively finds runnable exchanges in the execution plan.
     ///
     /// # Arguments

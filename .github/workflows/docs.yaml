@@ -16,6 +16,9 @@
 # under the License.
 
 on:
+  # Allow the docs site to be rebuilt and republished on demand, e.g. when a
+  # push-triggered run was dropped and the change never made it to asf-site.
+  workflow_dispatch:
   push:
     branches: [ "main" ]
     paths:
@@ -31,16 +34,16 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout docs sources
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Checkout asf-site branch
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           ref: asf-site
           path: asf-site
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

@@ -1,0 +1,36 @@
+=== Stage 1 ===
+SortShuffleWriterExec: partitioning=Hash([l_partkey@0], 16)
+  StatsExec: rows=600037902
+
+=== Stage 2 ===
+SortShuffleWriterExec: partitioning=Hash([p_partkey@0], 16)
+  FilterExec: p_brand@1 = Brand#23 AND p_container@2 = MED BOX, projection=[p_partkey@0]
+    StatsExec: rows=20000000
+
+=== Stage 3 ===
+SortShuffleWriterExec: partitioning=Hash([l_partkey@0], 16)
+  AggregateExec: mode=Partial, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
+    StatsExec: rows=600037902
+
+=== Stage 4 ===
+ShuffleWriterExec: partitioning: None
+  AggregateExec: mode=Partial, gby=[], aggr=[sum(lineitem.l_extendedprice)]
+    ProjectionExec: expr=[l_extendedprice@1 as l_extendedprice]
+      SortMergeJoinExec: join_type=Inner, on=[(p_partkey@2, l_partkey@1)], filter=CAST(l_quantity@0 AS Decimal128(30, 15)) < Float64(0.2) * avg(lineitem.l_quantity)@1
+        ProjectionExec: expr=[l_quantity@1 as l_quantity, l_extendedprice@2 as l_extendedprice, p_partkey@3 as p_partkey]
+          SortMergeJoinExec: join_type=Inner, on=[(l_partkey@0, p_partkey@0)]
+            SortExec: expr=[l_partkey@0 ASC], preserve_partitioning=[true]
+              UnresolvedShuffleExec: stage=1, partitioning: Hash([l_partkey@0], 16)
+            SortExec: expr=[p_partkey@0 ASC], preserve_partitioning=[true]
+              UnresolvedShuffleExec: stage=2, partitioning: Hash([p_partkey@0], 16)
+        SortExec: expr=[l_partkey@1 ASC], preserve_partitioning=[true]
+          ProjectionExec: expr=[CAST(0.2 * CAST(avg(lineitem.l_quantity)@1 AS Float64) AS Decimal128(30, 15)) as Float64(0.2) * avg(lineitem.l_quantity), l_partkey@0 as l_partkey]
+            AggregateExec: mode=FinalPartitioned, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
+              UnresolvedShuffleExec: stage=3, partitioning: Hash([l_partkey@0], 16)
+
+=== Stage 5 ===
+ShuffleWriterExec: partitioning: None
+  ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
+    AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice)]
+      CoalescePartitionsExec
+        UnresolvedShuffleExec: stage=4, partitioning: Hash([l_partkey@4], 16)

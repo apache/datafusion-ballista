@@ -17,7 +17,7 @@
 
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -28,7 +28,6 @@ use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
@@ -50,6 +49,8 @@ pub mod execution_stage;
 pub mod executor_manager;
 /// Session state management.
 pub mod session_manager;
+/// Per-task plan rewriter (restrict scan/shuffle-reader to task's slice).
+pub mod task_builder;
 /// Task scheduling and lifecycle management.
 pub mod task_manager;
 
@@ -267,7 +268,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             HashMap<(JobId, usize), Vec<TaskDescription>>,
         > = HashMap::new();
         for (executor_id, task) in bound_tasks.into_iter() {
-            let stage_key = (task.partition.job_id.clone(), task.partition.stage_id);
+            let stage_key = (task.key.job_id.clone(), task.key.stage_id);
             if let Some(tasks) = executor_stage_assignments.get_mut(&executor_id) {
                 if let Some(executor_stage_tasks) = tasks.get_mut(&stage_key) {
                     executor_stage_tasks.push(task);
@@ -366,21 +367,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         job_id: &JobId,
         job_name: &str,
         session_ctx: Arc<SessionContext>,
-        logical_plan: &LogicalPlan,
+        plan: &SubmitPlan,
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let start = Instant::now();
 
         self.task_manager
-            .submit_job(
-                job_id,
-                job_name,
-                session_ctx,
-                logical_plan,
-                queued_at,
-                subscriber,
-            )
+            .submit_plan(job_id, job_name, session_ctx, plan, queued_at, subscriber)
             .await?;
 
         let elapsed = start.elapsed();
@@ -390,8 +384,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok(())
     }
 
-    /// Spawn a delayed future to clean up job data on both Scheduler and Executors
-    pub(crate) fn clean_up_successful_job(&self, job_id: JobId) {
+    /// Immediately reclaim intermediate shuffle data, then spawn a delayed
+    /// future to clean up the remaining job data (final-stage output + job
+    /// state) on both Scheduler and Executors.
+    pub(crate) fn clean_up_successful_job(
+        &self,
+        job_id: JobId,
+        intermediate_stage_ids: Vec<u32>,
+    ) {
+        self.executor_manager
+            .clean_up_intermediate_job_data(job_id.clone(), intermediate_stage_ids);
         self.executor_manager.clean_up_job_data_delayed(
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,

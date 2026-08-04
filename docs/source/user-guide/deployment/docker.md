@@ -98,7 +98,7 @@ Use `docker logs CONTAINER_ID` to check the output from the executor(s):
 $ docker logs fb8b530cee6d
 INFO ballista_executor::executor_process: Running with config:
 INFO ballista_executor::executor_process: work_dir: /tmp/.tmpAkP3pZ
-INFO ballista_executor::executor_process: concurrent_tasks: 48
+INFO ballista_executor::executor_process: Executor vcores (default: available CPU cores): 48
 INFO ballista_executor::executor_process: Ballista v52.0.0 Rust Executor Flight Server listening on 0.0.0.0:50051
 INFO ballista_executor::execution_loop: Starting poll work loop with scheduler
 ```

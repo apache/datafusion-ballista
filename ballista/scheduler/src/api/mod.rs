@@ -12,8 +12,10 @@
 
 #[cfg(feature = "rest-api")]
 mod handlers;
+mod health;
 #[cfg(feature = "rest-api")]
 mod routes;
+pub(super) use health::health_routes;
 #[cfg(feature = "rest-api")]
 pub use routes::get_routes;
 

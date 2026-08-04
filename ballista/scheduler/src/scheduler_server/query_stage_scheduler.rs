@@ -16,9 +16,11 @@
 // under the License.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ballista_core::serde::protobuf::{FailedJob, JobStatus};
+use ballista_core::JobId;
+use ballista_core::serde::protobuf::{FailedJob, JobStatus, job_status};
 use log::{debug, error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
@@ -44,6 +46,11 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     config: Arc<SchedulerConfig>,
+    /// Guards against arming more than one "all executors lost" grace timer at a
+    /// time. When a whole cluster dies at once the reaper posts an `ExecutorLost`
+    /// per executor, and each would otherwise arm its own timer and fail every
+    /// running job again. See <https://github.com/apache/datafusion-ballista/issues/2029>
+    no_executor_check_pending: Arc<AtomicBool>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
@@ -56,8 +63,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             state,
             metrics_collector,
             config,
+            no_executor_check_pending: Arc::new(AtomicBool::new(false)),
         }
     }
+
+    async fn abort_job(&self, job_id: &JobId, failure_reason: String) -> Result<()> {
+        let executor_manager = self.state.executor_manager.clone();
+        self.state
+            .task_manager
+            .abort_job(job_id, failure_reason, move |running_tasks| async move {
+                if running_tasks.is_empty() {
+                    Ok(())
+                } else {
+                    executor_manager.cancel_running_tasks(running_tasks).await
+                }
+            })
+            .await?;
+        Ok(())
+    }
+
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.metrics_collector.as_ref()
@@ -146,7 +170,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             }
                         }
 
-                        error!("{}", &fail_message);
+                        error!("{}", fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
                             fail_message,
@@ -211,10 +235,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_completed(&job_id, queued_at, completed_at);
 
                 info!("Job finished successfully: [{job_id}]");
-                if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
-                    error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
-                }
-                self.state.clean_up_successful_job(job_id);
+                let intermediate_stage_ids =
+                    match self.state.task_manager.succeed_job(&job_id).await {
+                        Ok(ids) => ids,
+                        Err(e) => {
+                            error!(
+                                "Fail to invoke succeed_job for job {job_id} due to {e:?}"
+                            );
+                            vec![]
+                        }
+                    };
+                self.state
+                    .clean_up_successful_job(job_id, intermediate_stage_ids);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -226,24 +258,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job failed: [{job_id}]");
-                match self
-                    .state
-                    .task_manager
-                    .abort_job(&job_id, fail_message)
-                    .await
-                {
-                    Ok((running_tasks, _pending_tasks)) => {
-                        if !running_tasks.is_empty() {
-                            event_sender
-                                .post_event(QueryStageSchedulerEvent::CancelTasks(
-                                    running_tasks,
-                                ))
-                                .await?;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Fail to invoke abort_job for job {job_id} due to {e:?}");
-                    }
+                if let Err(e) = self.abort_job(&job_id, fail_message).await {
+                    error!("Fail to abort job {job_id} due to {e:?}");
                 }
                 self.state.clean_up_failed_job(job_id);
             }
@@ -257,17 +273,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job cancelled: [{job_id}]");
-                match self.state.task_manager.cancel_job(&job_id).await {
-                    Ok((running_tasks, _pending_tasks)) => {
-                        event_sender
-                            .post_event(QueryStageSchedulerEvent::CancelTasks(
-                                running_tasks,
-                            ))
-                            .await?;
-                    }
-                    Err(e) => {
-                        error!("Fail to invoke cancel_job for job {job_id} due to {e:?}");
-                    }
+                if let Err(e) = self.abort_job(&job_id, "Cancelled".to_owned()).await {
+                    error!("Fail to cancel job {job_id} due to {e:?}");
                 }
                 self.state.clean_up_failed_job(job_id);
             }
@@ -278,9 +285,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 let num_status = tasks_status.len();
                 if self.state.config.is_push_staged_scheduling() {
+                    // Refund the vcores each completing task consumed at bind
+                    // time (see `bind_one` in `cluster/mod.rs`). Refunding
+                    // one vcore per task would leak leftovers under the
+                    // multi-partition-task model, draining executor budgets
+                    // to 1 vcore over the course of a query.
+                    let vcores_freed = self
+                        .state
+                        .task_manager
+                        .sum_vcores_for_statuses(&tasks_status)
+                        .await;
                     self.state
                         .executor_manager
-                        .unbind_tasks(vec![(executor_id.clone(), num_status as u32)])
+                        .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
                         .await?;
                 }
                 match self
@@ -329,6 +346,88 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         error!("{msg}");
                     }
                 }
+
+                // If that was the last executor, the running jobs whose tasks were
+                // just reset can no longer make progress — there is nothing to
+                // schedule them onto. Rather than hang forever, wait a bounded
+                // grace period for an executor to (re)register (e.g. a rolling
+                // restart) and then fail any job still running on an empty cluster.
+                // Only fires for executors that were actually present, so jobs
+                // merely queued waiting for their first executor (autoscaling cold
+                // start) are never affected.
+                // See https://github.com/apache/datafusion-ballista/issues/2029
+                //
+                // `no_executor_check_pending` collapses the burst of `ExecutorLost`
+                // events produced when a whole cluster dies at once into a single
+                // timer, so each running job is failed at most once.
+                if self.state.executor_manager.get_alive_executors().is_empty()
+                    && !self.no_executor_check_pending.swap(true, Ordering::SeqCst)
+                {
+                    let state = self.state.clone();
+                    let sender = event_sender.clone();
+                    let pending = self.no_executor_check_pending.clone();
+                    let grace = Duration::from_secs(
+                        state.config.no_executors_grace_period_seconds,
+                    );
+                    let lost_at = timestamp_millis();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(grace).await;
+
+                        // An executor may have (re)registered during the grace
+                        // window; if so the reset tasks will be scheduled onto it
+                        // and there is nothing to fail.
+                        if state.executor_manager.get_alive_executors().is_empty() {
+                            for job_id in
+                                state.task_manager.get_running_job_cache().keys()
+                            {
+                                // Re-read the live status right before failing: a
+                                // job that finished during the grace window must
+                                // not be failed, and a job planned *after* the
+                                // cluster went empty (started_at > lost_at) has its
+                                // own window and must not inherit this one.
+                                let queued_at = match state
+                                    .task_manager
+                                    .get_job_status(job_id)
+                                    .await
+                                {
+                                    Ok(Some(JobStatus {
+                                        status: Some(job_status::Status::Running(running)),
+                                        ..
+                                    })) if running.started_at <= lost_at => {
+                                        running.queued_at
+                                    }
+                                    _ => continue,
+                                };
+
+                                let fail_message = format!(
+                                    "all executors were lost and no executor re-registered within {}s; no executors remain to run the tasks for this job",
+                                    grace.as_secs()
+                                );
+                                warn!("Failing job {job_id}: {fail_message}");
+                                if let Err(e) = sender
+                                    .post_event(
+                                        QueryStageSchedulerEvent::JobRunningFailed {
+                                            job_id: job_id.clone(),
+                                            fail_message,
+                                            queued_at,
+                                            failed_at: timestamp_millis(),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    error!(
+                                        "Fail to post JobRunningFailed for job {job_id}: {e:?}"
+                                    );
+                                }
+                            }
+                        }
+
+                        // Cleared last, so the whole burst of `ExecutorLost` events
+                        // that a simultaneous cluster death produces collapses into
+                        // this single check — even when the grace period is 0.
+                        pending.store(false, Ordering::SeqCst);
+                    });
+                }
             }
             QueryStageSchedulerEvent::CancelTasks(tasks) => {
                 if let Err(e) = self
@@ -370,6 +469,7 @@ mod tests {
     use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
+    use ballista_core::serde::protobuf::job_status;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{LogicalPlan, col};
@@ -426,6 +526,113 @@ mod tests {
             "Expected {} running jobs but found {}",
             expected,
             test.running_job_number()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_running_job_fails_when_all_executors_are_lost() -> Result<()> {
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        // Grace period of 0 so the job is failed as soon as the loss is observed,
+        // keeping the test fast.
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+                .with_no_executors_grace_period_seconds(0),
+            metrics_collector.clone(),
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        let job_id = test.submit("", &plan).await?;
+
+        // Wait until the job is actually running with tasks in flight. We
+        // deliberately never `tick()`, so its tasks never complete.
+        let job_id_ref = &job_id;
+        let test_ref = &test;
+        let running = await_condition(Duration::from_millis(50), 40, || async move {
+            let status = test_ref.job_status(job_id_ref).await?;
+            Ok(matches!(
+                status.and_then(|s| s.status),
+                Some(job_status::Status::Running(_))
+            ))
+        })
+        .await?;
+        assert!(running, "job should reach the running state");
+
+        // The only executor is lost. With no executors left, the reset tasks can
+        // never be scheduled, so the job must fail rather than hang forever
+        // (#2029).
+        test.lose_executor("virtual-executor-0").await?;
+
+        let failed = await_condition(Duration::from_millis(100), 50, || async move {
+            let status = test_ref.job_status(job_id_ref).await?;
+            Ok(matches!(
+                status.and_then(|s| s.status),
+                Some(job_status::Status::Failed(_))
+            ))
+        })
+        .await?;
+        assert!(
+            failed,
+            "job should be failed after all executors were lost, but status was {:?}",
+            test.job_status(&job_id).await?
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_running_job_survives_partial_executor_loss() -> Result<()> {
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+                .with_no_executors_grace_period_seconds(0),
+            metrics_collector.clone(),
+            2,
+            1,
+            None,
+        )
+        .await?;
+
+        let job_id = test.submit("", &plan).await?;
+
+        let job_id_ref = &job_id;
+        let test_ref = &test;
+        let running = await_condition(Duration::from_millis(50), 40, || async move {
+            let status = test_ref.job_status(job_id_ref).await?;
+            Ok(matches!(
+                status.and_then(|s| s.status),
+                Some(job_status::Status::Running(_))
+            ))
+        })
+        .await?;
+        assert!(running, "job should reach the running state");
+
+        // Lose only one of two executors. One remains alive, so the job must not
+        // be failed by the total-loss guard.
+        test.lose_executor("virtual-executor-0").await?;
+
+        // Give the (grace-0) failure path ample time to fire if it were going to.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let status = test.job_status(&job_id).await?;
+        assert!(
+            !matches!(
+                status.as_ref().and_then(|s| s.status.clone()),
+                Some(job_status::Status::Failed(_))
+            ),
+            "job must not be failed while an executor remains, but status was {status:?}"
         );
 
         Ok(())

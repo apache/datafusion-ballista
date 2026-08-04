@@ -173,6 +173,21 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)appear after the
+    /// cluster has lost its last executor before failing the running jobs.
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Set to 0 to fail as soon as the loss is observed."
+    )]
+    pub no_executors_grace_period_seconds: u64,
+    /// Minimum number of registered executors before /readyz returns 200
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to always report ready."
+    )]
+    pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     #[arg(
         long,
@@ -253,6 +268,12 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)register after the
+    /// cluster has lost its last executor before failing the running jobs. This
+    /// bounds the otherwise-unbounded wait so that a total executor loss fails
+    /// the affected jobs instead of hanging forever. Set to 0 to fail as soon as
+    /// the loss is observed.
+    pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
     /// [SessionBuilder] override option
@@ -265,6 +286,8 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
+    /// Minimum number of registered executors before /readyz returns 200
+    pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
@@ -300,12 +323,14 @@ impl Default for SchedulerConfig {
             grpc_server_max_encoding_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            no_executors_grace_period_seconds: 30,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
             #[cfg(feature = "rest-api")]
@@ -404,6 +429,13 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the grace period, in seconds, to wait for an executor to (re)register
+    /// after the last executor is lost before failing running jobs.
+    pub fn with_no_executors_grace_period_seconds(mut self, value: u64) -> Self {
+        self.no_executors_grace_period_seconds = value;
+        self
+    }
+
     /// Sets the maximum gRPC server decoding message size.
     pub fn with_grpc_server_max_decoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_decoding_message_size = value;
@@ -456,7 +488,7 @@ impl SchedulerConfig {
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskDistribution {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -486,7 +518,7 @@ impl std::str::FromStr for TaskDistribution {
 /// Policy for distributing tasks to available executor slots.
 #[derive(Debug, Clone, Default)]
 pub enum TaskDistributionPolicy {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -532,12 +564,14 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            no_executors_grace_period_seconds: opt.no_executors_grace_period_seconds,
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
             #[cfg(feature = "rest-api")]

@@ -18,11 +18,34 @@
 use std::fmt::{Debug, Formatter};
 
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::ExecutionPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::{JobId, JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
+
+/// A plan submitted for execution by a client.
+///
+/// Most jobs are submitted as a [LogicalPlan] which the scheduler optimizes
+/// and turns into a physical plan itself. A client may instead submit an
+/// already-built physical plan directly, bypassing logical planning on the
+/// scheduler entirely - e.g. for plans containing custom operators that have
+/// no logical-plan representation. Physical-plan jobs always use the static
+/// distributed planner; the adaptive query planner (AQE) requires a logical
+/// plan and is not available for this path.
+// `LogicalPlan` is much larger than `Arc<dyn ExecutionPlan>`, but `SubmitPlan`
+// values are only ever handled by reference or already boxed by their callers
+// (e.g. `QueryStageSchedulerEvent::JobQueued::plan`), so the size difference
+// does not cause repeated large stack copies in practice.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
+pub enum SubmitPlan {
+    /// A logical plan that the scheduler will plan into a physical plan.
+    Logical(LogicalPlan),
+    /// An already-built physical plan supplied directly by the client.
+    Physical(Arc<dyn ExecutionPlan>),
+}
 
 /// Events that drive the query stage scheduler state machine.
 #[derive(Clone)]
@@ -35,8 +58,8 @@ pub enum QueryStageSchedulerEvent {
         job_name: String,
         /// Session context for the job.
         session_ctx: Arc<SessionContext>,
-        /// Logical plan to execute.
-        plan: Box<LogicalPlan>,
+        /// Plan to execute, either logical or an already-built physical plan.
+        plan: Box<SubmitPlan>,
         /// Timestamp when the job was queued.
         queued_at: u64,
         /// job status subscriber

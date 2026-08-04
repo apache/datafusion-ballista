@@ -19,7 +19,9 @@ use crate::planner::create_shuffle_writer_with_config;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptiveStageInfo;
 use ballista_core::JobId;
-use ballista_core::execution_plans::ShuffleReaderExec;
+use ballista_core::execution_plans::{
+    PerPartitionFilterExec, ShuffleReaderExec, range_partition_predicates,
+};
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
@@ -28,6 +30,7 @@ use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     physical_plan::ExecutionPlan,
 };
+use log::debug;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
@@ -105,7 +108,24 @@ impl BallistaAdapter {
                 )?,
             };
 
-            Ok(Transformed::yes(Arc::new(reader)))
+            let reader: Arc<dyn ExecutionPlan> = Arc::new(reader);
+            // Without a per-partition filter, straddling sub-parts from a
+            // range-repartitioned upstream would feed multiple downstream
+            // partitions and `FinalPartitioned` would split their partial sums.
+            if let Some(routing) = exchange.range_repartition_routing() {
+                let predicates =
+                    range_partition_predicates(routing.routing_expr, &routing.cuts);
+                debug!(
+                    "range-repartition: injecting PerPartitionFilterExec above \
+                     ShuffleReader for stage {} — {} predicates over {} cuts",
+                    stage_id,
+                    predicates.len(),
+                    routing.cuts.len(),
+                );
+                let filtered = PerPartitionFilterExec::try_new(reader, predicates)?;
+                return Ok(Transformed::yes(Arc::new(filtered)));
+            }
+            Ok(Transformed::yes(reader))
         } else {
             Ok(Transformed::no(plan))
         }
