@@ -34,7 +34,15 @@ required-features = ["build-binary"]
 
 [features]
 arrow-ipc-optimizations = []
-build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary", "mimalloc", "dep:axum"]
+build-binary = [
+    "clap",
+    "tracing-subscriber",
+    "tracing-appender",
+    "tracing",
+    "ballista-core/build-binary",
+    "mimalloc",
+    "dep:axum",
+]
 default = ["arrow-ipc-optimizations", "build-binary"]
 spark-compat = ["ballista-core/spark-compat"]
 

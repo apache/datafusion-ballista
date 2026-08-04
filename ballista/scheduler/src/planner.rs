@@ -43,6 +43,7 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
@@ -51,6 +52,7 @@ use log::debug;
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
+use crate::state::task_builder::restrict_plan_to_partitions;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -195,6 +197,45 @@ impl DefaultDistributedPlanner {
             stages.append(&mut child_stages);
         }
 
+        // UnionExec: a branch that cannot be restricted away needs its own
+        // stage. Per-task restriction gives each branch of a union the
+        // partitions that task owns and an empty slice to the rest, relying on
+        // an unowned branch becoming 0-partition so `UnionExec`'s index
+        // arithmetic routes past it.
+        //
+        // That fails when the branch's partition count does not come from
+        // restrictable leaves — a `CoalescePartitionsExec` or non-preserving
+        // `SortExec` reports one partition whatever its leaves do, and a
+        // broadcast `ShuffleReaderExec` is deliberately never pruned. The
+        // branch keeps reporting a partition and keeps producing all of its
+        // data, so every task runs every branch: results come back inflated by
+        // the branch count, or a task executes a branch whose scan was emptied
+        // (#2184).
+        //
+        // Cutting a boundary beneath such a branch turns it into a
+        // `ShuffleReaderExec`, which restricts to nothing cleanly, and leaves
+        // the collapse in its own stage where it sees its whole input.
+        if execution_plan.is::<UnionExec>() {
+            for child in &mut children {
+                if can_stay_inline(child) {
+                    continue;
+                }
+                let writer = create_shuffle_writer_with_config(
+                    job_id,
+                    self.next_stage_id(),
+                    child.clone(),
+                    None,
+                    config,
+                )?;
+                *child = create_unresolved_shuffle(writer.as_ref());
+                stages.push(writer);
+            }
+            return Ok((
+                with_new_children_if_necessary(execution_plan, children)?,
+                stages,
+            ));
+        }
+
         if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
             let input = self.optimizer_enforce_sorting.optimize(input, config)?;
@@ -266,6 +307,107 @@ impl DefaultDistributedPlanner {
         self.next_stage_id
     }
 
+    /// Returns `Some(true/false)` when statistics can determine whether an
+    /// input fits Ballista's broadcast byte limit, or `None` when its size is
+    /// unknown. Falls back to a conservative row-width estimate when possible.
+    fn broadcast_size_under_threshold(
+        plan: &dyn ExecutionPlan,
+        threshold: usize,
+    ) -> Option<bool> {
+        let Ok(stats) = plan.partition_statistics(None) else {
+            debug!(
+                "broadcast check: partition_statistics returned error for {}",
+                plan.name()
+            );
+            return None;
+        };
+        debug!(
+            "broadcast check: {} total_byte_size={:?} num_rows={:?} threshold={}",
+            plan.name(),
+            stats.total_byte_size,
+            stats.num_rows,
+            threshold,
+        );
+        if let Some(bytes) = stats.total_byte_size.get_value()
+            && *bytes != 0
+        {
+            Some(*bytes < threshold)
+        } else if let Some(rows) = stats.num_rows.get_value()
+            && *rows != 0
+        {
+            let schema = plan.schema();
+            let bytes_per_row: usize = schema
+                .fields()
+                .iter()
+                .map(|f| match f.data_type() {
+                    DataType::Boolean => 1,
+                    DataType::Int8 | DataType::UInt8 => 1,
+                    DataType::Int16 | DataType::UInt16 => 2,
+                    DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
+                    DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
+                    DataType::Date32 => 4,
+                    DataType::Date64 => 8,
+                    DataType::Decimal128(_, _) => 16,
+                    DataType::Decimal256(_, _) => 32,
+                    _ => 32, // conservative estimate for variable-length types
+                })
+                .sum();
+            let estimated_bytes = *rows * bytes_per_row.max(8);
+            debug!(
+                "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
+                schema.fields().len(),
+            );
+            Some(estimated_bytes < threshold)
+        } else {
+            None
+        }
+    }
+
+    /// Lowers a null-aware anti join to the only shape supported correctly by
+    /// DataFusion's in-process hash join: collect the build side and coalesce
+    /// the probe side so one task owns all shared null/visited state.
+    fn lower_null_aware_join(
+        hash_join: &HashJoinExec,
+        threshold_bytes: usize,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Unknown size is allowed because file scans commonly lose exact byte
+        // statistics before this point. Known oversized inputs and an explicit
+        // threshold of zero fail clearly instead of running an unsafe plan.
+        if threshold_bytes == 0
+            || matches!(
+                Self::broadcast_size_under_threshold(
+                    &**hash_join.left(),
+                    threshold_bytes
+                ),
+                Some(false)
+            )
+        {
+            return Err(BallistaError::General(format!(
+                "Null-aware anti join requires single-task execution, but its build side does not fit ballista.optimizer.broadcast_join_threshold_bytes ({threshold_bytes} bytes)"
+            )));
+        }
+
+        // Always keep an explicit coalesce. Some scans report one output
+        // partition during planning but expand to multiple partitions when the
+        // distributed stage is built.
+        let right: Arc<dyn ExecutionPlan> = if hash_join
+            .right()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .is_some()
+        {
+            hash_join.right().clone()
+        } else {
+            Arc::new(CoalescePartitionsExec::new(hash_join.right().clone()))
+        };
+
+        hash_join
+            .builder()
+            .with_partition_mode(PartitionMode::CollectLeft)
+            .with_new_children(vec![hash_join.left().clone(), right])?
+            .build_exec()
+            .map_err(Into::into)
+    }
+
     /// Reconciles a join's partition mode with the Ballista broadcast
     /// threshold (`ballista.optimizer.broadcast_join_threshold_bytes`).
     ///
@@ -279,8 +421,9 @@ impl DefaultDistributedPlanner {
     ///   under the Ballista threshold (including a threshold of `0`, which
     ///   disables broadcast joins). This makes the Ballista key authoritative
     ///   even when it is overridden at runtime below the DataFusion session
-    ///   value. Null-aware anti joins are never demoted (they require
-    ///   `CollectLeft`).
+    ///   value. Null-aware anti joins are instead lowered to a single-task
+    ///   `CollectLeft` join unless the build side is known to exceed the
+    ///   Ballista threshold.
     ///
     /// Otherwise returns the input unchanged.
     fn maybe_promote_to_broadcast(
@@ -303,6 +446,15 @@ impl DefaultDistributedPlanner {
         if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
             && *hash_join.partition_mode() == PartitionMode::CollectLeft
         {
+            // A null-aware anti join cannot run once per probe partition:
+            // DataFusion's visited/null state is shared only within one process.
+            // Collect the build side and coalesce the probe side so the join has
+            // exactly one task. Reject a build side known to exceed the normal
+            // broadcast threshold; an unsupported-plan error is safer than a
+            // wrong answer.
+            if hash_join.null_aware {
+                return Self::lower_null_aware_join(hash_join, threshold_bytes);
+            }
             // Broadcasting is only correct for probe-driven join types. If the
             // join type is not broadcast-safe, demote it back to a partitioned
             // (shuffle) join. Correctness guard, independent of the threshold.
@@ -313,25 +465,35 @@ impl DefaultDistributedPlanner {
                 );
                 return Self::demote_collect_left_to_partitioned(hash_join, config);
             }
-            // Null-aware anti joins must stay `CollectLeft`: they track
-            // probe-side state that a partitioned join cannot reconstruct, so
-            // never demote them regardless of the threshold.
-            if hash_join.null_aware {
-                return Ok(plan);
-            }
             // Safe join type: honor the Ballista broadcast threshold. DataFusion
             // decided `CollectLeft` using its own session threshold, which can
             // exceed a user's runtime `broadcast_join_threshold_bytes` override.
             // If broadcasts are disabled (0) or the build (left) side is not
             // under the Ballista threshold, demote so the Ballista key is
             // authoritative in the static planner path too.
-            if threshold_bytes == 0 || !under(&**hash_join.left(), threshold_bytes) {
+            if threshold_bytes == 0
+                || !Self::broadcast_size_under_threshold(
+                    &**hash_join.left(),
+                    threshold_bytes,
+                )
+                .unwrap_or(false)
+            {
                 debug!(
                     "broadcast check: demoting CollectLeft join to Partitioned; build side not under Ballista threshold={threshold_bytes} (or broadcasts disabled)",
                 );
                 return Self::demote_collect_left_to_partitioned(hash_join, config);
             }
             return Ok(plan);
+        }
+
+        // An already-partitioned null-aware join is not changed by the copied
+        // DataFusion optimizer rule. Lower it here, where Ballista can also
+        // enforce single-task distributed execution.
+        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
+            && *hash_join.partition_mode() == PartitionMode::Partitioned
+            && hash_join.null_aware
+        {
+            return Self::lower_null_aware_join(hash_join, threshold_bytes);
         }
 
         if threshold_bytes == 0 {
@@ -352,63 +514,13 @@ impl DefaultDistributedPlanner {
         if *hash_join.partition_mode() != PartitionMode::Partitioned {
             return Ok(plan);
         }
-        if hash_join.null_aware {
-            return Ok(plan);
-        }
-
         let left = hash_join.left();
         let right = hash_join.right();
 
-        fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
-            let Ok(stats) = plan.partition_statistics(None) else {
-                debug!(
-                    "broadcast check: partition_statistics returned error for {}",
-                    plan.name()
-                );
-                return false;
-            };
-            debug!(
-                "broadcast check: {} total_byte_size={:?} num_rows={:?} threshold={}",
-                plan.name(),
-                stats.total_byte_size,
-                stats.num_rows,
-                threshold,
-            );
-            if let Some(bytes) = stats.total_byte_size.get_value() {
-                *bytes != 0 && *bytes < threshold
-            } else if let Some(rows) = stats.num_rows.get_value() {
-                let schema = plan.schema();
-                let bytes_per_row: usize = schema
-                    .fields()
-                    .iter()
-                    .map(|f| {
-                        match f.data_type() {
-                            DataType::Boolean => 1,
-                            DataType::Int8 | DataType::UInt8 => 1,
-                            DataType::Int16 | DataType::UInt16 => 2,
-                            DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
-                            DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
-                            DataType::Date32 => 4,
-                            DataType::Date64 => 8,
-                            DataType::Decimal128(_, _) => 16,
-                            DataType::Decimal256(_, _) => 32,
-                            _ => 32, // conservative estimate for variable-length types
-                        }
-                    })
-                    .sum();
-                let estimated_bytes = *rows * bytes_per_row.max(8);
-                debug!(
-                    "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
-                    schema.fields().len(),
-                );
-                estimated_bytes != 0 && estimated_bytes < threshold
-            } else {
-                false
-            }
-        }
-
-        let left_under = under(&**left, threshold_bytes);
-        let right_under = under(&**right, threshold_bytes);
+        let left_under = Self::broadcast_size_under_threshold(&**left, threshold_bytes)
+            .unwrap_or(false);
+        let right_under = Self::broadcast_size_under_threshold(&**right, threshold_bytes)
+            .unwrap_or(false);
         if !left_under && !right_under {
             debug!("broadcast check: neither side under threshold, skipping promotion");
             return Ok(plan);
@@ -530,6 +642,52 @@ impl DefaultDistributedPlanner {
             .with_new_children(vec![new_left, new_right])?
             .build_exec()?)
     }
+}
+
+/// Whether a union branch can be left in the union's own stage.
+///
+/// A branch already sitting behind a stage boundary needs nothing more, and
+/// neither does one that per-task restriction can reduce to zero partitions —
+/// that is the property the union's index arithmetic relies on. The second
+/// question is put to the real rewriter rather than to a list of operators, so
+/// it stays correct as the rewriter's handling of collapses, broadcast readers
+/// and leaf types evolves.
+fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if plan.is::<UnresolvedShuffleExec>() {
+        return true;
+    }
+    !holds_a_broadcast(plan) && restricts_to_nothing(plan)
+}
+
+/// Whether per-task restriction can reduce `plan` to zero partitions. An empty
+/// slice means "this task polls nothing here", so a branch that still reports a
+/// partition afterwards is one that cannot be restricted away.
+fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    restrict_plan_to_partitions(plan.clone(), &[])
+        .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
+}
+
+/// Whether `plan` contains a broadcast input or a `CollectLeft` join.
+///
+/// Asking the rewriter alone is not enough here. A `CollectLeft` join's build
+/// and probe sides can still be swapped after stage planning — `JoinSelection`
+/// runs on the resolved stage plan (see `ExecutionStage`) — and the two orders
+/// restrict differently: the build side is read in full (it must see its whole
+/// input), while a broadcast input is never pruned at all. So a branch that
+/// looks restrictable now can stop being restrictable by the time the task is
+/// built, which is exactly the case that left TPC-DS q5's catalog branch
+/// running in every task.
+///
+/// Treat any such branch as needing its own stage. The cost is one extra
+/// stage; the alternative is a silently inflated result.
+fn holds_a_broadcast(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let here = plan
+        .downcast_ref::<UnresolvedShuffleExec>()
+        .is_some_and(|u| u.broadcast)
+        || plan
+            .downcast_ref::<HashJoinExec>()
+            .is_some_and(|j| *j.partition_mode() == PartitionMode::CollectLeft);
+    here || plan.children().iter().any(|c| holds_a_broadcast(c))
 }
 
 fn create_unresolved_shuffle(
@@ -744,9 +902,10 @@ pub(crate) fn create_shuffle_writer_with_config(
 
 #[cfg(test)]
 mod test {
+    use super::{can_stay_inline, holds_a_broadcast};
     use crate::assert_plan;
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
-    use crate::test_utils::datafusion_test_context;
+    use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
@@ -755,6 +914,7 @@ mod test {
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 
     use datafusion::physical_plan::filter::FilterExec;
 
@@ -803,6 +963,66 @@ mod test {
         assert_eq!(
             displayable(rewritten.as_ref()).indent(false).to_string(),
             "EmptyExec\n"
+        );
+    }
+
+    /// A plain scan branch restricts away cleanly, so it can stay inline in
+    /// the union's stage and needs no extra shuffle.
+    #[test]
+    fn plain_union_branch_stays_inline() {
+        assert!(can_stay_inline(&scan_with_file_groups(4)));
+    }
+
+    /// A branch already sitting behind a stage boundary needs nothing more.
+    #[test]
+    fn branch_behind_a_stage_boundary_stays_inline() {
+        let schema = scan_with_file_groups(1).schema();
+        let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
+            1,
+            schema,
+            Partitioning::UnknownPartitioning(4),
+        ));
+        assert!(can_stay_inline(&reader));
+    }
+
+    /// A branch that collapses internally reports one partition whatever its
+    /// leaves do, so restriction cannot empty it and it needs its own stage.
+    #[test]
+    fn collapsing_union_branch_needs_its_own_stage() {
+        let branch: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(scan_with_file_groups(4)));
+        assert_eq!(
+            branch.properties().output_partitioning().partition_count(),
+            1
+        );
+        assert!(
+            !can_stay_inline(&branch),
+            "a collapsing branch cannot be restricted away"
+        );
+    }
+
+    /// The broadcast guard looks through the whole branch, not just its root:
+    /// a `CollectLeft` join's sides can be swapped after stage planning, and
+    /// the two orders restrict differently, so any branch holding one is
+    /// treated as needing its own stage.
+    #[test]
+    fn broadcast_is_detected_anywhere_in_a_branch() {
+        let plain = scan_with_file_groups(4);
+        assert!(
+            !holds_a_broadcast(&plain),
+            "a plain scan holds no broadcast"
+        );
+
+        let broadcast: Arc<dyn ExecutionPlan> =
+            Arc::new(UnresolvedShuffleExec::new_broadcast(1, plain.schema(), 4));
+        assert!(holds_a_broadcast(&broadcast));
+
+        // Buried a level down, which is where it actually shows up.
+        let buried: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(broadcast));
+        assert!(
+            holds_a_broadcast(&buried),
+            "the guard must search the branch, not just its root"
         );
     }
 
@@ -1085,6 +1305,138 @@ order by
         assert!(stages[4].shuffle_output_partitioning().is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn null_aware_collect_left_join_coalesces_probe_to_one_partition() {
+        use datafusion::{
+            arrow::datatypes::{DataType, Field, Schema},
+            common::{
+                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
+            },
+            physical_plan::{
+                Partitioning, coalesce_partitions::CoalescePartitionsExec,
+                joins::PartitionMode, repartition::RepartitionExec,
+                test::exec::StatisticsExec,
+            },
+        };
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        let stats = Statistics {
+            num_rows: Precision::Exact(20),
+            total_byte_size: Precision::Exact(80),
+            column_statistics: vec![ColumnStatistics::new_unknown()],
+        };
+        let left = Arc::new(StatisticsExec::new(stats.clone(), schema.as_ref().clone()))
+            as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(
+            RepartitionExec::try_new(
+                Arc::new(StatisticsExec::new(stats, schema.as_ref().clone())),
+                Partitioning::RoundRobinBatch(4),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                vec![(
+                    Arc::new(Column::new("key", 0)) as _,
+                    Arc::new(Column::new("key", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let planned = DefaultDistributedPlanner::maybe_promote_to_broadcast(
+            plan,
+            &datafusion::config::ConfigOptions::new(),
+        )
+        .unwrap();
+        let hash_join = planned
+            .downcast_ref::<HashJoinExec>()
+            .expect("null-aware join should remain a HashJoinExec");
+
+        assert_eq!(*hash_join.join_type(), JoinType::LeftAnti);
+        assert_eq!(*hash_join.partition_mode(), PartitionMode::CollectLeft);
+        assert!(hash_join.null_aware);
+        assert!(
+            hash_join
+                .right()
+                .downcast_ref::<CoalescePartitionsExec>()
+                .is_some(),
+            "probe side must be coalesced so the join runs in one task"
+        );
+        assert_eq!(
+            hash_join
+                .right()
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn null_aware_join_rejects_known_oversized_build_side() {
+        use datafusion::{
+            arrow::datatypes::{DataType, Field, Schema},
+            common::{
+                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
+            },
+            physical_plan::{joins::PartitionMode, test::exec::StatisticsExec},
+        };
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        let left = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Exact(5_000_000),
+                total_byte_size: Precision::Exact(20 * 1024 * 1024),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            schema.as_ref().clone(),
+        )) as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(StatisticsExec::new(
+            Statistics::new_unknown(&schema),
+            schema.as_ref().clone(),
+        )) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                vec![(
+                    Arc::new(Column::new("key", 0)) as _,
+                    Arc::new(Column::new("key", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let error = DefaultDistributedPlanner::maybe_promote_to_broadcast(
+            plan,
+            &datafusion::config::ConfigOptions::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "build side does not fit ballista.optimizer.broadcast_join_threshold_bytes"
+            ),
+            "{error}"
+        );
     }
 
     #[tokio::test]

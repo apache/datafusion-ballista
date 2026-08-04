@@ -19,7 +19,10 @@ use ballista_core::config::BallistaConfig;
 use datafusion::{
     arrow::compute::SortOptions,
     arrow::datatypes::{DataType, Schema},
-    common::{ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err},
+    common::{
+        ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err,
+        plan_err,
+    },
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
     physical_expr_common::physical_expr::fmt_sql,
@@ -248,10 +251,13 @@ impl DynamicJoinSelectionExec {
         // actually builds from rather than `self.left` unconditionally.
         // `supports_swap_join_order` is true when the *left* is the larger side,
         // so a swap moves the build onto `self.right`.
-        let swap_inputs = SelectJoinRule::supports_swap_join_order(
-            self.left.as_ref(),
-            self.right.as_ref(),
-        )?;
+        // Null-aware anti joins are only valid as LeftAnti and therefore cannot
+        // participate in the size-driven input swap.
+        let swap_inputs = !self.null_aware
+            && SelectJoinRule::supports_swap_join_order(
+                self.left.as_ref(),
+                self.right.as_ref(),
+            )?;
         let build_side = if swap_inputs { &self.right } else { &self.left };
 
         let build_max_partition_bytes = max_per_partition_build_bytes(build_side);
@@ -284,15 +290,41 @@ impl DynamicJoinSelectionExec {
             self.join_type
         };
 
-        let partition_mode =
-            if under_threshold && collect_left_broadcast_safe(build_side_join_type) {
-                PartitionMode::CollectLeft
-            } else {
-                PartitionMode::Partitioned
-            };
-
         let stats_left = self.left.partition_statistics(None)?;
         let stats_right = self.right.partition_statistics(None)?;
+        let build_stats = if swap_inputs {
+            &stats_right
+        } else {
+            &stats_left
+        };
+        let build_size_known = match build_stats.total_byte_size.get_value() {
+            Some(bytes) => *bytes != 0,
+            None => build_stats
+                .num_rows
+                .get_value()
+                .is_some_and(|rows| *rows != 0),
+        };
+
+        // A null-aware anti join must collect its build side and run its probe
+        // side in one task. Reject a disabled broadcast or a build side known
+        // to exceed the threshold. Unknown sizes are allowed because file scans
+        // commonly lose exact statistics before AQE first resolves the join.
+        if self.null_aware
+            && (threshold_collect_left_join_bytes == 0
+                || (build_size_known && !under_threshold))
+        {
+            return plan_err!(
+                "Null-aware anti join requires single-task execution, but its build side does not fit ballista.optimizer.broadcast_join_threshold_bytes ({threshold_collect_left_join_bytes} bytes)"
+            );
+        }
+
+        let partition_mode = if self.null_aware
+            || (under_threshold && collect_left_broadcast_safe(build_side_join_type))
+        {
+            PartitionMode::CollectLeft
+        } else {
+            PartitionMode::Partitioned
+        };
 
         let action = match (&self.selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self

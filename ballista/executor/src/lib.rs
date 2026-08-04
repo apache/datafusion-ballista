@@ -63,8 +63,8 @@ use log::info;
 
 use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask, TaskStatus,
-    task_status,
+    FailedTask, OperatorMetricsSet, RuntimeStatsReport, ShuffleWritePartition,
+    SuccessfulTask, TaskStatus, task_status,
 };
 use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
@@ -98,6 +98,21 @@ pub struct TaskExecutionTimes {
     end_exec_time: u64,
 }
 
+/// Side-channel data harvested from a task's executed plan, attached to the
+/// [`TaskStatus`] reported to the scheduler on success.
+///
+/// Marked `#[non_exhaustive]` so future additions (e.g. tracing IDs, further
+/// runtime reports) are non-breaking for external callers that construct via
+/// `TaskCompletionExtras { operator_metrics: …, ..Default::default() }`.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct TaskCompletionExtras {
+    /// Per-operator metrics collected from the executed plan.
+    pub operator_metrics: Option<Vec<OperatorMetricsSet>>,
+    /// Runtime-stats reports harvested from `RuntimeStatsExec` taps in the plan.
+    pub runtime_stats: Vec<RuntimeStatsReport>,
+}
+
 /// Converts a task execution result into a [`TaskStatus`] protobuf message.
 ///
 /// This function wraps the outcome of task execution (success or failure)
@@ -108,16 +123,22 @@ pub fn as_task_status(
     executor_id: String,
     stage_attempt_num: usize,
     key: TaskKey,
-    operator_metrics: Option<Vec<OperatorMetricsSet>>,
     execution_times: TaskExecutionTimes,
+    extras: TaskCompletionExtras,
 ) -> TaskStatus {
+    let TaskCompletionExtras {
+        operator_metrics,
+        runtime_stats,
+    } = extras;
     let metrics = operator_metrics.unwrap_or_default();
     let task_id = key.task_id;
     match execution_result {
         Ok(partitions) => {
             debug!(
-                "Task {task_id} finished with operator_metrics array size {}",
-                metrics.len()
+                "Task {task_id} finished with operator_metrics array size {} \
+                 and {} runtime-stats report(s)",
+                metrics.len(),
+                runtime_stats.len(),
             );
             TaskStatus {
                 task_id: task_id as u32,
@@ -131,6 +152,7 @@ pub fn as_task_status(
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
                     partitions,
+                    runtime_stats,
                 })),
             }
         }

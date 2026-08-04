@@ -46,15 +46,12 @@ use datafusion::arrow::compute::take_arrays;
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use futures::FutureExt;
 use log::warn;
 use tokio::sync::mpsc;
 
-use crate::execution_plans::{
-    BufferExec, RuntimeStatsExec, ShuffleWriterExec, SortShuffleWriterExec,
-};
+use crate::execution_plans::RuntimeStatsExec;
+use crate::execution_plans::plan_algebra::preserves_distribution;
 
 /// Walk `child`'s subtree for a [`RuntimeStatsExec`] that sketches on our
 /// routing expression, snapshot its merged T-Digest, and compute `K - 1`
@@ -153,54 +150,6 @@ pub(super) fn find_runtime_stats<'a>(
         return None;
     };
     find_runtime_stats(only_child, routing_expr)
-}
-
-/// Whitelist of pass-through operator types the walker will descend through
-/// on its way to a matching [`RuntimeStatsExec`]. Unlisted operators might
-/// drop rows, duplicate rows, or transform the routing key's value — any of
-/// which would make an upstream sketch stale by the time data reaches us.
-///
-/// Being conservative is the safety net: unrecognized node → walker gives
-/// up → single-bucket fallback. Extending this list requires positive
-/// verification that the operator is a distribution-preserving passthrough
-/// for the routing key. Absent an upstream `ExecutionPlan::affects_distribution()`
-/// method (nice-to-have that hopefully lands one day), we maintain this by hand.
-pub(super) fn preserves_distribution(plan: &dyn ExecutionPlan) -> bool {
-    // Every entry here is a *claim* that the operator (1) doesn't drop
-    // rows, (2) doesn't duplicate rows, (3) doesn't transform the routing
-    // key's value, AND (4) doesn't change partitioning (per-partition
-    // slots downstream still map to the same partitions upstream). Losing
-    // any of those invalidates the sketch/count on the other side.
-    //
-    // Notable *exclusions*:
-    //   • `SortPreservingMergeExec` — collapses N partitions to 1, so
-    //     per-partition slots below it don't align with the single
-    //     partition above. Values are preserved, but the partitioning
-    //     invariant fails.
-    //   • `ProjectionExec` — might compute a new column that shadows or
-    //     replaces the routing key, transforming values invisibly.
-    //   • `FilterExec`, `LimitExec`, joins — drop or duplicate rows.
-    //   • Our own DRRs — repartition by value; that's the whole point.
-    plan.downcast_ref::<BufferExec>().is_some()
-        // `SortExec` reorders rows within each partition; row set and per-
-        // partition counts unchanged — but ONLY when `preserve_partitioning`
-        // is true. The `preserve_partitioning=false` variant collapses N
-        // partitions to 1 (like `SortPreservingMergeExec`), which would
-        // invalidate per-partition slot alignment.
-        || plan
-            .downcast_ref::<SortExec>()
-            .is_some_and(|sort| sort.preserve_partitioning())
-        // `ShuffleWriterExec` / `SortShuffleWriterExec` sit at the top of
-        // every stage's plan on the executor side. They write batches to
-        // disk unchanged — no transformation, no filtering.
-        || plan.downcast_ref::<ShuffleWriterExec>().is_some()
-        || plan.downcast_ref::<SortShuffleWriterExec>().is_some()
-        // `BoundedWindowAggExec` / `WindowAggExec` are pure row-annotation:
-        // each input row emits exactly one output row with a new column
-        // (the window function's result). The routing key's values,
-        // partitioning, and row count are all preserved verbatim.
-        || plan.downcast_ref::<BoundedWindowAggExec>().is_some()
-        || plan.downcast_ref::<WindowAggExec>().is_some()
 }
 
 /// Split `batch` into `K = boundaries.len() + 1` sub-batches under the
@@ -341,7 +290,9 @@ pub(super) mod test_util {
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::common::Result;
     use datafusion::execution::TaskContext;
-    use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+    use datafusion::physical_expr::{
+        EquivalenceProperties, LexOrdering, Partitioning, PhysicalSortExpr,
+    };
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
@@ -368,6 +319,29 @@ pub(super) mod test_util {
         pub(crate) fn new(schema: &Arc<Schema>) -> Self {
             let properties = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema.clone()),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self {
+                schema: schema.clone(),
+                properties,
+            }
+        }
+
+        /// Same as `new` but declares `order_by` as the output ordering.
+        /// `OrderedRangeRepartitionExec::try_new` rejects inputs without a
+        /// declared ordering, so its panic test needs this variant.
+        pub(crate) fn with_ordering(
+            schema: &Arc<Schema>,
+            order_by: Vec<PhysicalSortExpr>,
+        ) -> Self {
+            let mut eq = EquivalenceProperties::new(schema.clone());
+            if let Some(lex) = LexOrdering::new(order_by) {
+                eq.add_ordering(lex);
+            }
+            let properties = Arc::new(PlanProperties::new(
+                eq,
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
