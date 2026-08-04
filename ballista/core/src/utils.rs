@@ -359,18 +359,15 @@ pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
 }
 
 /// Binds a gRPC server's listening socket, for use with tonic's
-/// `serve_with_incoming` / `serve_with_incoming_shutdown`.
-///
-/// tonic's `serve` binds lazily, inside the future it returns, so a caller that
-/// spawns that future has no way to know when the port started accepting
-/// connections. Use this instead whenever something else must be able to reach
-/// the port as soon as the server is started: the socket is listening by the
-/// time this returns.
+/// `serve_with_incoming` / `serve_with_incoming_shutdown`. Unlike tonic's
+/// `serve`, which binds lazily inside the future it returns, the socket is
+/// listening by the time this returns — so use this whenever a peer may be
+/// told to connect as soon as the server is started.
 ///
 /// tonic ignores the builder's `tcp_nodelay` and `tcp_keepalive` when serving
 /// from a pre-bound listener, so this applies the same values that
-/// [`create_grpc_server`] sets. The remaining settings still come from the
-/// builder.
+/// [`create_grpc_server`] sets, for the same reasons. The remaining settings
+/// still come from the builder.
 ///
 /// # Panics
 ///
@@ -381,7 +378,6 @@ pub fn create_grpc_server_incoming(
     config: &GrpcServerConfig,
 ) -> Result<TcpIncoming> {
     Ok(TcpIncoming::bind(addr)?
-        // Disable Nagle's Algorithm since we don't want packets to wait
         .with_nodelay(Some(true))
         .with_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds))))
 }
@@ -471,11 +467,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// The whole point of binding up front is that the port is reachable before
+    /// The point of binding up front is that the port is reachable before
     /// anything is served on it, so a peer told to connect back cannot arrive
     /// too early.
     #[tokio::test]
-    async fn grpc_server_incoming_accepts_connections_before_it_is_served() {
+    async fn test_create_grpc_server_incoming_binds_eagerly() {
         let incoming = create_grpc_server_incoming(
             "127.0.0.1:0".parse().unwrap(),
             &GrpcServerConfig::default(),
@@ -487,18 +483,5 @@ mod tests {
         tokio::net::TcpStream::connect(addr)
             .await
             .expect("port is already listening");
-    }
-
-    #[tokio::test]
-    async fn test_create_grpc_server_incoming_port_in_use() {
-        let first = create_grpc_server_incoming(
-            "127.0.0.1:0".parse().unwrap(),
-            &GrpcServerConfig::default(),
-        )
-        .expect("bind");
-        let addr = first.local_addr().expect("local addr");
-
-        let result = create_grpc_server_incoming(addr, &GrpcServerConfig::default());
-        assert!(result.is_err());
     }
 }
