@@ -36,7 +36,8 @@
 //! flows from parent to descendants via function arguments, so sibling
 //! subtrees never share state and there's no traversal-order dependency.
 
-use ballista_core::execution_plans::ShuffleReaderExec;
+use ballista_core::execution_plans::{PerPartitionFilterExec, ShuffleReaderExec};
+use datafusion::common::internal_err;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder,
@@ -81,6 +82,30 @@ fn restrict(
     if !under_collect && let Some(rewritten) = select_output_partitions(&plan, partitions)
     {
         return Ok(rewritten);
+    }
+
+    // PerPartitionFilterExec: its `predicates` vec is positionally aligned
+    // with the child's output partitions (predicates[k] filters
+    // input.execute(k)). When we restrict the child from K partitions to
+    // `partitions.len()`, the predicate vec must be sliced by the same
+    // indices in the same order
+    if !under_collect && let Some(ppf) = plan.downcast_ref::<PerPartitionFilterExec>() {
+        let children = plan.children();
+        let [child] = children.as_slice() else {
+            return internal_err!(
+                "PerPartitionFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        let new_child = restrict((*child).clone(), partitions, false)?;
+        let new_predicates: Vec<_> = partitions
+            .iter()
+            .map(|&part_idx| ppf.predicates()[part_idx].clone())
+            .collect();
+        return Ok(Arc::new(PerPartitionFilterExec::try_new(
+            new_child,
+            new_predicates,
+        )?));
     }
 
     // UnionExec: parent partition `p` maps to exactly one child's local
@@ -623,5 +648,74 @@ mod tests {
             vec![1],
             "streaming right side is pinned to this task's partition"
         );
+    }
+
+    /// A `PerPartitionFilterExec` restricted to a subset of partitions must
+    /// slice its `predicates` vector by the same indices, in the same order,
+    /// as its child. Otherwise the operator's construction invariant
+    /// (`predicates.len() == child.partition_count()`) breaks and
+    /// task-local partition `j` would filter through a global predicate
+    /// that no longer matches.
+    #[test]
+    fn per_partition_filter_predicates_are_sliced_with_partitions() {
+        use ballista_core::execution_plans::PerPartitionFilterExec;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+        use datafusion::scalar::ScalarValue;
+
+        // 4 upstream partitions, each with its own bespoke predicate so we
+        // can assert the slice ordering survives.
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let partitions_locs: Vec<Vec<PartitionLocation>> =
+            (0..4).map(|i| vec![create_partition(i)]).collect();
+        let reader = ShuffleReaderExec::try_new(
+            1,
+            partitions_locs,
+            schema.clone(),
+            Partitioning::UnknownPartitioning(4),
+        )
+        .unwrap();
+        let make_pred = |lo: i64| -> Arc<dyn PhysicalExpr> {
+            Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("v", 0)),
+                Operator::GtEq,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(lo)))),
+            ))
+        };
+        let predicates: Vec<Arc<dyn PhysicalExpr>> =
+            (0..4).map(|i| make_pred(i as i64 * 100)).collect();
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            PerPartitionFilterExec::try_new(
+                Arc::new(reader) as Arc<dyn ExecutionPlan>,
+                predicates.clone(),
+            )
+            .unwrap(),
+        );
+
+        let restricted = restrict_plan_to_partitions(plan, &[1, 3]).unwrap();
+        let ppf = restricted
+            .downcast_ref::<PerPartitionFilterExec>()
+            .expect("top must remain PerPartitionFilterExec");
+        assert_eq!(ppf.predicates().len(), 2);
+        assert_eq!(
+            ppf.predicates()[0].to_string(),
+            predicates[1].to_string(),
+            "local partition 0 must carry the global-partition-1 predicate"
+        );
+        assert_eq!(
+            ppf.predicates()[1].to_string(),
+            predicates[3].to_string(),
+            "local partition 1 must carry the global-partition-3 predicate"
+        );
+
+        // Reader below must have been restricted in the same order.
+        let child = ppf.children()[0].clone();
+        let reader = child
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("child must be a ShuffleReaderExec");
+        assert_eq!(reader.partition.len(), 2);
+        assert_eq!(reader.partition[0][0].partition_id.partition_id, 1);
+        assert_eq!(reader.partition[1][0].partition_id.partition_id, 3);
     }
 }

@@ -16,10 +16,15 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use ballista_core::execution_plans::{
+    OrderedRangeRepartitionExec, UnorderedRangeRepartitionExec, preserves_partitioning,
+};
+use datafusion::common::plan_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{ExecutionPlan, execution_plan};
@@ -125,9 +130,81 @@ impl DistributedExchangeRule {
                 );
                 return Ok(Transformed::yes(Arc::new(exchange_exec)));
             }
+        } else if !execution_plan.is::<ExchangeExec>() {
+            let children = execution_plan.children();
+            match children.as_slice() {
+                [] => {}
+                [child] => {
+                    if can_be_range_repartitioned(child)? {
+                        let exchange_exec = ExchangeExec::new(
+                            Arc::clone(child),
+                            None,
+                            self.plan_id_generator
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        );
+                        return Ok(Transformed::yes(
+                            execution_plan
+                                .with_new_children(vec![Arc::new(exchange_exec)])?,
+                        ));
+                    }
+                }
+                many => {
+                    let mut any_range = false;
+                    for c in many {
+                        any_range |= can_be_range_repartitioned(c)?;
+                    }
+                    if any_range {
+                        return plan_err!(
+                            "range-repartitioned child under multi-child parent `{}`: \
+                             cross-stage cut coordination is not yet implemented",
+                            execution_plan.name()
+                        );
+                    }
+                }
+            }
         }
         Ok(Transformed::no(execution_plan))
     }
+}
+
+/// Returns whether a plan should have distributed range-repartitioning added:
+///
+/// `Ok(true)` - `plan` has a "range-repartitioned child" that should have an ExchangeExec
+///
+/// `Ok(false)` - no range-repartition was present
+///
+/// `Err(_)` - there IS a URRE/ORRE below, but an intermediate op
+/// disturbs the routing expression enough that we can't safely route
+/// through it
+fn can_be_range_repartitioned(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> datafusion::error::Result<bool> {
+    if !preserves_partitioning(plan.as_ref()) {
+        // We've hit some other repartitioner, not range-repartitioned
+        return Ok(false);
+    }
+    let children = plan.children();
+    let [child] = children.as_slice() else {
+        // We don't support multi-legged plans for now (SMJ, etc)
+        return Ok(false);
+    };
+    if !child.is::<UnorderedRangeRepartitionExec>()
+        && !child.is::<OrderedRangeRepartitionExec>()
+    {
+        // Not range-repartitioned
+        return Ok(false);
+    }
+    // We are range repartitioned, but make sure the routing expression survives
+    if plan.is::<ProjectionExec>() {
+        // TODO: verify by checking expression itself
+        return plan_err!(
+            "range-repartitioned child under `{}`: routing expression \
+             cannot be safely remapped to the boundary schema",
+            plan.name()
+        );
+    }
+    // We can range-repartition this
+    Ok(true)
 }
 
 impl PhysicalOptimizerRule for DistributedExchangeRule {
@@ -145,14 +222,34 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
             .downcast_ref::<AdaptiveDatafusionExec>()
             .is_some()
         {
-            Ok(result.data)
-        } else {
-            let plan_id = self
+            return Ok(result.data);
+        }
+
+        // A range-repartitioned root is never visited as a child by
+        // `transform_up`, so wrap it here before the outer
+        // `AdaptiveDatafusionExec` goes on.
+        //
+        // TODO: kill this branch — and the range-repart arm in
+        // `transform()` above — when `ExchangeExec` carries a
+        // range-cuts partitioning variant the way it carries
+        // `Partitioning::Hash`. URRE will replace itself with an
+        // ExchangeExec (like the Hash arm does), `transform_up`'s
+        // output will already have an ExchangeExec at the range-repart
+        // position, and the plain `AdaptiveDatafusionExec` wrap below
+        // handles the root case with no extra ceremony.
+        let inner = if can_be_range_repartitioned(&result.data)? {
+            let id = self
                 .plan_id_generator
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Arc::new(ExchangeExec::new(result.data, None, id)) as Arc<dyn ExecutionPlan>
+        } else {
+            result.data
+        };
+        let plan_id = self
+            .plan_id_generator
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            Ok(Arc::new(AdaptiveDatafusionExec::new(plan_id, result.data)))
-        }
+        Ok(Arc::new(AdaptiveDatafusionExec::new(plan_id, inner)))
     }
 
     fn name(&self) -> &str {
@@ -200,6 +297,10 @@ mod tests {
     use super::*;
     use crate::assert_plan;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+    use ballista_core::execution_plans::{
+        RuntimeStatsExec, UnorderedRangeRepartitionExec,
+    };
+    use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{ColumnStatistics, Statistics};
     use datafusion::config::ConfigOptions;
@@ -645,5 +746,230 @@ mod tests {
             2, exchange2.plan_id,
             "second optimize on same rule: ExchangeExec should get plan_id=2 (counter at 2 after first call used 0 and 1)"
         );
+    }
+
+    // --- range-repartition ---
+
+    fn float_leaf_exec() -> Arc<dyn ExecutionPlan> {
+        // URRE routing today requires Float64 non-nullable.
+        let schema = Schema::new(vec![Field::new("v", DataType::Float64, false)]);
+        let stats = Statistics {
+            num_rows: Default::default(),
+            total_byte_size: Default::default(),
+            column_statistics: vec![ColumnStatistics::new_unknown()],
+        };
+        Arc::new(StatisticsExec::new(stats, schema))
+    }
+
+    fn stats_over_urre_over_leaf() -> Arc<dyn ExecutionPlan> {
+        let sort_expr = PhysicalSortExpr {
+            expr: Arc::new(Column::new("v", 0)),
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        };
+        let urre: Arc<dyn ExecutionPlan> = Arc::new(
+            UnorderedRangeRepartitionExec::try_new(
+                float_leaf_exec(),
+                vec![sort_expr.clone()],
+                4,
+            )
+            .unwrap(),
+        );
+        Arc::new(RuntimeStatsExec::try_new(urre, Some(vec![sort_expr])).unwrap())
+    }
+
+    fn count_exchanges(plan: &dyn ExecutionPlan) -> usize {
+        let here = usize::from(plan.is::<ExchangeExec>());
+        here + plan
+            .children()
+            .iter()
+            .map(|c| count_exchanges(c.as_ref()))
+            .sum::<usize>()
+    }
+
+    fn display_plan(plan: &Arc<dyn ExecutionPlan>) -> String {
+        format!(
+            "{}",
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true)
+        )
+    }
+
+    /// A bug in either half of the idempotency guard (the
+    /// `!.is::<ExchangeExec>()` check on the visited node, or
+    /// `is_range_repartitioned` accidentally recognising `ExchangeExec`)
+    /// would double-wrap on every AQE replan.
+    #[test]
+    fn range_repartition_optimize_is_idempotent() {
+        let rule = DistributedExchangeRule::default();
+
+        let first = rule
+            .optimize(stats_over_urre_over_leaf(), &config())
+            .unwrap();
+        let second = rule.optimize(first.clone(), &config()).unwrap();
+
+        assert_eq!(
+            count_exchanges(first.as_ref()),
+            1,
+            "first pass must insert exactly one ExchangeExec above the range-repartitioned root"
+        );
+        assert_eq!(
+            count_exchanges(second.as_ref()),
+            1,
+            "second pass must not insert a second ExchangeExec"
+        );
+        assert_eq!(
+            display_plan(&first),
+            display_plan(&second),
+            "second DER pass over its own output must be a no-op"
+        );
+    }
+
+    /// A range-repartition at the plan root — the canonical shape a
+    /// range-repartition-inserting rule emits, with nothing above it —
+    /// must still get an `ExchangeExec` wrapped above it. Without it,
+    /// `set_repartition_routing` has no parking slot for the recovered
+    /// cuts and downstream never gets a `PerPartitionFilterExec` to
+    /// trim straddler duplication.
+    #[test]
+    fn range_repartition_at_plan_root_gets_exchange_inserted() {
+        let rule = DistributedExchangeRule::default();
+        let root = stats_over_urre_over_leaf();
+
+        let result = rule.optimize(root, &config()).unwrap();
+
+        let adaptive = result
+            .downcast_ref::<AdaptiveDatafusionExec>()
+            .expect("DER wraps its output in AdaptiveDatafusionExec");
+        let below = adaptive.input();
+        assert!(
+            below.is::<ExchangeExec>(),
+            "expected an ExchangeExec between the AdaptiveDatafusionExec \
+             wrapper and the range-repartitioned subtree; got {}",
+            below.name()
+        );
+        let rse = below.children()[0];
+        assert!(rse.is::<RuntimeStatsExec>());
+        assert!(rse.children()[0].is::<UnorderedRangeRepartitionExec>());
+        assert_eq!(count_exchanges(result.as_ref()), 1);
+    }
+
+    /// A range-repartitioned chain on each branch of a `UnionExec` is
+    /// rejected at plan time — the machinery needs cross-stage cut
+    /// coordination (see doc-comment on `is_range_repartitioned`), and
+    /// silently producing independently-cut shuffles would misroute.
+    #[test]
+    fn range_repartition_under_union_is_rejected() {
+        let rule = DistributedExchangeRule::default();
+        let union: Arc<dyn ExecutionPlan> =
+            datafusion::physical_plan::union::UnionExec::try_new(vec![
+                stats_over_urre_over_leaf(),
+                stats_over_urre_over_leaf(),
+            ])
+            .unwrap();
+
+        let err = rule.optimize(union, &config()).unwrap_err().to_string();
+
+        assert!(
+            err.contains("range-repartitioned child under multi-child parent"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("UnionExec"), "unexpected error: {err}");
+    }
+
+    /// TODO: SMJ over range-repartitioned inputs is a motivating
+    /// consumer for cross-stage cut coordination — both sides must
+    /// share one cut set (derived from both sketches, parked on both
+    /// boundary exchanges) for equijoin keys to land in the same
+    /// downstream partition. Until that code exists, DER rejects the
+    /// shape at plan time.
+    #[test]
+    fn range_repartition_under_sort_merge_join_is_rejected() {
+        use datafusion::common::{JoinType, NullEquality};
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_plan::joins::SortMergeJoinExec;
+
+        let rule = DistributedExchangeRule::default();
+        let on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)> =
+            vec![(Arc::new(Column::new("v", 0)), Arc::new(Column::new("v", 0)))];
+        let smj: Arc<dyn ExecutionPlan> = Arc::new(
+            SortMergeJoinExec::try_new(
+                stats_over_urre_over_leaf(),
+                stats_over_urre_over_leaf(),
+                on,
+                None,
+                JoinType::Inner,
+                vec![SortOptions {
+                    descending: false,
+                    nulls_first: false,
+                }],
+                NullEquality::NullEqualsNothing,
+            )
+            .unwrap(),
+        );
+
+        let err = rule.optimize(smj, &config()).unwrap_err().to_string();
+
+        assert!(
+            err.contains("range-repartitioned child under multi-child parent"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("SortMergeJoinExec"), "unexpected error: {err}");
+    }
+
+    /// A `ProjectionExec` between (O/U)RRE and the boundary could
+    /// reindex, drop, or shadow the routing expression's referenced
+    /// columns — the read-side `PerPartitionFilterExec` would evaluate
+    /// against the wrong column and silently misroute. DER rejects the
+    /// shape at plan time; the fix will be revisited when arbitrary
+    /// routing expressions replace the current single-column form.
+    ///
+    /// See https://github.com/apache/datafusion-ballista/pull/2196#discussion_r3705634907
+    #[test]
+    fn range_repartition_under_projection_is_rejected() {
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_plan::projection::ProjectionExec;
+
+        let rule = DistributedExchangeRule::default();
+        let schema = Schema::new(vec![
+            Field::new("v", DataType::Float64, false),
+            Field::new("tag", DataType::Float64, false),
+        ]);
+        let stats = Statistics {
+            num_rows: Default::default(),
+            total_byte_size: Default::default(),
+            column_statistics: vec![
+                ColumnStatistics::new_unknown(),
+                ColumnStatistics::new_unknown(),
+            ],
+        };
+        let leaf: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(stats, schema));
+        let sort_expr = PhysicalSortExpr {
+            expr: Arc::new(Column::new("v", 0)),
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        };
+        let urre: Arc<dyn ExecutionPlan> = Arc::new(
+            UnorderedRangeRepartitionExec::try_new(leaf, vec![sort_expr], 4).unwrap(),
+        );
+        // Swap: post-projection output is (tag, v) — routing key `v`
+        // moves from index 0 to index 1.
+        let proj_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = vec![
+            (Arc::new(Column::new("tag", 1)), "tag".to_string()),
+            (Arc::new(Column::new("v", 0)), "v".to_string()),
+        ];
+        let proj: Arc<dyn ExecutionPlan> =
+            Arc::new(ProjectionExec::try_new(proj_exprs, urre).unwrap());
+
+        let err = rule.optimize(proj, &config()).unwrap_err().to_string();
+
+        assert!(
+            err.contains("routing expression cannot be safely remapped"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("ProjectionExec"), "unexpected error: {err}");
     }
 }
