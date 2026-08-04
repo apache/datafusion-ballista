@@ -484,4 +484,19 @@ mod tests {
             .await
             .expect("port is already listening");
     }
+
+    /// Binding eagerly means a port conflict surfaces here, as an error, rather
+    /// than later inside the spawned server task.
+    #[tokio::test]
+    async fn test_create_grpc_server_incoming_port_in_use() {
+        let first = create_grpc_server_incoming(
+            "127.0.0.1:0".parse().unwrap(),
+            &GrpcServerConfig::default(),
+        )
+        .expect("bind");
+        let addr = first.local_addr().expect("local addr");
+
+        let result = create_grpc_server_incoming(addr, &GrpcServerConfig::default());
+        assert!(result.is_err());
+    }
 }
