@@ -20,16 +20,18 @@
 //! Demonstrates distributed reads and writes against an Apache Iceberg table
 //! from a standalone Ballista cluster.
 //!
-//! This example requires a running Iceberg REST catalog and MinIO. Bring up the
-//! docker fixture from the workspace root:
+//! The example starts its own Iceberg REST catalog and MinIO with
+//! testcontainers, so all it needs is a running docker daemon:
 //!
 //! ```bash
-//! docker compose -f integrations/iceberg/dev/docker-compose.yaml up -d --wait
 //! cargo run -p iceberg-ballista --example standalone-iceberg-write
 //! ```
 //!
-//! Endpoints can be overridden with the `ICEBERG_REST_URI` and
-//! `ICEBERG_S3_ENDPOINT` environment variables.
+//! The containers are removed when the example exits.
+
+// Shared with the integration tests rather than duplicated.
+#[path = "../tests/fixture/mod.rs"]
+mod fixture;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,22 +47,6 @@ use iceberg_ballista::{
 };
 use iceberg_catalog_rest::RestCatalogBuilder;
 use iceberg_storage_opendal::OpenDalStorageFactory;
-
-/// Catalog + storage properties for the REST catalog and its MinIO storage.
-fn catalog_props() -> HashMap<String, String> {
-    let rest_uri = std::env::var("ICEBERG_REST_URI")
-        .unwrap_or_else(|_| "http://localhost:8181".to_string());
-    let s3_endpoint = std::env::var("ICEBERG_S3_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".to_string());
-    HashMap::from([
-        ("uri".to_string(), rest_uri),
-        ("s3.endpoint".to_string(), s3_endpoint),
-        ("s3.access-key-id".to_string(), "admin".to_string()),
-        ("s3.secret-access-key".to_string(), "password".to_string()),
-        ("s3.region".to_string(), "us-east-1".to_string()),
-        ("s3.path-style-access".to_string(), "true".to_string()),
-    ])
-}
 
 /// Creates the demo namespace and table in the catalog if they do not exist.
 async fn ensure_table(
@@ -122,7 +108,10 @@ async fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .try_init();
 
-    let props = catalog_props();
+    // Iceberg REST catalog + MinIO in docker, removed when this drops.
+    println!("== starting Iceberg REST catalog and MinIO ==");
+    let catalog_fixture = fixture::IcebergFixture::start().await;
+    let props = catalog_fixture.props();
 
     // Make sure the target table exists in the catalog.
     let (namespace, table) = ensure_table(&props).await?;

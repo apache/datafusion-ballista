@@ -160,10 +160,10 @@ jobs:
   iceberg-test:
     name: test iceberg integration
     # Deliberately not in the amd64/rust container the other linux jobs use:
-    # this job drives docker compose to bring up an Iceberg REST catalog and
-    # MinIO, and the test talks to them over the ports they publish on the
-    # runner. Running in a container would mean docker-in-docker plus a
-    # different hostname for those endpoints.
+    # the tests start an Iceberg REST catalog and MinIO via testcontainers and
+    # talk to them over the ports they publish on the runner. Running in a
+    # container would mean docker-in-docker plus a different hostname for those
+    # endpoints.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -181,26 +181,12 @@ jobs:
       - name: Configure rust runtime env
         uses: ./.github/actions/setup-rust-runtime
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
-      - name: Start Iceberg REST catalog and MinIO
-        run: |
-          docker compose -f integrations/iceberg/dev/docker-compose.yaml up -d --wait
       - name: Run iceberg-ballista tests
-        # The end-to-end suite is behind `integration-tests` precisely because it
-        # needs the fixture above; without the feature this only runs unit tests.
+        # Each test brings up its own catalog + MinIO with testcontainers, which
+        # is why the suite is behind `integration-tests`: without the feature
+        # this only runs unit tests and needs no docker.
         run: |
           cargo test --profile ci -p iceberg-ballista --features integration-tests --locked
-      - name: Stop Iceberg REST catalog and MinIO
-        if: always()
-        run: |
-          docker compose -f integrations/iceberg/dev/docker-compose.yaml logs --no-color > /tmp/iceberg-fixture.log || true
-          docker compose -f integrations/iceberg/dev/docker-compose.yaml down -v --remove-orphans --timeout 0
-      - name: Upload fixture logs
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: iceberg-fixture-logs
-          path: /tmp/iceberg-fixture.log
-          if-no-files-found: ignore
 
   macos-test:
     name: macos test

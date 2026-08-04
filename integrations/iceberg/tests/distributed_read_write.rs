@@ -17,23 +17,22 @@
 
 //! End-to-end distributed Iceberg write/read test.
 //!
-//! This runs against the docker fixture in `integrations/iceberg/dev` (an
-//! Iceberg REST catalog + MinIO), so it is behind the `integration-tests`
-//! feature and is not part of a plain `cargo test`:
+//! Each test starts its own Iceberg REST catalog + MinIO with testcontainers
+//! (see [`fixture`]), so this needs a working docker daemon. That is why it
+//! sits behind the `integration-tests` feature and is not part of a plain
+//! `cargo test`:
 //!
 //! ```bash
-//! docker compose -f integrations/iceberg/dev/docker-compose.yaml up -d --wait
 //! cargo test -p iceberg-ballista --features integration-tests --test distributed_read_write
 //! ```
-//!
-//! The endpoints can be overridden with the `ICEBERG_REST_URI` and
-//! `ICEBERG_S3_ENDPOINT` environment variables.
 
 #![cfg(feature = "integration-tests")]
 
+mod fixture;
+
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::array::RecordBatch;
 use ballista::datafusion::assert_batches_eq;
@@ -56,24 +55,8 @@ use iceberg_ballista::{
 use iceberg_catalog_rest::RestCatalogBuilder;
 use iceberg_datafusion::IcebergTableProvider;
 use iceberg_storage_opendal::OpenDalStorageFactory;
-use tokio::sync::Mutex;
 
-/// Serializes the catalog-mutating tests in this binary. The REST fixture is
-/// backed by in-memory SQLite, which rejects concurrent commits with
-/// `SQLITE_BUSY`. Each test still exercises parallelism *internally* (multiple
-/// write tasks / executors); this only stops the two test cases from committing
-/// to the catalog at the same time, so the suite is robust under a parallel test
-/// harness (`cargo test`, `nextest`) without relying on `--test-threads=1`.
-static CATALOG_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-/// Table name unique per run, so reruns don't collide in the shared catalog.
-fn unique_table_name(prefix: &str) -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("{prefix}_{millis}")
-}
+use crate::fixture::IcebergFixture;
 
 /// Session state with the Iceberg codecs installed.
 fn iceberg_session_state(config: SessionConfig) -> SessionState {
@@ -93,21 +76,6 @@ async fn run_sql(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
         .expect("run sql")
 }
 
-fn catalog_props() -> HashMap<String, String> {
-    let rest_uri = std::env::var("ICEBERG_REST_URI")
-        .unwrap_or_else(|_| "http://localhost:8181".to_string());
-    let s3_endpoint = std::env::var("ICEBERG_S3_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".to_string());
-    HashMap::from([
-        ("uri".to_string(), rest_uri),
-        ("s3.endpoint".to_string(), s3_endpoint),
-        ("s3.access-key-id".to_string(), "admin".to_string()),
-        ("s3.secret-access-key".to_string(), "password".to_string()),
-        ("s3.region".to_string(), "us-east-1".to_string()),
-        ("s3.path-style-access".to_string(), "true".to_string()),
-    ])
-}
-
 async fn build_rest_catalog(props: &HashMap<String, String>) -> impl Catalog + use<> {
     RestCatalogBuilder::default()
         .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
@@ -118,21 +86,19 @@ async fn build_rest_catalog(props: &HashMap<String, String>) -> impl Catalog + u
         .expect("build rest catalog")
 }
 
-/// Ensures the shared test namespace exists, tolerating a concurrent creator
-/// (tests run in parallel and share this namespace).
-async fn ensure_namespace(catalog: &impl Catalog) -> NamespaceIdent {
+/// Creates the test namespace. Each test owns its catalog, so this never races
+/// another creator.
+async fn create_namespace(catalog: &impl Catalog) -> NamespaceIdent {
     let namespace = NamespaceIdent::new("ballista_it".to_string());
-    if !catalog.namespace_exists(&namespace).await.unwrap()
-        && let Err(e) = catalog.create_namespace(&namespace, HashMap::new()).await
-        && !catalog.namespace_exists(&namespace).await.unwrap()
-    {
-        panic!("create namespace: {e}");
-    }
+    catalog
+        .create_namespace(&namespace, HashMap::new())
+        .await
+        .expect("create namespace");
     namespace
 }
 
-/// Creates `table_name` with `schema` (optionally partitioned) in the shared
-/// test namespace and returns that namespace.
+/// Creates `table_name` with `schema` (optionally partitioned) in the test
+/// namespace and returns that namespace.
 async fn create_table_with(
     props: &HashMap<String, String>,
     table_name: &str,
@@ -140,7 +106,7 @@ async fn create_table_with(
     partition_spec: Option<UnboundPartitionSpec>,
 ) -> NamespaceIdent {
     let catalog = build_rest_catalog(props).await;
-    let namespace = ensure_namespace(&catalog).await;
+    let namespace = create_namespace(&catalog).await;
 
     let builder = TableCreation::builder()
         .name(table_name.to_string())
@@ -226,10 +192,10 @@ async fn create_partitioned_table(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn distributed_insert_and_read() {
     let _ = env_logger::builder().is_test(true).try_init();
-    let _catalog_guard = CATALOG_GUARD.lock().await;
 
-    let props = catalog_props();
-    let table_name = unique_table_name("events");
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "events".to_string();
     let namespace = create_table(&props, &table_name).await;
 
     let state = iceberg_session_state(
@@ -354,7 +320,6 @@ async fn distributed_insert_and_read() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn parallel_multi_executor_insert_commits_all_rows() {
     let _ = env_logger::builder().is_test(true).try_init();
-    let _catalog_guard = CATALOG_GUARD.lock().await;
 
     const N_EXECUTORS: usize = 2;
     const SLOTS_PER_EXECUTOR: usize = 2;
@@ -363,8 +328,9 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
     // REGIONS.len() * 3.
     const TOTAL_ROWS: i32 = 12;
 
-    let props = catalog_props();
-    let table_name = unique_table_name("parallel_events");
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "parallel_events".to_string();
     let namespace = create_partitioned_table(&props, &table_name).await;
 
     // --- Bring up one scheduler + N executors in-process (real multi-executor) ---
@@ -531,10 +497,10 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn distributed_time_travel_pins_snapshot_schema() {
     let _ = env_logger::builder().is_test(true).try_init();
-    let _catalog_guard = CATALOG_GUARD.lock().await;
 
-    let props = catalog_props();
-    let table_name = unique_table_name("timetravel");
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "timetravel".to_string();
     let namespace = create_table(&props, &table_name).await;
 
     let state = iceberg_session_state(

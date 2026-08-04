@@ -63,11 +63,15 @@ ballista-scheduler = { path = "../../ballista/scheduler", version = "54.0.0", de
 env_logger = { workspace = true }
 iceberg-catalog-rest = { workspace = true }
 log = { workspace = true }
+# Starts the Iceberg REST catalog + MinIO the integration tests and the
+# standalone example run against. Not optional: cargo has no optional
+# dev-dependencies, so this is compiled for any `cargo test` on this crate.
+testcontainers-modules = { version = "0.15", features = ["minio", "http_wait"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = []
-# The end-to-end suite needs the Iceberg REST catalog + MinIO fixture in
-# `dev/docker-compose.yaml`, so it is off by default and opted into explicitly:
+# The end-to-end suite starts an Iceberg REST catalog + MinIO in docker, so it
+# is off by default and opted into explicitly:
 #   cargo test -p iceberg-ballista --features integration-tests
 integration-tests = []

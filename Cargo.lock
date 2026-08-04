@@ -4527,6 +4527,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "testcontainers-modules",
  "tokio",
 ]
 
@@ -8706,6 +8707,7 @@ dependencies = [
  "memchr",
  "parse-display",
  "pin-project-lite",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_with",
