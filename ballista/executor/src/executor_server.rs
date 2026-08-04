@@ -53,7 +53,9 @@ use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::serde::scheduler::from_proto::{
     get_task_definition, get_task_definition_vec,
 };
-use ballista_core::utils::{create_grpc_client_endpoint, create_grpc_server};
+use ballista_core::utils::{
+    create_grpc_client_endpoint, create_grpc_server, create_grpc_server_incoming,
+};
 
 use dashmap::DashMap;
 use datafusion::execution::TaskContext;
@@ -133,12 +135,19 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     );
 
     // 1. Start executor grpc service
+    //
+    // The listening socket is bound here rather than inside the spawned task,
+    // because step 2 registers with the scheduler and the scheduler dials this
+    // port back to check connectivity. Binding lazily inside the server future
+    // let that callback lose the race and get ECONNREFUSED, which fails
+    // registration and takes the executor down with it.
     let server = {
         let executor_meta = executor.metadata.clone();
         let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
         let grpc_server_config = config.grpc_server_config.clone();
 
+        let incoming = create_grpc_server_incoming(addr, &grpc_server_config)?;
         info!(
             "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
         );
@@ -150,7 +159,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             let shutdown_signal = grpc_shutdown.recv();
             let grpc_server_future = create_grpc_server(&grpc_server_config)
                 .add_service(server)
-                .serve_with_shutdown(addr, shutdown_signal);
+                .serve_with_incoming_shutdown(incoming, shutdown_signal);
             grpc_server_future.await.map_err(|e| {
                 error!("Tonic error, Could not start Executor Grpc Server.");
                 BallistaError::TonicError(e)
@@ -159,7 +168,6 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     };
 
     // 2. Do executor registration
-    // TODO the executor registration should happen only after the executor grpc server started.
     let executor_server = Arc::new(executor_server);
     match register_executor(&mut scheduler, executor.clone()).await {
         Ok(_) => {
