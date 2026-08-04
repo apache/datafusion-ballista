@@ -966,6 +966,32 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn cluster_config_plumbs_grpc_max_message_size() {
+        // Sanity check that setting `ballista.client.grpc_max_message_size`
+        // via `SessionConfig::options_mut().set(...)` — the path Python
+        // clients' `cluster_config` overrides use — actually reaches the
+        // reader consulted by `distributed_query`.
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        assert_eq!(
+            config.ballista_config().grpc_client_max_message_size(),
+            16 * 1024 * 1024,
+        );
+
+        let r = config
+            .options_mut()
+            .set("ballista.client.grpc_max_message_size", "67108864");
+        assert!(r.is_ok(), "set failed: {r:?}");
+
+        assert_eq!(
+            config.ballista_config().grpc_client_max_message_size(),
+            64 * 1024 * 1024,
+        );
+    }
+
     // The default must stay non-zero: `0` disables the fit check, and since AQE
     // no longer consults `prefer_hash_join`, a disabled check would leave the
     // Partitioned arm unconditionally on hash join and make SortMergeJoin — the
