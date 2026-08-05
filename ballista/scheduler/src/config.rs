@@ -674,7 +674,6 @@ impl TryFrom<Config> for SchedulerConfig {
             #[cfg(feature = "rest-api")]
             web_tui_route: opt.web_tui_route,
             on_work_available: None,
-
         };
 
         Ok(config)
