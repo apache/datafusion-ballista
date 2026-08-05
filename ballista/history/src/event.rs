@@ -25,10 +25,12 @@ use serde::{Deserialize, Serialize};
 /// Current on-disk schema version, stamped on `JobStart`/`JobEnd`.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// How a job reached its terminal state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JobEndStatus {
     Succeeded,
     Failed(String),
+    Cancelled,
 }
 
 /// Metrics captured per finished task on the incremental timeline.
@@ -39,6 +41,12 @@ pub struct TaskEndMetrics {
     pub elapsed_compute_nanos: u64,
 }
 
+/// A single record in a job's event log.
+///
+/// Stage and partition identifiers are fixed-width (`u32`) throughout rather
+/// than `usize`: this is a durable, cross-machine format, so a log written by a
+/// 64-bit scheduler must mean the same thing to any reader. Callers holding the
+/// scheduler's own `usize` stage ids cast on the way in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "ev")]
 pub enum HistoryEvent {
@@ -52,11 +60,11 @@ pub enum HistoryEvent {
         physical_plan: Option<String>,
     },
     StageStart {
-        stage_id: usize,
-        partitions: usize,
+        stage_id: u32,
+        partitions: u32,
     },
     StageEnd {
-        stage_id: usize,
+        stage_id: u32,
         status: String,
     },
     TaskEnd {

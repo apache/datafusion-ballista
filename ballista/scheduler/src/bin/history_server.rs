@@ -47,16 +47,6 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .map_err(BallistaError::IoError)?;
-
-    runtime.block_on(inner())
-}
-
-async fn inner() -> Result<()> {
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter = EnvFilter::new(rust_log.unwrap_or_else(|_| "info".to_string()));
     tracing_subscriber::fmt()
@@ -67,12 +57,26 @@ async fn inner() -> Result<()> {
 
     let args = Args::parse();
 
+    // `HistoryStore::load` walks the log directory with blocking file I/O, and
+    // how long it takes scales with the number of stored jobs. Run it here,
+    // before the runtime exists, rather than parking a runtime worker on it.
     let store = Arc::new(HistoryStore::load(&args.event_log_dir)?);
     tracing::info!(
         "Loaded {} completed job(s) from {}",
         store.jobs.len(),
         args.event_log_dir.display()
     );
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(BallistaError::IoError)?;
+
+    runtime.block_on(serve(args, store))
+}
+
+async fn serve(args: Args, store: Arc<HistoryStore>) -> Result<()> {
     let app = history_router(store);
 
     let addr: SocketAddr = format!("{}:{}", args.bind_host, args.bind_port)

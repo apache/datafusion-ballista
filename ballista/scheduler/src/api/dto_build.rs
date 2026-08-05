@@ -54,8 +54,11 @@ pub(crate) fn build_job_response(
 
     let num_stages = job.stage_count();
     let completed_stages = job.completed_stages();
-    let percent_complete =
-        ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
+    let percent_complete = if num_stages == 0 {
+        0
+    } else {
+        ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8
+    };
 
     let (logical_plan, physical_plan, stage_plan) = if with_plans {
         let physical_plan = match plan_format {

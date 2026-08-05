@@ -32,7 +32,6 @@ use crate::api::dto_build::{
 use crate::api::handlers::{JobQueryParams, PlanFormat};
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::serde::protobuf::{TaskStatus, task_status};
-use ballista_history::dto::TaskStatus as ApiTaskStatus;
 use ballista_history::event::{
     HistoryEvent, JobEndStatus, SCHEMA_VERSION, TaskEndMetrics,
 };
@@ -60,23 +59,23 @@ pub(crate) fn job_start_event(
     }
 }
 
-/// Builds one `TaskEnd` event per finished task in `statuses` (skips tasks
-/// still `Running`, which are transient/in-flight status updates rather than
-/// terminal states).
+/// Builds one `TaskEnd` event per finished task in `statuses`.
+///
+/// Only terminal statuses are recorded: `Running` updates are transient
+/// in-flight reports, and a status-less update carries no outcome to record at
+/// all, so both are skipped.
 pub(crate) fn task_end_events(
     executor_id: &str,
     statuses: &[TaskStatus],
 ) -> Vec<HistoryEvent> {
     statuses
         .iter()
-        .filter(|s| !matches!(s.status, Some(task_status::Status::Running(_))))
-        .map(|s| {
-            let status = s
-                .status
-                .as_ref()
-                .map(to_api_task_status)
-                .unwrap_or(ApiTaskStatus::Running);
-            HistoryEvent::TaskEnd {
+        .filter_map(|s| {
+            let status = match s.status.as_ref()? {
+                task_status::Status::Running(_) => return None,
+                terminal => to_api_task_status(terminal),
+            };
+            Some(HistoryEvent::TaskEnd {
                 stage_id: s.stage_id,
                 partition: s.partition_id,
                 executor_id: executor_id.to_string(),
@@ -85,7 +84,7 @@ pub(crate) fn task_end_events(
                 start_exec_time: s.start_exec_time,
                 end_exec_time: s.end_exec_time,
                 metrics: task_end_metrics(s),
-            }
+            })
         })
         .collect()
 }
@@ -138,6 +137,37 @@ pub(crate) fn job_end_event(
     }
 }
 
+/// Builds the terminal `JobEnd` event for a cancelled job.
+///
+/// Cancellation is recorded from the event-log tee, which runs *before* the
+/// scheduler applies the cancel to the graph, so the graph still reports the
+/// job as running here. The embedded job DTO's status fields are therefore
+/// overwritten, otherwise the history server would show a cancelled job as
+/// perpetually `Running`.
+///
+/// `queued_at` is not carried on `JobCancel`, so it is recorded as 0.
+pub(crate) fn job_cancel_event(
+    graph: &ExecutionGraphBox,
+    cancelled_at: u64,
+) -> HistoryEvent {
+    let mut event = job_end_event(
+        graph,
+        JobEndStatus::Cancelled,
+        /* queued_at */ 0,
+        cancelled_at,
+    );
+    if let HistoryEvent::JobEnd { job, .. } = &mut event {
+        job.job_status = CANCELLED_STATUS.to_string();
+        job.status = CANCELLED_STATUS.to_string();
+    }
+    event
+}
+
+/// The status string a cancelled job is recorded (and served) with. The live
+/// REST API has no equivalent -- a cancelled job's graph is dropped before it
+/// can be observed -- so this is history-only.
+const CANCELLED_STATUS: &str = "Cancelled";
+
 #[cfg(test)]
 mod tests {
     use crate::scheduler_server::event_log::*;
@@ -185,6 +215,45 @@ mod tests {
             status: Some(task_status::Status::Running(Default::default())),
         }];
         assert!(task_end_events("exec-1", &statuses).is_empty());
+    }
+
+    // A status update with no status at all reports no outcome, so there is
+    // nothing terminal to record for it either.
+    #[test]
+    fn task_end_events_skips_tasks_with_no_status() {
+        let statuses = vec![TaskStatus {
+            task_id: 0,
+            job_id: "job-1".into(),
+            stage_id: 1,
+            stage_attempt_num: 0,
+            partition_id: 0,
+            launch_time: 100,
+            start_exec_time: 110,
+            end_exec_time: 0,
+            metrics: vec![],
+            status: None,
+        }];
+        assert!(task_end_events("exec-1", &statuses).is_empty());
+    }
+
+    /// A cancelled job is recorded from a graph that has not yet been marked
+    /// failed, so the event must carry the cancelled status itself rather than
+    /// the graph's in-flight `Running`.
+    #[tokio::test]
+    async fn job_cancel_event_reports_cancelled_not_running() {
+        let graph = test_graph().await.unwrap();
+        let graph: ExecutionGraphBox = Box::new(graph);
+
+        let event = job_cancel_event(&graph, /* cancelled_at */ 42);
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("\"ev\":\"JobEnd\""));
+        assert!(json.contains("\"status\":\"Cancelled\""));
+        assert!(json.contains("\"job_status\":\"Cancelled\""));
+        assert!(
+            !json.contains("\"Running\""),
+            "cancelled job should not be recorded as running, got: {json}"
+        );
     }
 
     /// `job_end_event`'s embedded DTOs (`job`, `stages`, `dot`) are built by

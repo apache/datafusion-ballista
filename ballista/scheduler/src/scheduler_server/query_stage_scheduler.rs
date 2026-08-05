@@ -71,6 +71,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.metrics_collector.as_ref()
     }
+
+    /// Fetches a job's execution graph for the event log, reporting (rather
+    /// than swallowing) the cases where it is unavailable. Returning `None`
+    /// costs the job its event, not its execution -- event logging is never
+    /// allowed to fail scheduling.
+    #[cfg(feature = "rest-api")]
+    async fn event_log_graph(
+        &self,
+        job_id: &ballista_core::JobId,
+    ) -> Option<crate::state::execution_graph::ExecutionGraphBox> {
+        match self
+            .state
+            .task_manager
+            .get_job_execution_graph(job_id)
+            .await
+        {
+            Ok(Some(graph)) => Some(graph),
+            Ok(None) => {
+                warn!("event log: no execution graph for job {job_id}, skipping event");
+                None
+            }
+            Err(e) => {
+                warn!(
+                    "event log: failed to read execution graph for job {job_id}: {e:?}"
+                );
+                None
+            }
+        }
+    }
 }
 
 /// Groups task status updates by job id, so a single `TaskUpdating` batch
@@ -118,12 +147,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     queued_at,
                     submitted_at,
                 } => {
-                    if let Ok(Some(graph)) = self
-                        .state
-                        .task_manager
-                        .get_job_execution_graph(job_id)
-                        .await
-                    {
+                    if let Some(graph) = self.event_log_graph(job_id).await {
                         log.append(
                             job_id.as_str(),
                             event_log::job_start_event(&graph, *queued_at, *submitted_at),
@@ -137,17 +161,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         }
                     }
                 }
+                // The three terminal events below each close out the job's log.
+                // `finish_job` runs even when no `JobEnd` could be built, so a
+                // job that cannot be recorded still releases its file handle;
+                // such a log has no `JobEnd` line and the history server skips
+                // it rather than serving a half-written job.
                 QueryStageSchedulerEvent::JobFinished {
                     job_id,
                     queued_at,
                     completed_at,
                 } => {
-                    if let Ok(Some(graph)) = self
-                        .state
-                        .task_manager
-                        .get_job_execution_graph(job_id)
-                        .await
-                    {
+                    if let Some(graph) = self.event_log_graph(job_id).await {
                         log.append_final(
                             job_id.as_str(),
                             event_log::job_end_event(
@@ -167,12 +191,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     queued_at,
                     failed_at,
                 } => {
-                    if let Ok(Some(graph)) = self
-                        .state
-                        .task_manager
-                        .get_job_execution_graph(job_id)
-                        .await
-                    {
+                    if let Some(graph) = self.event_log_graph(job_id).await {
                         log.append_final(
                             job_id.as_str(),
                             event_log::job_end_event(
@@ -188,6 +207,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     log.finish_job(job_id.as_str()).await;
                 }
+                QueryStageSchedulerEvent::JobCancel(job_id) => {
+                    // Cancellation is terminal: the handler below drops the
+                    // graph, so this is the last point at which the job can be
+                    // recorded. Without this the log would never receive a
+                    // `JobEnd` -- leaving the cancelled job invisible to the
+                    // history server and its file handle open for the life of
+                    // the process.
+                    if let Some(graph) = self.event_log_graph(job_id).await {
+                        log.append_final(
+                            job_id.as_str(),
+                            event_log::job_cancel_event(&graph, timestamp_millis()),
+                        )
+                        .await;
+                    }
+                    log.finish_job(job_id.as_str()).await;
+                }
+                // `JobPlanningFailed` is deliberately absent: it is only posted
+                // when `submit_job` fails, i.e. instead of `JobSubmitted`, so
+                // the job has neither an execution graph nor an open log file.
                 _ => {}
             }
         }
