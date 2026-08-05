@@ -54,6 +54,12 @@ async fn main() -> ballista_core::error::Result<()> {
         ),
         task_max_failures: env_parsed("CHAOS_TASK_MAX_FAILURES", 4),
         stage_max_failures: env_parsed("CHAOS_STAGE_MAX_FAILURES", 4),
+        // The default is 30s. Turn it down so the total-executor-loss scenario
+        // fails the job a second or so after the reap instead of waiting it out.
+        no_executors_grace_period_seconds: env_parsed(
+            "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
+            1,
+        ),
         override_session_builder: Some(Arc::new(chaos_session_state)),
         ..Default::default()
     };

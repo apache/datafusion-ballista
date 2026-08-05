@@ -370,24 +370,19 @@ async fn restarted_executor_rejoins_and_serves_queries(#[case] aqe: bool) {
 
 /// Scenario G: every executor is killed mid-query.
 ///
-/// There is no executor left to recover onto, so the job cannot succeed. The only
-/// requirement is that it *terminates* — a scheduler that waits forever for tasks
-/// that can never be scheduled is a hang, and a hang is the bug this detects. The
-/// assertion is deliberately weak: this is a hang detector, not a correctness test.
+/// There is no executor left to recover onto, so the job cannot succeed. Once
+/// the last executor is reaped, the scheduler waits a bounded grace period for an
+/// executor to (re)register and then fails the job, rather than waiting forever
+/// for tasks that can never be scheduled. Both cases assert the query terminates
+/// with an error that names the executor loss, instead of hanging.
 ///
-/// Both cases reproduce #2029: the job does not terminate within the 120s
-/// timeout. The scheduler waits rather than failing the query once no executor
-/// can ever satisfy the remaining tasks.
-///
-/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
-/// #2029 is fixed; see chaos-testing/README.md, Finding 3. Note that this one
-/// costs 120s of wall clock when it runs, since detecting a hang means waiting
-/// out the timeout.
+/// Regression test for #2029. The grace period is turned down via the cluster
+/// builder so the job fails a second or so after the reap instead of waiting out
+/// the 30s default.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
-#[ignore = "reproduces #2029: killing every executor hangs the job instead of failing it"]
 async fn killing_every_executor_terminates_the_job(#[case] aqe: bool) {
     let mut run = ChaosRun::start(aqe, 2).await;
 
@@ -401,17 +396,23 @@ async fn killing_every_executor_terminates_the_job(#[case] aqe: bool) {
 
     let job_id = run.cluster.running_job_id().await.expect("job must appear");
     run.cluster
-        .await_stage_running(&job_id, 1)
+        .await_any_stage_running(&job_id)
         .await
-        .expect("stage 1 must start running");
+        .expect("the job must start running a task before we kill its executors");
 
     run.cluster.kill_executor(0).expect("kill executor 0");
     run.cluster.kill_executor(1).expect("kill executor 1");
 
-    // The job must end, one way or another, rather than hanging forever.
-    let outcome = tokio::time::timeout(Duration::from_secs(120), query).await;
+    // Once the executors are reaped and the grace period elapses, the scheduler
+    // must fail the job rather than hang forever (#2029).
+    let result = tokio::time::timeout(Duration::from_secs(120), query)
+        .await
+        .expect("job must terminate, not hang, after every executor is killed")
+        .expect("query task should not panic");
+    let err = result.expect_err("query must fail once every executor is lost");
+    let msg = err.to_string().to_lowercase();
     assert!(
-        outcome.is_ok(),
-        "job did not terminate within 120s after every executor was killed — this is a hang"
+        msg.contains("executor"),
+        "failure should name the executor loss, got: {err}"
     );
 }

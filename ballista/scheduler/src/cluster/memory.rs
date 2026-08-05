@@ -493,22 +493,20 @@ impl JobState for InMemoryJobState {
 
     async fn fail_unscheduled_job(&self, job_id: &JobId, reason: String) -> Result<()> {
         if let Some((job_id, (job_name, queued_at))) = self.queued_jobs.remove(job_id) {
-            self.completed_jobs.insert(
-                job_id.clone(),
-                (
-                    JobStatus {
-                        job_id: job_id.into(),
-                        job_name,
-                        status: Some(Status::Failed(FailedJob {
-                            error: reason,
-                            queued_at,
-                            started_at: 0,
-                            ended_at: timestamp_millis(),
-                        })),
-                    },
-                    None,
-                ),
-            );
+            let status = JobStatus {
+                job_id: job_id.clone().into(),
+                job_name,
+                status: Some(Status::Failed(FailedJob {
+                    error: reason,
+                    queued_at,
+                    started_at: 0,
+                    ended_at: timestamp_millis(),
+                })),
+            };
+            self.completed_jobs
+                .insert(job_id.clone(), (status.clone(), None));
+            self.job_event_sender
+                .send(&JobStateEvent::JobUpdated { job_id, status });
 
             Ok(())
         } else {
@@ -533,6 +531,7 @@ mod test {
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
+    use ballista_core::JobId;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{
@@ -605,6 +604,41 @@ mod test {
             Box::new(test_join_plan(4).await),
         )
         .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_job_planning_failure_notification() -> Result<()> {
+        let state = InMemoryJobState::new(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+        let mut events = state.job_state_events().await?;
+        let job_id = JobId::from("job-1");
+
+        state.accept_job(&job_id, "", 0)?;
+        state
+            .fail_unscheduled_job(&job_id, "failed planning".to_owned())
+            .await?;
+
+        let event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), events.next())
+                .await
+                .expect("job state event should arrive")
+                .expect("job state event stream should remain open");
+
+        assert!(matches!(
+            event,
+            JobStateEvent::JobUpdated {
+                job_id: event_job_id,
+                status: JobStatus {
+                    status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(_)),
+                    ..
+                },
+            } if event_job_id == job_id
+        ));
 
         Ok(())
     }

@@ -18,6 +18,7 @@
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
+use crate::state::aqe::execution_plan::RangeRepartitionRouting;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
@@ -27,7 +28,9 @@ use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriter;
+use ballista_core::execution_plans::{
+    ShuffleWriter, cut_partitions, merge_runtime_stats_reports, repartition_routing_expr,
+};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
@@ -283,6 +286,72 @@ impl AdaptiveExecutionGraph {
         Ok(events)
     }
 
+    /// Recover the range-repartition routing (cuts + routing expression)
+    /// from a completed stage's merged runtime-stats sketches. Caller must
+    /// have already established via `range_repartition_routing_expr` that
+    /// the stage's plan warrants routing, and passes the recovered expr in.
+    ///
+    /// `Ok(None)` means the stage produced no rows (nothing to route
+    /// through — passthrough is safe). `Err` means the stage's plan says
+    /// it should route but something went wrong recovering the cuts —
+    /// an invariant break, not a soft fallback (would misroute real data
+    /// downstream).
+    fn repartition_routing(
+        running_stage: &RunningStage,
+        routing_expr: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    ) -> ballista_core::error::Result<Option<RangeRepartitionRouting>> {
+        let stage_id = running_stage.stage_id;
+        if running_stage.runtime_stats_reports.is_empty() {
+            return Err(BallistaError::General(format!(
+                "range-repartition stage {stage_id}: no runtime-stats reports"
+            )));
+        }
+        let reports = running_stage
+            .runtime_stats_reports
+            .iter()
+            .map(|task| task.report.clone())
+            .collect::<Vec<_>>();
+        let merged = merge_runtime_stats_reports(&reports).map_err(|err| {
+            BallistaError::General(format!(
+                "range-repartition stage {stage_id}: merge_reports failed: {err}"
+            ))
+        })?;
+        // A range-repartition stage produces exactly one report group (its
+        // single routing expression); any other count is a shape bug.
+        let entry = match merged.as_slice() {
+            [entry] => entry,
+            groups => {
+                return Err(BallistaError::General(format!(
+                    "range-repartition stage {stage_id}: merge_reports returned {} groups, expected 1",
+                    groups.len()
+                )));
+            }
+        };
+        if entry.total_rows == 0 {
+            debug!("range-repartition stage {stage_id}: no rows produced, passthrough");
+            return Ok(None);
+        }
+        if entry.partition_count < 2 {
+            // K=1: single output partition — no cuts needed, no routing to
+            // recover. Everything flows to the one downstream partition.
+            debug!(
+                "range-repartition stage {stage_id}: K={}, no routing needed",
+                entry.partition_count
+            );
+            return Ok(None);
+        }
+        if entry.cuts.is_empty() {
+            return Err(BallistaError::General(format!(
+                "range-repartition stage {stage_id}: {} rows, K={}, but no cuts (sketch missed)",
+                entry.total_rows, entry.partition_count
+            )));
+        }
+        Ok(Some(RangeRepartitionRouting {
+            cuts: entry.cuts.clone(),
+            routing_expr,
+        }))
+    }
+
     /// Return a Vec of stages to cancel
     fn update_stage_progress(
         &mut self,
@@ -294,7 +363,29 @@ impl AdaptiveExecutionGraph {
             .update_exchange_locations(stage_id, locations)?;
 
         if is_completed {
-            let locations = self.planner.finalise_stage(stage_id)?;
+            let partitions = self.planner.take_stage_output_partitions(stage_id)?;
+
+            // Range-repartition stages need overlap-based remap of their partitions
+            let maybe_stage = self.stages.get(&stage_id);
+            let partitions = if let Some(ExecutionStage::Running(stage)) = maybe_stage
+                && let Some(routing_expr) = repartition_routing_expr(stage.plan.as_ref())?
+                && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
+            {
+                let reports = &stage.runtime_stats_reports;
+                let remapped = cut_partitions(partitions, reports, &routing.cuts)
+                    .map_err(|err| {
+                        BallistaError::General(format!(
+                            "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                        ))
+                    })?;
+                // Save boundaries to ExchangeExec so they are there for resolve_stage_partitions
+                self.planner.set_repartition_routing(stage_id, routing)?;
+                remapped
+            } else {
+                partitions
+            };
+            self.planner
+                .resolve_stage_partitions(stage_id, partitions.clone())?;
 
             let (runnable, stages_to_cancel) = self.planner.actionable_stages()?;
 
@@ -316,7 +407,7 @@ impl AdaptiveExecutionGraph {
             } else {
                 // There is no more tasks to run
                 // we update output locations
-                self.output_locations = locations.into_iter().flatten().collect();
+                self.output_locations = partitions.into_iter().flatten().collect();
             }
             // marking stages which need cancelling as canceled.
             // stage ids are returned for task cancellation action

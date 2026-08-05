@@ -53,7 +53,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -479,6 +479,11 @@ impl SchedulerTest {
         self.scheduler.running_job_number()
     }
 
+    /// Returns job state events from the underlying scheduler.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.scheduler.job_state_events().await
+    }
+
     /// Returns the session context for tests.
     pub async fn ctx(&self) -> Result<Arc<SessionContext>> {
         self.scheduler
@@ -540,6 +545,32 @@ impl SchedulerTest {
             .query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobCancel(job_id.to_owned()))
+            .await
+    }
+
+    /// Simulates the loss of an executor: deregisters it from the executor
+    /// manager and posts the `ExecutorLost` event. This mirrors the reaper's
+    /// `remove_executor` path without waiting out the heartbeat timeout.
+    pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
+        let reason = Some("test: executor lost".to_owned());
+        self.scheduler
+            .state
+            .executor_manager
+            .remove_executor(executor_id, reason.clone())
+            .await?;
+        self.post_scheduler_event(QueryStageSchedulerEvent::ExecutorLost(
+            executor_id.to_owned(),
+            reason,
+        ))
+        .await
+    }
+
+    /// Returns the current status of a job, if known.
+    pub async fn job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
+        self.scheduler
+            .state
+            .task_manager
+            .get_job_status(job_id)
             .await
     }
 

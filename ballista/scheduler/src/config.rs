@@ -28,11 +28,42 @@
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
+use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;
 use std::sync::Arc;
+
+/// Why the scheduler believes new work has become available for executors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkAvailableReason {
+    /// A job was submitted and its initial tasks are ready to be scheduled.
+    JobSubmitted {
+        /// Identifier of the submitted job.
+        job_id: JobId,
+    },
+    /// Completed tasks resolved downstream stages of a job, and the tasks of
+    /// those stages are now schedulable.
+    NewStagesRunnable {
+        /// Identifier of the job that gained schedulable tasks.
+        job_id: JobId,
+    },
+}
+
+/// Callback invoked when new work becomes available for executors, e.g. to
+/// wake idle pull-based executors via the poll loop's `poll_now_notify`.
+///
+/// It fires only after the work is visible to a polling executor, so waking
+/// one cannot race the scheduler's internal event processing.
+///
+/// # Warning
+///
+/// The callback runs synchronously inside the scheduler's main event loop.
+/// Implementations **must be non-blocking**; offload blocking or long-running
+/// work (such as network I/O) to a separate task or thread.
+///
+/// `Arc` rather than `Box` so [`SchedulerConfig`] remains [`Clone`].
+pub type OnWorkAvailableFn = Arc<dyn Fn(WorkAvailableReason) + Send + Sync>;
 
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
@@ -172,6 +203,16 @@ pub struct Config {
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// Maximum size of messages sent by the scheduler's outbound gRPC clients
+    /// (e.g. task assignment to executors). Should be at least as large as the
+    /// executor's `--grpc-server-max-decoding-message-size` for those RPCs to
+    /// succeed with big encoded plans.
+    #[arg(
+        long,
+        default_value_t = 16777216,
+        help = "The maximum size of a message sent by the scheduler's outbound gRPC clients (in bytes)."
+    )]
+    pub grpc_client_max_message_size: u32,
     /// Timeout in seconds before marking an executor as dead.
     #[arg(
         long,
@@ -186,6 +227,14 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)appear after the
+    /// cluster has lost its last executor before failing the running jobs.
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Set to 0 to fail as soon as the loss is observed."
+    )]
+    pub no_executors_grace_period_seconds: u64,
     /// Minimum number of registered executors before /readyz returns 200
     #[arg(
         long,
@@ -277,10 +326,18 @@ pub struct SchedulerConfig {
     pub grpc_server_max_decoding_message_size: u32,
     /// The maximum size of an encoded message at the grpc server side.
     pub grpc_server_max_encoding_message_size: u32,
+    /// The maximum size of a message sent by the scheduler's outbound gRPC clients.
+    pub grpc_client_max_message_size: u32,
     /// The executor timeout in seconds. It should be longer than executor's heartbeat intervals.
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)register after the
+    /// cluster has lost its last executor before failing the running jobs. This
+    /// bounds the otherwise-unbounded wait so that a total executor loss fails
+    /// the affected jobs instead of hanging forever. Set to 0 to fail as soon as
+    /// the loss is observed.
+    pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
     /// [SessionBuilder] override option
@@ -311,6 +368,9 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
     pub web_tui_route: String,
+    /// Callback invoked when new work becomes available for executors.
+    /// See [`OnWorkAvailableFn`].
+    pub on_work_available: Option<OnWorkAvailableFn>,
 }
 
 impl Default for SchedulerConfig {
@@ -331,8 +391,10 @@ impl Default for SchedulerConfig {
             scheduler_event_expected_processing_duration: 0,
             grpc_server_max_decoding_message_size: 16777216,
             grpc_server_max_encoding_message_size: 16777216,
+            grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            no_executors_grace_period_seconds: 30,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
@@ -350,6 +412,7 @@ impl Default for SchedulerConfig {
             cors_allowed_methods: String::default(),
             #[cfg(feature = "rest-api")]
             web_tui_route: String::from("/"),
+            on_work_available: None,
         }
     }
 }
@@ -440,6 +503,13 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the grace period, in seconds, to wait for an executor to (re)register
+    /// after the last executor is lost before failing running jobs.
+    pub fn with_no_executors_grace_period_seconds(mut self, value: u64) -> Self {
+        self.no_executors_grace_period_seconds = value;
+        self
+    }
+
     /// Sets the maximum gRPC server decoding message size.
     pub fn with_grpc_server_max_decoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_decoding_message_size = value;
@@ -449,6 +519,12 @@ impl SchedulerConfig {
     /// Sets the maximum gRPC server encoding message size.
     pub fn with_grpc_server_max_encoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_encoding_message_size = value;
+        self
+    }
+
+    /// Sets the maximum message size for the scheduler's outbound gRPC clients.
+    pub fn with_grpc_client_max_message_size(mut self, value: u32) -> Self {
+        self.grpc_client_max_message_size = value;
         self
     }
 
@@ -483,6 +559,16 @@ impl SchedulerConfig {
     /// Sets whether TLS should be used when connecting to executors (for flight proxy).
     pub fn with_use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
+        self
+    }
+
+    /// Sets the callback invoked when new work becomes available for
+    /// executors. See [`OnWorkAvailableFn`].
+    pub fn with_on_work_available(
+        mut self,
+        on_work_available: OnWorkAvailableFn,
+    ) -> Self {
+        self.on_work_available = Some(on_work_available);
         self
     }
 }
@@ -565,9 +651,11 @@ impl TryFrom<Config> for SchedulerConfig {
                 .grpc_server_max_decoding_message_size,
             grpc_server_max_encoding_message_size: opt
                 .grpc_server_max_encoding_message_size,
+            grpc_client_max_message_size: opt.grpc_client_max_message_size,
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            no_executors_grace_period_seconds: opt.no_executors_grace_period_seconds,
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,
@@ -585,6 +673,8 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_methods: opt.cors_allowed_methods,
             #[cfg(feature = "rest-api")]
             web_tui_route: opt.web_tui_route,
+            on_work_available: None,
+
         };
 
         Ok(config)
