@@ -81,6 +81,7 @@ tempfile = { version = "3.27" }
 tokio = { version = "1" }
 tokio-stream = { version = "0.1" }
 url = { version = "2.5" }
+url-escape = { version = "0.1.2" }
 uuid = { version = "1.23", features = ["v4", "v7"] }
 
 # cargo build --profile release-lto
