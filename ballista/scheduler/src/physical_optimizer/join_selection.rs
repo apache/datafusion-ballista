@@ -322,10 +322,10 @@ pub(crate) fn partitioned_hash_join(
     {
         hash_join.swap_inputs(PartitionMode::Partitioned)
     } else {
-        // Null-aware anti joins must use CollectLeft mode because they track probe-side state
-        // (probe_side_non_empty, probe_side_has_null) per-partition, but need global knowledge
-        // for correct null handling. With partitioning, a partition might not see probe rows
-        // even if the probe side is globally non-empty, leading to incorrect NULL row handling.
+        // Keep this copied rule aligned with upstream DataFusion. An Auto join
+        // that cannot be selected by size still requires CollectLeft when it is
+        // null-aware; Ballista's distributed planner later coalesces the probe
+        // side so this mode runs in exactly one task.
         let partition_mode = if hash_join.null_aware {
             PartitionMode::CollectLeft
         } else {
@@ -368,7 +368,12 @@ fn statistical_join_selection_subrule(
             PartitionMode::Partitioned => {
                 let left = hash_join.left();
                 let right = hash_join.right();
+                // Keep this branch aligned with upstream DataFusion: a
+                // null-aware join is not swapped, but its partition mode is not
+                // changed here. Ballista's distributed planner is responsible
+                // for lowering it to a single-task CollectLeft join.
                 if hash_join.join_type().supports_swap()
+                    && !hash_join.null_aware
                     && should_swap_join_order(&**left, &**right)?
                 {
                     hash_join
@@ -583,6 +588,7 @@ pub fn hash_join_swap_subrule(
     if let Some(hash_join) = input.downcast_ref::<HashJoinExec>()
         && hash_join.left.boundedness().is_unbounded()
         && !hash_join.right.boundedness().is_unbounded()
+        && !hash_join.null_aware
         && matches!(
             *hash_join.join_type(),
             JoinType::Inner | JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti
@@ -770,6 +776,122 @@ mod test {
             displayable(join.as_ref()).one_line().to_string(),
             displayable(optimized_join.as_ref()).one_line().to_string()
         );
+    }
+
+    #[test]
+    fn partitioned_null_aware_anti_join_is_not_swapped() {
+        use datafusion::{
+            common::NullEquality,
+            physical_optimizer::PhysicalOptimizerRule,
+            physical_plan::joins::{HashJoinExec, PartitionMode},
+        };
+
+        use crate::physical_optimizer::join_selection::JoinSelection;
+
+        // The large left and small right sides would normally be swapped by
+        // statistical join selection. Keep this rule aligned with upstream
+        // DataFusion: a null-aware anti join retains both its orientation and
+        // its existing partition mode. Distributed lowering happens later.
+        let (big, small) = create_big_and_small();
+        let join = Arc::new(
+            HashJoinExec::try_new(
+                Arc::clone(&big),
+                Arc::clone(&small),
+                vec![(
+                    Arc::new(Column::new("big_col", 0)) as _,
+                    Arc::new(Column::new("small_col", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::Partitioned,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let optimized = JoinSelection::new()
+            .optimize(join, &ConfigOptions::new())
+            .unwrap();
+        let hash_join = optimized
+            .downcast_ref::<HashJoinExec>()
+            .expect("null-aware join should remain a HashJoinExec");
+
+        assert_eq!(*hash_join.join_type(), JoinType::LeftAnti);
+        assert_eq!(*hash_join.partition_mode(), PartitionMode::Partitioned);
+        assert!(hash_join.null_aware);
+    }
+
+    #[test]
+    fn unbounded_input_rule_does_not_swap_null_aware_anti_join() {
+        use datafusion::{
+            arrow::datatypes::SchemaRef,
+            common::NullEquality,
+            execution::{SendableRecordBatchStream, TaskContext},
+            physical_plan::{
+                EmptyRecordBatchStream,
+                joins::{HashJoinExec, PartitionMode},
+                streaming::{PartitionStream, StreamingTableExec},
+            },
+        };
+
+        use crate::physical_optimizer::join_selection::hash_join_swap_subrule;
+
+        #[derive(Debug)]
+        struct EmptyPartitionStream(SchemaRef);
+
+        impl PartitionStream for EmptyPartitionStream {
+            fn schema(&self) -> &SchemaRef {
+                &self.0
+            }
+
+            fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
+                Box::pin(EmptyRecordBatchStream::new(Arc::clone(&self.0)))
+            }
+        }
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+        let left = Arc::new(
+            StreamingTableExec::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(EmptyPartitionStream(Arc::clone(&schema)))],
+                None,
+                vec![],
+                true,
+                None,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(StatisticsExec::new(
+            Statistics::new_unknown(&schema),
+            schema.as_ref().clone(),
+        )) as Arc<dyn ExecutionPlan>;
+        let join = Arc::new(
+            HashJoinExec::try_new(
+                Arc::clone(&left),
+                Arc::clone(&right),
+                vec![(
+                    Arc::new(Column::new("key", 0)) as _,
+                    Arc::new(Column::new("key", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::Partitioned,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let optimized = hash_join_swap_subrule(Arc::clone(&join), &ConfigOptions::new())
+            .expect(
+                "the unbounded-input rule must not try to create a null-aware RightAnti",
+            );
+
+        assert!(Arc::ptr_eq(&optimized, &join));
     }
 
     fn create_big_and_small() -> (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) {

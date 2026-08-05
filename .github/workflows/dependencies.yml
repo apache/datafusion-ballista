@@ -44,7 +44,7 @@ jobs:
     name: msrv dependency check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain
@@ -61,7 +61,7 @@ jobs:
     name: python Cargo.lock up to date
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
       - name: Setup Rust toolchain

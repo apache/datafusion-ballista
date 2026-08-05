@@ -33,11 +33,13 @@ use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::error;
 use std::io::BufWriter;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
+use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Error, Server};
 
 /// Configuration for gRPC client connections.
@@ -165,6 +167,7 @@ pub fn default_session_builder(
         .with_default_features()
         .with_config(config)
         .with_runtime_env(Arc::new(RuntimeEnvBuilder::new().build()?))
+        .with_optimizer_rules(crate::optimizer::ballista_default_optimizer_rules())
         .with_scalar_functions(ballista_scalar_functions())
         .with_aggregate_functions(ballista_aggregate_functions())
         .with_window_functions(ballista_window_functions())
@@ -355,6 +358,30 @@ pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
         )))
 }
 
+/// Binds a gRPC server's listening socket, for use with tonic's
+/// `serve_with_incoming` / `serve_with_incoming_shutdown`. Unlike tonic's
+/// `serve`, which binds lazily inside the future it returns, the socket is
+/// listening by the time this returns — so use this whenever a peer may be
+/// told to connect as soon as the server is started.
+///
+/// tonic ignores the builder's `tcp_nodelay` and `tcp_keepalive` when serving
+/// from a pre-bound listener, so this applies the same values that
+/// [`create_grpc_server`] sets, for the same reasons. The remaining settings
+/// still come from the builder.
+///
+/// # Panics
+///
+/// The listener is registered with the Tokio reactor, so this must be called
+/// from within a Tokio runtime.
+pub fn create_grpc_server_incoming(
+    addr: SocketAddr,
+    config: &GrpcServerConfig,
+) -> Result<TcpIncoming> {
+    Ok(TcpIncoming::bind(addr)?
+        .with_nodelay(Some(true))
+        .with_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds))))
+}
+
 /// Recursively collects metrics from an execution plan and all its children.
 pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
     let mut metrics_array = Vec::<MetricsSet>::new();
@@ -437,6 +464,39 @@ mod tests {
     #[test]
     fn test_create_grpc_client_endpoint_invalid_url() {
         let result = create_grpc_client_endpoint("not a valid url", None);
+        assert!(result.is_err());
+    }
+
+    /// The point of binding up front is that the port is reachable before
+    /// anything is served on it, so a peer told to connect back cannot arrive
+    /// too early.
+    #[tokio::test]
+    async fn test_create_grpc_server_incoming_binds_eagerly() {
+        let incoming = create_grpc_server_incoming(
+            "127.0.0.1:0".parse().unwrap(),
+            &GrpcServerConfig::default(),
+        )
+        .expect("bind");
+        let addr = incoming.local_addr().expect("local addr");
+
+        // `incoming` is never handed to a server, and yet:
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("port is already listening");
+    }
+
+    /// Binding eagerly means a port conflict surfaces here, as an error, rather
+    /// than later inside the spawned server task.
+    #[tokio::test]
+    async fn test_create_grpc_server_incoming_port_in_use() {
+        let first = create_grpc_server_incoming(
+            "127.0.0.1:0".parse().unwrap(),
+            &GrpcServerConfig::default(),
+        )
+        .expect("bind");
+        let addr = first.local_addr().expect("local addr");
+
+        let result = create_grpc_server_incoming(addr, &GrpcServerConfig::default());
         assert!(result.is_err());
     }
 }

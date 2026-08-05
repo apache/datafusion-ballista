@@ -53,7 +53,9 @@ use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::serde::scheduler::from_proto::{
     get_task_definition, get_task_definition_vec,
 };
-use ballista_core::utils::{create_grpc_client_endpoint, create_grpc_server};
+use ballista_core::utils::{
+    create_grpc_client_endpoint, create_grpc_server, create_grpc_server_incoming,
+};
 
 use dashmap::DashMap;
 use datafusion::execution::TaskContext;
@@ -67,7 +69,7 @@ use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::health::ExecutorHealth;
 use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::shutdown::ShutdownNotifier;
-use crate::{TaskExecutionTimes, as_task_status};
+use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 
 /// Number of consecutive heartbeat failures after which the executor
 /// initiates its own shutdown, letting k8s (or the operator) restart the
@@ -133,12 +135,19 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     );
 
     // 1. Start executor grpc service
+    //
+    // The listening socket is bound here rather than inside the spawned task,
+    // because step 2 registers with the scheduler and the scheduler dials this
+    // port back to check connectivity. Binding lazily inside the server future
+    // let that callback lose the race and get ECONNREFUSED, which fails
+    // registration and takes the executor down with it.
     let server = {
         let executor_meta = executor.metadata.clone();
         let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
         let grpc_server_config = config.grpc_server_config.clone();
 
+        let incoming = create_grpc_server_incoming(addr, &grpc_server_config)?;
         info!(
             "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
         );
@@ -150,7 +159,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             let shutdown_signal = grpc_shutdown.recv();
             let grpc_server_future = create_grpc_server(&grpc_server_config)
                 .add_service(server)
-                .serve_with_shutdown(addr, shutdown_signal);
+                .serve_with_incoming_shutdown(incoming, shutdown_signal);
             grpc_server_future.await.map_err(|e| {
                 error!("Tonic error, Could not start Executor Grpc Server.");
                 BallistaError::TonicError(e)
@@ -159,7 +168,6 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     };
 
     // 2. Do executor registration
-    // TODO the executor registration should happen only after the executor grpc server started.
     let executor_server = Arc::new(executor_server);
     match register_executor(&mut scheduler, executor.clone()).await {
         Ok(_) => {
@@ -451,6 +459,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .map(|m| m.try_into())
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
+                let runtime_stats = exec.collect_runtime_stats_reports();
                 let executor_id = &self.executor.metadata.id;
 
                 let end_exec_time = SystemTime::now()
@@ -468,8 +477,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     executor_id.clone(),
                     stage_attempt_num,
                     key.clone(),
-                    operator_metrics,
                     task_execution_times,
+                    TaskCompletionExtras {
+                        operator_metrics,
+                        runtime_stats,
+                    },
                 );
 
                 let _ = self
@@ -492,12 +504,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     self.executor.metadata.id.clone(),
                     stage_attempt_num,
                     key.clone(),
-                    None,
                     TaskExecutionTimes {
                         launch_time: task.launch_time,
                         start_exec_time,
                         end_exec_time,
                     },
+                    TaskCompletionExtras::default(),
                 );
                 let _ = self
                     .executor_env

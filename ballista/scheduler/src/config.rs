@@ -159,6 +159,16 @@ pub struct Config {
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// Maximum size of messages sent by the scheduler's outbound gRPC clients
+    /// (e.g. task assignment to executors). Should be at least as large as the
+    /// executor's `--grpc-server-max-decoding-message-size` for those RPCs to
+    /// succeed with big encoded plans.
+    #[arg(
+        long,
+        default_value_t = 16777216,
+        help = "The maximum size of a message sent by the scheduler's outbound gRPC clients (in bytes)."
+    )]
+    pub grpc_client_max_message_size: u32,
     /// Timeout in seconds before marking an executor as dead.
     #[arg(
         long,
@@ -173,6 +183,14 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)appear after the
+    /// cluster has lost its last executor before failing the running jobs.
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Set to 0 to fail as soon as the loss is observed."
+    )]
+    pub no_executors_grace_period_seconds: u64,
     /// Minimum number of registered executors before /readyz returns 200
     #[arg(
         long,
@@ -256,10 +274,18 @@ pub struct SchedulerConfig {
     pub grpc_server_max_decoding_message_size: u32,
     /// The maximum size of an encoded message at the grpc server side.
     pub grpc_server_max_encoding_message_size: u32,
+    /// The maximum size of a message sent by the scheduler's outbound gRPC clients.
+    pub grpc_client_max_message_size: u32,
     /// The executor timeout in seconds. It should be longer than executor's heartbeat intervals.
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)register after the
+    /// cluster has lost its last executor before failing the running jobs. This
+    /// bounds the otherwise-unbounded wait so that a total executor loss fails
+    /// the affected jobs instead of hanging forever. Set to 0 to fail as soon as
+    /// the loss is observed.
+    pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
     /// [SessionBuilder] override option
@@ -312,8 +338,10 @@ impl Default for SchedulerConfig {
             scheduler_event_expected_processing_duration: 0,
             grpc_server_max_decoding_message_size: 16777216,
             grpc_server_max_encoding_message_size: 16777216,
+            grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            no_executors_grace_period_seconds: 30,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
@@ -420,6 +448,13 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the grace period, in seconds, to wait for an executor to (re)register
+    /// after the last executor is lost before failing running jobs.
+    pub fn with_no_executors_grace_period_seconds(mut self, value: u64) -> Self {
+        self.no_executors_grace_period_seconds = value;
+        self
+    }
+
     /// Sets the maximum gRPC server decoding message size.
     pub fn with_grpc_server_max_decoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_decoding_message_size = value;
@@ -429,6 +464,12 @@ impl SchedulerConfig {
     /// Sets the maximum gRPC server encoding message size.
     pub fn with_grpc_server_max_encoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_encoding_message_size = value;
+        self
+    }
+
+    /// Sets the maximum message size for the scheduler's outbound gRPC clients.
+    pub fn with_grpc_client_max_message_size(mut self, value: u32) -> Self {
+        self.grpc_client_max_message_size = value;
         self
     }
 
@@ -551,9 +592,11 @@ impl TryFrom<Config> for SchedulerConfig {
                 .grpc_server_max_decoding_message_size,
             grpc_server_max_encoding_message_size: opt
                 .grpc_server_max_encoding_message_size,
+            grpc_client_max_message_size: opt.grpc_client_max_message_size,
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            no_executors_grace_period_seconds: opt.no_executors_grace_period_seconds,
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,

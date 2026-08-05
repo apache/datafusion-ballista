@@ -433,7 +433,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting execution poll loop...");
     let health = ballista_executor::health::ExecutorHealth::new();
     let poll_handle = tokio::spawn(async move {
-        execution_loop::poll_loop(scheduler, executor, codec, health).await
+        execution_loop::poll_loop(scheduler, executor, codec, None, health).await
     });
 
     tokio::select! {

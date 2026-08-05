@@ -17,10 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 set -e
-if ! command -v cargo-tomlfmt &> /dev/null; then
-    echo "Installing cargo-tomlfmt using cargo"
-    cargo install cargo-tomlfmt
-fi
 
 ci/scripts/rust_fmt.sh
 ci/scripts/rust_clippy.sh
