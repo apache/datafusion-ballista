@@ -107,10 +107,11 @@ struct BallistaBenchmarkOpt {
     )]
     queries_path: PathBuf,
 
-    /// Path to the primary data file (used for `groupby.sql` / `window.sql`).
+    /// Path to the primary data file (registered as `x` for `groupby.sql`).
+    /// Not required for the join or window suites — they use `--join-paths`.
     /// May be a local path or an object-store URL such as `s3://bucket/prefix`.
     #[structopt(short = "p", long = "path")]
-    path: String,
+    path: Option<String>,
 
     /// Comma-separated join data files, in order: x, small, medium, large.
     /// Used for `join.sql` and `window.sql` (window uses the `large` file).
@@ -181,7 +182,7 @@ async fn run_datafusion(opt: DataFusionBenchmarkOpt) -> Result<()> {
 
     let suite = Suite::from_queries_path(&opt.queries_path)?;
     let paths = SuitePaths {
-        primary: opt.path.to_string_lossy().into_owned(),
+        primary: Some(opt.path.to_string_lossy().into_owned()),
         join_csv: opt.join_paths.clone(),
     };
     register_h2o_tables(&ctx, suite, &paths).await?;
@@ -342,7 +343,7 @@ impl Suite {
 }
 
 struct SuitePaths {
-    primary: String,
+    primary: Option<String>,
     join_csv: String,
 }
 
@@ -352,7 +353,15 @@ async fn register_h2o_tables(
     paths: &SuitePaths,
 ) -> Result<()> {
     match suite {
-        Suite::Groupby => register_table(ctx, "x", &paths.primary).await,
+        Suite::Groupby => {
+            let primary = paths.primary.as_deref().ok_or_else(|| {
+                DataFusionError::Plan(
+                    "groupby suite requires --path pointing at the primary data file"
+                        .to_string(),
+                )
+            })?;
+            register_table(ctx, "x", primary).await
+        }
         Suite::Join => {
             let join_paths: Vec<&str> = paths.join_csv.split(',').collect();
             if join_paths.len() != 4 {
