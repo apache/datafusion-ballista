@@ -218,6 +218,13 @@ impl TestClusterBuilder {
             _machine_lock: machine_lock,
         };
 
+        // Executors dial the scheduler over gRPC the moment they start. If they
+        // are spawned before the scheduler has bound its port, some of them get
+        // GrpcConnectionError and exit — the scheduler never sees them, and
+        // await_executors then burns its full 120s deadline waiting for ghost
+        // registrations. Gate the executor spawns on scheduler readiness.
+        cluster.await_scheduler_ready().await?;
+
         for i in 0..cluster.builder.executors {
             cluster.spawn_executor(i)?;
         }
@@ -349,6 +356,37 @@ impl TestCluster {
             });
         }
         Ok(())
+    }
+
+    /// Block until the scheduler is accepting REST/gRPC connections.
+    ///
+    /// Returns early with the log tail if the scheduler process has already
+    /// exited, so a startup crash surfaces immediately instead of masquerading
+    /// as a 30s connect timeout.
+    async fn await_scheduler_ready(&mut self) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(Some(status)) = self.scheduler.try_wait() {
+                return Err(format!(
+                    "scheduler exited before becoming ready: {status}\n{}",
+                    self.log_tails()
+                ));
+            }
+            if reqwest::get(format!("{}/api/executors", self.rest_url()))
+                .await
+                .and_then(|r| r.error_for_status())
+                .is_ok()
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "timed out waiting for scheduler to accept connections\n{}",
+                    self.log_tails()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Block until `n` executors have registered with the scheduler.
