@@ -19,7 +19,7 @@
 # groupby/join are already exercised by the TPC-H job; window is where h2o adds
 # incremental coverage.
 
-name: h2o window SMALL
+name: h2o
 
 permissions:
   contents: read
@@ -56,7 +56,7 @@ on:
 
 jobs:
   h2o-window-small:
-    name: h2o window SMALL (AQE on, multi-partition tasks)
+    name: window SMALL
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
