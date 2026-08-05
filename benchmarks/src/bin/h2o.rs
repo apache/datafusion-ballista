@@ -23,9 +23,12 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
+use ballista_benchmarks::compare_results;
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::compute::{SortColumn, lexsort_to_indices, take};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::*;
 use std::path::{Path, PathBuf};
@@ -150,6 +153,11 @@ struct BallistaBenchmarkOpt {
     /// Print the physical plan and exit without running the query.
     #[structopt(long)]
     explain: bool,
+
+    /// Verify Ballista's answer against a local DataFusion oracle running the
+    /// same SQL over the same files. Adds one full local execution per query.
+    #[structopt(long)]
+    verify: bool,
 }
 
 #[derive(Debug, StructOpt)]
@@ -193,6 +201,7 @@ async fn run_datafusion(opt: DataFusionBenchmarkOpt) -> Result<()> {
 
     run_queries(
         &ctx,
+        None,
         &queries,
         query_range,
         opt.iterations,
@@ -240,8 +249,20 @@ async fn run_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         return explain_queries(&ctx, &queries, query_range).await;
     }
 
+    let oracle_ctx = if opt.verify {
+        let oracle_config = SessionConfig::new()
+            .with_target_partitions(opt.partitions)
+            .with_batch_size(opt.batch_size);
+        let oracle = SessionContext::new_with_config(oracle_config);
+        register_h2o_tables(&oracle, suite, &paths).await?;
+        Some(oracle)
+    } else {
+        None
+    };
+
     run_queries(
         &ctx,
+        oracle_ctx.as_ref(),
         &queries,
         query_range,
         opt.iterations,
@@ -271,6 +292,7 @@ async fn explain_queries(
 
 async fn run_queries(
     ctx: &SessionContext,
+    oracle_ctx: Option<&SessionContext>,
     queries: &AllQueries,
     query_range: std::ops::RangeInclusive<usize>,
     iterations: usize,
@@ -284,6 +306,7 @@ async fn run_queries(
 
         let mut per_iter_secs = Vec::with_capacity(iterations);
         let mut row_count = 0usize;
+        let mut last_batches = vec![];
         for iteration in 1..=iterations {
             let start = Instant::now();
             let batches = ctx.sql(sql).await?.collect().await?;
@@ -294,6 +317,7 @@ async fn run_queries(
                 "Query {query_id} iteration {iteration} took {:.3} s and returned {row_count} rows ({label})",
                 elapsed
             );
+            last_batches = batches;
         }
         let avg = per_iter_secs.iter().sum::<f64>() / per_iter_secs.len() as f64;
         println!("Query {query_id} avg time: {avg:.3} s ({row_count} rows)");
@@ -302,6 +326,32 @@ async fn run_queries(
         if debug {
             let plan = ctx.sql(sql).await?.into_optimized_plan()?;
             println!("=== Optimized logical plan ===\n{plan:?}\n");
+        }
+
+        if let Some(oracle) = oracle_ctx {
+            let oracle_start = Instant::now();
+            let expected = oracle.sql(sql).await?.collect().await?;
+            let oracle_secs = oracle_start.elapsed().as_secs_f64();
+            println!("Query {query_id} oracle (datafusion) took {oracle_secs:.3} s");
+
+            // h2o queries have no ORDER BY, so Ballista's distributed row
+            // order and DataFusion's single-process order can differ.
+            // Lexsort each side before comparing.
+            let sort_start = Instant::now();
+            let expected_sorted = canonicalize(&expected)?;
+            let actual_sorted = canonicalize(&last_batches)?;
+            let sort_secs = sort_start.elapsed().as_secs_f64();
+
+            let compare_start = Instant::now();
+            compare_results(&expected_sorted, &actual_sorted).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "Query {query_id} verification failed: {e}"
+                ))
+            })?;
+            let compare_secs = compare_start.elapsed().as_secs_f64();
+            println!(
+                "Query {query_id} verified vs DataFusion: OK (sort {sort_secs:.3}s, compare {compare_secs:.3}s)"
+            );
         }
     }
     println!("Total avg time across queries: {total_secs:.3} s");
@@ -316,6 +366,36 @@ fn query_range(
         Some(query_id) => query_id..=query_id,
         None => queries.min_id()..=queries.max_id(),
     }
+}
+
+/// Concatenate `batches` and lex-sort by every column, so distributed and
+/// single-process row orderings compare equal.
+fn canonicalize(batches: &[RecordBatch]) -> Result<Vec<RecordBatch>> {
+    if batches.is_empty() {
+        return Ok(vec![]);
+    }
+    let schema = batches[0].schema();
+    let combined = datafusion::arrow::compute::concat_batches(&schema, batches)
+        .map_err(|e| DataFusionError::Execution(format!("canonicalize concat: {e}")))?;
+    let sort_cols: Vec<SortColumn> = combined
+        .columns()
+        .iter()
+        .map(|c| SortColumn {
+            values: c.clone(),
+            options: None,
+        })
+        .collect();
+    let indices = lexsort_to_indices(&sort_cols, None)
+        .map_err(|e| DataFusionError::Execution(format!("canonicalize sort: {e}")))?;
+    let sorted_cols = combined
+        .columns()
+        .iter()
+        .map(|c| take(c.as_ref(), &indices, None))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| DataFusionError::Execution(format!("canonicalize take: {e}")))?;
+    let sorted = RecordBatch::try_new(schema, sorted_cols)
+        .map_err(|e| DataFusionError::Execution(format!("canonicalize batch: {e}")))?;
+    Ok(vec![sorted])
 }
 
 #[derive(Copy, Clone, Debug)]
