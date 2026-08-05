@@ -24,7 +24,7 @@
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_data;
-use crate::{TaskExecutionTimes, as_task_status};
+use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -56,25 +56,54 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// a fallback.
 const NOTIFIED_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Maximum time the poll loop waits for a free vcore before polling the
+/// scheduler anyway. `poll_work` doubles as the executor's heartbeat under
+/// pull-based scheduling, so a fully-busy executor must keep polling (reporting
+/// zero free vcores) or the scheduler times it out and resets its tasks. Kept
+/// well below the scheduler's executor timeout.
+const HEARTBEAT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Main execution loop that polls the scheduler for available tasks.
 ///
-/// This function runs indefinitely, periodically asking the scheduler for
-/// work. When tasks are received, they are executed on a dedicated thread
-/// pool and results are reported back to the scheduler.
+/// Runs indefinitely, periodically asking the scheduler for work. When tasks
+/// are received they are executed concurrently and results are reported back
+/// to the scheduler.
 ///
-/// The loop respects the executor's concurrent task limit via a semaphore,
-/// ensuring no more than the configured number of tasks run simultaneously.
+/// Concurrency is bounded by a semaphore. Pass `free_vcores` to supply your
+/// own semaphore — useful for sharing a single concurrency limit across
+/// multiple poll loops or for observing executor load from outside.
+/// Pass `None` to have the loop create a semaphore sized to the executor's
+/// configured vcore count.
 ///
 /// `poll_now_notify`, when provided, wakes an idle poll loop immediately
 /// (typically wired to the scheduler's `on_work_available` callback) instead
 /// of waiting out the idle interval. A notification sent mid-poll is not
 /// lost: `Notify` stores the permit and the next `notified().await` returns
 /// immediately.
+///
+/// **Shared semaphores**: when one semaphore is shared across loops that
+/// connect to different schedulers, each scheduler independently sees the
+/// current free capacity and may dispatch up to that many tasks. The semaphore
+/// still caps total concurrent execution — tasks that cannot run immediately
+/// wait for capacity — but both schedulers may over-commit relative to what
+/// the semaphore can actually admit at once. This is intentional: the
+/// semaphore acts as an execution throttle, not a reservation system.
+///
+/// **Semaphore sizing**: if the provided semaphore allows more concurrent
+/// tasks than the executor's thread pool has threads, excess admitted tasks
+/// will queue behind running ones. The caller is responsible for sizing the
+/// semaphore appropriately for their thread pool.
+///
+/// # Panics
+///
+/// Panics on startup if `free_vcores` is a semaphore with zero permits,
+/// which would cause the loop to deadlock immediately.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan, C>(
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
     poll_now_notify: Option<Arc<Notify>>,
+    free_vcores: Option<Arc<Semaphore>>,
     health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
 where
@@ -90,7 +119,13 @@ where
         .unwrap()
         .clone()
         .into();
-    let free_vcores = Arc::new(Semaphore::new(executor_specification.vcores as usize));
+    let free_vcores = free_vcores.unwrap_or_else(|| {
+        Arc::new(Semaphore::new(executor_specification.vcores as usize))
+    });
+    assert!(
+        free_vcores.available_permits() > 0,
+        "free_vcores semaphore must have at least one permit; passing a closed or zero-permit semaphore would deadlock the poll loop"
+    );
 
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
@@ -100,10 +135,28 @@ where
         DedicatedExecutor::new("task_runner", executor_specification.vcores as usize);
 
     loop {
-        // Wait for a vcore permit before asking for new work.
-        let permit = free_vcores.acquire().await.unwrap();
-        // Make the vcore available again for the actual bind below.
-        drop(permit);
+        // Wait for a vcore permit before asking for new work, but cap the wait
+        // so a fully-busy executor still polls the scheduler periodically.
+        // `poll_work` is the executor's ONLY heartbeat under pull-based
+        // scheduling (the scheduler records a heartbeat on every poll). If every
+        // vcore is held by a task running longer than the scheduler's executor
+        // timeout, blocking here indefinitely stops heartbeats, so the scheduler
+        // wrongly marks this healthy-but-busy executor dead and resets its
+        // in-flight tasks. On timeout we poll anyway below, reporting
+        // `num_free_vcores: 0`, so liveness no longer depends on vcore
+        // availability.
+        match tokio::time::timeout(HEARTBEAT_POLL_INTERVAL, free_vcores.acquire()).await {
+            // A vcore is free; release it so the bind below can claim it.
+            Ok(Ok(permit)) => drop(permit),
+            // Semaphore closed (executor shutting down).
+            Ok(Err(_)) => {
+                return Err(BallistaError::Internal(
+                    "vcore semaphore closed".to_string(),
+                ));
+            }
+            // No free vcore within the interval; poll anyway to stay alive.
+            Err(_) => {}
+        }
 
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
@@ -151,7 +204,10 @@ where
                     let task_status_sender = task_status_sender.clone();
 
                     // Acquire a vcore permit for the task.
-                    let permit = free_vcores.clone().acquire_owned().await.unwrap();
+                    let permit =
+                        free_vcores.clone().acquire_owned().await.map_err(|_| {
+                            BallistaError::Internal("vcore semaphore closed".to_string())
+                        })?;
 
                     let start_exec_time = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -203,8 +259,8 @@ where
                                 executor.metadata.id.clone(),
                                 task.task_attempt_num as usize,
                                 task_key,
-                                None,
                                 task_execution_times,
+                                TaskCompletionExtras::default(),
                             )) {
                                 warn!("failed to send task status: {error:?}");
                             };
@@ -362,6 +418,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .map(|m| m.try_into())
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
+        let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
 
         let end_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -379,8 +436,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             executor.metadata.id.clone(),
             stage_attempt_num as usize,
             key,
-            operator_metrics,
             task_execution_times,
+            TaskCompletionExtras {
+                operator_metrics,
+                runtime_stats,
+            },
         ));
 
         // Release the permit after the work is done

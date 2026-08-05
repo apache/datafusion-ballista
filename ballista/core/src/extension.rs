@@ -20,9 +20,10 @@ use crate::config::{
     BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
     BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
     BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
-    BALLISTA_JOB_NAME, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
-    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
-    BALLISTA_STANDALONE_PARALLELISM, BallistaConfig,
+    BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
+    BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
+    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
+    BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -204,6 +205,15 @@ pub trait SessionConfigExt {
     /// disables promotion via the row-count path.
     fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self;
 
+    /// Returns the maximum per-partition hash-join build-side bytes before
+    /// falling back to SortMergeJoin under AQE. `0` disables the check.
+    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize;
+
+    /// Sets the maximum per-partition hash-join build-side bytes before falling
+    /// back to SortMergeJoin under AQE. Setting `0` disables the check, which
+    /// leaves AQE on a hash join whatever the build size.
+    fn with_ballista_hash_join_max_build_partition_bytes(self, max_bytes: usize) -> Self;
+
     /// retrieves grpc client max message size
     fn ballista_grpc_client_max_message_size(&self) -> usize;
 
@@ -257,9 +267,6 @@ pub trait SessionConfigExt {
     /// Get whether to use TLS for executor connections
     fn ballista_use_tls(&self) -> bool;
 
-    /// Is short shuffle used
-    fn ballista_sort_shuffle_enabled(&self) -> bool;
-
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
     fn ballista_coalesce_enabled(&self) -> bool;
     /// Sets whether the AQE coalesce-shuffle-partitions rule is enabled.
@@ -312,6 +319,7 @@ impl SessionStateExt for SessionState {
             .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())))
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
+            .with_optimizer_rules(crate::optimizer::ballista_default_optimizer_rules())
             .with_scalar_functions(ballista_scalar_functions())
             .with_aggregate_functions(ballista_aggregate_functions())
             .with_window_functions(ballista_window_functions())
@@ -331,8 +339,12 @@ impl SessionStateExt for SessionState {
 
         let ballista_config = session_config.ballista_config();
 
+        let optimizer_rules =
+            crate::optimizer::with_ballista_optimizer_rules(self.optimizers());
+
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
+            .with_optimizer_rules(optimizer_rules)
             .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())));
 
         let builder = match planner_override {
@@ -513,6 +525,25 @@ impl SessionConfigExt for SessionConfig {
         }
     }
 
+    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.hash_join_max_build_partition_bytes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().hash_join_max_build_partition_bytes()
+            })
+    }
+
+    fn with_ballista_hash_join_max_build_partition_bytes(self, max_bytes: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, max_bytes)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, max_bytes)
+        }
+    }
+
     fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.options()
             .extensions
@@ -521,14 +552,6 @@ impl SessionConfigExt for SessionConfig {
             .unwrap_or_else(|| {
                 BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
             })
-    }
-
-    fn ballista_sort_shuffle_enabled(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.shuffle_sort_based_enabled())
-            .unwrap_or_else(|| BallistaConfig::default().shuffle_sort_based_enabled())
     }
 
     fn with_ballista_shuffle_reader_maximum_concurrent_requests(

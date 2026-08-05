@@ -36,7 +36,8 @@
 //! flows from parent to descendants via function arguments, so sibling
 //! subtrees never share state and there's no traversal-order dependency.
 
-use ballista_core::execution_plans::ShuffleReaderExec;
+use ballista_core::execution_plans::{PerPartitionFilterExec, ShuffleReaderExec};
+use datafusion::common::internal_err;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder,
@@ -46,7 +47,6 @@ use datafusion::error::Result;
 use datafusion::physical_expr::Distribution;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
-use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
@@ -82,6 +82,30 @@ fn restrict(
     if !under_collect && let Some(rewritten) = select_output_partitions(&plan, partitions)
     {
         return Ok(rewritten);
+    }
+
+    // PerPartitionFilterExec: its `predicates` vec is positionally aligned
+    // with the child's output partitions (predicates[k] filters
+    // input.execute(k)). When we restrict the child from K partitions to
+    // `partitions.len()`, the predicate vec must be sliced by the same
+    // indices in the same order
+    if !under_collect && let Some(ppf) = plan.downcast_ref::<PerPartitionFilterExec>() {
+        let children = plan.children();
+        let [child] = children.as_slice() else {
+            return internal_err!(
+                "PerPartitionFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        let new_child = restrict((*child).clone(), partitions, false)?;
+        let new_predicates: Vec<_> = partitions
+            .iter()
+            .map(|&part_idx| ppf.predicates()[part_idx].clone())
+            .collect();
+        return Ok(Arc::new(PerPartitionFilterExec::try_new(
+            new_child,
+            new_predicates,
+        )?));
     }
 
     // UnionExec: parent partition `p` maps to exactly one child's local
@@ -148,11 +172,24 @@ fn union_child_partitions(
 ///   every child (it's sticky — descendants of a collapse all read
 ///   everything).
 /// - `CoalescePartitionsExec` / `SortPreservingMergeExec`: set for all
-///   children.
-/// - `HashJoinExec` / `NestedLoopJoinExec`: set per child based on
-///   `required_input_distribution()`. Typically only the build side is
-///   `SinglePartition`, so the probe side inherits `false` and remains
-///   partition-aligned.
+///   children. These cannot be derived from the rule below — both declare
+///   `UnspecifiedDistribution`, because they consume every input partition
+///   without constraining how the input is partitioned. Keep the explicit
+///   case.
+/// - Anything else: set per child from `required_input_distribution()`. An
+///   input declared `SinglePartition` is one the operator consumes whole —
+///   a join or cross-join build side, for instance — so restricting it to
+///   the task's slice would hand each sibling task a different fraction of
+///   it. Typically only the build side is `SinglePartition`, so the probe
+///   side inherits `false` and remains partition-aligned.
+///
+///   This is asked of every operator rather than a list of join types.
+///   `CrossJoinExec` also collects its left input but was not on that list,
+///   so each task of a multi-partition stage rebuilt the cross-join's left
+///   side from its own slice and the result came back inflated (seen on
+///   TPC-DS q77, whose catalog branch is `from cs, cr`). It also brings in
+///   a non-preserving `SortExec` and `GlobalLimitExec`, which declare
+///   `SinglePartition` for the same reason.
 ///
 /// `UnionExec` is handled by the caller before reaching this function —
 /// its children need per-child *partition* sub-slices, not just per-child
@@ -165,14 +202,20 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
     if plan.is::<CoalescePartitionsExec>() || plan.is::<SortPreservingMergeExec>() {
         return vec![true; children.len()];
     }
-    if plan.is::<HashJoinExec>() || plan.is::<NestedLoopJoinExec>() {
-        return plan
-            .required_input_distribution()
-            .into_iter()
-            .map(|d| matches!(d, Distribution::SinglePartition))
-            .collect();
+    let required = plan.required_input_distribution();
+    if required.len() != children.len() {
+        // The trait contract is one entry per child, so a mismatch means a
+        // broken operator. Stay partition-aligned rather than reading whole:
+        // `true` here is not the safe direction, it makes every task of the
+        // stage read the entire input, which duplicates the data instead of
+        // protecting it. `false` is also what every operator outside the
+        // cases above got before this rule generalized.
+        return vec![false; children.len()];
     }
-    vec![false; children.len()]
+    required
+        .into_iter()
+        .map(|d| matches!(d, Distribution::SinglePartition))
+        .collect()
 }
 
 /// Restrict a plan node to a subset of its output partitions, re-indexed
@@ -480,30 +523,8 @@ mod tests {
     // upstream fix used a per-single-partition helper on the executor side;
     // this suite ports the same invariants to the scheduler-side rewriter.
 
-    use datafusion::arrow::datatypes::SchemaRef;
-    use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::ParquetSource;
-    use datafusion::execution::object_store::ObjectStoreUrl;
+    use crate::test_utils::scan_with_file_groups;
     use datafusion::physical_plan::union::UnionExec;
-
-    /// Build a `DataSourceExec` over `n` file groups (one file each), so
-    /// every group is exactly one partition. The scan's output partition
-    /// count equals `n`.
-    fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let source = Arc::new(ParquetSource::new(schema));
-        let mut builder =
-            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
-        for i in 0..n {
-            builder =
-                builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
-                    format!("file{i}.parquet"),
-                    100,
-                )]));
-        }
-        DataSourceExec::from_data_source(builder.build())
-    }
 
     /// File counts per file group of a `DataSourceExec` — the shape a union
     /// test cares about after restriction.
@@ -587,5 +608,114 @@ mod tests {
         let plan = scan_with_file_groups(4);
         let restricted = restrict_plan_to_partitions(plan, &[2]).unwrap();
         assert_eq!(group_file_counts(&restricted), vec![1]);
+    }
+
+    /// A `CrossJoinExec` collects its left input, so that side must be read
+    /// whole. Scoping is taken from `required_input_distribution()` rather
+    /// than a list of join types, which is what brings cross joins in.
+    ///
+    /// Restricting the collected side would give each sibling task a
+    /// different fraction of it, and the join would emit a different subset
+    /// of the cartesian product per task — TPC-DS q77's `from cs, cr` branch
+    /// came back inflated exactly this way.
+    #[test]
+    fn cross_join_left_side_is_read_whole() {
+        use datafusion::physical_plan::joins::CrossJoinExec;
+
+        let join: Arc<dyn ExecutionPlan> = Arc::new(CrossJoinExec::new(
+            scan_with_file_groups(4),
+            scan_with_file_groups(4),
+        ));
+
+        // Sanity: the operator really does declare its left input collected.
+        assert!(
+            matches!(
+                join.required_input_distribution().first(),
+                Some(Distribution::SinglePartition)
+            ),
+            "CrossJoinExec must declare SinglePartition on its left input"
+        );
+
+        let restricted = restrict_plan_to_partitions(join, &[1]).unwrap();
+        let children = restricted.children();
+        assert_eq!(
+            group_file_counts(children[0]),
+            vec![1, 1, 1, 1],
+            "collected left side keeps every group"
+        );
+        assert_eq!(
+            group_file_counts(children[1]),
+            vec![1],
+            "streaming right side is pinned to this task's partition"
+        );
+    }
+
+    /// A `PerPartitionFilterExec` restricted to a subset of partitions must
+    /// slice its `predicates` vector by the same indices, in the same order,
+    /// as its child. Otherwise the operator's construction invariant
+    /// (`predicates.len() == child.partition_count()`) breaks and
+    /// task-local partition `j` would filter through a global predicate
+    /// that no longer matches.
+    #[test]
+    fn per_partition_filter_predicates_are_sliced_with_partitions() {
+        use ballista_core::execution_plans::PerPartitionFilterExec;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+        use datafusion::scalar::ScalarValue;
+
+        // 4 upstream partitions, each with its own bespoke predicate so we
+        // can assert the slice ordering survives.
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let partitions_locs: Vec<Vec<PartitionLocation>> =
+            (0..4).map(|i| vec![create_partition(i)]).collect();
+        let reader = ShuffleReaderExec::try_new(
+            1,
+            partitions_locs,
+            schema.clone(),
+            Partitioning::UnknownPartitioning(4),
+        )
+        .unwrap();
+        let make_pred = |lo: i64| -> Arc<dyn PhysicalExpr> {
+            Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("v", 0)),
+                Operator::GtEq,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(lo)))),
+            ))
+        };
+        let predicates: Vec<Arc<dyn PhysicalExpr>> =
+            (0..4).map(|i| make_pred(i as i64 * 100)).collect();
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            PerPartitionFilterExec::try_new(
+                Arc::new(reader) as Arc<dyn ExecutionPlan>,
+                predicates.clone(),
+            )
+            .unwrap(),
+        );
+
+        let restricted = restrict_plan_to_partitions(plan, &[1, 3]).unwrap();
+        let ppf = restricted
+            .downcast_ref::<PerPartitionFilterExec>()
+            .expect("top must remain PerPartitionFilterExec");
+        assert_eq!(ppf.predicates().len(), 2);
+        assert_eq!(
+            ppf.predicates()[0].to_string(),
+            predicates[1].to_string(),
+            "local partition 0 must carry the global-partition-1 predicate"
+        );
+        assert_eq!(
+            ppf.predicates()[1].to_string(),
+            predicates[3].to_string(),
+            "local partition 1 must carry the global-partition-3 predicate"
+        );
+
+        // Reader below must have been restricted in the same order.
+        let child = ppf.children()[0].clone();
+        let reader = child
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("child must be a ShuffleReaderExec");
+        assert_eq!(reader.partition.len(), 2);
+        assert_eq!(reader.partition[0][0].partition_id.partition_id, 1);
+        assert_eq!(reader.partition[1][0].partition_id.partition_id, 3);
     }
 }
