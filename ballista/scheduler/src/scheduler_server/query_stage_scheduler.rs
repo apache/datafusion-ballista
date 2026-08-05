@@ -482,6 +482,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
 #[cfg(test)]
 mod tests {
+    use crate::cluster::JobStateEvent;
     use crate::config::{SchedulerConfig, WorkAvailableReason};
     use crate::scheduler_server::SchedulerServer;
     use crate::test_utils::{
@@ -507,6 +508,7 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use futures::StreamExt;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tonic::Request;
@@ -565,6 +567,48 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_scheduler_exposes_job_state_events() -> Result<()> {
+        let plan = test_plan(1);
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        let mut events = test.job_state_events().await?;
+        let (_, job_id) = test.run("", &plan).await?;
+        let received_success = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.next().await {
+                if matches!(
+                    event,
+                    JobStateEvent::JobUpdated {
+                        job_id: event_job_id,
+                        status,
+                    } if event_job_id == job_id
+                        && matches!(
+                            status.status,
+                            Some(job_status::Status::Successful(_))
+                        )
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .expect("successful job state event should arrive");
+        assert!(
+            received_success,
+            "job state event stream closed unexpectedly"
+        );
+        Ok(())
+    }
     #[tokio::test]
     async fn test_on_work_available_callback() -> Result<()> {
         let reasons: Arc<Mutex<Vec<WorkAvailableReason>>> = Arc::default();

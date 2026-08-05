@@ -53,7 +53,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -477,6 +477,11 @@ impl SchedulerTest {
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
+    }
+
+    /// Returns job state events from the underlying scheduler.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.scheduler.job_state_events().await
     }
 
     /// Returns the session context for tests.

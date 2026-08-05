@@ -31,7 +31,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
@@ -181,6 +181,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Returns the number of currently running jobs.
     pub fn running_job_number(&self) -> usize {
         self.state.task_manager.running_job_number()
+    }
+
+    /// Returns a stream of job state events from the configured state backend.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.state.task_manager.job_state_events().await
+    }
+
+    /// Returns a stream of cluster state events from the configured state backend.
+    pub async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
+        self.state.executor_manager.cluster_state_events().await
     }
 
     /// True when at least `min_ready_executors` executors currently have
@@ -451,6 +461,7 @@ pub fn timestamp_millis() -> u64 {
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use ballista_core::JobId;
     use ballista_core::extension::SessionConfigExt;
@@ -463,7 +474,9 @@ mod test {
     use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
+    use futures::StreamExt;
 
+    use crate::cluster::ClusterStateEvent;
     use crate::config::SchedulerConfig;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
@@ -486,6 +499,31 @@ mod test {
         assert_completed_event, assert_failed_event, assert_no_submitted_event,
         assert_submitted_event, test_cluster_context,
     };
+
+    #[tokio::test]
+    async fn test_scheduler_exposes_cluster_state_events() -> Result<()> {
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PushStaged).await?;
+        let mut events = scheduler.cluster_state_events().await?;
+        let (executor_metadata, executor_data) =
+            test_executors(2).into_iter().next().unwrap();
+        let executor_id = executor_metadata.id.clone();
+
+        scheduler
+            .state
+            .executor_manager
+            .register_executor(executor_metadata, executor_data)
+            .await?;
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .expect("cluster state event should arrive");
+        assert_eq!(
+            event,
+            Some(ClusterStateEvent::RegisteredExecutor { executor_id })
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {

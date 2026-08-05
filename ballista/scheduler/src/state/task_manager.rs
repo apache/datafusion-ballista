@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::JobState;
+use crate::cluster::{JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
@@ -241,6 +241,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 matches!(job_info.status, Some(job_status::Status::Running(_)))
             })
             .count()
+    }
+
+    /// Returns a stream of job state events from the configured state backend.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.state.job_state_events().await
     }
 
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
