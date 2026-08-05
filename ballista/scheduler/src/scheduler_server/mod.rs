@@ -23,7 +23,6 @@ use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::{JobId, JobStatusSubscriber};
-use tokio::sync::broadcast;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
@@ -32,7 +31,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
@@ -59,8 +58,6 @@ pub mod event;
 #[cfg(feature = "keda-scaler")]
 mod external_scaler;
 mod grpc;
-/// Job state event notifications for subscribers.
-pub mod job_state_event;
 pub(crate) mod query_stage_scheduler;
 
 /// Function type for building DataFusion session states from configuration.
@@ -89,11 +86,6 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
     /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
-    /// Broadcast sender for job state change notifications.
-    ///
-    /// Subscribers can receive notifications when jobs change state by calling
-    /// `subscribe_job_updates()`.
-    job_state_sender: broadcast::Sender<job_state_event::JobStateEvent>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -111,12 +103,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        let (job_state_sender, _) = broadcast::channel(config.job_state_channel_capacity);
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
-            job_state_sender.clone(),
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
@@ -132,7 +122,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
-            job_state_sender,
         }
     }
 
@@ -153,12 +142,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
-        let (job_state_sender, _) = broadcast::channel(config.job_state_channel_capacity);
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
-            job_state_sender.clone(),
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
@@ -174,7 +161,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
-            job_state_sender,
         }
     }
 
@@ -197,34 +183,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.state.task_manager.running_job_number()
     }
 
-    /// Subscribes to job state change notifications.
-    ///
-    /// Returns a receiver that will receive [`JobStateEvent`] notifications
-    /// whenever a job changes state. This allows consumers to be notified
-    /// of job state changes without polling.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut receiver = scheduler.subscribe_job_updates();
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = receiver.recv().await {
-    ///         println!("Job {} changed to state: {}", event.job_id, event.state);
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// # Note
-    ///
-    /// If the receiver falls behind and the channel buffer fills up,
-    /// older messages will be dropped and the receiver will receive
-    /// a `RecvError::Lagged` error on the next `recv()` call.
-    ///
-    /// [`JobStateEvent`]: job_state_event::JobStateEvent
-    pub fn subscribe_job_updates(
-        &self,
-    ) -> broadcast::Receiver<job_state_event::JobStateEvent> {
-        self.job_state_sender.subscribe()
+    /// Returns a stream of job state events from the configured state backend.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.state.task_manager.job_state_events().await
     }
 
     /// True when at least `min_ready_executors` executors currently have
@@ -235,7 +196,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let alive = self.state.executor_manager.get_alive_executors().len();
         alive >= self.state.config.min_ready_executors
     }
-
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.query_stage_scheduler.metrics_collector()

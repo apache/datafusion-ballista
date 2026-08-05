@@ -465,6 +465,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
 #[cfg(test)]
 mod tests {
+    use crate::cluster::JobStateEvent;
     use crate::config::SchedulerConfig;
     use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
     use ballista_core::config::TaskSchedulingPolicy;
@@ -474,6 +475,7 @@ mod tests {
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{LogicalPlan, col};
     use datafusion::test_util::scan_empty_with_partitions;
+    use futures::StreamExt;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -526,6 +528,52 @@ mod tests {
             "Expected {} running jobs but found {}",
             expected,
             test.running_job_number()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_exposes_job_state_events() -> Result<()> {
+        let plan = test_plan(1);
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        let mut events = test.job_state_events().await?;
+        let (_, job_id) = test.run("", &plan).await?;
+
+        let received_success = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.next().await {
+                if matches!(
+                    event,
+                    JobStateEvent::JobUpdated {
+                        job_id: event_job_id,
+                        status,
+                    } if event_job_id == job_id
+                        && matches!(
+                            status.status,
+                            Some(job_status::Status::Successful(_))
+                        )
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .expect("successful job state event should arrive");
+
+        assert!(
+            received_success,
+            "job state event stream closed unexpectedly"
         );
 
         Ok(())
