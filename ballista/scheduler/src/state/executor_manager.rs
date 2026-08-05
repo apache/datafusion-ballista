@@ -25,7 +25,7 @@ use ballista_core::serde::protobuf::ExecutorMetric;
 use ballista_core::serde::protobuf::executor_metric::Metric;
 use log::trace;
 
-use crate::cluster::{BoundTask, ClusterState, ExecutorSlot};
+use crate::cluster::{BoundTask, ClusterState, ClusterStateEventStream, ExecutorSlot};
 use crate::config::SchedulerConfig;
 
 use crate::state::execution_graph::RunningTaskInfo;
@@ -110,6 +110,11 @@ impl ExecutorManager {
         self.cluster_state.init().await?;
 
         Ok(())
+    }
+
+    /// Returns a stream of cluster state events from the configured state backend.
+    pub async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
+        self.cluster_state.cluster_state_events().await
     }
 
     /// Binds ready-to-run tasks from active jobs to available executor slots.
