@@ -565,6 +565,22 @@ impl SchedulerTest {
         .await
     }
 
+    /// Simulates the scheduler discovering an executor is gone while launching
+    /// tasks onto it. This is [`SchedulerState::remove_executor`], the path
+    /// taken when `launch_multi_task` fails — not the heartbeat reaper's path
+    /// that [`Self::lose_executor`] mirrors.
+    pub async fn lose_executor_on_launch_failure(&self, executor_id: &str) -> Result<()> {
+        self.scheduler
+            .state
+            .remove_executor(
+                executor_id,
+                Some("test: failed to launch task".to_owned()),
+                &self.scheduler.query_stage_event_loop.get_sender()?,
+            )
+            .await;
+        Ok(())
+    }
+
     /// Returns the current status of a job, if known.
     pub async fn job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
         self.scheduler

@@ -340,6 +340,21 @@ fail the job with a clear error. The scenario turns that grace down via the
 cluster builder and asserts the query fails with an error naming the executor
 loss.
 
+**Second path, same hang** ([#2226](https://github.com/apache/datafusion-ballista/issues/2226)).
+Scenario G kept failing intermittently after that fix, because the scheduler
+has _two_ ways of discovering an executor is gone and only one of them armed
+the grace timer. The heartbeat reaper posts `ExecutorLost`, which is where the
+timer lives; a failing task launch instead took
+`SchedulerState::remove_executor`, which rolled the graphs back inline and
+posted nothing. That path also deletes the executor's heartbeat, so the reaper
+could never rediscover it and post the event later — the job was left running
+on an empty cluster with no further executor-loss event to come. Whether a kill
+lands during a task launch or between heartbeats is a timing race, which is why
+the scenario failed only sometimes. The fix routes both removal paths through
+the same `ExecutorLost` event; the unit test
+`test_running_job_fails_when_launch_failure_loses_last_executor` covers the
+launch-failure path deterministically.
+
 ### For comparison: the heartbeat-expiry path does recover
 
 Ballista's HA recovery is not uniformly broken. Whenever the kill in Scenario
