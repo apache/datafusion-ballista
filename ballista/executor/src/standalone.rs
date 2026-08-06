@@ -148,6 +148,7 @@ pub async fn new_standalone_executor_from_builder(
         executor,
         codec,
         None,
+        None,
         crate::health::ExecutorHealth::new(),
     ));
     Ok(())

@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -57,7 +57,31 @@ pub mod ballista_physical_plan_node {
         Buffer(super::BufferExecNode),
         #[prost(message, tag = "8")]
         UnorderedRangeRepartition(super::UnorderedRangeRepartitionExecNode),
+        #[prost(message, tag = "9")]
+        OrderedRangeRepartition(super::OrderedRangeRepartitionExecNode),
+        #[prost(message, tag = "10")]
+        PerPartitionFilter(super::PerPartitionFilterExecNode),
     }
+}
+/// Value-range router over N locally-sorted overlapping input partitions.
+/// Redistributes them into K range-disjoint output partitions where each
+/// output is fully sorted on the routing expression. Uses N × K scatter
+/// channels feeding K per-output k-way merges (via DataFusion's SPM
+/// internals). Discovery of cut boundaries is identical to the unordered
+/// variant — walk the child subtree for a matching `RuntimeStatsExec`, snap
+/// its T-Digest.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OrderedRangeRepartitionExecNode {
+    /// Lexicographic ORDER BY. Routing keys off the first entry; the full
+    /// ordering is preserved for downstream operators. Must match the
+    /// input's declared `output_ordering` at plan time.
+    #[prost(message, repeated, tag = "1")]
+    pub order_by: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
+    /// K — number of output partitions. Must be ≥ 2.
+    #[prost(uint32, tag = "2")]
+    pub output_partitions: u32,
 }
 /// Runtime-stats tap. Passes batches through unmodified while accumulating:
 ///
@@ -110,6 +134,17 @@ pub struct UnorderedRangeRepartitionExecNode {
     /// K — number of output partitions. Must be ≥ 2.
     #[prost(uint32, tag = "2")]
     pub output_partitions: u32,
+}
+/// Filter with per-input-partition predicates. `predicates\[k\]` is the
+/// boolean expression applied to input partition `k`. Requires
+/// `predicates.len() == input_partition_count`. The child plan is
+/// plumbed by the framework as `inputs\[0\]` during decode.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PerPartitionFilterExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub predicates: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChaosExecNode {
@@ -849,6 +884,49 @@ pub struct SuccessfulTask {
     /// so we might want to think about some refactoring of the task definitions
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<ShuffleWritePartition>,
+    /// Reports from `RuntimeStatsExec` operators in this task's plan that
+    /// are still valid at the plan's output (walked from the top through
+    /// distribution-preserving nodes only — see
+    /// `range_repartition_common::preserves_distribution`). Empty when the
+    /// plan has no such stats-taps. Currently reports one entry per
+    /// executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
+    /// to combine reports across tasks/executors.
+    #[prost(message, repeated, tag = "3")]
+    pub runtime_stats: ::prost::alloc::vec::Vec<RuntimeStatsReport>,
+}
+/// One report per `RuntimeStatsExec` in the executed plan.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeStatsReport {
+    /// What the operator was sampling. Empty = row-count-only mode. When
+    /// non-empty, the first entry identifies which routing expression this
+    /// sketch describes; the scheduler groups sketches by this tag to
+    /// combine samples across tasks that were sampling the same expression.
+    #[prost(message, repeated, tag = "1")]
+    pub order_by: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
+    /// Per-partition observations. Interpretation depends on the operator's
+    /// position in the plan — pre-repartition gets one entry per input
+    /// partition, post-repartition gets one per output sub-partition. The
+    /// scheduler groups by `order_by` tag and aggregates.
+    #[prost(message, repeated, tag = "2")]
+    pub partitions: ::prost::alloc::vec::Vec<RuntimeStatsPartitionEntry>,
+}
+/// One partition's observations from a `RuntimeStatsExec`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeStatsPartitionEntry {
+    #[prost(uint32, tag = "1")]
+    pub partition_id: u32,
+    #[prost(uint64, tag = "2")]
+    pub row_count: u64,
+    /// Present when the `RuntimeStatsExec` was in sketch mode AND this
+    /// partition observed at least one non-null routing value.
+    ///
+    /// TODO: `optional MinMaxState min_max` — for a lighter post-repartition
+    /// mode where the bin-packer just needs (min, max, count) per
+    /// sub-partition and a full T-Digest is overkill.
+    #[prost(message, optional, tag = "3")]
+    pub sketch: ::core::option::Option<QuantileSketchState>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}

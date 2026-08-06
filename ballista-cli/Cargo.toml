@@ -36,8 +36,8 @@ crate-type = ["cdylib", "rlib"]
 ballista = { path = "../ballista/client", version = "54.0.0", features = ["standalone"], optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-cli = { workspace = true, optional = true }
-rustyline = { version = "18.0.0", optional = true }
 mimalloc = { workspace = true, optional = true }
+rustyline = { version = "18.0.0", optional = true }
 
 # TUI/web shared deps
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
@@ -46,7 +46,6 @@ config = { version = "0.15.23", default-features = false, features = ["yaml"], o
 dirs = "6.0"
 dotparser = { version = "0.3.0", optional = true }
 futures = { version = "0.3.31", optional = true }
-percent-encoding = { version = "2.3.2", optional = true }
 prometheus-parse = { version = "0.2", optional = true }
 ratatui = { version = "0.30.1", default-features = false, optional = true }
 reqwest = { version = "0.13.4", features = ["json"], optional = true }
@@ -55,14 +54,15 @@ serde_json = { version = "1", optional = true }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "local-time"] }
 tui-shimmer = { version = "0.1", optional = true }
+url-escape = { workspace = true, optional = true }
 
 # Native-only TUI deps
 crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
 tracing-appender = { version = "0.2", optional = true }
 
 # Web-only deps (WASM)
-critical-section = { version = "1.2.0", features = ["std"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
+critical-section = { version = "1.2.0", features = ["std"], optional = true }
 gloo-timers = { version = "0.4", features = ["futures"], optional = true }
 js-sys = { version = "0.3.95", optional = true }
 ratzilla = { version = "0.3.1", optional = true }
@@ -81,25 +81,57 @@ tokio = { workspace = true, features = ["macros", "sync", "time"] }
 default = ["cli", "tui"]
 
 cli = [
-    "dep:ballista", "dep:datafusion", "dep:datafusion-cli",
-    "dep:rustyline", "dep:mimalloc",
+    "dep:ballista",
+    "dep:datafusion",
+    "dep:datafusion-cli",
+    "dep:mimalloc",
+    "dep:rustyline",
 ]
 
 tui = [
-    "dep:chrono", "dep:config", "dep:crossterm", "dep:dotparser", "dep:futures",
-    "dep:percent-encoding", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest",
-    "dep:serde", "dep:serde_json", "dep:tracing-appender",
-    "dep:tui-shimmer", "ratatui/crossterm", "ratatui/all-widgets", "ratatui/macros",
-    "ratatui/layout-cache", "ratatui/underline-color", "ratatui/serde"
+    "dep:chrono",
+    "dep:config",
+    "dep:crossterm",
+    "dep:dotparser",
+    "dep:futures",
+    "dep:url-escape",
+    "dep:prometheus-parse",
+    "dep:ratatui",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tracing-appender",
+    "dep:tui-shimmer",
+    "ratatui/crossterm",
+    "ratatui/all-widgets",
+    "ratatui/macros",
+    "ratatui/layout-cache",
+    "ratatui/underline-color",
+    "ratatui/serde",
 ]
 
 web = [
-    "dep:chrono", "dep:config", "dep:critical-section", "dep:dotparser", "dep:futures", "dep:percent-encoding",
-    "dep:prometheus-parse", "dep:ratatui", "ratatui/serde", "dep:reqwest",
-    "dep:serde", "dep:serde_json", "dep:tui-shimmer",
-    "dep:ratzilla", "dep:wasm-bindgen", "dep:wasm-bindgen-futures",
-    "dep:gloo-timers", "dep:console_error_panic_hook",
-    "dep:tracing-web", "dep:web-sys", "dep:js-sys",
+    "dep:chrono",
+    "dep:config",
+    "dep:critical-section",
+    "dep:dotparser",
+    "dep:futures",
+    "dep:url-escape",
+    "dep:prometheus-parse",
+    "dep:ratatui",
+    "ratatui/serde",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tui-shimmer",
+    "dep:ratzilla",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:gloo-timers",
+    "dep:console_error_panic_hook",
+    "dep:tracing-web",
+    "dep:web-sys",
+    "dep:js-sys",
 ]
 
 [[bin]]

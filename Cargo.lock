@@ -1047,6 +1047,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-chaos"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "ballista",
+ "ballista-core",
+ "ballista-executor",
+ "ballista-scheduler",
+ "datafusion",
+ "env_logger",
+ "log",
+ "nix 0.31.3",
+ "reqwest 0.13.4",
+ "rstest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ballista-cli"
 version = "54.0.0"
 dependencies = [
@@ -1065,7 +1085,6 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "mimalloc",
- "percent-encoding",
  "prometheus-parse",
  "ratatui",
  "ratzilla",
@@ -1079,6 +1098,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-web",
  "tui-shimmer",
+ "url-escape",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -1192,6 +1212,7 @@ dependencies = [
  "clap 4.6.4",
  "dashmap",
  "datafusion",
+ "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-substrait",
  "futures",
@@ -1219,6 +1240,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url-escape",
  "uuid",
 ]
 
@@ -7624,6 +7646,15 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_derive",
+]
+
+[[package]]
+name = "url-escape"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd4105a4fc511f6b1c9616a372a1313ae7c15afcaac839617c1c7cf25ce0a965"
+dependencies = [
+ "percent-encoding",
 ]
 
 [[package]]

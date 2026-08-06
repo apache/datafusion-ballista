@@ -64,9 +64,13 @@ pub mod execution_plans;
 pub mod extension;
 /// Strongly-typed string identifiers (job ids, job names, ...).
 pub mod ids;
+/// KLL quantile sketch (Karnin-Lang-Liberty), generic over `Ord` items.
+pub mod kll;
 #[cfg(feature = "build-binary")]
 /// Object store configuration and utilities for distributed file access.
 pub mod object_store;
+/// Ballista-specific logical optimizer rules.
+pub mod optimizer;
 /// Query planning utilities for distributed execution.
 pub mod planner;
 /// Runtime registry for codec and function registration.

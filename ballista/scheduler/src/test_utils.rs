@@ -53,7 +53,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -308,6 +308,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
+                    runtime_stats: vec![],
                 })),
             });
         }
@@ -478,6 +479,11 @@ impl SchedulerTest {
         self.scheduler.running_job_number()
     }
 
+    /// Returns job state events from the underlying scheduler.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.scheduler.job_state_events().await
+    }
+
     /// Returns the session context for tests.
     pub async fn ctx(&self) -> Result<Arc<SessionContext>> {
         self.scheduler
@@ -539,6 +545,32 @@ impl SchedulerTest {
             .query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobCancel(job_id.to_owned()))
+            .await
+    }
+
+    /// Simulates the loss of an executor: deregisters it from the executor
+    /// manager and posts the `ExecutorLost` event. This mirrors the reaper's
+    /// `remove_executor` path without waiting out the heartbeat timeout.
+    pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
+        let reason = Some("test: executor lost".to_owned());
+        self.scheduler
+            .state
+            .executor_manager
+            .remove_executor(executor_id, reason.clone())
+            .await?;
+        self.post_scheduler_event(QueryStageSchedulerEvent::ExecutorLost(
+            executor_id.to_owned(),
+            reason,
+        ))
+        .await
+    }
+
+    /// Returns the current status of a job, if known.
+    pub async fn job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
+        self.scheduler
+            .state
+            .task_manager
+            .get_job_status(job_id)
             .await
     }
 
@@ -1209,6 +1241,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
         status: Some(task_status::Status::Successful(protobuf::SuccessfulTask {
             executor_id: executor_id.to_owned(),
             partitions,
+            runtime_stats: vec![],
         })),
     }
 }
@@ -1242,4 +1275,31 @@ pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskS
         metrics: vec![],
         status: Some(task_status::Status::Failed(failed_task)),
     }
+}
+
+/// A `DataSourceExec` over `n` single-file groups, so its output partition
+/// count is `n` and each group is independently restrictable.
+///
+/// Shared by the planner and task-builder tests, both of which need a leaf
+/// whose partitions per-task restriction can actually slice.
+pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, ParquetSource,
+    };
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+
+    let schema: SchemaRef =
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+    let source = Arc::new(ParquetSource::new(schema));
+    let mut builder =
+        FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source);
+    for i in 0..n {
+        builder = builder.with_file_group(FileGroup::new(vec![PartitionedFile::new(
+            format!("file{i}.parquet"),
+            100,
+        )]));
+    }
+    DataSourceExec::from_data_source(builder.build())
 }

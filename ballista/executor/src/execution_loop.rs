@@ -24,7 +24,7 @@
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_data;
-use crate::{TaskExecutionTimes, as_task_status};
+use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -46,8 +46,15 @@ use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
+
+/// Idle sleep between polls when polling is the only way to learn of new work.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Idle sleep when a `poll_now_notify` wake-up is wired and the timer is only
+/// a fallback.
+const NOTIFIED_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum time the poll loop waits for a free vcore before polling the
 /// scheduler anyway. `poll_work` doubles as the executor's heartbeat under
@@ -67,6 +74,12 @@ const HEARTBEAT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// multiple poll loops or for observing executor load from outside.
 /// Pass `None` to have the loop create a semaphore sized to the executor's
 /// configured vcore count.
+///
+/// `poll_now_notify`, when provided, wakes an idle poll loop immediately
+/// (typically wired to the scheduler's `on_work_available` callback) instead
+/// of waiting out the idle interval. A notification sent mid-poll is not
+/// lost: `Notify` stores the permit and the next `notified().await` returns
+/// immediately.
 ///
 /// **Shared semaphores**: when one semaphore is shared across loops that
 /// connect to different schedulers, each scheduler independently sees the
@@ -89,6 +102,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan,
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    poll_now_notify: Option<Arc<Notify>>,
     free_vcores: Option<Arc<Semaphore>>,
     health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
@@ -245,8 +259,8 @@ where
                                 executor.metadata.id.clone(),
                                 task.task_attempt_num as usize,
                                 task_key,
-                                None,
                                 task_execution_times,
+                                TaskCompletionExtras::default(),
                             )) {
                                 warn!("failed to send task status: {error:?}");
                             };
@@ -263,7 +277,19 @@ where
         }
 
         if !active_job {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            match &poll_now_notify {
+                Some(notify) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(NOTIFIED_IDLE_POLL_INTERVAL) => {}
+                        () = notify.notified() => {
+                            debug!("Received poll_now notification, polling immediately");
+                        }
+                    }
+                }
+                None => {
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                }
+            }
         }
     }
 }
@@ -392,6 +418,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .map(|m| m.try_into())
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
+        let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
 
         let end_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -409,8 +436,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             executor.metadata.id.clone(),
             stage_attempt_num as usize,
             key,
-            operator_metrics,
             task_execution_times,
+            TaskCompletionExtras {
+                operator_metrics,
+                runtime_stats,
+            },
         ));
 
         // Release the permit after the work is done

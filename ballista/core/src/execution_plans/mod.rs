@@ -22,6 +22,9 @@ mod buffer;
 mod chaos_exec;
 mod distributed_explain_analyze;
 mod distributed_query;
+mod ordered_range_repartition;
+mod per_partition_filter;
+pub mod plan_algebra;
 mod range_repartition_common;
 mod runtime_stats;
 mod shuffle_reader;
@@ -38,7 +41,15 @@ pub use chaos_exec::ChaosExec;
 use datafusion::common::exec_err;
 pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
-pub use runtime_stats::{RuntimeStatsExec, sketch_from_proto, sketch_to_proto};
+pub use ordered_range_repartition::OrderedRangeRepartitionExec;
+pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
+pub use plan_algebra::{preserves_distribution, preserves_partitioning};
+pub use runtime_stats::{
+    MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
+    collect_reports as collect_runtime_stats_reports, cut_partitions,
+    log_merged_runtime_stats, merge_reports as merge_runtime_stats_reports,
+    repartition_routing_expr, sketch_from_proto, sketch_to_proto,
+};
 pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;

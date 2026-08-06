@@ -27,8 +27,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::JobId;
-use crate::execution_plans::SortShuffleWriterExec;
-use crate::execution_plans::create_shuffle_path;
+use crate::execution_plans::{
+    OrderedRangeRepartitionExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    create_shuffle_path,
+};
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
@@ -73,9 +75,15 @@ enum GlobalPartitionMap {
     /// The plan collapses to a single output partition (e.g.
     /// `SortPreservingMergeExec`). Every local index → global partition 0.
     Collapsed,
-    /// The plan re-establishes a hash-partition K-space (e.g.
-    /// `RepartitionExec::Hash(_, K)`). Local index == global (0..K).
-    HashSpace,
+    /// The plan re-establishes a fresh K-space of output partitions — every
+    /// operator that fans rows into K distinct outputs and assigns each output
+    /// a fresh index. `RepartitionExec::Hash(_, K)` and
+    /// `RepartitionExec::RoundRobinBatch(K)` qualify;
+    /// `UnorderedRangeRepartitionExec` (range-routed) qualifies too. Local
+    /// index == global (0..K) regardless of the routing algorithm — the K-space
+    /// is per-stage and per-task-slot, `file_id` disambiguates the same
+    /// `partition_id` across producers.
+    KSpace,
     /// Nothing between the writer and the leaves rewrites partitioning —
     /// local index `i` is `slice[i]` globally. Empty when no slice was
     /// stamped, in which case local is used as-is (identity).
@@ -86,7 +94,7 @@ impl GlobalPartitionMap {
     fn resolve(&self, local: usize) -> u64 {
         match self {
             GlobalPartitionMap::Collapsed => 0,
-            GlobalPartitionMap::HashSpace => local as u64,
+            GlobalPartitionMap::KSpace => local as u64,
             GlobalPartitionMap::PassThrough(slice) => {
                 slice.get(local).copied().unwrap_or(local) as u64
             }
@@ -98,7 +106,14 @@ impl GlobalPartitionMap {
 /// determines the output partitioning shape:
 ///
 /// - `SortPreservingMergeExec` → `Collapsed` (fan-in to 1).
-/// - `RepartitionExec` producing a hash / round-robin K-space → `HashSpace`.
+/// - `RepartitionExec(Hash|RoundRobin)` → `KSpace` (fresh K-space by hash /
+///   round-robin routing).
+/// - `UnorderedRangeRepartitionExec` / `OrderedRangeRepartitionExec` →
+///   `KSpace` (fresh K-space by range routing, unordered or order-preserving).
+///   Same shape as hash-repartition from the writer's perspective: K distinct
+///   outputs, local index == global partition, `file_id` disambiguates across
+///   producers. Content-range info (which K-slot holds which value range)
+///   travels through the separate `RuntimeStatsExec` sketch-report channel.
 /// - Otherwise recurse into the sole child (Filter/Sort/Projection/… are
 ///   partitioning-preserving passthroughs).
 /// - If we hit a leaf or a fan-in without recognising it, treat it as
@@ -107,13 +122,13 @@ fn walk_child_partition_mapping(
     plan: &Arc<dyn ExecutionPlan>,
     global_output_partition_ids: &[usize],
 ) -> GlobalPartitionMap {
-    if plan.downcast_ref::<SortPreservingMergeExec>().is_some() {
+    if plan.is::<SortPreservingMergeExec>() {
         return GlobalPartitionMap::Collapsed;
     }
     if let Some(repart) = plan.downcast_ref::<RepartitionExec>() {
         match repart.partitioning() {
             Partitioning::Hash(_, _) | Partitioning::RoundRobinBatch(_) => {
-                return GlobalPartitionMap::HashSpace;
+                return GlobalPartitionMap::KSpace;
             }
             Partitioning::Range(_) => {
                 // Range-partitioning also freshly numbers its K outputs by
@@ -134,6 +149,11 @@ fn walk_child_partition_mapping(
             }
         }
     }
+    if plan.is::<UnorderedRangeRepartitionExec>()
+        || plan.is::<OrderedRangeRepartitionExec>()
+    {
+        return GlobalPartitionMap::KSpace;
+    }
     let children = plan.children();
     if children.len() == 1 {
         return walk_child_partition_mapping(children[0], global_output_partition_ids);
@@ -150,7 +170,7 @@ fn walk_child_partition_mapping(
 ///
 /// Two cases:
 ///
-/// - `SortShuffleWriter(Hash(K))` — HashSpace by construction; the K-space
+/// - `SortShuffleWriter(Hash(K))` — KSpace by construction; the K-space
 ///   `[0..K-1]` is intrinsic. Input ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
@@ -170,14 +190,14 @@ pub fn compute_global_output_partition_ids(
         };
         return (0..*k).collect();
     }
-    if stage_plan.downcast_ref::<ShuffleWriterExec>().is_some() {
+    if stage_plan.is::<ShuffleWriterExec>() {
         let children = stage_plan.children();
         let [child] = children.as_slice() else {
             unreachable!("ShuffleWriterExec always has exactly one child");
         };
         return match walk_child_partition_mapping(child, global_input_partition_ids) {
             GlobalPartitionMap::Collapsed => vec![0],
-            GlobalPartitionMap::HashSpace => {
+            GlobalPartitionMap::KSpace => {
                 let k = child.properties().output_partitioning().partition_count();
                 (0..k).collect()
             }
@@ -500,7 +520,7 @@ impl ShuffleWriterExec {
     /// operator's output_partitioning). `summary.partition_id` is the
     /// **global** output partition id downstream will address, computed via
     /// `walk_child_partition_mapping` over the child plan — either
-    /// `global_output_partition_ids[local]`, `local` (hash K-space), or `0`
+    /// `global_output_partition_ids[local]`, `local` (K-space), or `0`
     /// (collapsed / SPM).
     pub fn execute_shuffle_write(
         self,
