@@ -897,8 +897,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             scheduler_id,
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
+        let mut failed_jobs = vec![];
         for multi_task in multi_tasks {
-            let multi_task: Vec<TaskDefinition> = get_task_definition_vec(
+            let job_id = multi_task.job_id.clone();
+            let multi_task: Vec<TaskDefinition> = match get_task_definition_vec(
                 multi_task,
                 self.executor.runtime_producer.clone(),
                 self.executor.produce_config(),
@@ -910,8 +912,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     .higher_order_functions
                     .clone(),
                 self.codec.clone(),
-            )
-            .map_err(|e| Status::invalid_argument(format!("{e}")))?;
+            ) {
+                Ok(tasks) => tasks,
+                Err(e) => {
+                    error!("failed to decode tasks for {job_id} : {e}");
+                    failed_jobs.push(job_id);
+                    continue;
+                }
+            };
+
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
@@ -922,7 +931,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     .unwrap();
             }
         }
-        Ok(Response::new(LaunchMultiTaskResult { success: true }))
+        Ok(Response::new(LaunchMultiTaskResult {
+            success: true,
+            failed_jobs,
+        }))
     }
 
     async fn stop_executor(
