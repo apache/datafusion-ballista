@@ -30,6 +30,7 @@ ENV RUST_BACKTRACE=full
 COPY target/${RELEASE_FLAG}/ballista-scheduler /root/ballista-scheduler
 COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
 COPY target/${RELEASE_FLAG}/tpch /root/tpch
+COPY target/${RELEASE_FLAG}/h2o /root/h2o
 
 COPY benchmarks/run.sh /root/run.sh
 COPY benchmarks/queries/ /root/benchmarks/queries
