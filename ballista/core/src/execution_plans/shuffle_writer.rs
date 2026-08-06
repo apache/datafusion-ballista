@@ -849,19 +849,10 @@ async fn run_coordinator(
             }
         }
         Err(e) => {
-            // The stage driver drains output partition 0 first. Move the
-            // structural error there; later streams only need to unblock.
-            let msg = e.to_string();
-            let mut first_error = Some(e);
-            for (i, slot) in senders.iter_mut().enumerate() {
+            let shared = Arc::new(e);
+            for slot in senders.iter_mut() {
                 if let Some(sender) = slot.take() {
-                    let err = if let Some(e) = first_error.take() {
-                        e
-                    } else {
-                        DataFusionError::Execution(format!(
-                            "shuffle writer failed for output partition {i}: {msg}"
-                        ))
-                    };
+                    let err = DataFusionError::from(&shared);
                     let _ = sender.send(Err(err));
                 }
             }
@@ -943,6 +934,8 @@ pub(crate) fn summaries_to_batch(
 #[allow(dead_code, unused_imports)] // clippy false positive with local imports
 mod tests {
     use super::*;
+    use crate::error::BallistaError;
+    use crate::execution_plans::ChaosExec;
     use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
@@ -980,6 +973,50 @@ mod tests {
             all.extend(batches);
         }
         Ok(all)
+    }
+
+    async fn drive_partition_results(
+        plan: Arc<ShuffleWriterExec>,
+        task_ctx: Arc<TaskContext>,
+    ) -> Vec<crate::error::Result<Vec<RecordBatch>>> {
+        let k = plan.properties().output_partitioning().partition_count();
+        let mut handles = Vec::with_capacity(k);
+        for n in 0..k {
+            let plan = plan.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = plan.execute(n, ctx).map_err(BallistaError::from)?;
+                utils::collect_stream(&mut stream).await
+            }));
+        }
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(
+                h.await
+                    .expect("drive_partition_results task should not panic"),
+            );
+        }
+        results
+    }
+
+    fn assert_shared_structural_error(err: &BallistaError) {
+        let BallistaError::DataFusionError(e) = err else {
+            panic!("expected DataFusionError, got {err:?}");
+        };
+        assert!(
+            matches!(e.as_ref(), DataFusionError::Shared(_)),
+            "expected shared DataFusionError, got {e:?}"
+        );
+        let DataFusionError::ArrowError(arrow, _) = e.find_root() else {
+            panic!("expected ArrowError root, got {:?}", e.find_root());
+        };
+        let ArrowError::ExternalError(inner) = arrow.as_ref() else {
+            panic!("expected Arrow external error, got {arrow:?}");
+        };
+        assert!(
+            inner.downcast_ref::<BallistaError>().is_some(),
+            "expected Arrow external BallistaError, got {inner:?}"
+        );
     }
 
     #[tokio::test]
@@ -1069,36 +1106,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_repart_write_failure_propagates() -> Result<()> {
+    async fn write_failure_is_shared_to_all_output_partitions() -> Result<()> {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 
-        // Place a directory at the data-{file_id}.arrow path so File::create
-        // fails inside write_stream_to_disk, not at create_dir_all.
-        // Path: work_dir / job_id / stage_id / partition / data-{file_id}.arrow
-        // task_slot defaults to 0 in try_new, so file_id is 0.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let data_arrow_dir = tmp
-            .path()
-            .join("jobOne")
-            .join("1")
-            .join("0")
-            .join("data-0.arrow");
-        std::fs::create_dir_all(&data_arrow_dir).unwrap();
-        let work_dir = tmp.path().to_str().unwrap().to_owned();
-
-        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let input_plan: Arc<dyn ExecutionPlan> = Arc::new(ChaosExec::new(
+            create_input_plan()?,
+            1.0,
+            "transient",
+            Some(42),
+        )?);
+        let work_dir = TempDir::new()?;
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             "jobOne".into(),
             1,
             input_plan,
-            work_dir,
+            work_dir.path().to_str().unwrap().to_owned(),
         )?);
-        let result = drive_all_partitions(query_stage, task_ctx).await;
-        assert!(
-            result.is_err(),
-            "expected File::create failure in write_stream_to_disk to propagate"
-        );
+        let results = drive_partition_results(query_stage, task_ctx).await;
+        assert_eq!(2, results.len());
+        for result in results {
+            let err = result.expect_err("expected injected write failure");
+            assert_shared_structural_error(&err);
+        }
         Ok(())
     }
 

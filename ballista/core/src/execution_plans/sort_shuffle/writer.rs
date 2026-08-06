@@ -1069,19 +1069,10 @@ async fn run_coordinator(
     }
 
     if let Some(e) = first_error {
-        // The stage driver drains output partition 0 first. Move the
-        // structural error there; later streams only need to unblock.
-        let msg = e.to_string();
-        let mut first_error = Some(e);
-        for (i, slot) in senders.iter_mut().enumerate() {
+        let shared = Arc::new(e);
+        for slot in senders.iter_mut() {
             if let Some(sender) = slot.take() {
-                let err = if let Some(e) = first_error.take() {
-                    e
-                } else {
-                    DataFusionError::Execution(format!(
-                        "sort shuffle writer failed for output partition {i}: {msg}"
-                    ))
-                };
+                let err = DataFusionError::from(&shared);
                 let _ = sender.send(Err(err));
             }
         }
@@ -1145,6 +1136,8 @@ fn compute_partition_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::BallistaError;
+    use crate::execution_plans::ChaosExec;
     use datafusion::arrow::array::{StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -1175,6 +1168,45 @@ mod tests {
             Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
 
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+    }
+
+    async fn drive_partition_results(
+        plan: Arc<SortShuffleWriterExec>,
+        task_ctx: Arc<TaskContext>,
+    ) -> Vec<crate::error::Result<Vec<RecordBatch>>> {
+        let k = plan.properties().output_partitioning().partition_count();
+        let mut handles = Vec::with_capacity(k);
+        for n in 0..k {
+            let plan = plan.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = plan.execute(n, ctx).map_err(BallistaError::from)?;
+                crate::utils::collect_stream(&mut stream).await
+            }));
+        }
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(
+                h.await
+                    .expect("drive_partition_results task should not panic"),
+            );
+        }
+        results
+    }
+
+    fn assert_shared_io_error(err: &BallistaError) {
+        let BallistaError::DataFusionError(e) = err else {
+            panic!("expected DataFusionError, got {err:?}");
+        };
+        assert!(
+            matches!(e.as_ref(), DataFusionError::Shared(_)),
+            "expected shared DataFusionError, got {e:?}"
+        );
+        assert!(
+            matches!(e.find_root(), DataFusionError::IoError(_)),
+            "expected IO root, got {:?}",
+            e.find_root()
+        );
     }
 
     #[test]
@@ -1298,6 +1330,38 @@ mod tests {
         let output_dir = work_dir.path().join("job1").join("1").join("0");
         assert!(output_dir.join("data.arrow").exists());
         assert!(output_dir.join("data.arrow.index").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_failure_is_shared_to_all_output_partitions() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan: Arc<dyn ExecutionPlan> = Arc::new(ChaosExec::new(
+            create_test_input()?,
+            1.0,
+            "transient",
+            Some(42),
+        )?);
+        let work_dir = TempDir::new()?;
+
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            input_plan,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
+            SortShuffleConfig::default(),
+        )?);
+
+        let results = drive_partition_results(writer, task_ctx).await;
+        assert_eq!(2, results.len());
+        for result in results {
+            let err = result.expect_err("expected injected write failure");
+            assert_shared_io_error(&err);
+        }
 
         Ok(())
     }
