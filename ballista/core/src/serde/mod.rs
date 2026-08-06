@@ -1914,10 +1914,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
         let decoded = decoded_plan
             .downcast_ref::<PerPartitionFilterExec>()
             .expect("Expected PerPartitionFilterExec");
@@ -2115,10 +2123,18 @@ mod test {
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
-        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
 
         let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
 
         let decoded = decoded_plan
             .downcast_ref::<OrderedRangeRepartitionExec>()

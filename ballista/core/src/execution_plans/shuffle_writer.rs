@@ -134,7 +134,7 @@ fn walk_child_partition_mapping(
                 // Range-partitioning also freshly numbers its K outputs by
                 // range bucket, so it forms a K-space just like Hash. Global
                 // input ids from before the repartition are meaningless here.
-                return GlobalPartitionMap::HashSpace;
+                return GlobalPartitionMap::KSpace;
             }
             Partitioning::UnknownPartitioning(_) => {
                 // RepartitionExec still exchanges rows and freshly numbers

@@ -637,7 +637,7 @@ mod tests {
         // Sanity: the operator really does declare its left input collected.
         assert!(
             matches!(
-                join.required_input_distribution().first(),
+                join.input_distribution_requirements().child_distribution(0),
                 Some(Distribution::SinglePartition)
             ),
             "CrossJoinExec must declare SinglePartition on its left input"

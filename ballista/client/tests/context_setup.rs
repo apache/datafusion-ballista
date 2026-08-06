@@ -109,10 +109,9 @@ mod standalone {
     use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::{
         assert_batches_eq,
+        catalog::Session,
         common::exec_err,
-        execution::{
-            SessionState, SessionStateBuilder, TaskContext, context::QueryPlanner,
-        },
+        execution::{SessionStateBuilder, TaskContext, context::QueryPlanner},
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
@@ -395,7 +394,7 @@ mod standalone {
         async fn create_physical_plan(
             &self,
             _logical_plan: &LogicalPlan,
-            _session_state: &SessionState,
+            _session_state: &dyn Session,
         ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
             exec_err!("does not work")
         }
