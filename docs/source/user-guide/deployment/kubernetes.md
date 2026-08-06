@@ -107,6 +107,30 @@ persistentvolumeclaim/data-pv-claim created
 Copy the following yaml to a `cluster.yaml` file and change `<your-image>` with the name of your Ballista Docker image.
 
 ```yaml
+# Two Services front the same scheduler pod:
+#   - `ballista-scheduler-registration` sets `publishNotReadyAddresses: true`
+#     so executors can dial the scheduler for registration BEFORE its
+#     /readyz gate flips green. Without this, the scheduler's /readyz
+#     defaults to blocking on 1+ registered executor, which keeps its
+#     Endpoints empty — executors can't reach it to register in the first
+#     place. Chicken-and-egg; cluster never converges.
+#   - `ballista-scheduler` is the client-facing Service (respects /readyz)
+#     so clients don't submit queries to a scheduler with 0 executors mid
+#     rolling upgrade.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-scheduler-registration
+  labels:
+    app: ballista-scheduler
+spec:
+  publishNotReadyAddresses: true
+  ports:
+    - port: 50050
+      name: scheduler
+  selector:
+    app: ballista-scheduler
+---
 apiVersion: v1
 kind: Service
 metadata:
