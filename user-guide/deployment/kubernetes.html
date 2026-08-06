@@ -472,7 +472,31 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <section id="deploying-a-ballista-cluster">
 <h2>Deploying a Ballista Cluster<a class="headerlink" href="#deploying-a-ballista-cluster" title="Link to this heading">#</a></h2>
 <p>Copy the following yaml to a <code class="docutils literal notranslate"><span class="pre">cluster.yaml</span></code> file and change <code class="docutils literal notranslate"><span class="pre">&lt;your-image&gt;</span></code> with the name of your Ballista Docker image.</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Two Services front the same scheduler pod:</span>
+<span class="c1">#   - `ballista-scheduler-registration` sets `publishNotReadyAddresses: true`</span>
+<span class="c1">#     so executors can dial the scheduler for registration BEFORE its</span>
+<span class="c1">#     /readyz gate flips green. Without this, the scheduler&#39;s /readyz</span>
+<span class="c1">#     defaults to blocking on 1+ registered executor, which keeps its</span>
+<span class="c1">#     Endpoints empty — executors can&#39;t reach it to register in the first</span>
+<span class="c1">#     place. Chicken-and-egg; cluster never converges.</span>
+<span class="c1">#   - `ballista-scheduler` is the client-facing Service (respects /readyz)</span>
+<span class="c1">#     so clients don&#39;t submit queries to a scheduler with 0 executors mid</span>
+<span class="c1">#     rolling upgrade.</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Service</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler-registration</span>
+<span class="w">  </span><span class="nt">labels</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">publishNotReadyAddresses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">ports</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
+<span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">scheduler</span>
+<span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
 <span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Service</span>
 <span class="nt">metadata</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
