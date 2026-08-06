@@ -796,11 +796,12 @@ mod tests {
         Ok(())
     }
 
-    /// The same scenario as `test_running_job_fails_when_all_executors_are_lost`,
-    /// but the cluster's death is discovered by a failing task launch rather
-    /// than by the heartbeat reaper. That path removes the executor — heartbeat
-    /// included — so the reaper can never rediscover it, and it is therefore the
-    /// only chance the scheduler gets to notice the cluster is empty. See #2226.
+    /// The same outcome as `test_running_job_fails_when_all_executors_are_lost`,
+    /// but the cluster's death is discovered by a failing task launch instead of
+    /// by the heartbeat reaper. That path removes the executor — heartbeat
+    /// included — so the reaper can never rediscover it afterwards, making the
+    /// launch failure the only chance the scheduler gets to notice the cluster
+    /// is empty. See <https://github.com/apache/datafusion-ballista/issues/2226>
     #[tokio::test]
     async fn test_running_job_fails_when_launch_failure_loses_last_executor() -> Result<()>
     {
@@ -819,23 +820,15 @@ mod tests {
         )
         .await?;
 
+        // The only executor dies before its first task is launched, so the
+        // scheduler learns of the loss from `launch_multi_task` rather than
+        // from an expired heartbeat.
+        test.make_launches_fail("virtual-executor-0");
+
         let job_id = test.submit("", &plan).await?;
 
         let job_id_ref = &job_id;
         let test_ref = &test;
-        let running = await_condition(Duration::from_millis(50), 40, || async move {
-            let status = test_ref.job_status(job_id_ref).await?;
-            Ok(matches!(
-                status.and_then(|s| s.status),
-                Some(job_status::Status::Running(_))
-            ))
-        })
-        .await?;
-        assert!(running, "job should reach the running state");
-
-        test.lose_executor_on_launch_failure("virtual-executor-0")
-            .await?;
-
         let failed = await_condition(Duration::from_millis(100), 50, || async move {
             let status = test_ref.job_status(job_id_ref).await?;
             Ok(matches!(

@@ -190,7 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let state = self.clone();
         tokio::spawn(async move {
             let mut if_revive = false;
-            match state.launch_tasks(schedulable_tasks, sender.clone()).await {
+            match state.launch_tasks(schedulable_tasks, &sender).await {
                 Ok(unassigned_executor_slots) => {
                     if !unassigned_executor_slots.is_empty() {
                         if let Err(e) = state
@@ -227,11 +227,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ///    tasks, and — when this was the last executor — arms the grace timer
     ///    that fails the jobs left behind on an empty cluster.
     ///
-    /// The loss goes through the event rather than being handled inline so that
-    /// every removal path converges on one handler. Step 1 also drops the
-    /// executor's heartbeat, so the reaper can never rediscover the executor and
-    /// post the event itself: rolling the graphs back here without posting would
-    /// leave a job whose whole cluster died during a task launch running forever.
+    /// Every removal path must go through here, because step 1 also drops the
+    /// executor's heartbeat: once it is gone, nothing else can notice the
+    /// executor is missing and post the event later.
     /// See <https://github.com/apache/datafusion-ballista/issues/2226>
     pub(crate) async fn remove_executor(
         &self,
@@ -266,7 +264,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     async fn launch_tasks(
         &self,
         bound_tasks: Vec<BoundTask>,
-        sender: EventSender<QueryStageSchedulerEvent>,
+        sender: &EventSender<QueryStageSchedulerEvent>,
     ) -> Result<Vec<ExecutorSlot>> {
         // Put tasks to the same executor together
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
