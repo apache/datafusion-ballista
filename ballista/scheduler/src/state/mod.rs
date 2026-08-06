@@ -190,9 +190,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let state = self.clone();
         tokio::spawn(async move {
             let mut if_revive = false;
+            // Collect executor IDs that failed during launch so we can
+            // post `ExecutorLost` events for them below.
+            let mut failed_executor_ids: Vec<String> = vec![];
             match state.launch_tasks(schedulable_tasks).await {
                 Ok(unassigned_executor_slots) => {
                     if !unassigned_executor_slots.is_empty() {
+                        failed_executor_ids = unassigned_executor_slots
+                            .iter()
+                            .map(|(id, _)| id.clone())
+                            .collect();
                         if let Err(e) = state
                             .executor_manager
                             .unbind_tasks(unassigned_executor_slots)
@@ -208,6 +215,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     if_revive = true;
                 }
             }
+
+            for executor_id in failed_executor_ids {
+                if let Err(e) = sender
+                    .post_event(QueryStageSchedulerEvent::ExecutorLost(
+                        executor_id.clone(),
+                        Some(format!(
+                            "Executor {executor_id} removed after launch failure"
+                        )),
+                    ))
+                    .await
+                {
+                    error!("Fail to send ExecutorLost event for {executor_id}: {e:?}");
+                }
+            }
+
             if if_revive
                 && let Err(e) = sender
                     .post_event(QueryStageSchedulerEvent::ReviveOffers)
