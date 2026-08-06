@@ -128,6 +128,12 @@ impl Fixture {
          GROUP BY d.name ORDER BY d.name"
     }
 
+    pub fn shuffle_loss_query() -> &'static str {
+        "SELECT f.value, d.name \
+         FROM facts f JOIN dims d ON f.key = d.key \
+         ORDER BY f.value"
+    }
+
     /// The same query with a chaos UDF spliced into the WHERE clause.
     ///
     /// `injection` is a complete `chaos_*(...)` call returning BOOLEAN. Its own
@@ -153,6 +159,15 @@ impl Fixture {
              FROM facts f JOIN dims d ON f.key = d.key \
              WHERE {injection} IS NOT NULL \
              GROUP BY d.name ORDER BY d.name"
+        )
+    }
+
+    pub fn shuffle_loss_chaos_query(injection: &str) -> String {
+        format!(
+            "SELECT f.value, d.name \
+             FROM facts f JOIN dims d ON f.key = d.key \
+             WHERE {injection} IS NOT NULL \
+             ORDER BY f.value"
         )
     }
 }

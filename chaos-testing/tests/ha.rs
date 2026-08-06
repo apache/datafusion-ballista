@@ -248,12 +248,17 @@ async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
 #[case::aqe_on(true)]
 #[tokio::test]
 async fn executor_killed_after_shuffle_write_is_recovered(#[case] aqe: bool) {
-    let mut run = ChaosRun::start_with(aqe, 2, 60).await;
-    let expected = run.local_baseline().await;
+    let mut run = ChaosRun::start_with_concurrent_tasks(aqe, 2, 60, 1).await;
+    let expected = run.local_sql(Fixture::shuffle_loss_query()).await;
 
-    // Delay the *aggregate* side so the reduce stage is slow, giving us a window
-    // between "stage 1 succeeded" and "stage 2 has finished fetching".
-    let sql = Fixture::chaos_query("chaos_delay(f.key >= 0, 50)");
+    run.sql("SET ballista.shuffle.force_remote_read = true")
+        .await
+        .expect("force remote shuffle reads");
+    run.sql("SET ballista.shuffle.max_concurrent_read_requests = 1")
+        .await
+        .expect("serialize shuffle reads");
+
+    let sql = Fixture::shuffle_loss_chaos_query("chaos_delay(d.name IS NOT NULL, 300)");
 
     let query = tokio::spawn({
         let ctx = run.clone_ctx();
@@ -262,17 +267,54 @@ async fn executor_killed_after_shuffle_write_is_recovered(#[case] aqe: bool) {
     });
 
     let job_id = run.cluster.running_job_id().await.expect("job must appear");
+    let (executor_index, shuffle_stage_id) = run
+        .cluster
+        .await_successful_shuffle_output(&job_id)
+        .await
+        .expect("a shuffle-writing stage must complete before we kill its executor");
+    if run
+        .cluster
+        .job_status(&job_id)
+        .await
+        .expect("job status must be readable")
+        == "Completed"
+    {
+        panic!(
+            "job completed before executor {executor_index} could be killed after stage {shuffle_stage_id} wrote shuffle output\n{}",
+            run.cluster.diagnostics(&job_id).await
+        );
+    }
+    if query.is_finished() {
+        panic!(
+            "query completed before executor {executor_index} could be killed after stage {shuffle_stage_id} wrote shuffle output\n{}",
+            run.cluster.diagnostics(&job_id).await
+        );
+    }
     run.cluster
-        .await_stage_successful(&job_id, 1)
-        .await
-        .expect("stage 1 must complete before we kill its executor");
-    run.cluster.kill_executor(0).expect("kill executor 0");
+        .kill_executor(executor_index)
+        .unwrap_or_else(|e| {
+            panic!(
+                "kill executor {executor_index} with stage {shuffle_stage_id} shuffle output: {e}"
+            )
+        });
 
-    let batches = tokio::time::timeout(Duration::from_secs(180), query)
-        .await
-        .expect("query must not hang after shuffle output is lost")
-        .expect("query task must not panic")
-        .expect("query must recover by re-running the map stage");
+    let batches = match tokio::time::timeout(Duration::from_secs(180), query).await {
+        Ok(result) => match result.expect("query task must not panic") {
+            Ok(batches) => batches,
+            Err(e) => {
+                panic!(
+                    "query must recover by re-running the map stage: {e}\n{}",
+                    run.cluster.diagnostics(&job_id).await
+                )
+            }
+        },
+        Err(e) => {
+            panic!(
+                "query must not hang after shuffle output is lost: {e}\n{}",
+                run.cluster.diagnostics(&job_id).await
+            )
+        }
+    };
 
     let actual = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
         .unwrap()

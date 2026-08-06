@@ -69,19 +69,13 @@ fn binary(name: &str) -> PathBuf {
 
 /// One supervised executor process.
 ///
-/// `child` is used by this task's `kill_executor`/`executor_is_alive`. `port`,
-/// `grpc_port`, and `work_dir` are still not read anywhere yet — no code in
-/// this task needed to target an executor by its network address or inspect
-/// its working directory — so they keep a narrower `#[allow(dead_code)]` than
-/// the struct-wide one Task 5 left; a later scenario that needs to address a
-/// specific executor's port or inspect its shuffle files can drop it then.
+/// `child` is used by this task's `kill_executor`/`executor_is_alive`.
 pub(crate) struct ExecutorHandle {
     pub(crate) child: Child,
     #[allow(dead_code)]
     pub(crate) port: u16,
     #[allow(dead_code)]
     pub(crate) grpc_port: u16,
-    #[allow(dead_code)]
     pub(crate) work_dir: PathBuf,
 }
 
@@ -136,6 +130,11 @@ impl TestClusterBuilder {
 
     pub fn task_max_failures(mut self, n: usize) -> Self {
         self.task_max_failures = n;
+        self
+    }
+
+    pub fn concurrent_tasks(mut self, n: usize) -> Self {
+        self.concurrent_tasks = n;
         self
     }
 
@@ -414,7 +413,7 @@ impl TestCluster {
     }
 
     /// The last lines of every child process log, for timeout diagnostics.
-    fn log_tails(&self) -> String {
+    pub fn log_tails(&self) -> String {
         let mut out = String::new();
         let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.log_dir)
             .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
@@ -434,6 +433,16 @@ impl TestCluster {
             }
         }
         out
+    }
+
+    pub async fn diagnostics(&self, job_id: &str) -> String {
+        let stages = self
+            .stages(job_id)
+            .await
+            .ok()
+            .and_then(|stages| serde_json::to_string_pretty(&stages).ok())
+            .unwrap_or_else(|| "stage summary unavailable".to_string());
+        format!("--- stages ---\n{stages}\n{}", self.log_tails())
     }
 
     /// Block until the scheduler considers exactly `n` executors registered.
@@ -657,6 +666,50 @@ impl TestCluster {
         Ok(())
     }
 
+    pub async fn await_successful_shuffle_output(
+        &self,
+        job_id: &str,
+    ) -> Result<(usize, usize), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let stages = self.stages(job_id).await?;
+            for stage_id in running_stage_ids_with_successful_tasks(&stages) {
+                if let Some(executor_index) =
+                    self.executor_with_shuffle_output(job_id, stage_id)
+                {
+                    return Ok((executor_index, stage_id));
+                }
+            }
+            if self.job_status(job_id).await.unwrap_or_default() == "Completed" {
+                return Err(format!(
+                    "job {job_id} completed before a running shuffle-writing stage could be targeted\n{}",
+                    self.log_tails()
+                ));
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "timed out waiting for successful shuffle output for job {job_id}\n{}",
+                    self.log_tails()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    fn executor_with_shuffle_output(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+    ) -> Option<usize> {
+        self.executors
+            .iter()
+            .enumerate()
+            .find_map(|(index, executor)| {
+                let stage_dir = executor.work_dir.join(job_id).join(stage_id.to_string());
+                dir_has_entries(&stage_dir).then_some(index)
+            })
+    }
+
     /// Start a fresh executor process in the given slot and wait for it to register.
     pub async fn restart_executor(&mut self, index: usize) -> Result<(), String> {
         let expected = self.executors.len();
@@ -675,6 +728,34 @@ fn find_stage(stages: &serde_json::Value, stage_id: usize) -> Option<&serde_json
     stages.get("stages")?.as_array()?.iter().find(|s| {
         s.get("stage_id").and_then(|v| v.as_str()) == Some(stage_id.to_string().as_str())
     })
+}
+
+fn dir_has_entries(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+fn running_stage_ids_with_successful_tasks(stages: &serde_json::Value) -> Vec<usize> {
+    stages
+        .get("stages")
+        .and_then(|s| s.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|stage| {
+            stage.get("stage_status").and_then(|v| v.as_str()) == Some("Running")
+                && stage
+                    .get("tasks")
+                    .and_then(|tasks| tasks.as_array())
+                    .into_iter()
+                    .flatten()
+                    .any(|task| {
+                        task.get("status").and_then(|status| status.as_str())
+                            == Some("Successful")
+                    })
+        })
+        .filter_map(|stage| stage.get("stage_id")?.as_str()?.parse().ok())
+        .collect()
 }
 
 /// If `child` already exited with a non-zero status, log the path of its
