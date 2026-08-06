@@ -61,6 +61,9 @@ use datafusion::physical_expr::{
     Distribution, OrderingRequirements, PhysicalExpr, PhysicalSortExpr,
 };
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -96,6 +99,7 @@ pub struct RuntimeStatsExec {
     /// keep writes off any shared lock.
     sketches: Option<Arc<[Mutex<TDigest>]>>,
     properties: Arc<PlanProperties>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl RuntimeStatsExec {
@@ -154,6 +158,7 @@ impl RuntimeStatsExec {
             row_counts,
             sketches,
             properties,
+            metrics: ExecutionPlanMetricsSet::new(),
         })
     }
 
@@ -323,6 +328,10 @@ impl ExecutionPlan for RuntimeStatsExec {
         CardinalityEffect::Equal
     }
 
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -367,19 +376,40 @@ impl ExecutionPlan for RuntimeStatsExec {
             .and_then(|exprs| exprs.first())
             .map(|e| e.expr.clone());
 
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        // Separates sketch cost from the rest so we can tell whether the
+        // hot path in sketching mode is the T-Digest merge_unsorted_f64
+        // or something else (evaluate/downcast/flatten).
+        let sketch_time =
+            MetricBuilder::new(&self.metrics).subset_time("sketch_time", partition);
+        let sketch_batches =
+            MetricBuilder::new(&self.metrics).counter("sketch_batches", partition);
+
         let state = StreamState {
             input: input_stream,
             row_counts,
             sketches,
             routing_expr,
             partition,
+            baseline,
+            sketch_time,
+            sketch_batches,
         };
         let out = futures::stream::unfold(state, |mut state| async move {
-            let batch = state.input.next().await?;
-            let forwarded = batch.and_then(|batch| {
+            // Await the child first so upstream shuffle IO / parquet
+            // reads aren't billed to our elapsed_compute.
+            let next = state.input.next().await?;
+            // Clone the Time counter so the scoped timer doesn't hold a
+            // borrow across the mutable `state.ingest` call. `Time` is
+            // Arc-backed — cloning shares the counter, doesn't split it.
+            let elapsed = state.baseline.elapsed_compute().clone();
+            let timer = elapsed.timer();
+            let forwarded = next.and_then(|batch| {
                 state.ingest(&batch)?;
+                state.baseline.record_output(batch.num_rows());
                 Ok(batch)
             });
+            timer.done();
             Some((forwarded, state))
         });
 
@@ -396,6 +426,9 @@ struct StreamState {
     sketches: Option<Arc<[Mutex<TDigest>]>>,
     routing_expr: Option<Arc<dyn datafusion::physical_plan::PhysicalExpr>>,
     partition: usize,
+    baseline: BaselineMetrics,
+    sketch_time: Time,
+    sketch_batches: Count,
 }
 
 impl StreamState {
@@ -457,7 +490,10 @@ impl StreamState {
                         self.partition
                     )
                 })?;
+                let sketch_timer = self.sketch_time.timer();
                 *sketch = sketch.merge_unsorted_f64(values);
+                sketch_timer.done();
+                self.sketch_batches.add(1);
             }
         }
 
