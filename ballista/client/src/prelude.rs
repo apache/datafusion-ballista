@@ -17,4 +17,4 @@
 
 //! Ballista Prelude (common imports)
 
-pub use crate::extension::{SessionConfigExt, SessionContextExt, DataFrameExt};
+pub use crate::extension::{DataFrameExt, SessionConfigExt, SessionContextExt};
