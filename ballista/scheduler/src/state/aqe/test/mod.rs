@@ -21,6 +21,8 @@ mod alter_stages;
 mod broadcast_thresholds;
 /// Functional tests for the CoalescePartitionsRule end-to-end through the planner
 mod coalesce_rule;
+/// Intermediate-stage identification used by the on-success shuffle reclaim
+mod intermediate_stages;
 /// Job-failure lifecycle tests for the adaptive graph
 mod job_failure;
 /// covers join selection tests
