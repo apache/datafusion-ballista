@@ -19,7 +19,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::catalog::Session;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -350,6 +350,10 @@ impl TaskLauncher for BlackholeTaskLauncher {
 pub struct VirtualTaskLauncher {
     sender: Sender<(String, Vec<TaskStatus>)>,
     executors: HashMap<String, VirtualExecutor>,
+    /// Executors whose launches must fail, as if the process had died between
+    /// binding and launch. Shared with the owning [`SchedulerTest`], which adds
+    /// to it through [`SchedulerTest::make_launches_fail`].
+    unreachable: Arc<Mutex<HashSet<String>>>,
 }
 
 #[async_trait::async_trait]
@@ -360,6 +364,13 @@ impl TaskLauncher for VirtualTaskLauncher {
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
     ) -> Result<()> {
+        if self.unreachable.lock().contains(&executor.id) {
+            return Err(BallistaError::Internal(format!(
+                "test: executor {} is unreachable",
+                executor.id
+            )));
+        }
+
         let virtual_executor = self.executors.get(&executor.id).ok_or_else(|| {
             BallistaError::Internal(format!(
                 "No virtual executor with ID {} found",
@@ -386,6 +397,7 @@ pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     session_config: SessionConfig,
     status_receiver: Option<Receiver<(String, Vec<TaskStatus>)>>,
+    unreachable_executors: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SchedulerTest {
@@ -422,9 +434,12 @@ impl SchedulerTest {
 
         let (status_sender, status_receiver) = channel(1000);
 
+        let unreachable_executors: Arc<Mutex<HashSet<String>>> = Arc::default();
+
         let launcher = VirtualTaskLauncher {
             sender: status_sender,
             executors: executors.clone(),
+            unreachable: unreachable_executors.clone(),
         };
 
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -466,6 +481,7 @@ impl SchedulerTest {
             scheduler,
             session_config,
             status_receiver: Some(status_receiver),
+            unreachable_executors,
         })
     }
 
@@ -548,21 +564,28 @@ impl SchedulerTest {
             .await
     }
 
-    /// Simulates the loss of an executor: deregisters it from the executor
-    /// manager and posts the `ExecutorLost` event. This mirrors the reaper's
+    /// Simulates the loss of an executor. This mirrors the reaper's
     /// `remove_executor` path without waiting out the heartbeat timeout.
     pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
-        let reason = Some("test: executor lost".to_owned());
         self.scheduler
             .state
-            .executor_manager
-            .remove_executor(executor_id, reason.clone())
-            .await?;
-        self.post_scheduler_event(QueryStageSchedulerEvent::ExecutorLost(
-            executor_id.to_owned(),
-            reason,
-        ))
-        .await
+            .remove_executor(
+                executor_id,
+                Some("test: executor lost".to_owned()),
+                &self.scheduler.query_stage_event_loop.get_sender()?,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Makes every subsequent task launch onto `executor_id` fail, as if the
+    /// process had died after its tasks were bound to it. The scheduler then
+    /// discovers the loss through the failing launch rather than through
+    /// heartbeat expiry.
+    pub fn make_launches_fail(&self, executor_id: &str) {
+        self.unreachable_executors
+            .lock()
+            .insert(executor_id.to_owned());
     }
 
     /// Returns the current status of a job, if known.
