@@ -15,9 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import BallistaSessionContext, setup_test_cluster
-from ballista._internal_ballista import (
+from ballista import (
+    BallistaLogicalExtensionCodec,
+    BallistaPhysicalExtensionCodec,
     BallistaQueryPlanner,
+    BallistaSessionContext,
+    setup_test_cluster,
+)
+from ballista._internal_ballista import (
     ballista_datafusion_config_defaults,
     with_ballista_query_planner,
 )
@@ -25,9 +30,8 @@ from ballista.extension import (
     DataFrame,
     DistributedDataFrame,
     SessionConfig,
-    SessionContext,
 )
-from datafusion import col, lit
+from datafusion import SessionContext, col, lit
 import ctypes
 import pytest
 import pyarrow as pa
@@ -43,24 +47,49 @@ def assert_uses_ballista(df):
     assert "DistributedQueryExec" in str(df.execution_plan())
 
 
-def test_query_planner_capsules_use_current_datafusion_abi():
+def test_ballista_ffi_capsules_use_current_datafusion_abi():
     source_ctx = SessionContext()
+    logical_codec = BallistaLogicalExtensionCodec(source_ctx)
+    physical_codec = BallistaPhysicalExtensionCodec(source_ctx, logical_codec)
     planner = BallistaQueryPlanner("df://localhost:50050", source_ctx)
     is_valid = ctypes.pythonapi.PyCapsule_IsValid
     is_valid.argtypes = [ctypes.py_object, ctypes.c_char_p]
     is_valid.restype = ctypes.c_int
 
     capsules = {
-        b"datafusion_query_planner": planner.__datafusion_query_planner__(),
         b"datafusion_logical_extension_codec": (
-            planner.__datafusion_logical_extension_codec__()
+            logical_codec.__datafusion_logical_extension_codec__()
         ),
         b"datafusion_physical_extension_codec": (
-            planner.__datafusion_physical_extension_codec__()
+            physical_codec.__datafusion_physical_extension_codec__()
         ),
+        b"datafusion_query_planner": planner.__datafusion_query_planner__(),
     }
     for name, capsule in capsules.items():
         assert is_valid(capsule, name) == 1
+
+    assert not hasattr(logical_codec, "__datafusion_physical_extension_codec__")
+    assert not hasattr(physical_codec, "__datafusion_logical_extension_codec__")
+    assert not hasattr(planner, "__datafusion_logical_extension_codec__")
+    assert not hasattr(planner, "__datafusion_physical_extension_codec__")
+
+
+def test_manual_query_planner_and_codec_composition():
+    address, port = setup_test_cluster()
+    source_ctx = SessionContext()
+    source_ctx.register_csv("registered", "testdata/test.csv", has_header=True)
+    logical_codec = BallistaLogicalExtensionCodec(source_ctx)
+    physical_codec = BallistaPhysicalExtensionCodec(source_ctx, logical_codec)
+    planner = BallistaQueryPlanner(f"df://{address}:{port}", source_ctx)
+
+    configured_ctx = source_ctx.with_logical_extension_codec(logical_codec)
+    configured_ctx = configured_ctx.with_physical_extension_codec(physical_codec)
+    configured_ctx = configured_ctx.with_query_planner(planner)
+
+    df = configured_ctx.sql("SELECT COUNT(*) FROM registered")
+    assert type(df) is DataFrame
+    assert_uses_ballista(df)
+    assert df.collect()[0].column(0).to_pylist() == [5]
 
 
 def test_low_level_helper_returns_standard_distributed_dataframe():

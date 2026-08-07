@@ -21,8 +21,11 @@ except ImportError:
     import importlib_metadata
 
 from ._internal_ballista import (
-    BallistaScheduler,
     BallistaExecutor,
+    BallistaLogicalExtensionCodec,
+    BallistaPhysicalExtensionCodec,
+    BallistaQueryPlanner,
+    BallistaScheduler,
     setup_test_cluster,
 )
 from .extension import (
@@ -37,6 +40,9 @@ __all__ = [
     "setup_test_cluster",
     "BallistaScheduler",
     "BallistaExecutor",
+    "BallistaLogicalExtensionCodec",
+    "BallistaPhysicalExtensionCodec",
+    "BallistaQueryPlanner",
     "BallistaSessionContext",
     "DistributedDataFrame",
     "ExecutionPlanVisualization",

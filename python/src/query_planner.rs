@@ -18,7 +18,8 @@
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::planner::BallistaQueryPlanner;
 use ballista_core::serde::{
-    BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
+    BallistaLogicalExtensionCodec as NativeBallistaLogicalExtensionCodec,
+    BallistaPhysicalExtensionCodec as NativeBallistaPhysicalExtensionCodec,
 };
 use datafusion::catalog::Session;
 use datafusion::common::{DataFusionError, Result};
@@ -30,9 +31,7 @@ use datafusion_ffi::execution::FFI_TaskContextProvider;
 use datafusion_ffi::proto::logical_extension_codec::FFI_LogicalExtensionCodec;
 use datafusion_ffi::proto::physical_extension_codec::FFI_PhysicalExtensionCodec;
 use datafusion_ffi::query_planner::FFI_QueryPlanner;
-use datafusion_proto::logical_plan::{
-    DefaultLogicalExtensionCodec, LogicalExtensionCodec,
-};
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use pyo3::exceptions::PyValueError;
@@ -47,6 +46,113 @@ use url::Url;
 const DEFAULT_SCHEDULER_PORT: u16 = 50050;
 
 #[pyclass(
+    name = "BallistaLogicalExtensionCodec",
+    module = "ballista._internal_ballista",
+    skip_from_py_object
+)]
+pub(crate) struct PyBallistaLogicalExtensionCodec {
+    logical_codec: Arc<dyn LogicalExtensionCodec>,
+    ffi_logical_codec: FFI_LogicalExtensionCodec,
+    // The FFI codec holds a weak task-context provider.
+    _session_ctx: Py<PyAny>,
+}
+
+#[pymethods]
+impl PyBallistaLogicalExtensionCodec {
+    #[new]
+    fn new(session_ctx: Bound<'_, PyAny>) -> PyResult<Self> {
+        let user_logical_codec: Arc<dyn LogicalExtensionCodec> =
+            (&ffi_logical_codec_from_python(session_ctx.clone())?).into();
+        let logical_codec: Arc<dyn LogicalExtensionCodec> =
+            Arc::new(NativeBallistaLogicalExtensionCodec::new(user_logical_codec));
+        let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx.clone())?;
+        let ffi_logical_codec = FFI_LogicalExtensionCodec::new(
+            Arc::clone(&logical_codec),
+            Some(tokio_runtime_handle()),
+            task_ctx_provider,
+        );
+
+        Ok(Self {
+            logical_codec,
+            ffi_logical_codec,
+            _session_ctx: session_ctx.unbind(),
+        })
+    }
+
+    fn __datafusion_logical_extension_codec__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyCapsule>> {
+        PyCapsule::new_with_value(
+            py,
+            self.ffi_logical_codec.clone(),
+            cr"datafusion_logical_extension_codec",
+        )
+    }
+}
+
+#[pyclass(
+    name = "BallistaPhysicalExtensionCodec",
+    module = "ballista._internal_ballista",
+    skip_from_py_object
+)]
+pub(crate) struct PyBallistaPhysicalExtensionCodec {
+    ffi_physical_codec: FFI_PhysicalExtensionCodec,
+    // The FFI codec holds a weak task-context provider.
+    _session_ctx: Py<PyAny>,
+    // Retain the Python logical codec as well as its native Arc.
+    _logical_codec: Py<PyAny>,
+}
+
+impl PyBallistaPhysicalExtensionCodec {
+    fn from_logical_codec(
+        session_ctx: Bound<'_, PyAny>,
+        logical_codec: Arc<dyn LogicalExtensionCodec>,
+        logical_codec_object: Py<PyAny>,
+    ) -> PyResult<Self> {
+        let ffi_physical_codec =
+            ballista_physical_ffi_codec(session_ctx.clone(), logical_codec)?;
+
+        Ok(Self {
+            ffi_physical_codec,
+            _session_ctx: session_ctx.unbind(),
+            _logical_codec: logical_codec_object,
+        })
+    }
+}
+
+#[pymethods]
+impl PyBallistaPhysicalExtensionCodec {
+    #[new]
+    fn new(
+        session_ctx: Bound<'_, PyAny>,
+        logical_codec: Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let native_logical_codec = {
+            let logical_codec =
+                logical_codec.extract::<PyRef<'_, PyBallistaLogicalExtensionCodec>>()?;
+            Arc::clone(&logical_codec.logical_codec)
+        };
+        Self::from_logical_codec(
+            session_ctx,
+            native_logical_codec,
+            logical_codec.unbind(),
+        )
+    }
+
+    fn __datafusion_physical_extension_codec__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyCapsule>> {
+        PyCapsule::new_with_value(
+            py,
+            self.ffi_physical_codec.clone(),
+            cr"datafusion_physical_extension_codec",
+        )
+    }
+}
+
+#[pyclass(
     name = "BallistaQueryPlanner",
     module = "ballista._internal_ballista",
     skip_from_py_object
@@ -55,10 +161,10 @@ pub(crate) struct PyBallistaQueryPlanner {
     address: String,
     config: ballista_core::config::BallistaConfig,
     logical_codec: Arc<dyn LogicalExtensionCodec>,
-    ffi_logical_codec: FFI_LogicalExtensionCodec,
-    ffi_physical_codec: FFI_PhysicalExtensionCodec,
-    // The FFI codecs hold a weak task-context provider. Retain its source
-    // context for as long as Python retains this planner.
+    fallback_logical_codec: FFI_LogicalExtensionCodec,
+    fallback_physical_codec: FFI_PhysicalExtensionCodec,
+    // The fallback FFI codecs hold a weak task-context provider. Retain its
+    // source context for as long as Python retains this planner.
     _session_ctx: Py<PyAny>,
 }
 
@@ -71,37 +177,52 @@ impl PyBallistaQueryPlanner {
         session_ctx: Bound<'_, PyAny>,
         config_overrides: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
-        let user_logical_codec: Arc<dyn LogicalExtensionCodec> =
-            (&ffi_logical_codec_from_python(session_ctx.clone())?).into();
-        // The planner-side codec must retain the source context's Python-aware
-        // codecs because DistributedQueryExec embeds a serialized logical plan.
-        let logical_codec: Arc<dyn LogicalExtensionCodec> =
-            Arc::new(BallistaLogicalExtensionCodec::new(user_logical_codec));
-        let physical_codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(
-            BallistaPhysicalExtensionCodec::new(Arc::clone(&logical_codec)),
+        let logical_codec = PyBallistaLogicalExtensionCodec::new(session_ctx.clone())?;
+        let fallback_physical_codec = ballista_physical_ffi_codec(
+            session_ctx.clone(),
+            Arc::clone(&logical_codec.logical_codec),
+        )?;
+        Self::from_codecs(
+            address,
+            session_ctx,
+            config_overrides,
+            logical_codec.logical_codec,
+            logical_codec.ffi_logical_codec,
+            fallback_physical_codec,
+        )
+    }
+
+    fn __datafusion_query_planner__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyCapsule>> {
+        let planner: Arc<dyn QueryPlanner + Send + Sync> =
+            Arc::new(LazyBallistaQueryPlanner {
+                address: self.address.clone(),
+                config: self.config.clone(),
+                logical_codec: Arc::clone(&self.logical_codec),
+                _session_ctx: self._session_ctx.clone_ref(py),
+            });
+        let ffi = FFI_QueryPlanner::new_with_ffi_codecs(
+            planner,
+            self.fallback_logical_codec.clone(),
+            self.fallback_physical_codec.clone(),
         );
 
-        // The receiving SessionContext composes an installed codec with its own
-        // codecs. Export only the Ballista layer here; wrapping the source codec
-        // again would make the receiver traverse the same codec stack twice.
-        let installed_logical_codec: Arc<dyn LogicalExtensionCodec> = Arc::new(
-            BallistaLogicalExtensionCodec::new(Arc::new(
-                DefaultLogicalExtensionCodec {},
-            )),
-        );
-        let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx.clone())?;
-        let runtime = tokio_runtime_handle();
-        let ffi_logical_codec = FFI_LogicalExtensionCodec::new(
-            installed_logical_codec,
-            Some(runtime.clone()),
-            task_ctx_provider.clone(),
-        );
-        let ffi_physical_codec = FFI_PhysicalExtensionCodec::new(
-            physical_codec,
-            Some(runtime),
-            task_ctx_provider.clone(),
-        );
+        // This exact name is the ABI consumed by datafusion-python 55f43b5e.
+        PyCapsule::new_with_value(py, ffi, cr"datafusion_query_planner")
+    }
+}
 
+impl PyBallistaQueryPlanner {
+    fn from_codecs(
+        address: String,
+        session_ctx: Bound<'_, PyAny>,
+        config_overrides: Option<HashMap<String, String>>,
+        logical_codec: Arc<dyn LogicalExtensionCodec>,
+        fallback_logical_codec: FFI_LogicalExtensionCodec,
+        fallback_physical_codec: FFI_PhysicalExtensionCodec,
+    ) -> PyResult<Self> {
         let mut session_config = SessionConfig::new_with_ballista();
         if let Some(overrides) = config_overrides {
             for (key, value) in overrides {
@@ -121,53 +242,10 @@ impl PyBallistaQueryPlanner {
             address,
             config: session_config.ballista_config(),
             logical_codec,
-            ffi_logical_codec,
-            ffi_physical_codec,
+            fallback_logical_codec,
+            fallback_physical_codec,
             _session_ctx: session_ctx.unbind(),
         })
-    }
-
-    fn __datafusion_logical_extension_codec__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Bound<'py, PyCapsule>> {
-        PyCapsule::new_with_value(
-            py,
-            self.ffi_logical_codec.clone(),
-            cr"datafusion_logical_extension_codec",
-        )
-    }
-
-    fn __datafusion_physical_extension_codec__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Bound<'py, PyCapsule>> {
-        PyCapsule::new_with_value(
-            py,
-            self.ffi_physical_codec.clone(),
-            cr"datafusion_physical_extension_codec",
-        )
-    }
-
-    fn __datafusion_query_planner__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Bound<'py, PyCapsule>> {
-        let planner: Arc<dyn QueryPlanner + Send + Sync> =
-            Arc::new(LazyBallistaQueryPlanner {
-                address: self.address.clone(),
-                config: self.config.clone(),
-                logical_codec: Arc::clone(&self.logical_codec),
-                _session_ctx: self._session_ctx.clone_ref(py),
-            });
-        let ffi = FFI_QueryPlanner::new_with_ffi_codecs(
-            planner,
-            self.ffi_logical_codec.clone(),
-            self.ffi_physical_codec.clone(),
-        );
-
-        // This exact name is the ABI consumed by datafusion-python 55f43b5e.
-        PyCapsule::new_with_value(py, ffi, cr"datafusion_query_planner")
     }
 }
 
@@ -262,27 +340,52 @@ pub(crate) fn with_ballista_query_planner(
         }
     }
 
-    let planner = PyBallistaQueryPlanner::new(
+    let logical_codec = PyBallistaLogicalExtensionCodec::new(session_ctx.clone())?;
+    let logical_native = Arc::clone(&logical_codec.logical_codec);
+    let fallback_logical_codec = logical_codec.ffi_logical_codec.clone();
+    let logical_codec = Py::new(py, logical_codec)?;
+
+    let physical_codec = PyBallistaPhysicalExtensionCodec::from_logical_codec(
+        session_ctx.clone(),
+        Arc::clone(&logical_native),
+        logical_codec.clone_ref(py).into_any(),
+    )?;
+    let fallback_physical_codec = physical_codec.ffi_physical_codec.clone();
+    let physical_codec = Py::new(py, physical_codec)?;
+
+    let planner = PyBallistaQueryPlanner::from_codecs(
         address,
         session_ctx.clone(),
         Some(ballista_overrides),
+        logical_native,
+        fallback_logical_codec,
+        fallback_physical_codec,
     )?;
     let planner = Py::new(py, planner)?;
 
-    // datafusion-python deliberately rebinds imported planners to the codecs
-    // installed on the receiving context. Install Ballista's codecs first so
-    // that rebind keeps DistributedQueryExec serialization active.
-    let ctx = session_ctx.call_method1(
-        "with_logical_extension_codec",
-        (planner.bind(py),),
-    )?;
-    let ctx = ctx.call_method1(
-        "with_physical_extension_codec",
-        (planner.bind(py),),
-    )?;
+    // Install each Ballista codec once before the planner. datafusion-python
+    // then rebinds the planner to the receiving context's codec chains.
+    let ctx = session_ctx
+        .call_method1("with_logical_extension_codec", (logical_codec.bind(py),))?;
+    let ctx =
+        ctx.call_method1("with_physical_extension_codec", (physical_codec.bind(py),))?;
     Ok(ctx
         .call_method1("with_query_planner", (planner.bind(py),))?
         .unbind())
+}
+
+fn ballista_physical_ffi_codec(
+    session_ctx: Bound<'_, PyAny>,
+    logical_codec: Arc<dyn LogicalExtensionCodec>,
+) -> PyResult<FFI_PhysicalExtensionCodec> {
+    let physical_codec: Arc<dyn PhysicalExtensionCodec> =
+        Arc::new(NativeBallistaPhysicalExtensionCodec::new(logical_codec));
+    let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx)?;
+    Ok(FFI_PhysicalExtensionCodec::new(
+        physical_codec,
+        Some(tokio_runtime_handle()),
+        task_ctx_provider,
+    ))
 }
 
 fn apply_datafusion_override(
