@@ -796,6 +796,56 @@ mod tests {
         Ok(())
     }
 
+    /// The same outcome as `test_running_job_fails_when_all_executors_are_lost`,
+    /// but the cluster's death is discovered by a failing task launch instead of
+    /// by the heartbeat reaper. That path removes the executor — heartbeat
+    /// included — so the reaper can never rediscover it afterwards, making the
+    /// launch failure the only chance the scheduler gets to notice the cluster
+    /// is empty. See <https://github.com/apache/datafusion-ballista/issues/2226>
+    #[tokio::test]
+    async fn test_running_job_fails_when_launch_failure_loses_last_executor() -> Result<()>
+    {
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+                .with_no_executors_grace_period_seconds(0),
+            metrics_collector.clone(),
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        // The only executor dies before its first task is launched, so the
+        // scheduler learns of the loss from `launch_multi_task` rather than
+        // from an expired heartbeat.
+        test.make_launches_fail("virtual-executor-0");
+
+        let job_id = test.submit("", &plan).await?;
+
+        let job_id_ref = &job_id;
+        let test_ref = &test;
+        let failed = await_condition(Duration::from_millis(100), 50, || async move {
+            let status = test_ref.job_status(job_id_ref).await?;
+            Ok(matches!(
+                status.and_then(|s| s.status),
+                Some(job_status::Status::Failed(_))
+            ))
+        })
+        .await?;
+        assert!(
+            failed,
+            "job should be failed after a launch failure lost the last executor, but status was {:?}",
+            test.job_status(&job_id).await?
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_running_job_survives_partial_executor_loss() -> Result<()> {
         let plan = test_plan(10);

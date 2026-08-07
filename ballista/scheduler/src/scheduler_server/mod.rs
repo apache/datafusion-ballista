@@ -35,12 +35,10 @@ use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStre
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{debug, error, warn};
+use log::{debug, warn};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
-
-use crate::state::executor_manager::ExecutorManager;
 
 use crate::state::SchedulerState;
 use crate::state::task_manager::TaskLauncher;
@@ -364,7 +362,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
                     // If executor is expired, remove it immediately
                     Self::remove_executor(
-                        state.executor_manager.clone(),
+                        state.clone(),
                         sender_clone,
                         &executor_id,
                         Some(stop_reason.clone()),
@@ -389,8 +387,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    /// Removes an executor after `wait_secs`, in the background. The removal
+    /// itself is [`SchedulerState::remove_executor`], so this path and the one
+    /// taken when a task launch fails cannot drift apart.
     pub(crate) fn remove_executor(
-        executor_manager: ExecutorManager,
+        state: Arc<SchedulerState<T, U>>,
         event_sender: EventSender<QueryStageSchedulerEvent>,
         executor_id: &str,
         reason: Option<String>,
@@ -402,20 +403,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             // Wait for `wait_secs` before removing executor
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
 
-            // Update the executor manager immediately here
-            if let Err(e) = executor_manager
-                .remove_executor(&executor_id, reason.clone())
-                .await
-            {
-                error!("error removing executor {executor_id}: {e:?}");
-            }
-
-            if let Err(e) = event_sender
-                .post_event(QueryStageSchedulerEvent::ExecutorLost(executor_id, reason))
-                .await
-            {
-                error!("error sending ExecutorLost event: {e:?}");
-            }
+            state
+                .remove_executor(&executor_id, reason, &event_sender)
+                .await;
         });
     }
 

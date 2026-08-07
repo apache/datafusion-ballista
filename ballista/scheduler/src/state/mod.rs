@@ -190,7 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let state = self.clone();
         tokio::spawn(async move {
             let mut if_revive = false;
-            match state.launch_tasks(schedulable_tasks).await {
+            match state.launch_tasks(schedulable_tasks, &sender).await {
                 Ok(unassigned_executor_slots) => {
                     if !unassigned_executor_slots.is_empty() {
                         if let Err(e) = state
@@ -222,33 +222,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     /// Remove an executor.
     /// 1. The executor related info will be removed from [`ExecutorManager`]
-    /// 2. All of affected running execution graph will be rolled backed
-    /// 3. All of the running tasks of the affected running stages will be cancelled
+    /// 2. A [`QueryStageSchedulerEvent::ExecutorLost`] is posted, which rolls
+    ///    back the affected running execution graphs, cancels their running
+    ///    tasks, and — when this was the last executor — arms the grace timer
+    ///    that fails the jobs left behind on an empty cluster.
+    ///
+    /// Every removal path must go through here, because step 1 also drops the
+    /// executor's heartbeat: once it is gone, nothing else can notice the
+    /// executor is missing and post the event later.
+    /// See <https://github.com/apache/datafusion-ballista/issues/2226>
     pub(crate) async fn remove_executor(
         &self,
         executor_id: &str,
         reason: Option<String>,
+        sender: &EventSender<QueryStageSchedulerEvent>,
     ) {
         if let Err(e) = self
             .executor_manager
-            .remove_executor(executor_id, reason)
+            .remove_executor(executor_id, reason.clone())
             .await
         {
             warn!("Fail to remove executor {executor_id}: {e}");
         }
 
-        match self.task_manager.executor_lost(executor_id).await {
-            Ok(tasks) => {
-                if !tasks.is_empty()
-                    && let Err(e) =
-                        self.executor_manager.cancel_running_tasks(tasks).await
-                {
-                    warn!("Fail to cancel running tasks due to {e:?}");
-                }
-            }
-            Err(e) => {
-                error!("TaskManager error to handle Executor {executor_id} lost: {e}");
-            }
+        if let Err(e) = sender
+            .post_event(QueryStageSchedulerEvent::ExecutorLost(
+                executor_id.to_owned(),
+                reason,
+            ))
+            .await
+        {
+            error!("Fail to post ExecutorLost for executor {executor_id}: {e:?}");
         }
     }
 
@@ -260,6 +264,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     async fn launch_tasks(
         &self,
         bound_tasks: Vec<BoundTask>,
+        sender: &EventSender<QueryStageSchedulerEvent>,
     ) -> Result<Vec<ExecutorSlot>> {
         // Put tasks to the same executor together
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
@@ -292,6 +297,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             let n_tasks: usize = tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
 
             let state = self.clone();
+            let sender = sender.clone();
             let join_handle = tokio::spawn(async move {
                 let success = match state
                     .executor_manager
@@ -309,7 +315,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
                             // It's OK to remove executor aggressively,
                             // since if the executor is in healthy state, it will be registered again.
-                            state.remove_executor(&executor_id, Some(err_msg)).await;
+                            state
+                                .remove_executor(&executor_id, Some(err_msg), &sender)
+                                .await;
 
                             false
                         } else {
