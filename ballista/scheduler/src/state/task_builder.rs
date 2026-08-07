@@ -176,7 +176,7 @@ fn union_child_partitions(
 ///   `UnspecifiedDistribution`, because they consume every input partition
 ///   without constraining how the input is partitioned. Keep the explicit
 ///   case.
-/// - Anything else: set per child from `required_input_distribution()`. An
+/// - Anything else: set per child from `input_distribution_requirements()`. An
 ///   input declared `SinglePartition` is one the operator consumes whole —
 ///   a join or cross-join build side, for instance — so restricting it to
 ///   the task's slice would hand each sibling task a different fraction of
@@ -202,8 +202,9 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
     if plan.is::<CoalescePartitionsExec>() || plan.is::<SortPreservingMergeExec>() {
         return vec![true; children.len()];
     }
-    let required = plan.required_input_distribution();
-    if required.len() != children.len() {
+    let required = plan.input_distribution_requirements();
+    let per_child = required.per_child_distributions();
+    if per_child.len() != children.len() {
         // The trait contract is one entry per child, so a mismatch means a
         // broken operator. Stay partition-aligned rather than reading whole:
         // `true` here is not the safe direction, it makes every task of the
@@ -212,8 +213,7 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
         // cases above got before this rule generalized.
         return vec![false; children.len()];
     }
-    required
-        .into_iter()
+    per_child
         .map(|d| matches!(d, Distribution::SinglePartition))
         .collect()
 }
@@ -275,6 +275,13 @@ fn select_output_partitions(
             Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
             Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(kept.len()),
             Partitioning::UnknownPartitioning(_) => {
+                Partitioning::UnknownPartitioning(kept.len())
+            }
+            Partitioning::Range(_) => {
+                // Range-partitioned shuffle output is not yet produced by
+                // Ballista's writers, so we should never encounter it on the
+                // reader side. Fall back to Unknown to keep the type
+                // exhaustive without inventing new range boundaries.
                 Partitioning::UnknownPartitioning(kept.len())
             }
         };
@@ -630,7 +637,7 @@ mod tests {
         // Sanity: the operator really does declare its left input collected.
         assert!(
             matches!(
-                join.required_input_distribution().first(),
+                join.input_distribution_requirements().child_distribution(0),
                 Some(Distribution::SinglePartition)
             ),
             "CrossJoinExec must declare SinglePartition on its left input"

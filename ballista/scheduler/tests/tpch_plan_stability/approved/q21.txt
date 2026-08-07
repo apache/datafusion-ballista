@@ -68,8 +68,8 @@ SortShuffleWriterExec: partitioning=Hash([s_name@0], 16)
 
 === Stage 11 ===
 ShuffleWriterExec: partitioning: None
-  SortExec: TopK(fetch=100), expr=[numwait@1 DESC, s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
-    ProjectionExec: expr=[s_name@0 as s_name, count(Int64(1))@1 as numwait]
+  ProjectionExec: expr=[s_name@0 as s_name, count(Int64(1))@1 as numwait]
+    SortExec: TopK(fetch=100), expr=[count(Int64(1))@1 DESC, s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[s_name@0 as s_name], aggr=[count(Int64(1))]
         UnresolvedShuffleExec: stage=10, partitioning: Hash([s_name@0], 16)
 

@@ -374,7 +374,7 @@ mod tests {
 
         assert_plan!(result.as_ref(), @ r"
         AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
-          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)]
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)], null_aware
             StatisticsExec: col_count=1, row_count=Absent
             CoalescePartitionsExec
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
