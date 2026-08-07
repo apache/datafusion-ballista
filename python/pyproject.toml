@@ -41,7 +41,8 @@ classifiers = [
 ]
 dependencies = [
     "pyarrow>=23.0.1",
-    "datafusion==54",
+    # Temporary PR #1679 pin. Use its released version before publishing.
+    "datafusion @ git+https://github.com/apache/datafusion-python.git@f1526210338d75ef105246e5c948e0e4a4a0f5ce",
     "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]

@@ -56,7 +56,15 @@ message BallistaPhysicalPlanNode {
     UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
     OrderedRangeRepartitionExecNode ordered_range_repartition = 9;
     PerPartitionFilterExecNode per_partition_filter = 10;
+    DistributedQueryExecNode distributed_query = 11;
   }
+}
+
+message DistributedQueryExecNode {
+  string scheduler_url = 1;
+  repeated KeyValuePair settings = 2;
+  bytes logical_plan = 3;
+  string session_id = 4;
 }
 
 // Value-range router over N locally-sorted overlapping input partitions.

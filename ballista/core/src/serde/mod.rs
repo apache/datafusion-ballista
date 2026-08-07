@@ -18,15 +18,20 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
-use crate::extension::BallistaCacheNode;
+use crate::extension::{BallistaCacheNode, SessionConfigExt, SessionConfigHelperExt};
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::execution::config::SessionConfig;
 use datafusion::logical_expr::Extension;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion_proto::bytes::{
+    logical_plan_from_bytes_with_extension_codec,
+    logical_plan_to_bytes_with_extension_codec,
+};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
@@ -56,10 +61,10 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PerPartitionFilterExec, RuntimeStatsExec, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, DistributedQueryExec,
+    OrderedRangeRepartitionExec, PartitionGroup, PerPartitionFilterExec,
+    RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+    UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -192,6 +197,21 @@ pub struct BallistaLogicalExtensionCodec {
 }
 
 impl BallistaLogicalExtensionCodec {
+    /// Creates a Ballista logical codec that delegates non-Ballista objects to
+    /// `default_codec` while retaining Ballista's file-format codecs.
+    pub fn new(default_codec: Arc<dyn LogicalExtensionCodec>) -> Self {
+        Self {
+            default_codec,
+            file_format_codecs: vec![
+                Arc::new(ParquetLogicalExtensionCodec {}),
+                Arc::new(CsvLogicalExtensionCodec {}),
+                Arc::new(JsonLogicalExtensionCodec {}),
+                Arc::new(ArrowLogicalExtensionCodec {}),
+                Arc::new(AvroLogicalExtensionCodec {}),
+            ],
+        }
+    }
+
     /// looks for a codec which can operate on this node
     /// returns a position of codec in the list and result.
     ///
@@ -220,18 +240,7 @@ impl BallistaLogicalExtensionCodec {
 
 impl Default for BallistaLogicalExtensionCodec {
     fn default() -> Self {
-        Self {
-            default_codec: Arc::new(DefaultLogicalExtensionCodec {}),
-            // Position in this list is important as it will be used for decoding.
-            // If new codec is added it should go to last position.
-            file_format_codecs: vec![
-                Arc::new(ParquetLogicalExtensionCodec {}),
-                Arc::new(CsvLogicalExtensionCodec {}),
-                Arc::new(JsonLogicalExtensionCodec {}),
-                Arc::new(ArrowLogicalExtensionCodec {}),
-                Arc::new(AvroLogicalExtensionCodec {}),
-            ],
-        }
+        Self::new(Arc::new(DefaultLogicalExtensionCodec {}))
     }
 }
 
@@ -349,19 +358,95 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
             .encode(buf)
             .map_err(|e| DataFusionError::Internal(e.to_string()))
     }
+
+    fn try_decode_udf(
+        &self,
+        name: &str,
+        buf: &[u8],
+    ) -> Result<Arc<datafusion::logical_expr::ScalarUDF>> {
+        self.default_codec.try_decode_udf(name, buf)
+    }
+
+    fn try_encode_udf(
+        &self,
+        node: &datafusion::logical_expr::ScalarUDF,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.default_codec.try_encode_udf(node, buf)
+    }
+
+    fn try_decode_higher_order_function(
+        &self,
+        name: &str,
+        buf: &[u8],
+    ) -> Result<Arc<datafusion::logical_expr::HigherOrderUDF>> {
+        self.default_codec
+            .try_decode_higher_order_function(name, buf)
+    }
+
+    fn try_encode_higher_order_function(
+        &self,
+        node: &datafusion::logical_expr::HigherOrderUDF,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.default_codec
+            .try_encode_higher_order_function(node, buf)
+    }
+
+    fn try_decode_udaf(
+        &self,
+        name: &str,
+        buf: &[u8],
+    ) -> Result<Arc<datafusion::logical_expr::AggregateUDF>> {
+        self.default_codec.try_decode_udaf(name, buf)
+    }
+
+    fn try_encode_udaf(
+        &self,
+        node: &datafusion::logical_expr::AggregateUDF,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.default_codec.try_encode_udaf(node, buf)
+    }
+
+    fn try_decode_udwf(
+        &self,
+        name: &str,
+        buf: &[u8],
+    ) -> Result<Arc<datafusion::logical_expr::WindowUDF>> {
+        self.default_codec.try_decode_udwf(name, buf)
+    }
+
+    fn try_encode_udwf(
+        &self,
+        node: &datafusion::logical_expr::WindowUDF,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.default_codec.try_encode_udwf(node, buf)
+    }
 }
 
 /// Physical extension codec for Ballista-specific execution plan nodes.
 #[derive(Debug)]
 pub struct BallistaPhysicalExtensionCodec {
     default_codec: Arc<dyn PhysicalExtensionCodec>,
+    logical_codec: Arc<dyn LogicalExtensionCodec>,
+}
+
+impl BallistaPhysicalExtensionCodec {
+    /// Creates a physical codec that uses `logical_codec` for logical plans
+    /// embedded in client-side Ballista execution nodes.
+    pub fn new(logical_codec: Arc<dyn LogicalExtensionCodec>) -> Self {
+        Self {
+            default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
+            logical_codec,
+        }
+    }
 }
 
 impl Default for BallistaPhysicalExtensionCodec {
     fn default() -> Self {
-        Self {
-            default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
-        }
+        Self::new(Arc::new(BallistaLogicalExtensionCodec::default()))
     }
 }
 
@@ -663,6 +748,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     predicates,
                 )?))
             }
+            PhysicalPlanType::DistributedQuery(distributed_query) => {
+                if !inputs.is_empty() {
+                    return Err(DataFusionError::Internal(format!(
+                        "DistributedQueryExec expects no inputs, got {}",
+                        inputs.len()
+                    )));
+                }
+                let plan = logical_plan_from_bytes_with_extension_codec(
+                    &distributed_query.logical_plan,
+                    ctx,
+                    self.logical_codec.as_ref(),
+                )?;
+                let config = SessionConfig::new_with_ballista()
+                    .update_from_key_value_pair(&distributed_query.settings)
+                    .ballista_config();
+                Ok(Arc::new(
+                    DistributedQueryExec::<LogicalPlanNode>::with_extension(
+                        distributed_query.scheduler_url.clone(),
+                        config,
+                        plan,
+                        Arc::clone(&self.logical_codec),
+                        distributed_query.session_id.clone(),
+                    ),
+                ))
+            }
         }
     }
 
@@ -924,6 +1034,38 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 ))
             })?;
             Ok(())
+        } else if let Some(exec) =
+            node.downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+        {
+            let logical_plan = logical_plan_to_bytes_with_extension_codec(
+                exec.logical_plan(),
+                self.logical_codec.as_ref(),
+            )?;
+            let settings = exec
+                .config()
+                .settings()
+                .iter()
+                .map(|(key, value)| protobuf::KeyValuePair {
+                    key: key.clone(),
+                    value: Some(value.clone()),
+                })
+                .collect();
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::DistributedQuery(
+                    protobuf::DistributedQueryExecNode {
+                        scheduler_url: exec.scheduler_url().to_string(),
+                        settings,
+                        logical_plan: logical_plan.to_vec(),
+                        session_id: exec.session_id().to_string(),
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode distributed query execution plan: {e:?}"
+                ))
+            })?;
+            Ok(())
         } else {
             Err(DataFusionError::Internal(format!(
                 "Unsupported plan node, name: [{}] ",
@@ -967,6 +1109,109 @@ mod test {
     };
     use datafusion_proto::{logical_plan::AsLogicalPlan, protobuf::LogicalPlanNode};
     use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct MarkerLogicalCodec;
+
+    impl LogicalExtensionCodec for MarkerLogicalCodec {
+        fn try_decode(
+            &self,
+            _buf: &[u8],
+            _inputs: &[LogicalPlan],
+            _ctx: &TaskContext,
+        ) -> Result<Extension> {
+            Err(DataFusionError::Plan("marker-plan-decode".to_string()))
+        }
+
+        fn try_encode(&self, _node: &Extension, _buf: &mut Vec<u8>) -> Result<()> {
+            Err(DataFusionError::Plan("marker-plan-encode".to_string()))
+        }
+
+        fn try_decode_table_provider(
+            &self,
+            _buf: &[u8],
+            _table_ref: &datafusion::common::TableReference,
+            _schema: SchemaRef,
+            _ctx: &TaskContext,
+        ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+            Err(DataFusionError::Plan("marker-table-decode".to_string()))
+        }
+
+        fn try_encode_table_provider(
+            &self,
+            _table_ref: &datafusion::common::TableReference,
+            _node: Arc<dyn datafusion::catalog::TableProvider>,
+            _buf: &mut Vec<u8>,
+        ) -> Result<()> {
+            Err(DataFusionError::Plan("marker-table-encode".to_string()))
+        }
+
+        fn try_decode_udf(
+            &self,
+            _name: &str,
+            _buf: &[u8],
+        ) -> Result<Arc<datafusion::logical_expr::ScalarUDF>> {
+            Err(DataFusionError::Plan("marker-scalar".to_string()))
+        }
+
+        fn try_decode_higher_order_function(
+            &self,
+            _name: &str,
+            _buf: &[u8],
+        ) -> Result<Arc<datafusion::logical_expr::HigherOrderUDF>> {
+            Err(DataFusionError::Plan("marker-higher-order".to_string()))
+        }
+
+        fn try_decode_udaf(
+            &self,
+            _name: &str,
+            _buf: &[u8],
+        ) -> Result<Arc<datafusion::logical_expr::AggregateUDF>> {
+            Err(DataFusionError::Plan("marker-aggregate".to_string()))
+        }
+
+        fn try_decode_udwf(
+            &self,
+            _name: &str,
+            _buf: &[u8],
+        ) -> Result<Arc<datafusion::logical_expr::WindowUDF>> {
+            Err(DataFusionError::Plan("marker-window".to_string()))
+        }
+    }
+
+    #[test]
+    fn logical_codec_delegates_function_decoding() {
+        let codec = BallistaLogicalExtensionCodec::new(Arc::new(MarkerLogicalCodec));
+
+        assert!(
+            codec
+                .try_decode_udf("udf", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("marker-scalar")
+        );
+        assert!(
+            codec
+                .try_decode_udaf("udaf", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("marker-aggregate")
+        );
+        assert!(
+            codec
+                .try_decode_udwf("udwf", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("marker-window")
+        );
+        assert!(
+            codec
+                .try_decode_higher_order_function("higher", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("marker-higher-order")
+        );
+    }
 
     #[tokio::test]
     async fn file_format_serialization_roundtrip() {
@@ -1090,6 +1335,44 @@ mod test {
             decoded.output_partitioning().partition_count(),
             4,
             "EmptyExec partition count must survive round-trip through datafusion-proto"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_distributed_query_exec_roundtrip() {
+        let logical_plan = LogicalPlan::EmptyRelation(EmptyRelation {
+            produce_one_row: true,
+            schema: Arc::new(DFSchema::empty()),
+        });
+        let config = SessionConfig::new_with_ballista()
+            .set_bool(crate::config::BALLISTA_CLIENT_PULL, true)
+            .ballista_config();
+        let original_exec = DistributedQueryExec::<LogicalPlanNode>::new(
+            "http://localhost:50050".to_string(),
+            config,
+            logical_plan.clone(),
+            "test-session".to_string(),
+        );
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let converter = DefaultPhysicalProtoConverter {};
+        let mut buf = Vec::new();
+        codec
+            .try_encode(Arc::new(original_exec), &mut buf, &converter)
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx, &converter).unwrap();
+        let decoded_exec = decoded_plan
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .expect("Expected DistributedQueryExec");
+
+        assert_eq!(decoded_exec.scheduler_url(), "http://localhost:50050");
+        assert_eq!(decoded_exec.session_id(), "test-session");
+        assert!(decoded_exec.config().client_pull());
+        assert_eq!(
+            decoded_exec.logical_plan().display_indent().to_string(),
+            logical_plan.display_indent().to_string()
         );
     }
 
