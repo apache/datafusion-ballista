@@ -555,6 +555,7 @@ struct ScatterMetrics {
 ///   2. **Send zero-copy Arrow slices** (`batch.slice(start, len)`) instead
 ///      of materialising via `take_arrays`. Turns per-batch scatter into a
 ///      few Arc bumps rather than N × K allocations under skew.
+#[allow(clippy::too_many_arguments)]
 async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,

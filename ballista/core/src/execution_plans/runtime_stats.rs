@@ -399,9 +399,6 @@ impl ExecutionPlan for RuntimeStatsExec {
             // Await the child first so upstream shuffle IO / parquet
             // reads aren't billed to our elapsed_compute.
             let next = state.input.next().await?;
-            // Clone the Time counter so the scoped timer doesn't hold a
-            // borrow across the mutable `state.ingest` call. `Time` is
-            // Arc-backed — cloning shares the counter, doesn't split it.
             let elapsed = state.baseline.elapsed_compute().clone();
             let timer = elapsed.timer();
             let forwarded = next.and_then(|batch| {
