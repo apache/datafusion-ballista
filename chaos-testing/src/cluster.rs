@@ -793,6 +793,11 @@ mod tests {
     async fn cluster_starts_with_the_requested_executors_registered() {
         let cluster = TestCluster::builder()
             .executors(2)
+            // This canary only checks that registration happened; it kills
+            // nothing, so the default short reap timeout buys it nothing and
+            // lets a CPU-starved executor be reaped mid-startup on a loaded CI
+            // runner before the snapshot below.
+            .executor_timeout_seconds(30)
             .start()
             .await
             .expect("cluster must start");
