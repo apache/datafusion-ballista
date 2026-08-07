@@ -20,8 +20,8 @@ mod common;
 mod supported {
 
     use crate::common::{
-        remote_context, remote_context_with_state, standalone_context,
-        standalone_context_with_state,
+        remote_context, remote_context_with_aqe, remote_context_with_state,
+        standalone_context, standalone_context_with_aqe, standalone_context_with_state,
     };
     use ballista_core::config::BallistaConfig;
 
@@ -71,6 +71,53 @@ mod supported {
             "| 31         | 2009-04-01T00:01:00 |",
             "+------------+---------------------+",
         ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    // An uncorrelated scalar subquery is executed first and its value inlined
+    // into the outer plan (rather than decorrelated to a join), so the outer
+    // query distributes without a `ScalarSubqueryExec`. Runs with the adaptive
+    // (AQE) planner both off (default) and on. See #1910.
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[case::standalone_aqe(standalone_context_with_aqe())]
+    #[case::remote_aqe(remote_context_with_aqe())]
+    #[tokio::test]
+    async fn should_execute_uncorrelated_scalar_subquery(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        // The optimizer is left free to plan a physical scalar subquery (this is
+        // the DataFusion default; #1909 disabled it as a workaround, and #1910
+        // reverted that). Set it explicitly so the test states what it covers.
+        ctx.sql(
+            "SET datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery = true",
+        )
+        .await?
+        .collect()
+        .await?;
+
+        // Exactly the row holding the maximum id matches the inlined subquery
+        // value, so the count is 1.
+        let result = ctx
+            .sql("select count(*) as cnt from test where id = (select max(id) from test)")
+            .await?
+            .collect()
+            .await?;
+        let expected = ["+-----+", "| cnt |", "+-----+", "| 1   |", "+-----+"];
 
         assert_batches_eq!(expected, &result);
 
