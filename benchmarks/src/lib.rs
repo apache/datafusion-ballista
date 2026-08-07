@@ -26,7 +26,9 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Maximum relative-or-absolute difference tolerated between floating-point
 /// cells. Distributed (Ballista) and single-process (DataFusion) execution
@@ -241,20 +243,95 @@ pub async fn execute_query_capturing_answer(
     Ok(answer)
 }
 
+/// Parse a `--empty-tables` argument (comma-separated table names) against a
+/// benchmark's table list. Returns the validated names, deduplicated in first-
+/// seen order. Unknown names are an error rather than being ignored, since a
+/// typo would otherwise silently produce a full-data run.
+pub fn parse_empty_tables(spec: &str, valid: &[&str]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = vec![];
+    for name in spec.split(',') {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !valid.contains(&name) {
+            return Err(DataFusionError::Plan(format!(
+                "--empty-tables: unknown table '{name}'"
+            )));
+        }
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(DataFusionError::Plan(
+            "--empty-tables: no table names given".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Write a zero-row Parquet mirror for each named table, inferring the schema
+/// from the real Parquet data under `data_path`. Returns
+/// `table name -> mirror path` overrides for table registration, so the
+/// Ballista and oracle contexts can register the same provably-empty tables
+/// and `--verify` remains a valid comparison.
+pub async fn prepare_empty_tables(
+    data_path: &str,
+    tables: &[String],
+    out_dir: &Path,
+) -> Result<HashMap<String, String>> {
+    use datafusion::parquet::arrow::ArrowWriter;
+
+    std::fs::create_dir_all(out_dir)?;
+    let schema_ctx = SessionContext::new();
+    let mut overrides = HashMap::new();
+    for table in tables {
+        let real_path = find_path(data_path, table, "parquet")?;
+        let df = schema_ctx
+            .read_parquet(&real_path, ParquetReadOptions::default())
+            .await?;
+        let schema = Arc::new(df.schema().as_arrow().clone());
+        let dest = out_dir.join(format!("{table}.parquet"));
+        let file = std::fs::File::create(&dest)?;
+        let writer = ArrowWriter::try_new(file, schema, None)
+            .map_err(|e| DataFusionError::Execution(format!("{e}")))?;
+        writer
+            .close()
+            .map_err(|e| DataFusionError::Execution(format!("{e}")))?;
+        overrides.insert(table.clone(), dest.to_string_lossy().into_owned());
+    }
+    Ok(overrides)
+}
+
 /// Register each named table as a Parquet source under `path`, inferring the
 /// schema from the files. Works for both a single `<table>.parquet` file and a
-/// partitioned `<table>/` directory (see `find_path`).
+/// partitioned `<table>/` directory (see `find_path`). Tables present in
+/// `overrides` are registered from the override path instead (used by
+/// `--empty-tables` to substitute zero-row mirrors).
 pub async fn register_parquet_tables(
     ctx: &SessionContext,
     tables: &[&str],
     path: &str,
+    overrides: &HashMap<String, String>,
     debug: bool,
 ) -> Result<()> {
     for &table in tables {
-        let table_path = find_path(path, table, "parquet")?;
-        if debug {
-            println!("Registering table '{table}' from Parquet at {table_path}");
-        }
+        let table_path = match overrides.get(table) {
+            Some(p) => {
+                if debug {
+                    println!("Registering table '{table}' as EMPTY from {p}");
+                }
+                p.clone()
+            }
+            None => {
+                let p = find_path(path, table, "parquet")?;
+                if debug {
+                    println!("Registering table '{table}' from Parquet at {p}");
+                }
+                p
+            }
+        };
         ctx.register_parquet(table, &table_path, ParquetReadOptions::default())
             .await
             .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
@@ -364,5 +441,61 @@ mod tests {
         )
         .unwrap();
         assert!(compare_results(&[a], &[b]).is_ok());
+    }
+
+    #[test]
+    fn parse_empty_tables_validates_and_dedupes() {
+        let valid = &["lineitem", "orders", "nation"];
+        assert_eq!(
+            parse_empty_tables("lineitem, orders,lineitem", valid).unwrap(),
+            vec!["lineitem".to_string(), "orders".to_string()]
+        );
+        let err = parse_empty_tables("linetem", valid)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown table 'linetem'"), "{err}");
+        assert!(parse_empty_tables("", valid).is_err());
+        assert!(parse_empty_tables(" , ", valid).is_err());
+    }
+
+    #[tokio::test]
+    async fn prepare_empty_tables_writes_zero_row_mirror() {
+        use datafusion::parquet::arrow::ArrowWriter;
+        use datafusion::prelude::SessionContext;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // One-row "t1" table as the real data.
+        let batch = i64_batch(vec![42]);
+        let file = std::fs::File::create(data_dir.join("t1.parquet")).unwrap();
+        let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let out_dir = tmp.path().join("empty");
+        let overrides = prepare_empty_tables(
+            data_dir.to_str().unwrap(),
+            &["t1".to_string()],
+            &out_dir,
+        )
+        .await
+        .unwrap();
+
+        // The mirror must be readable, zero-row, and schema-identical.
+        let ctx = SessionContext::new();
+        let df = ctx
+            .read_parquet(overrides["t1"].clone(), ParquetReadOptions::default())
+            .await
+            .unwrap();
+        let schema = df.schema().as_arrow().clone();
+        let batches = df.collect().await.unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 0);
+        assert_eq!(
+            comparable_schema(&schema),
+            comparable_schema(&batch.schema())
+        );
     }
 }

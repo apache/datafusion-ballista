@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: TPC-H SF10
+name: TPC-H
 
 permissions:
   contents: read
@@ -52,23 +52,61 @@ on:
 
 jobs:
   tpch-sf10:
-    name: TPC-H SF10 (${{ matrix.label }})
+    name: TPC-H (${{ matrix.label }})
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
+    # Cap the job well under the 6-hour default so a hung query fails fast
+    # and frees the runner rather than sitting for hours with no useful
+    # signal.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - label: "AQE off"
+          - label: "SF10, AQE off"
             planner_args: ""
             slug: "aqe-off"
-          - label: "AQE on"
+            scale_factor: "10"
+            partitions: "16"
+            empty_rotation: false
+          - label: "SF10, AQE on"
             planner_args: "-c ballista.planner.adaptive.enabled=true"
             slug: "aqe-on"
-          - label: "AQE on, multi-partition tasks"
+            scale_factor: "10"
+            partitions: "16"
+            empty_rotation: false
+          - label: "SF10, AQE on, multi-partition tasks"
             planner_args: "-c ballista.planner.adaptive.enabled=true -c ballista.scheduler.max_partitions_per_task=0"
             slug: "aqe-on-mpt"
+            scale_factor: "10"
+            partitions: "16"
+            empty_rotation: false
+          # Low-partition legs run at SF1 to keep CI runtime bounded; low
+          # partition counts are what triggered the union-restriction and
+          # single-task-path bug class (#2186).
+          - label: "SF1, AQE on, 1 partition"
+            planner_args: "-c ballista.planner.adaptive.enabled=true"
+            slug: "aqe-on-sf1-p1"
+            scale_factor: "1"
+            partitions: "1"
+            empty_rotation: false
+          - label: "SF1, AQE on, 2 partitions"
+            planner_args: "-c ballista.planner.adaptive.enabled=true"
+            slug: "aqe-on-sf1-p2"
+            scale_factor: "1"
+            partitions: "2"
+            empty_rotation: false
+          # Empty-stage leg: a rotating set of tables is registered zero-row,
+          # forcing empty intermediate stages through PropagateEmptyExecRule
+          # (the #2185/#2194 bug class). Rotation is keyed on day-of-week in
+          # the run step below.
+          - label: "SF1, AQE on, empty tables"
+            planner_args: "-c ballista.planner.adaptive.enabled=true"
+            slug: "aqe-on-sf1-empty"
+            scale_factor: "1"
+            partitions: "16"
+            empty_rotation: true
     steps:
       - name: Install dependencies
         run: |
@@ -88,7 +126,7 @@ jobs:
         with:
           # Share the build cache across all matrix legs — the compiled
           # binaries are identical; only the per-suite CLI args differ.
-          shared-key: tpch-sf10
+          shared-key: tpch
 
       - name: Build Ballista binaries
         run: |
@@ -102,16 +140,19 @@ jobs:
         with:
           tool: tpchgen-cli@2.0.2
 
-      - name: Generate TPC-H SF10 data
+      - name: Generate TPC-H data
         run: |
           mkdir -p "$RUNNER_TEMP/tpch-data"
           tpchgen-cli \
-            --scale-factor 10 \
+            --scale-factor ${{ matrix.scale_factor }} \
             --parts 16 \
             --format=parquet \
             --output-dir "$RUNNER_TEMP/tpch-data"
 
       - name: Run TPC-H queries against Ballista cluster
+        # Primary timeout, on the step rather than the job, so that a hang
+        # still runs the log-upload step below.
+        timeout-minutes: 45
         env:
           DATA_DIR: ${{ runner.temp }}/tpch-data
           WORK_DIR: ${{ runner.temp }}/work
@@ -168,26 +209,47 @@ jobs:
           done
           nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
 
+          # Empty-tables rotation: keyed on day-of-week so different
+          # query/empty-table combinations get coverage over time while any
+          # single run stays cheap. Deterministic within a day.
+          EMPTY_ARGS=""
+          if [ "${{ matrix.empty_rotation }}" = "true" ]; then
+            case $(( $(date +%u) % 3 )) in
+              0) EMPTY_TABLES="lineitem" ;;
+              1) EMPTY_TABLES="orders" ;;
+              2) EMPTY_TABLES="supplier,nation" ;;
+            esac
+            echo "Empty tables for this run: $EMPTY_TABLES"
+            EMPTY_ARGS="--empty-tables $EMPTY_TABLES"
+          fi
+
           # This matrix leg runs one planner configuration against the whole
-          # SF10 dataset. The other legs run in parallel jobs.
+          # generated dataset. The other legs run in parallel jobs.
           # q16 omitted: still unsupported (matches benchmarks/run.sh).
           for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 22; do
             echo "::group::[${{ matrix.label }}] Query $q"
+            # shellcheck disable=SC2086 # EMPTY_ARGS is intentionally unquoted:
+            # it expands to zero words or a flag plus value, never a single
+            # word containing spaces.
             ./target/tpch-ci/tpch benchmark ballista \
               --host 127.0.0.1 --port 50050 \
               --query "$q" \
               --path "$DATA_DIR" \
               --format parquet \
-              --partitions 16 \
+              --partitions ${{ matrix.partitions }} \
               --iterations 1 \
               --verify \
+              $EMPTY_ARGS \
               -c datafusion.optimizer.prefer_hash_join=false \
               ${{ matrix.planner_args }}
             echo "::endgroup::"
           done
 
       - name: Upload cluster logs on failure
-        if: failure()
+        # `!success()` rather than `failure()` so a timed-out or cancelled
+        # run still surfaces its scheduler/executor logs — the hang case is
+        # exactly when they are most worth having.
+        if: ${{ !success() }}
         uses: actions/upload-artifact@v7
         with:
           name: tpch-sf10-cluster-logs-${{ matrix.slug }}

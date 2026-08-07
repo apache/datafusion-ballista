@@ -21,6 +21,7 @@ use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
 use ballista_benchmarks::{
     answer_statement_index, compare_results, execute_query_capturing_answer, find_path,
+    parse_empty_tables, prepare_empty_tables,
 };
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
@@ -59,6 +60,7 @@ use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::ops::Div;
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::Write,
     iter::Iterator,
@@ -142,6 +144,13 @@ struct BallistaBenchmarkOpt {
     /// same data.
     #[structopt(long = "verify")]
     verify: bool,
+
+    /// Comma-separated table names to register as zero-row tables (schema
+    /// preserved) in both the Ballista and oracle contexts, forcing empty
+    /// intermediate stages through the distributed planner. Requires
+    /// `--format parquet`; incompatible with `--expected`.
+    #[structopt(long = "empty-tables")]
+    empty_tables: Option<String>,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -366,6 +375,29 @@ fn select_queries(query: Option<usize>, skip: &[usize]) -> Result<Vec<usize>> {
     Ok(selected)
 }
 
+/// Parse and validate `--empty-tables`. The mirrors are Parquet files and the
+/// schema is inferred from Parquet data, so the flag requires
+/// `--format parquet`; canned expected results assume full data, so it
+/// conflicts with `--expected`. Returns an empty list when the flag is unset.
+fn validate_empty_tables(opt: &BallistaBenchmarkOpt) -> Result<Vec<String>> {
+    let Some(spec) = &opt.empty_tables else {
+        return Ok(vec![]);
+    };
+    if opt.file_format != "parquet" {
+        return Err(DataFusionError::Plan(
+            "--empty-tables requires --format parquet".to_string(),
+        ));
+    }
+    if opt.expected_results.is_some() {
+        return Err(DataFusionError::Plan(
+            "--empty-tables cannot be combined with --expected \
+             (canned answers assume full data)"
+                .to_string(),
+        ));
+    }
+    parse_empty_tables(spec, TABLES)
+}
+
 #[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
     println!("Running benchmarks with the following options: {opt:?}");
@@ -406,6 +438,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
             opt.path.to_str().unwrap(),
             opt.file_format.as_str(),
             opt.partitions,
+            &HashMap::new(),
         )
         .await?;
     }
@@ -549,6 +582,17 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     // Determine which queries to run
     let query_numbers = select_queries(opt.query, &opt.skip)?;
 
+    // Zero-row mirrors are built once and shared by every query's Ballista
+    // session and by the oracle, so both sides see identical empty tables.
+    let empty_names = validate_empty_tables(&opt)?;
+    let empty_overrides = if empty_names.is_empty() {
+        HashMap::new()
+    } else {
+        let dir = std::env::temp_dir()
+            .join(format!("tpch-empty-tables-{}", std::process::id()));
+        prepare_empty_tables(&opt.path, &empty_names, &dir).await?
+    };
+
     let oracle_ctx = if opt.verify {
         let cfg = SessionConfig::new()
             .with_target_partitions(opt.partitions)
@@ -559,6 +603,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             opt.path.as_str(),
             opt.file_format.as_str(),
             opt.partitions,
+            &empty_overrides,
         )
         .await?;
         Some(ctx)
@@ -581,6 +626,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             &address,
             &opt,
             oracle_ctx.as_ref(),
+            &empty_overrides,
             query,
             &sqls,
             &mut query_run,
@@ -624,6 +670,7 @@ async fn run_ballista_query(
     address: &str,
     opt: &BallistaBenchmarkOpt,
     oracle_ctx: Option<&SessionContext>,
+    overrides: &HashMap<String, String>,
     query: usize,
     sqls: &[String],
     query_run: &mut QueryRun,
@@ -650,7 +697,14 @@ async fn run_ballista_query(
 
     let state = session_state_with_s3_support(config)?;
     let ctx = SessionContext::remote_with_state(address, state).await?;
-    register_tables(opt.path.as_str(), opt.file_format.as_str(), &ctx, opt.debug).await?;
+    register_tables(
+        opt.path.as_str(),
+        opt.file_format.as_str(),
+        &ctx,
+        overrides,
+        opt.debug,
+    )
+    .await?;
 
     let answer_idx = answer_statement_index(sqls);
     let mut batches = vec![];
@@ -879,7 +933,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
     let sql_path = opt.sql_path.to_str().unwrap().to_string();
 
     for ctx in &clients {
-        register_tables(path, file_format, ctx, opt.debug).await?;
+        register_tables(path, file_format, ctx, &HashMap::new(), opt.debug).await?;
     }
 
     let request_per_thread = request_amount.div(concurrency);
@@ -964,8 +1018,15 @@ async fn register_datafusion_tables(
     path: &str,
     file_format: &str,
     partitions: usize,
+    overrides: &HashMap<String, String>,
 ) -> Result<()> {
     for table in TABLES {
+        if let Some(p) = overrides.get(*table) {
+            ctx.register_parquet(*table, p, ParquetReadOptions::default())
+                .await
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
+            continue;
+        }
         let table_provider = {
             let mut session_state = ctx.state();
             get_table(&mut session_state, path, table, file_format, partitions).await?
@@ -979,9 +1040,19 @@ async fn register_tables(
     path: &str,
     file_format: &str,
     ctx: &SessionContext,
+    overrides: &HashMap<String, String>,
     debug: bool,
 ) -> Result<()> {
     for &table in TABLES {
+        if let Some(p) = overrides.get(table) {
+            if debug {
+                println!("Registering table '{table}' as EMPTY from {p}");
+            }
+            ctx.register_parquet(table, p, ParquetReadOptions::default())
+                .await
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
+            continue;
+        }
         match file_format {
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
@@ -1729,6 +1800,57 @@ mod tests {
     #[test]
     fn select_queries_rejects_skipping_everything() {
         assert!(select_queries(None, &(1..=22).collect::<Vec<_>>()).is_err());
+    }
+
+    #[test]
+    fn empty_tables_requires_parquet_format() {
+        let opt = BallistaBenchmarkOpt::from_iter([
+            "tpch",
+            "-p",
+            "/data",
+            "--format",
+            "csv",
+            "--empty-tables",
+            "lineitem",
+        ]);
+        let err = validate_empty_tables(&opt).unwrap_err().to_string();
+        assert!(err.contains("requires --format parquet"), "{err}");
+    }
+
+    #[test]
+    fn empty_tables_conflicts_with_expected_results() {
+        let opt = BallistaBenchmarkOpt::from_iter([
+            "tpch",
+            "-p",
+            "/data",
+            "--format",
+            "parquet",
+            "--empty-tables",
+            "lineitem",
+            "--expected",
+            "/answers",
+        ]);
+        let err = validate_empty_tables(&opt).unwrap_err().to_string();
+        assert!(err.contains("--expected"), "{err}");
+    }
+
+    #[test]
+    fn empty_tables_parses_valid_names() {
+        let opt = BallistaBenchmarkOpt::from_iter([
+            "tpch",
+            "-p",
+            "/data",
+            "--format",
+            "parquet",
+            "--empty-tables",
+            "supplier,nation",
+        ]);
+        assert_eq!(
+            validate_empty_tables(&opt).unwrap(),
+            vec!["supplier".to_string(), "nation".to_string()]
+        );
+        let none = BallistaBenchmarkOpt::from_iter(["tpch", "-p", "/data"]);
+        assert!(validate_empty_tables(&none).unwrap().is_empty());
     }
 
     fn run_with(queries: Vec<QueryRun>) -> BenchmarkRun {
