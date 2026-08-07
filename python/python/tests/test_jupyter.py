@@ -222,9 +222,10 @@ class TestBallistaMagicsConnected:
         assert result is not None
 
     def test_sql_magic_cell_returns_dataframe(self, connected_magics):
-        """Test %%sql cell magic returns a DistributedDataFrame."""
+        """%%sql cell magic returns the DataFrame for IPython to render."""
         result = connected_magics.sql("", cell="SELECT 1 as value")
         assert result is not None
+        assert connected_magics._last_result is not None
 
     def test_sql_magic_cell_stores_in_shell_namespace(self, connected_magics):
         """Test %%sql stores result in shell namespace when var name given."""
@@ -240,6 +241,56 @@ class TestBallistaMagicsConnected:
         """Test %sql with empty line returns None."""
         result = connected_magics.sql("")
         assert result is None
+
+    def test_sql_cell_magic_limit_bounds_the_query(self, connected_magics):
+        """--limit N pushes LIMIT N into the query, bounding the stored result."""
+        mock_shell = MagicMock()
+        mock_shell.user_ns = {}
+        connected_magics.shell = mock_shell
+
+        five_rows = "SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(x)"
+
+        # --limit 2 on a 5-row source: only 2 rows are computed and stored.
+        connected_magics.sql("--limit 2 my_var", cell=five_rows)
+        stored = mock_shell.user_ns["my_var"]
+        assert sum(batch.num_rows for batch in stored.collect()) == 2
+
+        # Without --limit the full result is stored (all 5 rows).
+        connected_magics.sql("full_var", cell=five_rows)
+        full = mock_shell.user_ns["full_var"]
+        assert sum(batch.num_rows for batch in full.collect()) == 5
+
+    def test_sql_cell_magic_bare_limit_uses_default(self):
+        """A bare --limit uses DEFAULT_LIMIT; a non-integer next token is the var."""
+        from ballista.jupyter import DEFAULT_LIMIT
+
+        parse = BallistaMagics._parse_cell_magic_args
+        # bare --limit, next token is the variable name
+        assert parse("--limit my_var") == ("my_var", False, DEFAULT_LIMIT)
+        # bare --limit, no variable
+        assert parse("--limit") == (None, False, DEFAULT_LIMIT)
+        # explicit number overrides the default
+        assert parse("--limit 3 v") == ("v", False, 3)
+        # no --limit at all -> no limit (all rows)
+        assert parse("v") == ("v", False, None)
+
+    def test_sql_cell_magic_no_display(self, connected_magics):
+        """--no-display stores the result but returns None (renders nothing)."""
+        mock_shell = MagicMock()
+        mock_shell.user_ns = {}
+        connected_magics.shell = mock_shell
+
+        result = connected_magics.sql(
+            "--no-display other_var", cell="SELECT 1 as value"
+        )
+        assert result is None
+        assert mock_shell.user_ns["other_var"] is not None
+
+    def test_sql_cell_magic_rejects_non_positive_limit(self, connected_magics):
+        """An explicit non-positive --limit returns the error string."""
+        result = connected_magics.sql("--limit 0", cell="SELECT 1")
+        assert isinstance(result, str)
+        assert "--limit" in result
 
     def test_schema_missing_table_name_returns_usage(self, connected_magics):
         """Test _schema with no table name returns usage string."""
@@ -273,6 +324,34 @@ class TestBallistaMagicsConnected:
         """Test %register with missing file path returns a message."""
         result = connected_magics.register("parquet my_table")
         assert result is not None
+
+
+class TestSqlCellMagicArgParsing:
+    """Cluster-free tests for %%sql argument parsing."""
+
+    def test_parse_cell_magic_args(self, magics):
+        from ballista.jupyter import DEFAULT_LIMIT
+
+        # (line, expected (var_name, no_display, limit))
+        valid_cases = [
+            ("", (None, False, None)),
+            ("my_var", ("my_var", False, None)),
+            ("--no-display", (None, True, None)),
+            ("--limit 10 my_var", ("my_var", False, 10)),
+            ("my_var --no-display --limit 3", ("my_var", True, 3)),
+            # bare --limit uses the default...
+            ("--limit", (None, False, DEFAULT_LIMIT)),
+            # ...and a non-integer next token is the variable name, not the count
+            ("--limit my_var", ("my_var", False, DEFAULT_LIMIT)),
+            ("--limit abc", ("abc", False, DEFAULT_LIMIT)),
+        ]
+        for line, expected in valid_cases:
+            assert magics._parse_cell_magic_args(line) == expected, line
+
+        # Only an explicit non-positive --limit value is rejected.
+        for line in ("--limit 0", "--limit -1"):
+            with pytest.raises(ValueError):
+                magics._parse_cell_magic_args(line)
 
 
 class TestIPythonExtension:
