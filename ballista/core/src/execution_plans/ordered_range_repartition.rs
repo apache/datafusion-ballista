@@ -87,7 +87,9 @@ use datafusion::physical_expr::{
 use datafusion::physical_plan::execution_plan::{
     CardinalityEffect, EvaluationType, SchedulingType,
 };
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+};
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -330,6 +332,10 @@ impl ExecutionPlan for OrderedRangeRepartitionExec {
     }
 
     /// Every input row is emitted exactly once. Overrides default `Unknown`.
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     fn cardinality_effect(&self) -> CardinalityEffect {
         CardinalityEffect::Equal
     }
@@ -431,6 +437,22 @@ impl OrderedRangeRepartitionExec {
             let scatter_senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> =
                 senders.into();
             let guard_senders = scatter_senders.clone();
+            let scatter_metrics = ScatterMetrics {
+                elapsed_compute: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_elapsed_compute", input_partition),
+                split_time: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_split_time", input_partition),
+                send_time: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_send_time", input_partition),
+                discover_cuts_time: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_discover_cuts_time", input_partition),
+                input_batches: MetricBuilder::new(&self.metrics)
+                    .counter("scatter_input_batches", input_partition),
+                input_rows: MetricBuilder::new(&self.metrics)
+                    .counter("scatter_input_rows", input_partition),
+                scattered_batches: MetricBuilder::new(&self.metrics)
+                    .counter("scatter_output_sub_batches", input_partition),
+            };
             // `guarded_scatter` wraps the body in `catch_unwind`: a panic
             // inside `scatter_input_partition` (or anything it calls) becomes
             // a broadcast error rather than a silent sender-drop that
@@ -444,6 +466,7 @@ impl OrderedRangeRepartitionExec {
                     scatter_senders,
                     cuts_cell,
                     output_partitions,
+                    scatter_metrics,
                 ),
                 guard_senders,
             )));
@@ -488,6 +511,37 @@ impl OrderedRangeRepartitionExec {
     }
 }
 
+/// Per-input-partition scatter counters. Labeled with `input_partition`;
+/// `aggregate_by_name` in the display collapses across all input
+/// partitions for a task-wide total.
+///
+/// Merge-side metrics (per output partition) are recorded separately
+/// by `StreamingMerge` via `BaselineMetrics` in `initialize_state`.
+struct ScatterMetrics {
+    /// Total scatter compute — timer scoped post child-poll so upstream
+    /// stream time (sort, parquet scan) isn't billed here.
+    elapsed_compute: Time,
+    /// `split_batch_by_range` cost isolated from the surrounding
+    /// send/backpressure work. Growing much faster than input_rows
+    /// suggests routing-expression evaluation is the hot loop.
+    split_time: Time,
+    /// `senders[output].send().await` cost. Includes backpressure
+    /// waits — high values mean downstream merge is slow to drain,
+    /// which starves the scatter path.
+    send_time: Time,
+    /// One-shot cost of the first-batch cut discovery walk. Reads the
+    /// upstream `RuntimeStatsExec` and computes K-1 quantiles.
+    discover_cuts_time: Time,
+    /// Batches read from the child. Zero-row batches short-circuit
+    /// so this counts only work-carrying batches.
+    input_batches: Count,
+    /// Rows read from the child.
+    input_rows: Count,
+    /// Sub-batches sent downstream. Under skew this can be much larger
+    /// than input_batches (each input batch splits into up to K subs).
+    scattered_batches: Count,
+}
+
 /// One background task per input partition. Reads the sorted input; on the
 /// first batch, the shared `OnceLock` learns the value cuts. Each batch is
 /// then dispatched via `split_batch_by_range` to K per-input senders (one
@@ -501,6 +555,7 @@ impl OrderedRangeRepartitionExec {
 ///   2. **Send zero-copy Arrow slices** (`batch.slice(start, len)`) instead
 ///      of materialising via `take_arrays`. Turns per-batch scatter into a
 ///      few Arc bumps rather than N × K allocations under skew.
+#[allow(clippy::too_many_arguments)]
 async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,
@@ -509,6 +564,7 @@ async fn scatter_input_partition(
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
     cuts_cell: Arc<OnceLock<Vec<f64>>>,
     output_partitions: usize,
+    metrics: ScatterMetrics,
 ) -> Result<()> {
     let mut stream = child.execute(input_partition, ctx)?;
     while let Some(batch_result) = stream.next().await {
@@ -517,9 +573,15 @@ async fn scatter_input_partition(
         if senders.iter().all(|s| s.is_closed()) {
             return Ok(());
         }
+        let compute_timer = metrics.elapsed_compute.timer();
         let batch = batch_result?;
+        metrics.input_batches.add(1);
+        metrics.input_rows.add(batch.num_rows());
         let cuts = cuts_cell.get_or_init(|| {
-            discover_cuts(&child, routing_expr.as_ref(), output_partitions)
+            let discover_timer = metrics.discover_cuts_time.timer();
+            let cuts = discover_cuts(&child, routing_expr.as_ref(), output_partitions);
+            discover_timer.done();
+            cuts
         });
         // TODO(perf): input is sorted — this per-row `split_batch_by_range`
         // is legal but wasteful. Two follow-ups worth measuring:
@@ -528,16 +590,24 @@ async fn scatter_input_partition(
         //   2. Send zero-copy `batch.slice(start, len)` instead of
         //      `take_arrays`-materialised sub-batches. Arc bumps replace
         //      allocations under skew.
+        let split_timer = metrics.split_time.timer();
         let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        split_timer.done();
+        // Stop the compute timer around the send.await so backpressure
+        // waits get billed to `send_time` alone, not double-counted.
+        compute_timer.done();
         for (output, sub) in splits.into_iter().enumerate() {
             if sub.num_rows() == 0 {
                 continue;
             }
+            let send_timer = metrics.send_time.timer();
             // `send().await` provides backpressure: full channel suspends
             // this task → suspends input read → propagates upstream. Error
             // on send means downstream dropped its receiver; keep forwarding
             // to other outputs.
             let _ = senders[output].send(Ok(sub)).await;
+            send_timer.done();
+            metrics.scattered_batches.add(1);
         }
     }
     // Senders drop with this task → each output's merger sees EOF on that
