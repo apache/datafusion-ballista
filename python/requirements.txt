@@ -1,4 +1,4 @@
-datafusion==52.0.0
+datafusion @ git+https://github.com/apache/datafusion-python.git@f1526210338d75ef105246e5c948e0e4a4a0f5ce
 pyarrow
 pytest
 maturin>=1.8.0,<2.0.0

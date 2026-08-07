@@ -15,7 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import gc
+
 from ballista import (
+    BallistaExtension,
     BallistaLogicalExtensionCodec,
     BallistaPhysicalExtensionCodec,
     BallistaQueryPlanner,
@@ -90,6 +93,35 @@ def test_manual_query_planner_and_codec_composition():
     assert type(df) is DataFrame
     assert_uses_ballista(df)
     assert df.collect()[0].column(0).to_pylist() == [5]
+
+
+def test_ballista_extension_uses_atomic_context_installation():
+    address, port = setup_test_cluster()
+    source_ctx = SessionContext()
+    source_ctx.register_csv("registered", "testdata/test.csv", has_header=True)
+
+    configured_ctx = source_ctx.with_extensions(
+        BallistaExtension(f"df://{address}:{port}")
+    )
+
+    df = configured_ctx.sql("SELECT COUNT(*) FROM registered")
+    assert type(df) is DataFrame
+    assert_uses_ballista(df)
+    assert df.collect()[0].column(0).to_pylist() == [5]
+
+
+def test_ballista_extension_context_must_outlive_dataframe():
+    address, port = setup_test_cluster()
+    configured_ctx = SessionContext().with_extensions(
+        BallistaExtension(f"df://{address}:{port}")
+    )
+    df = configured_ctx.sql("SELECT 1")
+
+    del configured_ctx
+    gc.collect()
+
+    with pytest.raises(Exception, match="went out of scope"):
+        df.collect()
 
 
 def test_low_level_helper_returns_standard_distributed_dataframe():

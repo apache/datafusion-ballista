@@ -39,6 +39,7 @@ fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
+    m.add_class::<query_planner::PyBallistaExtension>()?;
     m.add_class::<query_planner::PyBallistaLogicalExtensionCodec>()?;
     m.add_class::<query_planner::PyBallistaPhysicalExtensionCodec>()?;
     m.add_class::<query_planner::PyBallistaQueryPlanner>()?;

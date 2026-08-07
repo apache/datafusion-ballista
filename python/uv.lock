@@ -52,7 +52,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datafusion", git = "https://github.com/apache/datafusion-python.git?rev=55f43b5e231da5591e7bbd632dac85f304a22cca" },
+    { name = "datafusion", git = "https://github.com/apache/datafusion-python.git?rev=f1526210338d75ef105246e5c948e0e4a4a0f5ce" },
     { name = "ipython", marker = "extra == 'jupyter'", specifier = ">=8.0.0" },
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
@@ -328,7 +328,7 @@ wheels = [
 [[package]]
 name = "datafusion"
 version = "54.0.0"
-source = { git = "https://github.com/apache/datafusion-python.git?rev=55f43b5e231da5591e7bbd632dac85f304a22cca#55f43b5e231da5591e7bbd632dac85f304a22cca" }
+source = { git = "https://github.com/apache/datafusion-python.git?rev=f1526210338d75ef105246e5c948e0e4a4a0f5ce#f1526210338d75ef105246e5c948e0e4a4a0f5ce" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "pyarrow" },

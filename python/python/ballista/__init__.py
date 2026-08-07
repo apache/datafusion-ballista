@@ -22,10 +22,12 @@ except ImportError:
 
 from ._internal_ballista import (
     BallistaExecutor,
+    BallistaExtension,
     BallistaLogicalExtensionCodec,
     BallistaPhysicalExtensionCodec,
     BallistaQueryPlanner,
     BallistaScheduler,
+    ballista_datafusion_config_defaults,
     setup_test_cluster,
 )
 from .extension import (
@@ -38,8 +40,10 @@ __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
     "setup_test_cluster",
+    "ballista_datafusion_config_defaults",
     "BallistaScheduler",
     "BallistaExecutor",
+    "BallistaExtension",
     "BallistaLogicalExtensionCodec",
     "BallistaPhysicalExtensionCodec",
     "BallistaQueryPlanner",
