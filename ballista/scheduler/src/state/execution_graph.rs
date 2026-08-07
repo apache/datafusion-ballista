@@ -1819,11 +1819,12 @@ mod test {
     use std::sync::Arc;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
-    use ballista_core::error::Result;
+    use ballista_core::error::{BallistaError, Result};
     use ballista_core::serde::protobuf::{
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
         TaskKilled, failed_task, job_status, task_status,
     };
+    use datafusion::arrow::error::ArrowError;
     use datafusion::common::{DataFusionError, Result as DataFusionResult};
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::{
@@ -2572,23 +2573,13 @@ mod test {
         let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
         let task_status1 = mock_completed_task(task1, &executor2.id);
 
-        // 2nd task in the Stage 2, failed due to FetchPartitionError
         let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status2 = mock_failed_task(
-            task2,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor1.id.clone(),
-                        map_stage_id: 1,
-                        map_partition_id: 0,
-                    },
-                )),
-            },
-        );
+        let failed_task = wrapped_fetch_failed_task(&executor1.id, 1, 0);
+        assert!(matches!(
+            failed_task.failed_reason,
+            Some(failed_task::FailedReason::FetchPartitionError(_))
+        ));
+        let task_status2 = mock_failed_task(task2, failed_task);
 
         let mut running_task_count = 0;
         while let Some(_task) = agg_graph.pop_next_task(&executor2.id)? {
@@ -3226,6 +3217,25 @@ mod test {
     // async fn test_shuffle_files_should_cleaned_after_fetch_failure() -> Result<()> {
     //     todo!()
     // }
+
+    fn wrapped_fetch_failed_task(
+        executor_id: &str,
+        map_stage_id: usize,
+        map_partition_id: usize,
+    ) -> FailedTask {
+        let err = BallistaError::DataFusionError(Box::new(DataFusionError::ArrowError(
+            Box::new(ArrowError::ExternalError(Box::new(
+                BallistaError::FetchFailed(
+                    executor_id.to_owned(),
+                    map_stage_id,
+                    map_partition_id,
+                    "FetchPartitionError".to_owned(),
+                ),
+            ))),
+            None,
+        )));
+        FailedTask::from(err)
+    }
 
     fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {
         let executor = mock_executor("executor-id1".to_string());

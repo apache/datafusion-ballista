@@ -286,6 +286,17 @@ impl AdaptivePlanner {
         }
     }
 
+    pub fn remove_exchange_locations(&mut self, stage_id: usize, executor_id: &str) {
+        if let Some(stage_output) = self.runnable_stage_output.get_mut(&stage_id) {
+            stage_output
+                .partition_locations
+                .iter_mut()
+                .for_each(|(_partition, locs)| {
+                    locs.retain(|loc| loc.executor_meta.id != executor_id);
+                });
+        }
+    }
+
     /// Once all tasks have completed, pop the accumulated stage output as a
     /// K-shaped `Vec<Vec<PartitionLocation>>` (or the broadcast-shape variant)
     /// *without* parking it on the ExchangeExec. Caller can post-process
@@ -650,6 +661,5 @@ impl AdaptivePlanner {
 /// Wraps stage plan with addition of references to previous stages
 pub(crate) struct AdaptiveStageInfo {
     pub(crate) plan: Arc<dyn ShuffleWriter>,
-    #[allow(dead_code)] // TODO: still not sure if this is needed
-    pub(crate) inputs: Vec<usize>,
+    pub(crate) inputs: std::collections::HashMap<usize, StageOutput>,
 }

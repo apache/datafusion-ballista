@@ -19,7 +19,7 @@ use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
 use crate::state::aqe::execution_plan::RangeRepartitionRouting;
-use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
@@ -29,7 +29,7 @@ use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::{
-    ShuffleWriter, cut_partitions, merge_runtime_stats_reports, repartition_routing_expr,
+    cut_partitions, merge_runtime_stats_reports, repartition_routing_expr,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -167,7 +167,7 @@ impl AdaptiveExecutionGraph {
         let stages: ballista_core::error::Result<HashMap<usize, ExecutionStage>> =
             runnable
                 .into_iter()
-                .map(|s| Self::create_resolved_stage(session_config.clone(), s.plan))
+                .map(|s| Self::create_resolved_stage(session_config.clone(), s))
                 .collect();
         let stages = stages?;
 
@@ -202,15 +202,15 @@ impl AdaptiveExecutionGraph {
 impl AdaptiveExecutionGraph {
     fn create_resolved_stage(
         session_config: Arc<SessionConfig>,
-        stage: Arc<dyn ShuffleWriter>,
+        stage: AdaptiveStageInfo,
     ) -> ballista_core::error::Result<(usize, ExecutionStage)> {
-        let stage_id = stage.stage_id();
+        let stage_id = stage.plan.stage_id();
         let stage = ExecutionStage::Resolved(ResolvedStage::new(
             stage_id,
             0,
-            stage,
-            vec![],         // we do not know output links at this moment
-            HashMap::new(), // we do not keep inputs at the moment
+            stage.plan,
+            vec![], // we do not know output links at this moment
+            stage.inputs,
             HashSet::new(),
             session_config,
         ));
@@ -399,7 +399,7 @@ impl AdaptiveExecutionGraph {
                     if !self.stages.contains_key(&stage.plan.stage_id()) {
                         let (stage_id, stage) = Self::create_resolved_stage(
                             self.session_config.clone(),
-                            stage.plan,
+                            stage,
                         )?;
                         self.stages.insert(stage_id, stage);
                     }
@@ -524,6 +524,11 @@ impl AdaptiveExecutionGraph {
                     }
                 }
             });
+
+        for stage_id in &reset_running_stage {
+            self.planner
+                .remove_exchange_locations(*stage_id, executor_id);
+        }
 
         // check and reset the successful stages
         if !resubmit_inputs.is_empty() {

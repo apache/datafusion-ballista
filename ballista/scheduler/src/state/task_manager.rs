@@ -1338,11 +1338,23 @@ mod tests {
         let manager_for_abort = manager.clone();
         let job_id_for_abort = job_id.clone();
         let abort = tokio::spawn(async move {
+            let manager_for_cancel = manager_for_abort.clone();
+            let job_id_for_cancel = job_id_for_abort.clone();
             manager_for_abort
                 .abort_job(
                     &job_id_for_abort,
                     "test failure".to_string(),
                     move |tasks| async move {
+                        let status = manager_for_cancel
+                            .get_job_status(&job_id_for_cancel)
+                            .await?
+                            .expect(
+                                "aborted job should remain visible during cancellation",
+                            );
+                        assert!(
+                            matches!(status.status, Some(Status::Failed(_))),
+                            "job must be terminal before executor tasks are cancelled"
+                        );
                         cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
                         Ok(())
                     },

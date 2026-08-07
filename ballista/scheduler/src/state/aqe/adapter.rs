@@ -18,6 +18,7 @@
 use crate::planner::create_shuffle_writer_with_config;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptiveStageInfo;
+use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
 use ballista_core::execution_plans::{
     PerPartitionFilterExec, ShuffleReaderExec, range_partition_predicates,
@@ -31,11 +32,12 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 use log::debug;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BallistaAdapter {
-    inputs: Vec<usize>,
+    inputs: HashMap<usize, StageOutput>,
 }
 
 ///
@@ -61,7 +63,12 @@ impl BallistaAdapter {
                     "stage ID has to be generated at this point".to_string(),
                 )
             })?;
-            self.inputs.push(stage_id);
+            let mut stage_output = StageOutput::new();
+            for partition in partitions.iter().flatten().cloned() {
+                stage_output.add_partition(partition);
+            }
+            stage_output.complete = true;
+            self.inputs.insert(stage_id, stage_output);
             let partitioning = exchange.properties().partitioning.clone();
 
             let reader = match (exchange.coalesce(), exchange.broadcast) {
