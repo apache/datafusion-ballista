@@ -134,8 +134,8 @@ non-null without invoking the (volatile) UDF. Two regression tests in
 ## How to run
 
 ```sh
-cargo test -p ballista-chaos              # everything except the known-bug scenarios
-cargo test -p ballista-chaos -- --ignored # the known-bug scenarios; these fail, on purpose
+cargo test -p ballista-chaos              # active regression scenarios
+cargo test -p ballista-chaos -- --ignored # any currently ignored known-bug scenarios
 ```
 
 Every test that spawns a cluster does so through `TestCluster`, which holds
@@ -191,11 +191,9 @@ sanity check that every other scenario's assertions depend on.
 | F        | `restarted_executor_rejoins_and_serves_queries`                     | Kills an executor, waits for the scheduler to reap it, restarts it, asserts the registered count returns to 2 and the cluster still serves the baseline query.                                               | Pass (both), after the race fix in this crate (see below).                                                                                     |
 | G        | `killing_every_executor_terminates_the_job`                         | SIGKILLs every executor mid-query; asserts the job fails with an error naming the executor loss rather than hanging.                                                                                        | Regression test for [#2029](https://github.com/apache/datafusion-ballista/issues/2029) — Finding 3.                                 |
 
-An ignored scenario above is not a defect in this harness, and its assertions
-have not been weakened to make it pass — it reproduces a real Ballista bug and
-is ignored only so that CI is not red on a bug this crate did not introduce.
-Run the ignored scenarios with `-- --ignored --test-threads=1` to see the
-remaining failures; see [Findings](#findings) for what each one proves.
+If a future scenario is ignored, it should stay tied to its tracking issue or
+follow-up path, and its assertions should keep reproducing the underlying bug
+rather than being weakened to pass.
 
 ### A note on Scenario F: the harness race that was fixed here
 
