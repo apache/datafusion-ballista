@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -61,6 +61,8 @@ pub mod ballista_physical_plan_node {
         OrderedRangeRepartition(super::OrderedRangeRepartitionExecNode),
         #[prost(message, tag = "10")]
         PerPartitionFilter(super::PerPartitionFilterExecNode),
+        #[prost(message, tag = "11")]
+        PartitionedBoundedWindowAgg(super::PartitionedBoundedWindowAggExecNode),
     }
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
@@ -144,6 +146,19 @@ pub struct PerPartitionFilterExecNode {
     #[prost(message, repeated, tag = "1")]
     pub predicates: ::prost::alloc::vec::Vec<
         ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
+}
+/// Wrapper for `BoundedWindowAggExec` that overrides
+/// `required_input_distribution` to `Unspecified` — see the module doc on
+/// `execution_plans::partitioned_bounded_window_agg` for what makes that safe.
+/// The child plan is plumbed by the framework as `inputs\[0\]` during decode.
+/// `input_order_mode` and `can_repartition` are hardcoded on the decode side
+/// per the rule's shape gates; only `window_expr` needs to cross the wire.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PartitionedBoundedWindowAggExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub window_expr: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalWindowExprNode,
     >,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

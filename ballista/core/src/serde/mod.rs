@@ -57,9 +57,9 @@ use std::{convert::TryInto, io::Cursor};
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PerPartitionFilterExec, RuntimeStatsExec, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec,
+    PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
+    RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+    UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -662,6 +662,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     predicates,
                 )?))
             }
+            PhysicalPlanType::PartitionedBoundedWindowAgg(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PartitionedBoundedWindowAggExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let input_schema = input.schema();
+                let window_expr = node
+                    .window_expr
+                    .iter()
+                    .map(|we| {
+                        datafusion_proto::physical_plan::from_proto::parse_physical_window_expr(
+                            we,
+                            &decode_ctx,
+                            input_schema.as_ref(),
+                            &converter,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(PartitionedBoundedWindowAggExec::try_new(
+                    window_expr,
+                    input.clone(),
+                )?))
+            }
         }
     }
 
@@ -919,6 +944,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode PerPartitionFilterExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PartitionedBoundedWindowAggExec>()
+        {
+            let converter = DefaultPhysicalProtoConverter {};
+            let window_expr = exec
+                .window_expr()
+                .iter()
+                .map(|we| {
+                    datafusion_proto::physical_plan::to_proto::serialize_physical_window_expr(
+                        we,
+                        self.default_codec.as_ref(),
+                        &converter,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PartitionedBoundedWindowAgg(
+                    protobuf::PartitionedBoundedWindowAggExecNode { window_expr },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PartitionedBoundedWindowAggExec: {e:?}"
                 ))
             })?;
             Ok(())

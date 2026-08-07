@@ -56,6 +56,7 @@ message BallistaPhysicalPlanNode {
     UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
     OrderedRangeRepartitionExecNode ordered_range_repartition = 9;
     PerPartitionFilterExecNode per_partition_filter = 10;
+    PartitionedBoundedWindowAggExecNode partitioned_bounded_window_agg = 11;
   }
 }
 
@@ -131,6 +132,16 @@ message UnorderedRangeRepartitionExecNode {
 // plumbed by the framework as `inputs[0]` during decode.
 message PerPartitionFilterExecNode {
   repeated datafusion.PhysicalExprNode predicates = 1;
+}
+
+// Wrapper for `BoundedWindowAggExec` that overrides
+// `required_input_distribution` to `Unspecified` — see the module doc on
+// `execution_plans::partitioned_bounded_window_agg` for what makes that safe.
+// The child plan is plumbed by the framework as `inputs[0]` during decode.
+// `input_order_mode` and `can_repartition` are hardcoded on the decode side
+// per the rule's shape gates; only `window_expr` needs to cross the wire.
+message PartitionedBoundedWindowAggExecNode {
+  repeated datafusion.PhysicalWindowExprNode window_expr = 1;
 }
 
 message ChaosExecNode {
