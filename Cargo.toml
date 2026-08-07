@@ -35,19 +35,20 @@ edition = "2024"
 rust-version = "1.88.0"
 
 [workspace.dependencies]
-arrow = { version = "59.1.0", features = ["ipc_compression"] }
-arrow-flight = { version = "59.1.0", features = ["flight-sql-experimental"] }
+arrow = { version = "59.2.0", features = ["ipc_compression"] }
+arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
 # DataFusion crates are pinned to a git rev of apache/datafusion main rather than
 # a crates.io release. Bump this rev to advance to newer DataFusion commits.
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
-datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-ffi = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion.git", rev = "e08aed1e5de41dcf81d529140dae07723b942a5e" }
 
 ctor = { version = "1.0" }
 insta = "1.47"

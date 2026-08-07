@@ -136,6 +136,26 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         }
     }
 
+    /// Returns the scheduler URL used by this query.
+    pub fn scheduler_url(&self) -> &str {
+        &self.scheduler_url
+    }
+
+    /// Returns the Ballista configuration used by this query.
+    pub fn config(&self) -> &BallistaConfig {
+        &self.config
+    }
+
+    /// Returns the logical plan submitted to the scheduler.
+    pub fn logical_plan(&self) -> &LogicalPlan {
+        &self.plan
+    }
+
+    /// Returns the client session identifier.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// Returns the scheduler job id after the query has been accepted.
     pub fn job_id(&self) -> Option<JobId> {
         self.job_id.lock().clone()
@@ -227,8 +247,14 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
         })?;
 
-        let settings = context
+        // The FFI planner carries Ballista options in this node because the
+        // destination datafusion-python TaskContext does not know Ballista's
+        // ConfigExtension. Restore them before executing the query.
+        let session_config = context
             .session_config()
+            .clone()
+            .with_option_extension(self.config.clone());
+        let settings = session_config
             .options()
             .entries()
             .iter()
@@ -254,8 +280,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
         let metric_total_bytes =
             MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
-
-        let session_config = context.session_config().clone();
 
         if session_config.ballista_config().client_pull() {
             let stream = futures::stream::once(
