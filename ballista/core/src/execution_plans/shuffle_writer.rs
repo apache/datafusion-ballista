@@ -849,6 +849,8 @@ async fn run_coordinator(
             }
         }
         Err(e) => {
+            // Share the original error with every output handoff so classification
+            // preserves FetchFailed/IO details regardless of stream completion order.
             let shared = Arc::new(e);
             for slot in senders.iter_mut() {
                 if let Some(sender) = slot.take() {
