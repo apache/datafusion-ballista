@@ -19,15 +19,37 @@
 
 //! Shared types for Ballista's scheduler REST API.
 //!
-//! These response types live outside `ballista-scheduler` so that a future
-//! history server can serialize byte-identical JSON from stored state without
-//! depending on the scheduler's live execution graph.
+//! This crate is the serialization boundary between the live scheduler and the
+//! history server: the scheduler builds these types, writes them to an event
+//! log, and the history server reads them back and serves them.
+//!
+//! # Write once, replay verbatim
+//!
+//! The history server does **not** re-derive responses from stored execution
+//! state. When a job finishes, the scheduler runs its DTO builders once against
+//! the live execution graph and writes the finished [`dto::JobResponse`] and
+//! [`dto::QueryStagesResponse`] into the log's terminal record. Replay
+//! deserializes those values and re-serializes them unchanged:
+//!
+//! ```text
+//! scheduler ──> dto builders ──> DTO ──> event log ──> history server ──> JSON
+//! ```
+//!
+//! So byte-identical output is a structural property, not a convention two
+//! implementations have to keep agreeing on. There is one definition of each
+//! type and one place that populates it. That is also why the builders
+//! themselves stay in `ballista-scheduler`: they need the live execution graph,
+//! and nothing on the replay path calls them.
+//!
+//! One consequence worth knowing: anything not captured when the record is
+//! written cannot be recovered later. Plans, for instance, are rendered in a
+//! single format at write time, so replay cannot re-render them differently.
 //!
 //! # What belongs here
 //!
 //! A type belongs in this crate when it is part of the `/api/*` wire contract
-//! *and* can be reconstructed from a stored event log. Types describing live
-//! scheduler state (`SchedulerStateResponse`, `CancelJobResponse`) stay in
+//! *and* is worth persisting in the event log. Types describing live scheduler
+//! state (`SchedulerStateResponse`, `CancelJobResponse`) stay in
 //! `ballista-scheduler`, because there is nothing to replay.
 //!
 //! `ExecutorResponse` also stays behind, for a different reason: it embeds
