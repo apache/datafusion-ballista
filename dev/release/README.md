@@ -287,6 +287,8 @@ of the following crates:
 - [ballista-cli](https://crates.io/crates/ballista-cli)
 - [ballista-core](https://crates.io/crates/ballista-core)
 - [ballista-executor](https://crates.io/crates/ballista-executor)
+- [ballista-api-types](https://crates.io/crates/ballista-api-types)
+- [ballista-history](https://crates.io/crates/ballista-history)
 - [ballista-scheduler](https://crates.io/crates/ballista-scheduler)
 
 Download and unpack the official release tarball
@@ -306,6 +308,8 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 ```shell
 (cd ballista/core && cargo publish)
 (cd ballista/executor && cargo publish)
+(cd ballista/api-types && cargo publish)
+(cd ballista/history && cargo publish)
 (cd ballista/scheduler && cargo publish)
 (cd ballista/client && cargo publish)
 (cd ballista-cli && cargo publish)
