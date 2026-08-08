@@ -26,17 +26,23 @@
 //!
 //! # Write once, replay verbatim
 //!
-//! The terminal [`event::HistoryEvent::JobEnd`] record embeds the finished
-//! [`ballista_api_types::dto::JobResponse`] and
-//! [`ballista_api_types::dto::QueryStagesResponse`] the scheduler built from
-//! its live execution graph. Replay deserializes those values and re-serializes
-//! them unchanged, so the history server never re-derives a response and there
-//! is no second implementation to drift.
+//! The terminal [`event::JobEnd`] record embeds the finished `/api/*` responses
+//! the scheduler built from its live execution graph, stored as raw JSON. Replay
+//! relays those bytes unchanged, so the history server never re-derives a
+//! response and there is no second implementation to drift.
 //!
-//! The earlier records ([`event::HistoryEvent::JobStart`], `StageStart`,
-//! `StageEnd`, `TaskEnd`) form an incremental timeline. Nothing reads them yet;
-//! they exist so a future UI can show a job progressing rather than only its
-//! final state.
+//! The earlier records ([`event::JobStart`], [`event::StageStart`],
+//! [`event::StageEnd`], [`event::TaskEnd`]) form an incremental timeline.
+//! Nothing reads them yet; they exist so a future UI can show a job progressing
+//! rather than only its final state.
+//!
+//! # Compatibility
+//!
+//! Logs outlive the binaries that wrote them, so a newer reader must keep
+//! reading older logs indefinitely. [`event::SCHEMA_VERSION`] documents the
+//! policy, [`event::LogRecord`] is the self-describing envelope that makes it
+//! enforceable, and `testdata/schema-v1.eventlog` is a frozen log that CI
+//! replays on every build to catch regressions.
 //!
 //! # Durability
 //!

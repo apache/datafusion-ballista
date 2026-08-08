@@ -146,7 +146,7 @@ async fn run(log_dir: PathBuf, mut rx: mpsc::Receiver<WriterMsg>) {
                     Some(f) => f,
                     None => continue,
                 };
-                match serde_json::to_string(&*event) {
+                match event.to_record().and_then(|r| serde_json::to_string(&r)) {
                     Ok(mut line) => {
                         line.push('\n');
                         if let Err(e) = file.write_all(line.as_bytes()).await {
@@ -203,8 +203,10 @@ async fn open_for<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{HistoryEvent, JobEndStatus, SCHEMA_VERSION};
-    use ballista_api_types::dto::{JobResponse, QueryStagesResponse};
+    use crate::event::{
+        HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, StageStart,
+    };
+    use serde_json::value::RawValue;
     use std::collections::BTreeMap;
 
     #[tokio::test]
@@ -216,51 +218,43 @@ mod tests {
 
         writer.append(
             "job-1",
-            HistoryEvent::JobStart {
-                version: SCHEMA_VERSION,
+            HistoryEvent::JobStart(JobStart {
                 job_id: "job-1".into(),
                 job_name: "q1".into(),
                 queued_at: 1,
                 submitted_at: 2,
                 logical_plan: None,
                 physical_plan: None,
-            },
+            }),
         );
         for stage_id in 0..10 {
             writer.append(
                 "job-1",
-                HistoryEvent::StageStart {
+                HistoryEvent::StageStart(StageStart {
                     stage_id,
                     partitions: 4,
-                },
+                }),
             );
         }
 
-        let job = JobResponse {
-            job_id: "job-1".into(),
-            job_name: "q1".into(),
-            job_status: "COMPLETED".into(),
-            status: "Successful".into(),
-            num_stages: 2,
-            completed_stages: 2,
-            percent_complete: 100,
-            start_time: 10,
-            end_time: 20,
-            logical_plan: Some("Projection".into()),
-            physical_plan: Some("ProjectionExec".into()),
-            stage_plan: Some("stage plan".into()),
-        };
-        let job_end = HistoryEvent::JobEnd {
-            version: SCHEMA_VERSION,
+        let job_end = HistoryEvent::JobEnd(Box::new(JobEnd {
             status: JobEndStatus::Succeeded,
             queued_at: 1,
             started_at: 2,
             completed_at: 20,
-            job: Box::new(job),
-            stages: Box::new(QueryStagesResponse { stages: vec![] }),
+            index: JobIndex {
+                job_id: "job-1".into(),
+                job_name: "q1".into(),
+                status: "Completed".into(),
+                job_status: "COMPLETED".into(),
+                start_time: 10,
+                end_time: 20,
+            },
+            job: RawValue::from_string(r#"{"job_id":"job-1"}"#.to_string()).unwrap(),
+            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
             config: BTreeMap::new(),
             dot: "digraph {}".into(),
-        };
+        }));
         writer.append_final("job-1", job_end).await;
         writer.finish_job("job-1").await;
 
@@ -284,22 +278,21 @@ mod tests {
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
         writer.append(
             "job-1",
-            HistoryEvent::JobStart {
-                version: SCHEMA_VERSION,
+            HistoryEvent::JobStart(JobStart {
                 job_id: "job-1".into(),
                 job_name: "q1".into(),
                 queued_at: 1,
                 submitted_at: 2,
                 logical_plan: None,
                 physical_plan: None,
-            },
+            }),
         );
         writer.append(
             "job-1",
-            HistoryEvent::StageStart {
+            HistoryEvent::StageStart(StageStart {
                 stage_id: 1,
                 partitions: 4,
-            },
+            }),
         );
         writer.flush_job("job-1").await;
 
