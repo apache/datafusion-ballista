@@ -24,6 +24,12 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 publish = false
 
+[features]
+# Enables the Kubernetes (kind) backend and its integration test. Off by default
+# so the process-based harness and default `cargo test` stay dependency-light and
+# require no cluster.
+k8s = []
+
 [dependencies]
 arrow = { workspace = true }
 ballista = { path = "../ballista/client" }
