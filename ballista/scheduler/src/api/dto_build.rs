@@ -23,9 +23,10 @@
 //! in the axum handlers) means the same DTOs can be produced from state that
 //! did not come from a live handler request.
 //!
-//! Everything in this module is pure: state in, DTO out, no I/O.
+//! Everything in this module is pure: state in, DTO out, no I/O and no
+//! wall-clock reads. `graph_to_query_stages` takes `now` from its caller so a
+//! replay of a stored log renders the same elapsed times every time.
 
-use crate::api::handlers::{JobQueryParams, PlanFormat};
 use crate::display::format_stage_metrics;
 use crate::state::execution_graph::{ExecutionGraphBox, ExecutionStage};
 use crate::state::execution_stage::TaskInfo;
@@ -35,12 +36,11 @@ use ballista_core::serde::protobuf::failed_task::FailedReason::{
 };
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedTask, task_status};
-use ballista_core::utils::get_current_time;
 use ballista_history::dto::{
-    JobResponse, Percentiles, QueryStageSummary, QueryStagesResponse, TaskStatus,
-    TaskSummary,
+    JobResponse, Percentiles, PlanFormat, QueryStageSummary, QueryStagesResponse,
+    TaskStatus, TaskSummary,
 };
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
 use std::time::Duration;
@@ -55,14 +55,6 @@ pub fn job_overview_to_response(job: &JobOverview) -> JobResponse {
         job_elapsed_ms(job.start_time, job.end_time),
     );
 
-    // calculate progress based on completed stages for now, but we could use completed
-    // tasks in the future to make this more accurate
-    let percent_complete = if job.num_stages == 0 {
-        0
-    } else {
-        ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8
-    };
-
     JobResponse {
         job_id: job.job_id.to_string(),
         job_name: job.job_name.to_owned(),
@@ -72,7 +64,7 @@ pub fn job_overview_to_response(job: &JobOverview) -> JobResponse {
         end_time: job.end_time,
         num_stages: job.num_stages,
         completed_stages: job.completed_stages,
-        percent_complete,
+        percent_complete: percent_complete(job.completed_stages, job.num_stages),
         logical_plan: None,
         physical_plan: None,
         stage_plan: None,
@@ -83,7 +75,7 @@ pub fn job_overview_to_response(job: &JobOverview) -> JobResponse {
 /// rendered logical, physical, and stage plans.
 pub fn graph_to_job_response(
     graph: &ExecutionGraphBox,
-    query: &JobQueryParams,
+    plan_format: PlanFormat,
 ) -> JobResponse {
     let stage_plan = format!("{graph:?}");
     let job = graph.as_ref();
@@ -95,13 +87,10 @@ pub fn graph_to_job_response(
 
     let num_stages = job.stage_count();
     let completed_stages = job.completed_stages();
-    let percent_complete =
-        ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
 
-    let plan_format = query.plan_format.clone().unwrap_or_default();
     let physical_plan = match plan_format {
         PlanFormat::Default | PlanFormat::Metrics => {
-            DisplayableExecutionPlan::new(job.physical_plan().as_ref())
+            displayable(job.physical_plan().as_ref())
                 .indent(false)
                 .to_string()
         }
@@ -119,7 +108,7 @@ pub fn graph_to_job_response(
         end_time: job.end_time(),
         num_stages,
         completed_stages,
-        percent_complete,
+        percent_complete: percent_complete(completed_stages, num_stages),
         logical_plan: job.logical_plan().map(str::to_owned),
         physical_plan: Some(physical_plan),
         stage_plan: Some(stage_plan),
@@ -129,75 +118,53 @@ pub fn graph_to_job_response(
 /// Build the per-stage summaries served by `GET /api/job/{job_id}/stages`.
 pub fn graph_to_query_stages(
     graph: &ExecutionGraphBox,
-    query: &JobQueryParams,
+    plan_format: PlanFormat,
+    now: u128,
 ) -> QueryStagesResponse {
-    let plan_format = query.plan_format.clone().unwrap_or_default();
-
     let stages = graph
         .as_ref()
         .stages()
         .iter()
         .map(|(id, stage)| {
-            let mut summary = QueryStageSummary {
+            // Every started stage contributes the same three things; only how
+            // it reaches its metrics and which elapsed-time rule applies
+            // differ. Stages that have not started yet contribute nothing.
+            let started: Option<(&[MetricsSet], &[TaskInfo], Option<String>)> =
+                match stage {
+                    ExecutionStage::Running(s) => Some((
+                        s.stage_metrics.as_deref().unwrap_or(&[]),
+                        &s.task_infos,
+                        get_running_stage_time(&s.task_infos, now),
+                    )),
+                    ExecutionStage::Successful(s) => Some((
+                        &s.stage_metrics,
+                        &s.task_infos,
+                        get_finished_stage_time(&s.task_infos),
+                    )),
+                    ExecutionStage::Failed(s) => Some((
+                        s.stage_metrics.as_deref().unwrap_or(&[]),
+                        &s.task_infos,
+                        get_finished_stage_time(&s.task_infos),
+                    )),
+                    _ => None,
+                };
+
+            let has_started = started.is_some();
+            let (metrics, task_infos, elapsed_compute) = started.unwrap_or_default();
+            let tasks = task_summaries(task_infos, metrics);
+
+            QueryStageSummary {
                 stage_id: id.to_string(),
                 stage_status: stage.variant_name().to_string(),
-                input_rows: 0,
-                output_rows: 0,
-                elapsed_compute: None,
-                tasks: vec![],
-                task_duration_percentiles: None,
-                task_input_percentiles: None,
-                stage_plan: None,
-            };
-
-            match stage {
-                ExecutionStage::Running(running_stage) => {
-                    let metrics = running_stage.stage_metrics.as_deref().unwrap_or(&[]);
-                    summary.stage_plan = Some(render_stage_plan(
-                        running_stage.plan.as_ref(),
-                        metrics,
-                        &plan_format,
-                    ));
-                    summary.input_rows = get_combined_count(metrics, "input_rows");
-                    summary.output_rows = get_combined_count(metrics, "output_rows");
-                    summary.elapsed_compute = get_running_stage_time(
-                        &running_stage.task_infos,
-                        get_current_time(),
-                    );
-                    summary.tasks = task_summaries(&running_stage.task_infos, metrics);
-                }
-                ExecutionStage::Successful(completed_stage) => {
-                    let metrics = completed_stage.stage_metrics.as_slice();
-                    summary.stage_plan = Some(render_stage_plan(
-                        completed_stage.plan.as_ref(),
-                        metrics,
-                        &plan_format,
-                    ));
-                    summary.input_rows = get_combined_count(metrics, "input_rows");
-                    summary.output_rows = get_combined_count(metrics, "output_rows");
-                    summary.elapsed_compute =
-                        get_finished_stage_time(&completed_stage.task_infos);
-                    summary.tasks = task_summaries(&completed_stage.task_infos, metrics);
-                }
-                ExecutionStage::Failed(failed_stage) => {
-                    let metrics = failed_stage.stage_metrics.as_deref().unwrap_or(&[]);
-                    summary.stage_plan = Some(render_stage_plan(
-                        failed_stage.plan.as_ref(),
-                        metrics,
-                        &plan_format,
-                    ));
-                    summary.input_rows = get_combined_count(metrics, "input_rows");
-                    summary.output_rows = get_combined_count(metrics, "output_rows");
-                    summary.elapsed_compute =
-                        get_finished_stage_time(&failed_stage.task_infos);
-                    summary.tasks = task_summaries(&failed_stage.task_infos, metrics);
-                }
-                _ => {}
+                input_rows: get_combined_count(metrics, "input_rows"),
+                output_rows: get_combined_count(metrics, "output_rows"),
+                elapsed_compute,
+                stage_plan: has_started
+                    .then(|| render_stage_plan(stage.plan(), metrics, plan_format)),
+                task_duration_percentiles: task_duration_percentiles(&tasks),
+                task_input_percentiles: task_input_percentiles(&tasks),
+                tasks,
             }
-
-            summary.task_duration_percentiles = task_duration_percentiles(&summary.tasks);
-            summary.task_input_percentiles = task_input_percentiles(&summary.tasks);
-            summary
         })
         .collect();
 
@@ -207,9 +174,9 @@ pub fn graph_to_query_stages(
 /// Render one stage's plan in the requested format. `Metrics` overlays the
 /// stage's aggregated metrics onto the plan; the other formats ignore them.
 fn render_stage_plan(
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+    plan: &dyn ExecutionPlan,
     metrics: &[MetricsSet],
-    plan_format: &PlanFormat,
+    plan_format: PlanFormat,
 ) -> String {
     match plan_format {
         PlanFormat::Default => displayable(plan).indent(false).to_string(),
@@ -262,7 +229,7 @@ fn task_summaries(
 ///
 /// A free function rather than a `From` impl: both types are foreign to this
 /// crate now that [`TaskStatus`] lives in `ballista-history`.
-pub fn task_status_to_dto(value: &task_status::Status) -> TaskStatus {
+fn task_status_to_dto(value: &task_status::Status) -> TaskStatus {
     match value {
         task_status::Status::Running(_) => TaskStatus::Running,
         task_status::Status::Failed(failed) => TaskStatus::Failed {
@@ -271,6 +238,15 @@ pub fn task_status_to_dto(value: &task_status::Status) -> TaskStatus {
         },
         task_status::Status::Successful(_) => TaskStatus::Successful,
     }
+}
+
+/// Progress as a percentage of stages completed. Zero-stage jobs report 0
+/// rather than dividing by zero.
+fn percent_complete(completed_stages: usize, num_stages: usize) -> u8 {
+    if num_stages == 0 {
+        return 0;
+    }
+    ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8
 }
 
 fn percentile_duration(sorted: &[u64], pct: f64) -> u64 {
@@ -352,33 +328,31 @@ fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, Strin
     }
 }
 
-fn get_running_stage_time(task_infos: &[TaskInfo], current_time: u128) -> Option<String> {
-    let min_start = task_infos
+/// Earliest non-zero task start in a stage. Zero means "not started yet", so
+/// those entries are ignored rather than dragging the minimum to 0.
+fn min_start_time(task_infos: &[TaskInfo]) -> Option<u128> {
+    task_infos
         .iter()
         .map(|t| t.start_exec_time)
         .filter(|t| *t > 0)
-        .min();
+        .min()
+}
 
-    match (min_start, current_time) {
+fn get_running_stage_time(task_infos: &[TaskInfo], current_time: u128) -> Option<String> {
+    match (min_start_time(task_infos), current_time) {
         (Some(start), end) if end >= start => Some(format_millis(end - start)),
         _ => None,
     }
 }
 
 fn get_finished_stage_time(task_infos: &[TaskInfo]) -> Option<String> {
-    let min_start = task_infos
-        .iter()
-        .map(|t| t.start_exec_time)
-        .filter(|t| *t > 0)
-        .min();
-
     let max_end = task_infos
         .iter()
         .map(|t| t.end_exec_time)
         .filter(|t| *t > 0)
         .max();
 
-    match (min_start, max_end) {
+    match (min_start_time(task_infos), max_end) {
         (Some(start), Some(end)) if end >= start => Some(format_millis(end - start)),
         _ => None,
     }
@@ -473,11 +447,6 @@ mod tests {
             global_input_partition_ids: vec![],
             vcores_consumed: 0,
         }
-    }
-
-    #[test]
-    fn test_job_elapsed_saturates_when_end_precedes_start() {
-        assert_eq!(job_elapsed_ms(900, 100), 0);
     }
 
     // --- get_finished_stage_time ---

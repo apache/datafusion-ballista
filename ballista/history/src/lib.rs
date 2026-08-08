@@ -15,10 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![warn(missing_docs)]
+
 //! Shared types for Ballista's scheduler REST API.
 //!
 //! These response types live outside `ballista-scheduler` so that a future
 //! history server can serialize byte-identical JSON from stored state without
 //! depending on the scheduler's live execution graph.
+//!
+//! # What belongs here
+//!
+//! A type belongs in this crate when it is part of the `/api/*` wire contract
+//! *and* can be reconstructed from a stored event log. Types describing live
+//! scheduler state (`SchedulerStateResponse`, `CancelJobResponse`) stay in
+//! `ballista-scheduler`, because there is nothing to replay.
+//!
+//! `ExecutorResponse` also stays behind, for a different reason: it embeds
+//! `ballista-core` types, and this crate is deliberately serde-only so it
+//! stays cheap to depend on. Sharing it would mean either taking a
+//! `ballista-core` dependency here or duplicating those structs.
 
 pub mod dto;

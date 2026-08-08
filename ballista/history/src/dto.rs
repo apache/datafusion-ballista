@@ -19,37 +19,58 @@
 //! server, so both serialize byte-identical JSON.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
+/// Summary of one job, served by `GET /api/jobs` and `GET /api/job/{job_id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResponse {
     /// A `String` rather than `ballista_core::JobId` so this crate stays a
     /// serde-only leaf. `JobId` is `#[serde(transparent)]` over `String`, so
     /// the serialized JSON is unchanged.
     pub job_id: String,
+    /// Human-readable job name.
     pub job_name: String,
+    /// Verbose status, including the completion or failure detail.
     pub job_status: String,
+    /// Plain status word: `Queued`, `Running`, `Completed`, `Failed`, or `Invalid`.
     pub status: String,
+    /// Total number of stages in the job.
     pub num_stages: usize,
+    /// Number of stages that finished successfully.
     pub completed_stages: usize,
+    /// Progress as a percentage of completed stages.
     pub percent_complete: u8,
+    /// Timestamp when the job started.
     pub start_time: u64,
+    /// Timestamp when the job ended (0 if still running).
     pub end_time: u64,
+    /// Rendered logical plan. Absent in the job list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_plan: Option<String>,
+    /// Rendered physical plan. Absent in the job list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub physical_plan: Option<String>,
+    /// Rendered stage DAG. Absent in the job list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_plan: Option<String>,
 }
 
+/// Terminal or in-flight state of a single task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskStatus {
+    /// Task is currently executing.
     Running,
+    /// Task completed successfully.
     Successful,
-    Failed { reason: String, error: String },
+    /// Task failed, with the classified reason and the underlying error.
+    Failed {
+        /// Failure category, e.g. `ExecutionError` or `FetchPartitionError`.
+        reason: String,
+        /// Underlying error message.
+        error: String,
+    },
 }
 
+/// Per-task detail within a stage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSummary {
     /// task id
@@ -79,36 +100,67 @@ pub struct TaskSummary {
     pub output_rows: usize,
 }
 
+/// Five-number summary over a stage's tasks, used to spot skew.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Percentiles {
+    /// Smallest observed value.
     pub min: u64,
+    /// 25th percentile.
     pub p25: u64,
+    /// 50th percentile.
     pub median: u64,
+    /// 75th percentile.
     pub p75: u64,
+    /// Largest observed value.
     pub max: u64,
 }
 
+/// Summary of one query stage, served by `GET /api/job/{job_id}/stages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryStageSummary {
+    /// Stage id, as a string.
     pub stage_id: String,
+    /// Stage state, e.g. `Running`, `Successful`, `Failed`.
     pub stage_status: String,
+    /// Rows read by the stage, summed across tasks.
     pub input_rows: usize,
+    /// Rows produced by the stage, summed across tasks.
     pub output_rows: usize,
+    /// Formatted wall time across the stage's tasks, if any have started.
     pub elapsed_compute: Option<String>,
+    /// Rendered plan for this stage, in the requested [`PlanFormat`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_plan: Option<String>,
+    /// Distribution of per-task execution time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_duration_percentiles: Option<Percentiles>,
+    /// Distribution of per-task input row counts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_input_percentiles: Option<Percentiles>,
+    /// One entry per task. Always `Some` today; the `Option` predates
+    /// multi-partition tasks, when this list was indexed by partition and
+    /// could be sparse.
     pub tasks: Vec<Option<TaskSummary>>,
 }
 
+/// Response body for `GET /api/job/{job_id}/stages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryStagesResponse {
+    /// One summary per stage, in stage order.
     pub stages: Vec<QueryStageSummary>,
 }
 
-/// Session config as flat key/value pairs (from `SessionConfig::to_props()`),
-/// sorted for stable output.
-pub type JobConfig = BTreeMap<String, String>;
+/// How a plan should be rendered. Parsed from the `?plan_format=` query
+/// parameter, and part of the REST contract, so it lives alongside the
+/// response types rather than with the HTTP handlers.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFormat {
+    /// `?plan_format=default` => plain indent, no metrics
+    #[default]
+    Default,
+    /// `?plan_format=tree` => tree render, no metrics
+    Tree,
+    /// `?plan_format=metrics` => indent with aggregated metrics
+    Metrics,
+}

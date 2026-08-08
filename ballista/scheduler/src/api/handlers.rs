@@ -27,7 +27,8 @@ use ballista_core::serde::protobuf::{ExecutorMetric, executor_metric::Metric};
 use ballista_core::serde::scheduler::{
     ExecutorOperatingSystemSpecification, ExecutorSpecification,
 };
-use ballista_history::dto::JobResponse;
+use ballista_core::utils::get_current_time;
+use ballista_history::dto::{JobResponse, PlanFormat};
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -111,18 +112,6 @@ struct CancelJobResponse {
 pub struct JobQueryParams {
     /// Controls plan format
     pub plan_format: Option<PlanFormat>,
-}
-
-#[derive(Debug, serde::Deserialize, Default, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanFormat {
-    /// ?plan_format=default => plain indent, no metrics
-    #[default]
-    Default,
-    /// ?plan_format=tree => tree render, no metrics
-    Tree,
-    /// ?plan_format=metrics => indent with aggregated metrics   
-    Metrics,
 }
 
 /// A handler for GET requests to the root (`/`).
@@ -313,7 +302,10 @@ pub async fn get_job<
         })?
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
 
-    Ok(Json(dto_build::graph_to_job_response(&graph, &query)))
+    Ok(Json(dto_build::graph_to_job_response(
+        &graph,
+        query.plan_format.unwrap_or_default(),
+    )))
 }
 
 pub async fn cancel_job<
@@ -404,7 +396,11 @@ pub async fn get_query_stages<
             )
         })?
     {
-        Ok(Json(dto_build::graph_to_query_stages(&graph, &query)))
+        Ok(Json(dto_build::graph_to_query_stages(
+            &graph,
+            query.plan_format.unwrap_or_default(),
+            get_current_time(),
+        )))
     } else {
         Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
