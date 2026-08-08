@@ -41,7 +41,7 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = ["dep:ballista-history"]
+rest-api = ["dep:ballista-api-types"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -49,8 +49,8 @@ substrait = ["dep:datafusion-substrait"]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.9"
+ballista-api-types = { path = "../api-types", version = "54.0.0", optional = true }
 ballista-core = { path = "../core", version = "54.0.0" }
-ballista-history = { path = "../history", version = "54.0.0", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }

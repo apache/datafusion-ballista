@@ -16,8 +16,8 @@
 # under the License.
 
 [package]
-name = "ballista-history"
-description = "Shared REST response types for the Ballista scheduler and history server"
+name = "ballista-api-types"
+description = "Wire types for the Ballista scheduler REST API"
 license = "Apache-2.0"
 version = "54.0.0"
 homepage = "https://datafusion.apache.org/ballista/"

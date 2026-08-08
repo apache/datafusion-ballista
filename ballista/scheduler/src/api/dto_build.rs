@@ -19,7 +19,7 @@
 //!
 //! These functions are the only place the scheduler's `ExecutionGraph` /
 //! `JobOverview` shapes are translated into the wire types in
-//! [`ballista_history::dto`]. Keeping the translation here (rather than inline
+//! [`ballista_api_types::dto`]. Keeping the translation here (rather than inline
 //! in the axum handlers) means the same DTOs can be produced from state that
 //! did not come from a live handler request.
 //!
@@ -31,15 +31,15 @@ use crate::display::format_stage_metrics;
 use crate::state::execution_graph::{ExecutionGraphBox, ExecutionStage};
 use crate::state::execution_stage::TaskInfo;
 use crate::state::task_manager::JobOverview;
+use ballista_api_types::dto::{
+    JobResponse, Percentiles, PlanFormat, QueryStageSummary, QueryStagesResponse,
+    TaskStatus, TaskSummary,
+};
 use ballista_core::serde::protobuf::failed_task::FailedReason::{
     ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
 };
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedTask, task_status};
-use ballista_history::dto::{
-    JobResponse, Percentiles, PlanFormat, QueryStageSummary, QueryStagesResponse,
-    TaskStatus, TaskSummary,
-};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
@@ -228,7 +228,7 @@ fn task_summaries(
 /// Map a protobuf task status onto the wire enum.
 ///
 /// A free function rather than a `From` impl: both types are foreign to this
-/// crate now that [`TaskStatus`] lives in `ballista-history`.
+/// crate now that [`TaskStatus`] lives in `ballista-api-types`.
 fn task_status_to_dto(value: &task_status::Status) -> TaskStatus {
     match value {
         task_status::Status::Running(_) => TaskStatus::Running,
