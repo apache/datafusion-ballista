@@ -34,6 +34,7 @@ mod shuffle_writer_trait;
 pub mod sort_shuffle;
 mod unordered_range_repartition;
 mod unresolved_shuffle;
+mod value_index;
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +62,7 @@ pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
 pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
+pub use value_index::{ValueIndexExec, ValueIndexReader};
 
 use crate::JobId;
 

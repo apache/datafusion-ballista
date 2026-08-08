@@ -18,7 +18,7 @@
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
 use ballista_core::execution_plans::create_shuffle_path;
-use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::arrow::ipc::reader::FileReader;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
@@ -154,7 +154,7 @@ impl FlightService for BallistaFlightService {
                 let file = BufReader::new(file);
                 // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
                 let reader = unsafe {
-                    StreamReader::try_new(file, None)
+                    FileReader::try_new(file, None)
                         .map_err(|e| from_arrow_err(&e))?
                         .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
                 };
@@ -405,7 +405,7 @@ async fn stream_sort_shuffle_block(
 }
 
 fn read_partition<T>(
-    reader: StreamReader<std::io::BufReader<T>>,
+    reader: FileReader<std::io::BufReader<T>>,
     tx: Sender<Result<RecordBatch, FlightError>>,
 ) -> Result<(), FlightError>
 where
