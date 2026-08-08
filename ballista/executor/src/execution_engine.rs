@@ -135,6 +135,10 @@ impl ExecutionEngine for DefaultExecutionEngine {
     ) -> Result<Arc<dyn QueryStageExecutor>> {
         let plan = plan
             .transform(|p| {
+                // TODO: RangeShuffleReaderExec needs the same late-bind
+                // (with_work_dir + with_client_pool) once a planner rule
+                // plants it; without it, the first task carrying one will
+                // fail with "work dir should have been set by executor".
                 if let Some(reader) = p.downcast_ref::<ShuffleReaderExec>() {
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
