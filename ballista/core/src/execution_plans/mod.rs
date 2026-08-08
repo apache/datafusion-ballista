@@ -23,6 +23,7 @@ mod chaos_exec;
 mod distributed_explain_analyze;
 mod distributed_query;
 mod ordered_range_repartition;
+mod partitioned_bounded_window_agg;
 mod per_partition_filter;
 pub mod plan_algebra;
 mod range_repartition_common;
@@ -42,6 +43,7 @@ use datafusion::common::exec_err;
 pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
 pub use ordered_range_repartition::OrderedRangeRepartitionExec;
+pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
 pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
 pub use plan_algebra::{preserves_distribution, preserves_partitioning};
 pub use runtime_stats::{
