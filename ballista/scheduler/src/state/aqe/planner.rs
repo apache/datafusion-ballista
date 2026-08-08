@@ -22,7 +22,7 @@ use crate::state::aqe::execution_plan::{
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
-    PropagateEmptyExecRule, SelectJoinRule,
+    ParallelWindowRule, PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -543,6 +543,12 @@ impl AdaptivePlanner {
 
         // changing plan before other built in optimizers kick in
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
+
+        // Rewrite bounded RANGE-frame windows into a range-shuffle so BWAG's
+        // single-partition constraint is not a serial bottleneck. Must run
+        // before DistributedExchangeRule — the rule emits an ORRE that DE
+        // picks up as the shuffle-boundary K-space source.
+        physical_optimizers.push(Arc::new(ParallelWindowRule));
 
         // select actual join implementation based on current runtime information
         physical_optimizers

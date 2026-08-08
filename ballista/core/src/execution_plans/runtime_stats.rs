@@ -1755,7 +1755,7 @@ mod overlap_remap_tests {
 
     /// A straddling sub-part — one whose sketched [min, max] spans the cut
     /// — appears in BOTH downstream partitions' lists. This is the case
-    /// PerPartitionFilterExec exists to clean up.
+    /// RangeFilterExec exists to clean up.
     #[test]
     fn overlap_remap_straddling_producer_appears_in_both_partitions() {
         // Producer 300 covers [5, 25) — straddles the cut at 15.

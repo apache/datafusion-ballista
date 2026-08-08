@@ -58,8 +58,9 @@ use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
     PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
-    RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec,
-    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec,
+    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -702,6 +703,61 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     predicates,
                 )?))
             }
+            PhysicalPlanType::RangeFilter(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "RangeFilterExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let schema = input.schema();
+                let routing_expr_proto = node.routing_expr.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "RangeFilterExecNode missing routing_expr".into(),
+                    )
+                })?;
+                let routing_expr =
+                    datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+                        routing_expr_proto,
+                        ctx,
+                        schema.as_ref(),
+                        self,
+                    )?;
+                let partition_indices: Vec<usize> =
+                    node.partition_indices.iter().map(|&i| i as usize).collect();
+                let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
+                    datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
+                        DataFusionError::Internal(format!(
+                            "RangeFilterExec: failed to decode ScalarValue: {e:?}"
+                        ))
+                    })
+                };
+                let cuts: Vec<_> = node.cuts.iter().map(sv_from_proto).collect::<Result<
+                    _,
+                    DataFusionError,
+                >>(
+                )?;
+                let halo_lo_proto = node.halo_lo.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "RangeFilterExecNode missing halo_lo".into(),
+                    )
+                })?;
+                let halo_lo = sv_from_proto(halo_lo_proto)?;
+                let halo_hi_proto = node.halo_hi.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "RangeFilterExecNode missing halo_hi".into(),
+                    )
+                })?;
+                let halo_hi = sv_from_proto(halo_hi_proto)?;
+                Ok(Arc::new(RangeFilterExec::try_new_with_indices(
+                    input.clone(),
+                    routing_expr,
+                    cuts,
+                    halo_lo,
+                    halo_hi,
+                    partition_indices,
+                )?))
+            }
             PhysicalPlanType::PartitionedBoundedWindowAgg(node) => {
                 let [input] = inputs else {
                     return Err(DataFusionError::Internal(format!(
@@ -1024,6 +1080,57 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode PerPartitionFilterExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeFilterExec>() {
+            let cuts = exec.cuts().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "RangeFilterExec: cannot serialize before resolve_cuts()".into(),
+                )
+            })?;
+            let routing_expr =
+                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                    exec.routing_expr(),
+                    self.default_codec.as_ref(),
+                )?;
+            let partition_indices: Vec<u32> =
+                exec.partition_indices().iter().map(|&i| i as u32).collect();
+            let cuts_proto = cuts
+                .iter()
+                .map(datafusion_proto_common::ScalarValue::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "failed to encode RangeFilterExec cuts: {e:?}"
+                    ))
+                })?;
+            let halo_lo = datafusion_proto_common::ScalarValue::try_from(&exec.halo_lo())
+                .map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "failed to encode RangeFilterExec halo_lo: {e:?}"
+                    ))
+                })?;
+            let halo_hi = datafusion_proto_common::ScalarValue::try_from(&exec.halo_hi())
+                .map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "failed to encode RangeFilterExec halo_hi: {e:?}"
+                    ))
+                })?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeFilter(
+                    protobuf::RangeFilterExecNode {
+                        routing_expr: Some(routing_expr),
+                        cuts: cuts_proto,
+                        halo_lo: Some(halo_lo),
+                        halo_hi: Some(halo_hi),
+                        partition_indices,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode RangeFilterExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -2045,6 +2152,86 @@ mod test {
                 "predicate {k} mismatched after roundtrip",
             );
         }
+    }
+
+    /// `RangeFilterExec` round-trips through the codec: routing expr, cuts,
+    /// and halo widths reappear identical on the other side.
+    #[tokio::test]
+    async fn test_range_filter_exec_roundtrip() {
+        use crate::execution_plans::RangeFilterExec;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_plan::repartition::RepartitionExec;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let source: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(schema.clone()),
+        );
+        let input: Arc<dyn ExecutionPlan> = Arc::new(
+            RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(3)).unwrap(),
+        );
+        use datafusion::scalar::ScalarValue;
+        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let cuts: Vec<ScalarValue> = vec![
+            ScalarValue::Float64(Some(10.0)),
+            ScalarValue::Float64(Some(20.0)),
+        ];
+        let original = RangeFilterExec::try_new_resolved(
+            input.clone(),
+            routing_expr.clone(),
+            cuts.clone(),
+            ScalarValue::Float64(Some(3.0)),
+            ScalarValue::Float64(Some(0.0)),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<RangeFilterExec>()
+            .expect("Expected RangeFilterExec");
+        assert_eq!(decoded.cuts().unwrap(), cuts);
+        assert_eq!(decoded.halo_lo(), ScalarValue::Float64(Some(3.0)));
+        assert_eq!(decoded.halo_hi(), ScalarValue::Float64(Some(0.0)));
+        assert_eq!(decoded.routing_expr().to_string(), routing_expr.to_string());
+    }
+
+    /// A pending RangeFilterExec (unresolved cuts) refuses to serialize —
+    /// wire plans must always carry resolved cuts.
+    #[tokio::test]
+    async fn test_range_filter_exec_pending_refuses_serialization() {
+        use crate::execution_plans::RangeFilterExec;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_plan::repartition::RepartitionExec;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let source: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(schema.clone()),
+        );
+        let input: Arc<dyn ExecutionPlan> = Arc::new(
+            RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(2)).unwrap(),
+        );
+        use datafusion::scalar::ScalarValue;
+        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let pending = RangeFilterExec::try_new_pending(
+            input,
+            routing_expr,
+            ScalarValue::Float64(Some(0.0)),
+            ScalarValue::Float64(Some(0.0)),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        let err = codec.try_encode(Arc::new(pending), &mut buf).unwrap_err();
+        assert!(err.to_string().contains("before resolve_cuts"));
     }
 
     /// `BufferExec` in `Dam` mode round-trips through the codec.

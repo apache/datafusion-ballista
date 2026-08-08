@@ -58,6 +58,7 @@ message BallistaPhysicalPlanNode {
     PerPartitionFilterExecNode per_partition_filter = 10;
     PartitionedBoundedWindowAggExecNode partitioned_bounded_window_agg = 11;
     RangeShuffleReaderExecNode range_shuffle_reader = 12;
+    RangeFilterExecNode range_filter = 13;
   }
 }
 
@@ -133,6 +134,25 @@ message UnorderedRangeRepartitionExecNode {
 // plumbed by the framework as `inputs[0]` during decode.
 message PerPartitionFilterExecNode {
   repeated datafusion.PhysicalExprNode predicates = 1;
+}
+
+// Filter over ordered inputs with per-partition half-open range predicates
+// derived from `cuts` + `halo_lo` / `halo_hi`. Zero halo recovers the exact
+// range-repartition trim used above `ShuffleReaderExec`. Non-zero halo
+// widens each partition's read range to include a boundary "context" band
+// (bounded RANGE-frame windows). The child plan is plumbed by the framework
+// as `inputs[0]` during decode. Serialization requires cuts to be resolved.
+//
+// `partition_indices` maps this operator's local partition index to the
+// global partition index in the original K-shape defined by `cuts`. Under
+// task-level restriction the input is sliced to a subset of the K global
+// partitions; each entry stays < `cuts.len() + 1`.
+message RangeFilterExecNode {
+  datafusion.PhysicalExprNode routing_expr = 1;
+  repeated datafusion_common.ScalarValue cuts = 2;
+  datafusion_common.ScalarValue halo_lo = 3;
+  datafusion_common.ScalarValue halo_hi = 4;
+  repeated uint32 partition_indices = 5;
 }
 
 // Wrapper for `BoundedWindowAggExec` that overrides
