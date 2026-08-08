@@ -692,7 +692,7 @@ impl RecordBatchStream for GovernedStream {
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
 /// If `force_remote_read` is true, all partitions are treated as remote.
-fn local_remote_read_split(
+pub(crate) fn local_remote_read_split(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     force_remote_read: bool,
@@ -1037,7 +1037,7 @@ async fn new_ballista_client(
     .await
 }
 
-async fn fetch_partition_remote(
+pub(crate) async fn fetch_partition_remote(
     location: &PartitionLocation,
     config: Arc<GrpcClientConfig>,
     prefer_flight: bool,
@@ -1108,7 +1108,7 @@ async fn fetch_partition_remote(
     }
 }
 
-fn fetch_partition_local(
+pub(crate) fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
