@@ -37,6 +37,7 @@ ballista-core = { path = "../ballista/core", version = "54.0.0", features = [
 ] }
 clap = { workspace = true }
 datafusion = { workspace = true }
+datafusion-functions-aggregate-common = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }
@@ -56,7 +57,12 @@ tokio = { version = "^1.52", features = [
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+ordered-float = "4"
 
 [[bench]]
 harness = false
 name = "sort_shuffle"
+
+[[bench]]
+harness = false
+name = "quantile_sketch"
