@@ -22,6 +22,7 @@ members = [
     "ballista/client",
     "ballista/core",
     "ballista/executor",
+    "ballista/history",
     "ballista/scheduler",
     "benchmarks",
     "chaos-testing",

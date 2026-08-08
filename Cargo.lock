@@ -1201,6 +1201,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-history"
+version = "54.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "ballista-scheduler"
 version = "54.0.0"
 dependencies = [
@@ -1208,6 +1215,7 @@ dependencies = [
  "async-trait",
  "axum",
  "ballista-core",
+ "ballista-history",
  "clap 4.6.3",
  "dashmap",
  "datafusion",
@@ -1230,6 +1238,7 @@ dependencies = [
  "regex",
  "rstest",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",

@@ -41,7 +41,7 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = []
+rest-api = ["dep:ballista-history"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -50,6 +50,7 @@ arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.9"
 ballista-core = { path = "../core", version = "54.0.0" }
+ballista-history = { path = "../history", version = "54.0.0", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
@@ -88,6 +89,7 @@ path = "tests/tpch_plan_stability/main.rs"
 datafusion-functions-aggregate-common = { workspace = true }
 regex = "1"
 rstest = { workspace = true }
+serde_json = "1"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true, optional = true }
