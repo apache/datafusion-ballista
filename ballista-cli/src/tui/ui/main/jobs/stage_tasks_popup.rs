@@ -77,7 +77,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(format!(
                 " Tasks for stage '{}' of job '{}' ",
-                stage.id, popup.job_id
+                stage.stage_id, popup.job_id
             ))
             .borders(Borders::ALL)
             .border_style(app.theme.popup_border_alt)
@@ -106,7 +106,7 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         StageTaskStatus::Successful => {
             Text::from("Successful").style(app.theme.status_completed)
         }
-        StageTaskStatus::Failed { reason } => {
+        StageTaskStatus::Failed { reason, .. } => {
             Text::from(reason.clone()).style(app.theme.status_failed)
         }
     };
@@ -116,7 +116,7 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         Cell::from(status_text.centered()),
         Cell::from(Text::from(app.format_count(task.input_rows)).right_aligned()),
         Cell::from(Text::from(app.format_count(task.output_rows)).right_aligned()),
-        Cell::from(Text::from(task.partition_id.to_string()).right_aligned()),
+        Cell::from(Text::from(format_partitions(&task.partition_id)).right_aligned()),
         Cell::from(Text::from(format_datetime(task.scheduled_time, app)).centered()),
         Cell::from(
             Text::from(
@@ -148,4 +148,14 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
 
 fn format_datetime(dt: u64, app: &App) -> String {
     app.format_datetime(dt.try_into().unwrap_or(0))
+}
+
+/// Render the global partitions a task owns. Single-partition tasks show just
+/// the id; multi-partition tasks show the whole list.
+fn format_partitions(partitions: &[u32]) -> String {
+    partitions
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

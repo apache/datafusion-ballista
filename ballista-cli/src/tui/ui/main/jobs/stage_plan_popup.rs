@@ -42,7 +42,10 @@ fn render_plans(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
 
-    let title = format!(" Plan for stage '{}' of job '{}' ", stage.id, popup.job_id);
+    let title = format!(
+        " Plan for stage '{}' of job '{}' ",
+        stage.stage_id, popup.job_id
+    );
 
     let block = Block::default()
         .title(title)
@@ -50,10 +53,12 @@ fn render_plans(f: &mut Frame, area: Rect, app: &App) {
         .border_style(app.theme.popup_border)
         .border_type(BorderType::Thick);
 
-    let paragraph = Paragraph::new(&*stage.plan).block(block).scroll((
-        popup.plan_vertical_scroll_position(),
-        popup.plan_horizontal_scroll_position(),
-    ));
+    let paragraph = Paragraph::new(stage.stage_plan.as_deref().unwrap_or_default())
+        .block(block)
+        .scroll((
+            popup.plan_vertical_scroll_position(),
+            popup.plan_horizontal_scroll_position(),
+        ));
 
     f.render_widget(paragraph, area);
 }

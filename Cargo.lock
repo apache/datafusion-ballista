@@ -1077,6 +1077,7 @@ name = "ballista-cli"
 version = "54.0.0"
 dependencies = [
  "ballista",
+ "ballista-api-types",
  "chrono",
  "clap 4.6.3",
  "config",
