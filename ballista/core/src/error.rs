@@ -342,40 +342,48 @@ mod tests {
     }
 
     #[test]
-    fn bare_datafusion_io_error_is_retryable() {
-        let e = BallistaError::DataFusionError(Box::new(DataFusionError::IoError(
-            io::Error::new(io::ErrorKind::ConnectionReset, "connection reset"),
-        )));
-        let task = io_failed_task(e);
-        assert!(task.retryable);
-        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
-    }
-
-    #[test]
-    fn shared_wrapped_io_error_is_retryable() {
-        // Errors from a join's shared build side arrive as Shared(Arc<IoError>);
-        // the classifier must see through the wrapper or it will not retry a
-        // transient IO failure.
-        let inner = DataFusionError::IoError(io::Error::new(
-            io::ErrorKind::ConnectionReset,
-            "connection reset",
-        ));
-        let shared = DataFusionError::Shared(Arc::new(inner));
-        let e = BallistaError::DataFusionError(Box::new(shared));
-        let task = io_failed_task(e);
-        assert!(task.retryable);
-        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
-    }
-
-    #[test]
-    fn context_wrapped_shared_io_error_is_retryable() {
-        let inner = DataFusionError::IoError(io::Error::other("s3 timeout"));
-        let shared = DataFusionError::Shared(Arc::new(inner));
-        let ctx = shared.context("reading join build side");
-        let e = BallistaError::DataFusionError(Box::new(ctx));
-        let task = io_failed_task(e);
-        assert!(task.retryable);
-        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
+    fn io_error_is_retryable_through_any_wrapper() {
+        // Both a native DataFusion IoError and a BallistaError::IoError carried
+        // across DataFusion as External stay retryable, including under the
+        // Shared/Context layers DataFusion adds (e.g. a join's shared build side).
+        let df_io = || {
+            DataFusionError::IoError(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "connection reset",
+            ))
+        };
+        let cases: Vec<(&str, BallistaError)> = vec![
+            ("native", BallistaError::DataFusionError(Box::new(df_io()))),
+            (
+                "shared",
+                BallistaError::DataFusionError(Box::new(DataFusionError::Shared(
+                    Arc::new(df_io()),
+                ))),
+            ),
+            (
+                "context+shared",
+                BallistaError::DataFusionError(Box::new(
+                    DataFusionError::Shared(Arc::new(df_io()))
+                        .context("reading join build side"),
+                )),
+            ),
+            (
+                "external",
+                wrap_in_external(BallistaError::IoError(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "connection reset",
+                ))),
+            ),
+        ];
+        for (label, e) in cases {
+            let task = io_failed_task(e);
+            assert!(task.retryable, "{label} should be retryable");
+            assert!(task.count_to_failures, "{label} should count to failures");
+            assert!(
+                matches!(task.failed_reason, Some(FailedReason::IoError(_))),
+                "{label} should classify as IoError",
+            );
+        }
     }
 
     #[test]
@@ -508,27 +516,5 @@ mod tests {
             task.failed_reason,
             Some(FailedReason::ExecutionError(_))
         ));
-    }
-
-    #[test]
-    fn external_wrapped_io_error_is_retryable() {
-        // A BallistaError::IoError carried across DataFusion as External must
-        // stay retryable, including under Shared/Context layers.
-        let io = || {
-            BallistaError::IoError(io::Error::new(
-                io::ErrorKind::ConnectionReset,
-                "connection reset",
-            ))
-        };
-        for e in [
-            wrap_in_external(io()),
-            wrap_in_shared_external(io()),
-            wrap_in_context_external(io()),
-        ] {
-            let task = io_failed_task(e);
-            assert!(task.retryable);
-            assert!(task.count_to_failures);
-            assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
-        }
     }
 }
