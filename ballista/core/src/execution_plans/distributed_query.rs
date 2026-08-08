@@ -18,6 +18,7 @@
 use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::error::BallistaError;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
@@ -872,7 +873,7 @@ async fn fetch_partition(
             flight_transport,
         )
         .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))
+        .map_err(BallistaError::into_datafusion)
 }
 
 #[cfg(test)]

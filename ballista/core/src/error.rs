@@ -84,8 +84,7 @@ impl BallistaError {
     /// the error structural (rather than stringifying it) so that task-failure
     /// classification can recover it: `find_root()` traverses any `Shared` /
     /// `Context` / `Diagnostic` layers DataFusion adds on top and lands on this
-    /// `External` node, whose payload is downcast back to a `BallistaError` (see
-    /// [`find_fetch_failed`] and [`is_retryable_io`]).
+    /// `External` node, whose payload is downcast back to a `BallistaError`.
     pub fn into_datafusion(self) -> DataFusionError {
         DataFusionError::External(Box::new(self))
     }
