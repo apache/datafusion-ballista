@@ -1025,6 +1025,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-api-types"
+version = "54.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "ballista-benchmarks"
 version = "54.0.0"
 dependencies = [
@@ -1070,6 +1077,7 @@ name = "ballista-cli"
 version = "54.0.0"
 dependencies = [
  "ballista",
+ "ballista-api-types",
  "chrono",
  "clap 4.6.3",
  "config",
@@ -1207,6 +1215,7 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "axum",
+ "ballista-api-types",
  "ballista-core",
  "clap 4.6.3",
  "dashmap",
@@ -1230,6 +1239,7 @@ dependencies = [
  "regex",
  "rstest",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",

@@ -39,6 +39,7 @@ use crate::tui::{
     ui::vertical_scrollbar::render_scrollbar,
 };
 
+use crate::tui::domain::jobs::JobStatusExt;
 use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::components::loading_indicator::shimmer_spans_with_style;
 use crate::tui::ui::vertical_scrollbar;
@@ -118,7 +119,7 @@ pub async fn load_job_stages_popup(app: &App, job_id: &str) -> TuiResult<()> {
 
     stages
         .stages
-        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+        .sort_by_key(|s| s.stage_id.parse::<u64>().unwrap_or(u64::MAX));
 
     app.send_event(Event::DataLoaded {
         data: UiData::JobStagesData(job_id.to_owned(), stages),
@@ -144,7 +145,7 @@ pub async fn load_stage_plan(
 
     stages
         .stages
-        .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+        .sort_by_key(|s| s.stage_id.parse::<u64>().unwrap_or(u64::MAX));
 
     app.send_event(Event::DataLoaded {
         data: UiData::JobStagesPlanData(tab.clone(), stages),
@@ -359,14 +360,14 @@ fn render_jobs_table(
 }
 
 fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
-    let start_time = app.format_datetime(job.start_time);
+    let start_time = app.format_datetime(job.start_time as i64);
     Cell::from(Text::from(start_time).centered())
 }
 
 fn render_job_duration_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
     let duration = if job.end_time > 0 {
-        let duration = job.end_time - job.start_time;
-        app.format_duration(duration as u64)
+        let duration = job.end_time.saturating_sub(job.start_time);
+        app.format_duration(duration)
     } else {
         "N/A".to_string()
     };

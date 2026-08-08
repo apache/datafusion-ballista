@@ -21,33 +21,38 @@ use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize, Clone, Debug)]
-pub struct Job {
-    pub job_id: String,
-    pub job_name: String,
-    pub status: String,     // Running, Completed, Failed, Canceled
-    pub job_status: String, // human-readable status/failure detail, e.g. "Failed: <reason>"
-    pub start_time: i64,
-    pub end_time: i64,
-    pub num_stages: usize,
-    pub completed_stages: usize,
-    pub percent_complete: u8,
+// Shared with the scheduler that serves it, so a field change there is a
+// compile error here rather than a runtime deserialization failure (#2257).
+pub use ballista_api_types::dto::JobResponse as Job;
+
+/// Status predicates over the shared [`Job`] type. An extension trait because
+/// `Job` is defined in `ballista-api-types`, which is deliberately free of any
+/// TUI concerns.
+pub trait JobStatusExt {
+    /// Job is accepted but not yet scheduled.
+    fn is_queued(&self) -> bool;
+    /// Job is currently executing.
+    fn is_running(&self) -> bool;
+    /// Job finished successfully.
+    fn is_completed(&self) -> bool;
+    /// Job terminated with an error.
+    fn is_failed(&self) -> bool;
 }
 
-impl Job {
-    pub fn is_queued(&self) -> bool {
+impl JobStatusExt for Job {
+    fn is_queued(&self) -> bool {
         self.status == "Queued"
     }
 
-    pub fn is_running(&self) -> bool {
+    fn is_running(&self) -> bool {
         self.status == "Running"
     }
 
-    pub fn is_completed(&self) -> bool {
+    fn is_completed(&self) -> bool {
         self.status == "Completed"
     }
 
-    pub fn is_failed(&self) -> bool {
+    fn is_failed(&self) -> bool {
         self.status == "Failed"
     }
 }
@@ -454,8 +459,8 @@ mod tests {
         id: &str,
         name: &str,
         status: &str,
-        start_time: i64,
-        end_time: i64,
+        start_time: u64,
+        end_time: u64,
         num_stages: usize,
         completed_stages: usize,
         percent_complete: u8,
@@ -470,6 +475,9 @@ mod tests {
             num_stages,
             completed_stages,
             percent_complete,
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
         }
     }
 
@@ -748,6 +756,9 @@ mod tests {
             num_stages: 1,
             completed_stages: 0,
             percent_complete: 0,
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
         };
         assert_eq!(job.status, "Failed");
         assert_eq!(job.job_status, "Failed: division by zero");

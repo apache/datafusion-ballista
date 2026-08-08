@@ -34,6 +34,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # CLI-only deps (DataFusion/Ballista) — gated by `cli` feature
 ballista = { path = "../ballista/client", version = "54.0.0", features = ["standalone"], optional = true }
+ballista-api-types = { path = "../ballista/api-types", version = "54.0.0", optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-cli = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
@@ -89,6 +90,7 @@ cli = [
 ]
 
 tui = [
+    "dep:ballista-api-types",
     "dep:chrono",
     "dep:config",
     "dep:crossterm",
@@ -111,6 +113,7 @@ tui = [
 ]
 
 web = [
+    "dep:ballista-api-types",
     "dep:chrono",
     "dep:config",
     "dep:critical-section",
