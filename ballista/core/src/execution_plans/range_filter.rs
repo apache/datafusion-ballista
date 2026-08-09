@@ -90,7 +90,7 @@ pub type RangeBound = (Option<ScalarValue>, Option<ScalarValue>);
 
 /// Bounds after halo widening. Float64-only internally today — see the
 /// "Type generality" section in the module doc.
-type WidenedBound = (Option<f64>, Option<f64>);
+pub type WidenedBound = (Option<f64>, Option<f64>);
 
 /// Both raw and widened bounds. `raw` is preserved for serialization; the
 /// executor consumes `widened`.
