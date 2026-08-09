@@ -152,6 +152,9 @@ fn job_end_event_inner(
         job_status: job.job_status.clone(),
         start_time: job.start_time,
         end_time: job.end_time,
+        num_stages: job.num_stages,
+        completed_stages: job.completed_stages,
+        percent_complete: job.percent_complete,
     };
 
     // Stored as raw JSON rather than typed, so the record stays readable when
