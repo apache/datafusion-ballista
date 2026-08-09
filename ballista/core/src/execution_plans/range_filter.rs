@@ -62,7 +62,7 @@ use std::task::{Context, Poll};
 
 use datafusion::arrow::array::{Array, RecordBatch};
 use datafusion::arrow::compute::filter_record_batch;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::cast::{as_boolean_array, as_float64_array};
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
@@ -654,17 +654,12 @@ impl RecordBatchStream for RangeFilterStream {
     }
 }
 
-// Silence the unused import warning when the file is compiled without
-// arrow — DataType is only exercised via `data_type(...)` return checks.
-#[allow(dead_code)]
-fn _touch_datatype(_: DataType) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use datafusion::arrow::array::Float64Array;
     use datafusion::arrow::compute::SortOptions;
-    use datafusion::arrow::datatypes::{Field, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::LexOrdering;
