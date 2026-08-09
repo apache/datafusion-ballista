@@ -11,7 +11,9 @@
 // limitations under the License.
 
 #[cfg(feature = "rest-api")]
-mod dto_build;
+// `pub(crate)` so `scheduler_server::event_log` can build the same DTOs the
+// live REST API serves.
+pub(crate) mod dto_build;
 #[cfg(feature = "rest-api")]
 mod handlers;
 mod health;
