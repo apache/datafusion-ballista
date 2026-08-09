@@ -26,6 +26,7 @@ mod ordered_range_repartition;
 mod partitioned_bounded_window_agg;
 mod per_partition_filter;
 pub mod plan_algebra;
+mod range_filter;
 mod range_repartition_common;
 mod range_shuffle_reader;
 mod runtime_stats;
@@ -47,6 +48,7 @@ pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
 pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
 pub use plan_algebra::{preserves_distribution, preserves_partitioning};
+pub use range_filter::{RangeBound, RangeFilterExec, WidenedBound};
 pub use range_shuffle_reader::RangeShuffleReaderExec;
 pub use runtime_stats::{
     MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
