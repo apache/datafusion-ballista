@@ -22,6 +22,9 @@ CELL_W = 46
 CELL_H = 24
 OP_ROW_H = 34
 ORRE_ROW_H = 62   # taller row for ORRE so the N→N crossing arrows have space
+SW_ROW_H = 68     # taller row for ShuffleWriter so batch sub-cells fit
+HIGHLIGHT_READER_K = 1   # example reader whose read windows we highlight with brackets
+HIGHLIGHT_COLOR = "#e07a00"
 EXEC_PAD = 10
 EXEC_LABEL_H = 18
 STAGE_PAD = 14
@@ -110,7 +113,11 @@ def stage_width(stage: Stage) -> int:
 
 
 def row_height(op: Op) -> int:
-    return ORRE_ROW_H if op.kind == "orre" else OP_ROW_H
+    if op.kind == "orre":
+        return ORRE_ROW_H
+    if op.kind == "shuffle_write":
+        return SW_ROW_H
+    return OP_ROW_H
 
 
 def stage_height(stage: Stage) -> int:
@@ -232,6 +239,14 @@ def render(doc: Doc) -> str:
                 )
             else:
                 parts.append(text(sx + STAGE_PAD + 8, row_y + rh // 2, op.label, size=FS_OP, anchor="start"))
+            # Highlighted reader's (exec, slot) for bracket rendering on shuffle_write cells.
+            if op.kind == "shuffle_write" and exec_frames:
+                _slices_per_exec = exec_frames[0][0].slices
+                h_ex = HIGHLIGHT_READER_K // _slices_per_exec
+                h_sl = HIGHLIGHT_READER_K % _slices_per_exec
+            else:
+                h_ex, h_sl = -1, -1
+
             # Cells across execs, labeled with global k (0..K-1 across all execs).
             k_cursor = 0
             for ex_idx, (ex, ex_x0, cell_x0) in enumerate(exec_frames):
@@ -244,16 +259,51 @@ def render(doc: Doc) -> str:
                     parts.append(rect(cx, cy, CELL_W - 4, ch, fill=fill, stroke="#556", sw=0.8))
                     # global-k label: for ORRE row put it at the TOP of the cell so the
                     # crossing arrows drawn inside have breathing room below.
-                    label_y = (cy + 10) if op.kind == "orre" else (cy + ch // 2)
+                    # For shuffle_write, put label at TOP so batches fit below.
+                    if op.kind in ("orre", "shuffle_write"):
+                        label_y = cy + 10
+                    else:
+                        label_y = cy + ch // 2
                     parts.append(text(cx + (CELL_W - 4) // 2, label_y, f"k={k}", size=FS_SMALL))
 
-                    # Record shuffle anchors
+                    # Record shuffle anchors + draw batches + highlight consumed windows.
                     if op.kind == "shuffle_write":
                         out_id = op.extra.get("out")
                         if out_id:
                             writer_anchors.setdefault(out_id, []).append(
                                 (ex_idx, si, cx + (CELL_W - 4) // 2, cy)
                             )
+                        # Batch sub-cells: N horizontal strips below the label.
+                        n_batches = int(doc.shuffles.get(out_id or "", {}).get("batches_per_writer", 4))
+                        batch_zone_top = cy + 18  # below the "k=N" label
+                        batch_zone_bot = cy + ch - 2
+                        batch_h = (batch_zone_bot - batch_zone_top) / max(n_batches, 1)
+                        for bi in range(n_batches):
+                            by = batch_zone_top + bi * batch_h
+                            parts.append(rect(
+                                cx + 3, int(by), CELL_W - 4 - 6, int(batch_h - 1),
+                                fill="#fff", stroke="#889", sw=0.4, rx=1,
+                            ))
+                        # Highlight the batches reader HIGHLIGHT_READER_K pulls from THIS writer.
+                        # Value order: top batch = smallest values, bottom batch = largest.
+                        # Halo left (writer at reader_sl - 1): reader pulls BOTTOM batch
+                        # Halo right (writer at reader_sl + 1): reader pulls TOP batch
+                        # Self (writer at reader_sl in ANY exec): reader pulls ALL batches
+                        if si == h_sl:
+                            b_lo, b_hi = 0, n_batches
+                        elif si == h_sl - 1:
+                            b_lo, b_hi = n_batches - 1, n_batches
+                        elif si == h_sl + 1:
+                            b_lo, b_hi = 0, 1
+                        else:
+                            b_lo, b_hi = -1, -1
+                        if b_lo >= 0:
+                            y_top = batch_zone_top + b_lo * batch_h
+                            y_bot = batch_zone_top + b_hi * batch_h
+                            parts.append(rect(
+                                cx + 1, int(y_top) - 1, CELL_W - 4 - 2, int(y_bot - y_top) + 2,
+                                fill="none", stroke=HIGHLIGHT_COLOR, sw=2, rx=2,
+                            ))
                 k_cursor += ex.slices
 
             # ORRE: draw the internal N→N crossing arrows per exec.
@@ -267,12 +317,10 @@ def render(doc: Doc) -> str:
                     xs = [cell_x0 + si * CELL_W + (CELL_W - 4) // 2 for si in range(ex.slices)]
                     top_y = row_y + 4 + 14      # just below the "k=N" label
                     bot_y = row_y + rh - 4 - 4  # just above the cell bottom edge
-                    for i, x_in in enumerate(xs):
-                        for j, x_out in enumerate(xs):
-                            # Skip drawing self as a straight line (would be a bar) —
-                            # let the reader infer identity as an obvious no-op.
-                            if i == j:
-                                continue
+                    # Full N² arrows including self (i==j) — every input can go to
+                    # every output; self-lines make the K² cost fully visible.
+                    for x_in in xs:
+                        for x_out in xs:
                             parts.append(
                                 line(x_in, bot_y, x_out, top_y, stroke="#888", sw=0.6, dash="1.5,1.5")
                             )
@@ -353,6 +401,11 @@ def render(doc: Doc) -> str:
                 f' K² · O(K)'
                 f'</text>'
             )
+            # Highlight legend, one line below the punchline box.
+            legend = f"reader k={HIGHLIGHT_READER_K} read windows (via range index)"
+            legend_w = 6 * len(legend) + 20
+            parts.append(rect(mx - legend_w // 2, my + 14, legend_w, 18, fill="#ffffff", stroke=HIGHLIGHT_COLOR, sw=1, rx=4))
+            parts.append(text(mx, my + 23, legend, size=FS_SMALL, fill=HIGHLIGHT_COLOR, weight="bold"))
 
     parts.append("</svg>")
     return "\n".join(parts)
