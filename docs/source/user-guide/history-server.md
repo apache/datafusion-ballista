@@ -59,8 +59,8 @@ ballista-history-server \
   --bind-port 50060
 ```
 
-It loads every completed log it finds at startup and serves them over the same
-paths as the live scheduler:
+It scans the directory at startup and indexes every completed log it finds, then
+serves them over the same paths as the live scheduler:
 
 | Endpoint                       | Serves                              |
 | ------------------------------ | ----------------------------------- |
@@ -76,8 +76,14 @@ Because the TUI talks to that same API, you can browse history with:
 ballista-cli --tui --host localhost --port 50060
 ```
 
-Logs are read once at startup. Restart the history server to pick up jobs that
-finished since it launched.
+The directory is scanned once at startup, so restart the history server to pick
+up jobs that finished since it launched.
+
+Only each job's summary is held in memory, which is what `GET /api/jobs` is
+built from. Everything else is read back out of the job's log when you ask for
+it. A job with many tasks stores megabytes of plan and per-task detail, and
+keeping all of that resident for every job in the directory would put the
+server's memory use at the mercy of how long you retain logs.
 
 ## What is recorded
 
@@ -100,7 +106,11 @@ future UI can show a job progressing rather than only its end state.
   use for log rotation.
 - **A corrupt log is skipped, not fatal.** If the scheduler dies mid-write the
   affected file simply has no terminal record, so the history server ignores it
-  and still serves every other job.
+  and still serves every other job. Damage confined to a job's stored responses
+  is only found when that job is opened, and shows up as a failed request for
+  that one job.
+- **Do not delete a log out from under a running server.** The job stays in the
+  list until the next restart, and opening it fails.
 - **Plans are rendered once, when the job ends.** The `?plan_format=` query
   parameter therefore has no effect against a history server; it returns the
   format captured at write time.

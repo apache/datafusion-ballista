@@ -428,7 +428,7 @@ mod tests {
         writer.flush_job(&job_id).await;
 
         let store = HistoryStore::load(dir.path()).unwrap();
-        let replayed = store.jobs.get(&job_id).expect("job should be replayed");
+        let replayed = store.read_job(&job_id).expect("job should be replayed");
 
         assert_eq!(
             replayed.job.get(),

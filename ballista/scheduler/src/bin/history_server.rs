@@ -62,8 +62,8 @@ fn main() -> Result<()> {
     // before the runtime exists, rather than parking a runtime worker on it.
     let store = Arc::new(HistoryStore::load(&args.event_log_dir)?);
     tracing::info!(
-        "Loaded {} completed job(s) from {}",
-        store.jobs.len(),
+        "Indexed {} completed job(s) from {}",
+        store.len(),
         args.event_log_dir.display()
     );
 

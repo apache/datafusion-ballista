@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Standalone history server: loads completed event logs and serves the same
+//! Standalone history server: indexes completed event logs and serves the same
 //! `/api/*` responses the live scheduler does, from stored DTOs.
 
 use crate::api::SchedulerErrorResponse;
@@ -28,31 +28,76 @@ use axum::{
 use ballista_api_types::dto::{JobConfig, JobResponse};
 use ballista_core::BALLISTA_VERSION;
 use ballista_history::event::JobIndex;
-use ballista_history::reader::{ReplayedJob, read_completed_job};
+use ballista_history::reader::{
+    ReadError, ReplayedJob, read_completed_job, read_job_index,
+};
 use datafusion::DATAFUSION_VERSION;
 use http::StatusCode;
 use http::header::CONTENT_TYPE;
 use serde_json::value::RawValue;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// In-memory store of completed jobs, loaded once at startup from a directory
-/// of `<job_id>.eventlog` files.
+/// Where one completed job lives, and just enough about it to list it.
+struct JobEntry {
+    /// Frozen summary, everything `GET /api/jobs` reports.
+    index: JobIndex,
+    /// The `<job_id>.eventlog` the rest of the job is read back from.
+    path: PathBuf,
+}
+
+/// Index of the completed jobs found in an event-log directory.
+///
+/// Only each job's [`JobIndex`] is held in memory. The stored payloads (both
+/// plan-bearing REST responses, the session config and the DOT graph) run to
+/// megabytes for a job with many tasks, and would otherwise sit resident for
+/// every job in the directory whether or not anyone ever looks at it. They are
+/// read back from disk per request instead, which is fine at the rate a person
+/// clicks through a UI.
 #[derive(Default)]
 pub struct HistoryStore {
     /// Completed jobs keyed by job id.
-    pub jobs: HashMap<String, ReplayedJob>,
+    jobs: HashMap<String, JobEntry>,
+}
+
+/// Why reading one job's stored payload back produced nothing.
+#[derive(Debug)]
+pub enum JobReadError {
+    /// No job with this id was found when the directory was indexed.
+    NotFound,
+    /// The log was indexed at startup but could not be read now.
+    Unreadable(ReadError),
+    /// The log no longer has a terminal record, so it was replaced or
+    /// truncated after the index was built.
+    Vanished,
+}
+
+impl std::fmt::Display for JobReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobReadError::NotFound => write!(f, "no such job"),
+            JobReadError::Unreadable(e) => write!(f, "event log is unreadable: {e}"),
+            JobReadError::Vanished => {
+                write!(f, "event log no longer contains a terminal record")
+            }
+        }
+    }
 }
 
 impl HistoryStore {
-    /// Load every completed job found under `dir`. Missing directories yield
+    /// Index every completed job found under `dir`. Missing directories yield
     /// an empty store rather than an error.
     ///
     /// A single unreadable/corrupt `.eventlog` file (e.g. truncated by a
     /// crash mid-write) is logged and skipped rather than failing the whole
     /// load — one bad log must not hide every other completed job. Only a
     /// failure to read the directory itself is propagated.
+    ///
+    /// Each log is read once here, but only its summary is decoded, so this
+    /// costs a pass over the directory rather than a copy of it in memory.
+    /// Corruption confined to the payloads therefore surfaces when the job is
+    /// requested rather than at startup.
     pub fn load(dir: &Path) -> std::io::Result<HistoryStore> {
         let mut jobs = HashMap::new();
         if dir.exists() {
@@ -61,9 +106,9 @@ impl HistoryStore {
                 if path.extension().and_then(|e| e.to_str()) != Some("eventlog") {
                     continue;
                 }
-                match read_completed_job(&path) {
-                    Ok(Some(replayed)) => {
-                        jobs.insert(replayed.index.job_id.clone(), replayed);
+                match read_job_index(&path) {
+                    Ok(Some(index)) => {
+                        jobs.insert(index.job_id.clone(), JobEntry { index, path });
                     }
                     Ok(None) => {}
                     Err(err) => {
@@ -77,6 +122,63 @@ impl HistoryStore {
         }
         Ok(HistoryStore { jobs })
     }
+
+    /// How many completed jobs were indexed.
+    pub fn len(&self) -> usize {
+        self.jobs.len()
+    }
+
+    /// Whether the log directory held no completed jobs.
+    pub fn is_empty(&self) -> bool {
+        self.jobs.is_empty()
+    }
+
+    /// Read one job's stored payload back from its event log.
+    ///
+    /// This is blocking file I/O, so the request handlers call it from
+    /// `spawn_blocking` rather than on a runtime worker.
+    pub fn read_job(&self, job_id: &str) -> Result<ReplayedJob, JobReadError> {
+        let entry = self.jobs.get(job_id).ok_or(JobReadError::NotFound)?;
+        match read_completed_job(&entry.path) {
+            Ok(Some(replayed)) => Ok(replayed),
+            Ok(None) => Err(JobReadError::Vanished),
+            Err(e) => Err(JobReadError::Unreadable(e)),
+        }
+    }
+}
+
+/// [`HistoryStore::read_job`] moved off the async runtime.
+///
+/// A log that was indexed at startup and cannot be read now means the file
+/// changed underneath us, so both failures are logged rather than only being
+/// reported to whoever happened to ask.
+async fn read_job_blocking(
+    store: Arc<HistoryStore>,
+    job_id: String,
+) -> Result<ReplayedJob, SchedulerErrorResponse> {
+    let result = tokio::task::spawn_blocking(move || {
+        store.read_job(&job_id).map_err(|e| (job_id, e))
+    })
+    .await
+    .map_err(|e| {
+        tracing::warn!("history server: reading an event log panicked: {e}");
+        SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
+
+    result.map_err(|(job_id, err)| match err {
+        JobReadError::NotFound => SchedulerErrorResponse::new(StatusCode::NOT_FOUND),
+        JobReadError::Vanished => {
+            tracing::warn!("history server: event log for {job_id} {err}");
+            SchedulerErrorResponse::with_error(StatusCode::NOT_FOUND, err.to_string())
+        }
+        JobReadError::Unreadable(_) => {
+            tracing::warn!("history server: event log for {job_id} {err}");
+            SchedulerErrorResponse::with_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                err.to_string(),
+            )
+        }
+    })
 }
 
 /// Build the axum router serving `/api/*` from a loaded [`HistoryStore`].
@@ -115,6 +217,8 @@ fn list_entry(index: &JobIndex) -> JobResponse {
     }
 }
 
+/// The one endpoint that touches every job, and the reason the index is held
+/// in memory at all: it is served without going near the disk.
 async fn get_jobs(State(store): State<Arc<HistoryStore>>) -> Json<Vec<JobResponse>> {
     let mut jobs: Vec<JobResponse> =
         store.jobs.values().map(|j| list_entry(&j.index)).collect();
@@ -140,44 +244,32 @@ async fn get_job(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<axum::response::Response, SchedulerErrorResponse> {
-    store
-        .jobs
-        .get(&job_id)
-        .map(|j| raw_json(&j.job))
-        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
+    let job = read_job_blocking(store, job_id).await?;
+    Ok(raw_json(&job.job))
 }
 
 async fn get_stages(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<axum::response::Response, SchedulerErrorResponse> {
-    store
-        .jobs
-        .get(&job_id)
-        .map(|j| raw_json(&j.stages))
-        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
+    let job = read_job_blocking(store, job_id).await?;
+    Ok(raw_json(&job.stages))
 }
 
 async fn get_config(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<Json<JobConfig>, SchedulerErrorResponse> {
-    store
-        .jobs
-        .get(&job_id)
-        .map(|j| Json(j.config.clone()))
-        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
+    let job = read_job_blocking(store, job_id).await?;
+    Ok(Json(job.config))
 }
 
 async fn get_dot(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<String, SchedulerErrorResponse> {
-    store
-        .jobs
-        .get(&job_id)
-        .map(|j| j.dot.clone())
-        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
+    let job = read_job_blocking(store, job_id).await?;
+    Ok(job.dot)
 }
 
 async fn get_executors_empty() -> Json<Vec<()>> {
@@ -218,7 +310,7 @@ mod tests {
 
     const STAGE_ID_MARKER: &str = "stage-42";
 
-    fn sample_replayed_job(job_id: &str) -> ReplayedJob {
+    fn sample_replayed_job_with_stage(job_id: &str, stage_id: &str) -> ReplayedJob {
         let job = JobResponse {
             job_id: job_id.into(),
             job_name: "q1".into(),
@@ -235,7 +327,7 @@ mod tests {
         };
         let stages = QueryStagesResponse {
             stages: vec![QueryStageSummary {
-                stage_id: STAGE_ID_MARKER.into(),
+                stage_id: stage_id.into(),
                 stage_status: "Completed".into(),
                 input_rows: 10,
                 output_rows: 5,
@@ -265,15 +357,17 @@ mod tests {
         }
     }
 
-    fn store_with_one_job() -> Arc<HistoryStore> {
-        let mut jobs = HashMap::new();
-        jobs.insert("job-1".to_string(), sample_replayed_job("job-1"));
-        Arc::new(HistoryStore { jobs })
+    /// Every test goes through a real directory of logs, because the store no
+    /// longer holds payloads it could be handed directly.
+    fn store_with_one_job(dir: &tempfile::TempDir) -> Arc<HistoryStore> {
+        write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
+        Arc::new(HistoryStore::load(dir.path()).unwrap())
     }
 
     #[tokio::test]
     async fn jobs_endpoint_nulls_plan_fields() {
-        let app = history_router(store_with_one_job());
+        let dir = tempdir().unwrap();
+        let app = history_router(store_with_one_job(&dir));
         let resp = app
             .oneshot(
                 Request::builder()
@@ -294,7 +388,8 @@ mod tests {
 
     #[tokio::test]
     async fn stages_endpoint_returns_stored_dto() {
-        let app = history_router(store_with_one_job());
+        let dir = tempdir().unwrap();
+        let app = history_router(store_with_one_job(&dir));
         let resp = app
             .oneshot(
                 Request::builder()
@@ -317,7 +412,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_job_returns_404_on_job_and_stages() {
-        let app = history_router(store_with_one_job());
+        let dir = tempdir().unwrap();
+        let app = history_router(store_with_one_job(&dir));
 
         let resp = app
             .clone()
@@ -345,7 +441,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_endpoint_returns_static_payload() {
-        let app = history_router(store_with_one_job());
+        let dir = tempdir().unwrap();
+        let app = history_router(store_with_one_job(&dir));
         let resp = app
             .oneshot(
                 Request::builder()
@@ -375,8 +472,89 @@ mod tests {
         }
     }
 
+    /// Fetch one path and return the status and body together.
+    async fn get(app: &Router, uri: &str) -> (StatusCode, String) {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// The point of the whole design: nothing but the summary is retained, so
+    /// a detail request has to go back to the file. Rewriting the log behind a
+    /// loaded store and seeing the new contents served is the only way to
+    /// observe that from outside.
+    #[tokio::test]
+    async fn detail_endpoints_read_the_log_on_demand() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("job-1.eventlog");
+        let app = history_router(store_with_one_job(&dir));
+
+        let (status, body) = get(&app, "/api/job/job-1/stages").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(STAGE_ID_MARKER));
+
+        write_job_end_log_with_stage(&path, "job-1", "rewritten-stage");
+
+        let (status, body) = get(&app, "/api/job/job-1/stages").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("rewritten-stage"),
+            "payload should be read per request, not cached at load: {body}"
+        );
+    }
+
+    /// Corruption confined to the payloads is not visible when the directory
+    /// is indexed, so it has to be reported at request time. A 500 naming the
+    /// problem beats an empty or truncated response.
+    #[tokio::test]
+    async fn a_log_that_breaks_after_indexing_reports_the_failure() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("job-1.eventlog");
+        let app = history_router(store_with_one_job(&dir));
+
+        std::fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
+
+        let (status, body) = get(&app, "/api/job/job-1").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.contains("unreadable"), "got: {body}");
+
+        // The job list is served from the index, so it still lists the job.
+        let (status, body) = get(&app, "/api/jobs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("job-1"));
+    }
+
+    /// A log whose terminal record has gone (rotated, truncated) is a job that
+    /// no longer exists rather than a server fault.
+    #[tokio::test]
+    async fn a_log_that_loses_its_terminal_record_returns_404() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("job-1.eventlog");
+        let app = history_router(store_with_one_job(&dir));
+
+        std::fs::write(
+            &path,
+            "{\"ev\":\"StageStart\",\"version\":1,\"data\":{\"stage_id\":1}}\n",
+        )
+        .unwrap();
+
+        let (status, _) = get(&app, "/api/job/job-1/config").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     fn write_job_end_log(path: &Path, job_id: &str) {
-        let replayed = sample_replayed_job(job_id);
+        write_job_end_log_with_stage(path, job_id, STAGE_ID_MARKER)
+    }
+
+    fn write_job_end_log_with_stage(path: &Path, job_id: &str, stage_id: &str) {
+        let replayed = sample_replayed_job_with_stage(job_id, stage_id);
         let event = HistoryEvent::JobEnd(Box::new(JobEnd {
             status: JobEndStatus::Succeeded,
             queued_at: 0,
@@ -407,8 +585,11 @@ mod tests {
         drop(corrupt);
 
         let store = HistoryStore::load(dir.path()).unwrap();
-        assert_eq!(store.jobs.len(), 1);
-        assert!(store.jobs.contains_key("job-good"));
-        assert!(!store.jobs.contains_key("job-bad"));
+        assert_eq!(store.len(), 1);
+        assert!(store.read_job("job-good").is_ok());
+        assert!(matches!(
+            store.read_job("job-bad"),
+            Err(JobReadError::NotFound)
+        ));
     }
 }
