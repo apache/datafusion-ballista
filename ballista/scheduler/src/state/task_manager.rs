@@ -193,7 +193,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         config: Arc<SchedulerConfig>,
     ) -> Self {
         let generator = Arc::new(AtomicSnowflakeGenerator::new(
-            0,
+            0, // machine id is hard codded to 0
             MonotonicClock::<1>::with_epoch(ferroid::time::UNIX_EPOCH),
         ));
         Self {
@@ -217,7 +217,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         config: Arc<SchedulerConfig>,
     ) -> Self {
         let generator = Arc::new(AtomicSnowflakeGenerator::new(
-            0,
+            0, // machine id is hard codded to 0
             MonotonicClock::<1>::with_epoch(ferroid::time::UNIX_EPOCH),
         ));
 
