@@ -19,10 +19,11 @@
 exclude = ["dev/msrvcheck", "python"]
 members = [
     "ballista-cli",
+    "ballista/api-types",
     "ballista/client",
     "ballista/core",
     "ballista/executor",
-    "ballista/api-types",
+    "ballista/history",
     "ballista/scheduler",
     "benchmarks",
     "chaos-testing",
