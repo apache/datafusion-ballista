@@ -175,6 +175,9 @@ pub struct TaskEnd {
 /// local decouples the part that must stay readable forever from
 /// `ballista-api-types`, which evolves with the live REST contract.
 ///
+/// These are exactly the fields `GET /api/jobs` renders, which is what lets the
+/// history server build the job list without touching the payloads at all.
+///
 /// Adding fields here later is fine; each one needs `#[serde(default)]` so older
 /// logs still parse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +194,12 @@ pub struct JobIndex {
     pub start_time: u64,
     /// When the job reached its terminal state.
     pub end_time: u64,
+    /// Total number of stages in the job.
+    pub num_stages: usize,
+    /// Number of stages that finished successfully.
+    pub completed_stages: usize,
+    /// Progress as a percentage of completed stages.
+    pub percent_complete: u8,
 }
 
 /// Terminal record, and the only one the history server serves from.
@@ -304,6 +313,9 @@ mod tests {
                 job_status: "COMPLETED".into(),
                 start_time: 10,
                 end_time: 20,
+                num_stages: 1,
+                completed_stages: 1,
+                percent_complete: 100,
             },
             job: RawValue::from_string(r#"{"job_id":"job-1"}"#.to_string()).unwrap(),
             stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),

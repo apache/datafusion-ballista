@@ -150,6 +150,9 @@ mod tests {
             job_status: "COMPLETED".into(),
             start_time: 2,
             end_time: 3,
+            num_stages: 1,
+            completed_stages: 1,
+            percent_complete: 100,
         }
     }
 
