@@ -18,12 +18,14 @@
 digraph G {
 
     ballista_core
+    ballista_api_types
     ballista_scheduler
     ballista_executor
     ballista
     ballista_cli
 
     ballista_scheduler -> ballista_core
+    ballista_scheduler -> ballista_api_types
 
     ballista_executor -> ballista_core
 
