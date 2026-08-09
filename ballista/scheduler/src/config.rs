@@ -147,6 +147,9 @@ pub struct Config {
         help = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
     )]
     pub log_dir: Option<String>,
+    /// Directory to write per-job event logs to. Enables the history server.
+    #[arg(long)]
+    pub event_log_dir: Option<String>,
     /// Whether to print thread IDs and names in log files.
     #[arg(
         long,
@@ -365,6 +368,8 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
+    /// Directory to write per-job event logs to. `None` disables event logging.
+    pub event_log_dir: Option<String>,
     #[cfg(feature = "rest-api")]
     /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
     pub web_tui_route: String,
@@ -410,6 +415,7 @@ impl Default for SchedulerConfig {
             cors_allowed_origins: String::default(),
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
+            event_log_dir: None,
             #[cfg(feature = "rest-api")]
             web_tui_route: String::from("/"),
             on_work_available: None,
@@ -556,6 +562,12 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the directory to write per-job event logs to.
+    pub fn with_event_log_dir(mut self, event_log_dir: Option<String>) -> Self {
+        self.event_log_dir = event_log_dir;
+        self
+    }
+
     /// Sets whether TLS should be used when connecting to executors (for flight proxy).
     pub fn with_use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
@@ -671,6 +683,7 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_origins: opt.cors_allowed_origins,
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
+            event_log_dir: opt.event_log_dir,
             #[cfg(feature = "rest-api")]
             web_tui_route: opt.web_tui_route,
             on_work_available: None,
