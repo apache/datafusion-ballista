@@ -64,7 +64,7 @@ serves them over the same paths as the live scheduler:
 
 | Endpoint                       | Serves                              |
 | ------------------------------ | ----------------------------------- |
-| `GET /api/jobs`                | every completed job                 |
+| `GET /api/jobs`                | every completed job, newest first   |
 | `GET /api/job/{job_id}`        | one job's summary and plans         |
 | `GET /api/job/{job_id}/stages` | per-stage and per-task detail       |
 | `GET /api/job/{job_id}/config` | the session config the job ran with |
@@ -111,6 +111,9 @@ future UI can show a job progressing rather than only its end state.
   that one job.
 - **Do not delete a log out from under a running server.** The job stays in the
   list until the next restart, and opening it fails.
+- **`GET /api/jobs` returns every job in one response.** There is no paging
+  yet, so a directory holding a very large number of jobs produces a large
+  response. Prune accordingly until paging exists.
 - **Plans are rendered once, when the job ends.** The `?plan_format=` query
   parameter therefore has no effect against a history server; it returns the
   format captured at write time.

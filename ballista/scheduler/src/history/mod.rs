@@ -219,10 +219,21 @@ fn list_entry(index: &JobIndex) -> JobResponse {
 
 /// The one endpoint that touches every job, and the reason the index is held
 /// in memory at all: it is served without going near the disk.
+///
+/// Newest first. A job id is a random 7-character string
+/// (`TaskManager::generate_job_id`), so ordering by it would be arbitrary,
+/// whereas start time is both meaningful and the order the TUI puts the list
+/// into once it has it.
 async fn get_jobs(State(store): State<Arc<HistoryStore>>) -> Json<Vec<JobResponse>> {
     let mut jobs: Vec<JobResponse> =
         store.jobs.values().map(|j| list_entry(&j.index)).collect();
-    jobs.sort_by(|a, b| a.job_id.cmp(&b.job_id));
+    // Job id breaks ties, so two jobs that started in the same millisecond
+    // cannot swap places between requests.
+    jobs.sort_by(|a, b| {
+        b.start_time
+            .cmp(&a.start_time)
+            .then_with(|| a.job_id.cmp(&b.job_id))
+    });
     Json(jobs)
 }
 
@@ -310,7 +321,11 @@ mod tests {
 
     const STAGE_ID_MARKER: &str = "stage-42";
 
-    fn sample_replayed_job_with_stage(job_id: &str, stage_id: &str) -> ReplayedJob {
+    fn sample_replayed_job_with_stage(
+        job_id: &str,
+        stage_id: &str,
+        start_time: u64,
+    ) -> ReplayedJob {
         let job = JobResponse {
             job_id: job_id.into(),
             job_name: "q1".into(),
@@ -319,8 +334,8 @@ mod tests {
             num_stages: 1,
             completed_stages: 1,
             percent_complete: 100,
-            start_time: 2,
-            end_time: 3,
+            start_time,
+            end_time: start_time + 1,
             logical_plan: Some("Projection".into()),
             physical_plan: Some("ProjectionExec".into()),
             stage_plan: Some("stage".into()),
@@ -344,8 +359,8 @@ mod tests {
                 job_name: "q1".into(),
                 status: "Successful".into(),
                 job_status: "COMPLETED".into(),
-                start_time: 2,
-                end_time: 3,
+                start_time,
+                end_time: start_time + 1,
                 num_stages: 1,
                 completed_stages: 1,
                 percent_complete: 100,
@@ -472,6 +487,50 @@ mod tests {
         }
     }
 
+    /// Job ids are random 7-character strings, so ordering the list by id puts
+    /// it in an order that means nothing. Newest first is what a history view
+    /// wants, and it is what makes a future `?limit=` worth having.
+    #[tokio::test]
+    async fn jobs_are_listed_newest_first() {
+        let dir = tempdir().unwrap();
+        for (job_id, start_time) in [("zzz", 10u64), ("aaa", 30), ("mmm", 20)] {
+            write_job_end_log_with_stage(
+                &dir.path().join(format!("{job_id}.eventlog")),
+                job_id,
+                STAGE_ID_MARKER,
+                start_time,
+            );
+        }
+        let app = history_router(Arc::new(HistoryStore::load(dir.path()).unwrap()));
+
+        let (status, body) = get(&app, "/api/jobs").await;
+        assert_eq!(status, StatusCode::OK);
+        let jobs: Vec<JobResponse> = serde_json::from_str(&body).unwrap();
+        let order: Vec<&str> = jobs.iter().map(|j| j.job_id.as_str()).collect();
+        assert_eq!(order, ["aaa", "mmm", "zzz"]);
+    }
+
+    /// Equal start times must still produce a total order, otherwise the list
+    /// can reshuffle between two identical requests.
+    #[tokio::test]
+    async fn jobs_with_the_same_start_time_are_ordered_by_id() {
+        let dir = tempdir().unwrap();
+        for job_id in ["ccc", "aaa", "bbb"] {
+            write_job_end_log_with_stage(
+                &dir.path().join(format!("{job_id}.eventlog")),
+                job_id,
+                STAGE_ID_MARKER,
+                7,
+            );
+        }
+        let app = history_router(Arc::new(HistoryStore::load(dir.path()).unwrap()));
+
+        let (_, body) = get(&app, "/api/jobs").await;
+        let jobs: Vec<JobResponse> = serde_json::from_str(&body).unwrap();
+        let order: Vec<&str> = jobs.iter().map(|j| j.job_id.as_str()).collect();
+        assert_eq!(order, ["aaa", "bbb", "ccc"]);
+    }
+
     /// Fetch one path and return the status and body together.
     async fn get(app: &Router, uri: &str) -> (StatusCode, String) {
         let resp = app
@@ -500,7 +559,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains(STAGE_ID_MARKER));
 
-        write_job_end_log_with_stage(&path, "job-1", "rewritten-stage");
+        write_job_end_log_with_stage(&path, "job-1", "rewritten-stage", 2);
 
         let (status, body) = get(&app, "/api/job/job-1/stages").await;
         assert_eq!(status, StatusCode::OK);
@@ -550,11 +609,16 @@ mod tests {
     }
 
     fn write_job_end_log(path: &Path, job_id: &str) {
-        write_job_end_log_with_stage(path, job_id, STAGE_ID_MARKER)
+        write_job_end_log_with_stage(path, job_id, STAGE_ID_MARKER, 2)
     }
 
-    fn write_job_end_log_with_stage(path: &Path, job_id: &str, stage_id: &str) {
-        let replayed = sample_replayed_job_with_stage(job_id, stage_id);
+    fn write_job_end_log_with_stage(
+        path: &Path,
+        job_id: &str,
+        stage_id: &str,
+        start_time: u64,
+    ) {
+        let replayed = sample_replayed_job_with_stage(job_id, stage_id, start_time);
         let event = HistoryEvent::JobEnd(Box::new(JobEnd {
             status: JobEndStatus::Succeeded,
             queued_at: 0,
