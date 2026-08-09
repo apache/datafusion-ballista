@@ -18,10 +18,10 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ballista_core::error::Result;
+use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::serde::protobuf::{TaskStatus, job_status};
 use ballista_core::{JobId, JobStatusSubscriber};
 
 use datafusion::execution::context::SessionState;
@@ -31,6 +31,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
+use crate::checkpoint::{CheckpointMaterializer, contains_checkpoint, resolve_checkpoints};
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -243,6 +244,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         plan: &SubmitPlan,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
+        // Lazy checkpoints become their own jobs; what reaches the planner is
+        // always checkpoint free. Physical plans cannot carry checkpoint nodes,
+        // since those are resolved before physical planning.
+        let resolved;
+        let plan = match plan {
+            SubmitPlan::Logical(logical) if contains_checkpoint(logical) => {
+                resolved = SubmitPlan::Logical(
+                    resolve_checkpoints(&ctx, logical, self).await?,
+                );
+                &resolved
+            }
+            other => other,
+        };
+
         log::debug!("Received submit request for job {job_name}");
         let job_id = self.state.task_manager.generate_job_id();
         self.query_stage_event_loop
@@ -429,6 +444,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
 
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> CheckpointMaterializer
+    for SchedulerServer<T, U>
+{
+    async fn materialize(
+        &self,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+    ) -> Result<()> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        let job_id = self
+            .submit_plan(job_name, ctx, &SubmitPlan::Logical(plan.clone()), Some(tx))
+            .await?;
+
+        // Queued and Running arrive first; only terminal statuses end the wait.
+        while let Some(status) = rx.recv().await {
+            match status.status {
+                Some(job_status::Status::Successful(_)) => return Ok(()),
+                Some(job_status::Status::Failed(f)) => {
+                    return Err(BallistaError::General(format!(
+                        "checkpoint job {job_id} failed: {}",
+                        f.error
+                    )));
+                }
+                _ => continue,
+            }
+        }
+
+        Err(BallistaError::General(format!(
+            "checkpoint job {job_id} ended without a terminal status"
+        )))
     }
 }
 

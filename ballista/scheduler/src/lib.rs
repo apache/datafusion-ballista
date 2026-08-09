@@ -39,6 +39,7 @@ pub mod scheduler_server;
 pub mod standalone;
 /// Scheduler state management.
 pub mod state;
+pub(crate) mod checkpoint;
 
 mod flight_proxy_service;
 
