@@ -114,6 +114,7 @@ future UI can show a job progressing rather than only its end state.
 - **`GET /api/jobs` returns every job in one response.** There is no paging
   yet, so a directory holding a very large number of jobs produces a large
   response. Prune accordingly until paging exists.
+  ([#2270](https://github.com/apache/datafusion-ballista/issues/2270))
 - **Plans are rendered once, when the job ends.** The `?plan_format=` query
   parameter therefore has no effect against a history server; it returns the
   format captured at write time.
