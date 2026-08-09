@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -63,6 +63,8 @@ pub mod ballista_physical_plan_node {
         PerPartitionFilter(super::PerPartitionFilterExecNode),
         #[prost(message, tag = "11")]
         PartitionedBoundedWindowAgg(super::PartitionedBoundedWindowAggExecNode),
+        #[prost(message, tag = "12")]
+        RangeShuffleReader(super::RangeShuffleReaderExecNode),
     }
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
@@ -248,6 +250,24 @@ pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
     pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+}
+/// Ordering-preserving shuffle reader. Reuses `ShuffleReaderPartition` for the
+/// M-shape source layout. Partitioning is derived from `partition.len()`
+/// (always `UnknownPartitioning`, range-partitioned by `merge_ordering`).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeShuffleReaderExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub partition: ::prost::alloc::vec::Vec<ShuffleReaderPartition>,
+    #[prost(message, optional, tag = "2")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+    #[prost(uint32, tag = "3")]
+    pub stage_id: u32,
+    /// Sort key the reader's k-way merge preserves. Advertised on the reader's
+    /// `PlanProperties.eq_properties` for downstream consumers.
+    #[prost(message, repeated, tag = "4")]
+    pub merge_ordering: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).

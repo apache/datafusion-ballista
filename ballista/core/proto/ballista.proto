@@ -57,6 +57,7 @@ message BallistaPhysicalPlanNode {
     OrderedRangeRepartitionExecNode ordered_range_repartition = 9;
     PerPartitionFilterExecNode per_partition_filter = 10;
     PartitionedBoundedWindowAggExecNode partitioned_bounded_window_agg = 11;
+    RangeShuffleReaderExecNode range_shuffle_reader = 12;
   }
 }
 
@@ -199,6 +200,18 @@ message ShuffleReaderExecNode {
 message ShuffleReaderPartition {
   // each partition of a shuffle read can read data from multiple locations
   repeated PartitionLocation location = 1;
+}
+
+// Ordering-preserving shuffle reader. Reuses `ShuffleReaderPartition` for the
+// M-shape source layout. Partitioning is derived from `partition.len()`
+// (always `UnknownPartitioning`, range-partitioned by `merge_ordering`).
+message RangeShuffleReaderExecNode {
+  repeated ShuffleReaderPartition partition = 1;
+  datafusion_common.Schema schema = 2;
+  uint32 stage_id = 3;
+  // Sort key the reader's k-way merge preserves. Advertised on the reader's
+  // `PlanProperties.eq_properties` for downstream consumers.
+  repeated datafusion.PhysicalSortExprNode merge_ordering = 4;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
