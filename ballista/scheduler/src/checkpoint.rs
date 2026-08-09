@@ -31,9 +31,9 @@ use ballista_core::extension::BallistaCheckpointNode;
 use datafusion::common::DFSchema;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::datasource::file_format::DefaultFileType;
-use datafusion::logical_expr::{UserDefinedLogicalNodeCore, Expr, LogicalPlanBuilder};
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingTableUrl;
+use datafusion::logical_expr::{Expr, LogicalPlanBuilder, UserDefinedLogicalNodeCore};
 use datafusion::logical_expr::{LogicalPlan, dml::CopyTo};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::StreamExt;
@@ -154,7 +154,9 @@ pub(crate) fn resolve_checkpoints<'a>(
             })
             .collect::<Vec<_>>();
 
-        Ok(LogicalPlanBuilder::from(scan).project(projection)?.build()?)
+        Ok(LogicalPlanBuilder::from(scan)
+            .project(projection)?
+            .build()?)
     })
 }
 
@@ -180,9 +182,9 @@ mod test {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::assert_batches_eq;
     use datafusion::datasource::MemTable;
-    use datafusion::logical_expr::{Extension, LogicalPlanBuilder};
-    use datafusion::prelude::{col, lit, Expr};
     use datafusion::functions_aggregate::expr_fn::count;
+    use datafusion::logical_expr::{Extension, LogicalPlanBuilder};
+    use datafusion::prelude::{Expr, col, lit};
     use std::sync::Mutex;
     use tempfile::TempDir;
 
@@ -195,12 +197,22 @@ mod test {
 
     impl RecordingMaterializer {
         fn locations(&self) -> Vec<String> {
-            self.calls.lock().unwrap().iter().map(|(l, _)| l.clone()).collect()
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(l, _)| l.clone())
+                .collect()
         }
 
         /// The plan each split out job was given, in submission order.
         fn plans(&self) -> Vec<LogicalPlan> {
-            self.calls.lock().unwrap().iter().map(|(_, p)| p.clone()).collect()
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, p)| p.clone())
+                .collect()
         }
 
         fn call_count(&self) -> usize {
@@ -335,7 +347,9 @@ mod test {
         let materializer = RecordingMaterializer::default();
 
         let plan = plan_for(&ctx, "select * from test").await;
-        let resolved = resolve_checkpoints(&ctx, &plan, &materializer).await.unwrap();
+        let resolved = resolve_checkpoints(&ctx, &plan, &materializer)
+            .await
+            .unwrap();
 
         assert_eq!(
             format!("{}", resolved.display_indent()),
@@ -364,7 +378,9 @@ mod test {
             .build()
             .unwrap();
 
-        let resolved = resolve_checkpoints(&ctx, &plan, &materializer).await.unwrap();
+        let resolved = resolve_checkpoints(&ctx, &plan, &materializer)
+            .await
+            .unwrap();
 
         // Exactly one job was split out, writing to the checkpoint location.
         assert_eq!(materializer.locations(), vec![location]);
@@ -412,14 +428,17 @@ mod test {
         let ctx = test_context();
         let materializer = RecordingMaterializer::default();
 
-        let inner = checkpoint(&location, plan_for(&ctx, "select id, name from test").await);
+        let inner =
+            checkpoint(&location, plan_for(&ctx, "select id, name from test").await);
         let plan = LogicalPlanBuilder::from(inner)
             .filter(col("test.id").gt(lit(2)))
             .unwrap()
             .build()
             .unwrap();
 
-        let resolved = resolve_checkpoints(&ctx, &plan, &materializer).await.unwrap();
+        let resolved = resolve_checkpoints(&ctx, &plan, &materializer)
+            .await
+            .unwrap();
 
         // Would previously fail here with FieldNotFound on test.id.
         let result = ctx
@@ -469,7 +488,9 @@ mod test {
             .build()
             .unwrap();
 
-        let resolved = resolve_checkpoints(&ctx, &plan, &materializer).await.unwrap();
+        let resolved = resolve_checkpoints(&ctx, &plan, &materializer)
+            .await
+            .unwrap();
 
         // Both qualifiers survive the round trip, not just the first.
         let scan = resolved.inputs()[0];
@@ -516,11 +537,16 @@ mod test {
             .unwrap();
         let plan = checkpoint(&outer_location, filtered);
 
-        let resolved = resolve_checkpoints(&ctx, &plan, &materializer).await.unwrap();
+        let resolved = resolve_checkpoints(&ctx, &plan, &materializer)
+            .await
+            .unwrap();
 
         // Ordering is the point: resolving top down would submit the outer job
         // with an unresolved checkpoint still inside it.
-        assert_eq!(materializer.locations(), vec![inner_location, outer_location]);
+        assert_eq!(
+            materializer.locations(),
+            vec![inner_location, outer_location]
+        );
         assert!(!contains_checkpoint(&resolved));
     }
 
@@ -544,7 +570,9 @@ mod test {
         // checkpoint rather than a barrier.
         let plan = checkpoint(&location, inner);
         let expected_columns = plan.schema().columns();
-        let resolved = resolve_checkpoints(&ctx, &plan, &materializer).await.unwrap();
+        let resolved = resolve_checkpoints(&ctx, &plan, &materializer)
+            .await
+            .unwrap();
 
         assert_eq!(materializer.call_count(), 1);
         assert_eq!(resolved.schema().columns(), expected_columns);

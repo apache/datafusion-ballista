@@ -31,7 +31,9 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
-use crate::checkpoint::{CheckpointMaterializer, contains_checkpoint, resolve_checkpoints};
+use crate::checkpoint::{
+    CheckpointMaterializer, contains_checkpoint, resolve_checkpoints,
+};
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -250,9 +252,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let resolved;
         let plan = match plan {
             SubmitPlan::Logical(logical) if contains_checkpoint(logical) => {
-                resolved = SubmitPlan::Logical(
-                    resolve_checkpoints(&ctx, logical, self).await?,
-                );
+                resolved =
+                    SubmitPlan::Logical(resolve_checkpoints(&ctx, logical, self).await?);
                 &resolved
             }
             other => other,

@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 /// REST API endpoints for scheduler operations.
 pub mod api;
+pub(crate) mod checkpoint;
 /// Cluster management and executor coordination.
 pub mod cluster;
 /// Scheduler configuration options.
@@ -39,7 +40,6 @@ pub mod scheduler_server;
 pub mod standalone;
 /// Scheduler state management.
 pub mod state;
-pub(crate) mod checkpoint;
 
 mod flight_proxy_service;
 
