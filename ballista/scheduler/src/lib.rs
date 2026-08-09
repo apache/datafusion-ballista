@@ -25,6 +25,9 @@ pub mod cluster;
 pub mod config;
 /// Display utilities for execution plans and state.
 pub mod display;
+/// Standalone history server: serves `/api/*` from stored event logs.
+#[cfg(feature = "rest-api")]
+pub mod history;
 /// Metrics collection and reporting.
 pub mod metrics;
 /// Physical query plan optimizers.
