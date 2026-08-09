@@ -57,9 +57,9 @@ use std::{convert::TryInto, io::Cursor};
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PerPartitionFilterExec, RuntimeStatsExec, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec,
+    PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
+    RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -538,6 +538,46 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 };
                 Ok(Arc::new(exec))
             }
+            PhysicalPlanType::RangeShuffleReader(range_reader) => {
+                let stage_id = range_reader.stage_id as usize;
+                let schema: SchemaRef = Arc::new(convert_required!(range_reader.schema)?);
+                let partition_location: Vec<Vec<PartitionLocation>> = range_reader
+                    .partition
+                    .iter()
+                    .map(|p| {
+                        p.location
+                            .iter()
+                            .map(|l| {
+                                l.clone().try_into().map_err(|e| {
+                                    DataFusionError::Internal(format!(
+                                        "Fail to get partition location due to {e:?}"
+                                    ))
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let merge_ordering_exprs = parse_physical_sort_exprs(
+                    &range_reader.merge_ordering,
+                    &decode_ctx,
+                    schema.as_ref(),
+                    &converter,
+                )?;
+                let merge_ordering = datafusion::physical_expr::LexOrdering::new(
+                    merge_ordering_exprs,
+                )
+                .ok_or_else(|| {
+                    proto_error(
+                        "RangeShuffleReaderExec: merge_ordering must be non-empty",
+                    )
+                })?;
+                Ok(Arc::new(RangeShuffleReaderExec::try_new(
+                    stage_id,
+                    partition_location,
+                    schema,
+                    merge_ordering,
+                )?))
+            }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
@@ -693,6 +733,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     predicates,
                 )?))
             }
+            PhysicalPlanType::PartitionedBoundedWindowAgg(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PartitionedBoundedWindowAggExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let input_schema = input.schema();
+                let window_expr = node
+                    .window_expr
+                    .iter()
+                    .map(|we| {
+                        datafusion_proto::physical_plan::from_proto::parse_physical_window_expr(
+                            we,
+                            &decode_ctx,
+                            input_schema.as_ref(),
+                            &converter,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(PartitionedBoundedWindowAggExec::try_new(
+                    window_expr,
+                    input.clone(),
+                )?))
+            }
         }
     }
 
@@ -807,6 +872,46 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode shuffle reader execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeShuffleReaderExec>() {
+            let stage_id = exec.stage_id as u32;
+            let mut partition = vec![];
+            for location in &exec.partition {
+                partition.push(protobuf::ShuffleReaderPartition {
+                    location: location
+                        .iter()
+                        .map(|l| {
+                            l.clone().try_into().map_err(|e| {
+                                DataFusionError::Internal(format!(
+                                    "Fail to get partition location due to {e:?}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                });
+            }
+            let converter = DefaultPhysicalProtoConverter {};
+            let merge_ordering = serialize_physical_sort_exprs(
+                exec.merge_ordering().iter().cloned(),
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeShuffleReader(
+                    protobuf::RangeShuffleReaderExecNode {
+                        stage_id,
+                        partition,
+                        schema: Some(exec.schema().as_ref().try_into()?),
+                        merge_ordering,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode range shuffle reader execution plan: {e:?}"
                 ))
             })?;
 
@@ -950,6 +1055,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode PerPartitionFilterExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PartitionedBoundedWindowAggExec>()
+        {
+            let converter = DefaultPhysicalProtoConverter {};
+            let window_expr = exec
+                .window_expr()
+                .iter()
+                .map(|we| {
+                    datafusion_proto::physical_plan::to_proto::serialize_physical_window_expr(
+                        we,
+                        self.default_codec.as_ref(),
+                        &converter,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PartitionedBoundedWindowAgg(
+                    protobuf::PartitionedBoundedWindowAggExecNode { window_expr },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PartitionedBoundedWindowAggExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -1245,6 +1375,67 @@ mod test {
             decoded_exec.coalesce.is_none(),
             "absent coalesce field must decode to None (codec inertness)"
         );
+    }
+
+    /// `RangeShuffleReaderExec` carries its merge ordering across the wire —
+    /// the reader's k-way merge machinery is inert without it, and the
+    /// scheduler side plants the reader with the child's declared ordering.
+    #[tokio::test]
+    async fn test_range_shuffle_reader_exec_roundtrip() {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema = create_test_schema();
+        let sort_expr = PhysicalSortExpr {
+            expr: col("id", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let merge_ordering = LexOrdering::new(vec![sort_expr.clone()]).unwrap();
+
+        let original = RangeShuffleReaderExec::try_new(
+            7,
+            vec![vec![]; 4],
+            schema.clone(),
+            merge_ordering.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<RangeShuffleReaderExec>()
+            .expect("Expected RangeShuffleReaderExec");
+
+        assert_eq!(decoded.stage_id, 7);
+        assert_eq!(decoded.schema().as_ref(), schema.as_ref());
+        assert_eq!(decoded.partition.len(), 4, "partition shape must survive");
+        assert_eq!(
+            decoded.merge_ordering().len(),
+            1,
+            "merge_ordering must round-trip"
+        );
+        assert_eq!(
+            decoded.merge_ordering().first().expr.to_string(),
+            sort_expr.expr.to_string(),
+        );
+        // The ordering must land on `PlanProperties.eq_properties` — downstream
+        // consumers (BWAG, SMJ build side) read it there.
+        let advertised = decoded
+            .properties()
+            .eq_properties
+            .oeq_class()
+            .iter()
+            .next()
+            .cloned()
+            .expect("advertised ordering");
+        assert_eq!(advertised, merge_ordering);
     }
 
     /// The sort shuffle writer's per-task memory budget must survive the

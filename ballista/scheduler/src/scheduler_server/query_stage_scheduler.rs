@@ -355,6 +355,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         {
                             warn!("Fail to cancel running tasks due to {e:?}");
                         }
+                        if self.state.config.is_push_staged_scheduling() {
+                            event_sender
+                                .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                                .await?;
+                        }
                     }
                     Err(e) => {
                         let msg = format!(

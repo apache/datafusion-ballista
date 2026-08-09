@@ -958,15 +958,12 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema,
             futures::stream::once(async move {
-                let summaries = rx
-                    .await
-                    .map_err(|_| {
-                        DataFusionError::Internal(
-                            "SortShuffleWriterExec coordinator dropped without sending"
-                                .to_owned(),
-                        )
-                    })?
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                let summaries = rx.await.map_err(|_| {
+                    DataFusionError::Internal(
+                        "SortShuffleWriterExec coordinator dropped without sending"
+                            .to_owned(),
+                    )
+                })??;
                 summaries_to_batch(
                     summaries,
                     schema_captured,
@@ -1049,7 +1046,7 @@ async fn run_coordinator(
 
     let mut grouped: Vec<Vec<ShuffleWritePartition>> =
         (0..k).map(|_| Vec::new()).collect();
-    let mut first_error: Option<String> = None;
+    let mut first_error: Option<DataFusionError> = None;
     for handle in handles {
         match handle.await {
             Ok(Ok(summaries)) => {
@@ -1061,24 +1058,24 @@ async fn run_coordinator(
                 }
             }
             Ok(Err(e)) => {
-                first_error.get_or_insert_with(|| format!("{e:?}"));
+                first_error.get_or_insert(e);
             }
             Err(join_err) => {
-                first_error
-                    .get_or_insert_with(|| format!("write task panicked: {join_err}"));
+                first_error.get_or_insert_with(|| {
+                    DataFusionError::Execution(format!("write task panicked: {join_err}"))
+                });
             }
         }
     }
 
-    if let Some(msg) = first_error {
-        for (i, slot) in senders.iter_mut().enumerate() {
+    if let Some(e) = first_error {
+        // Share the original error with every output handoff so classification
+        // preserves FetchFailed/IO details regardless of stream completion order.
+        let shared = Arc::new(e);
+        for slot in senders.iter_mut() {
             if let Some(sender) = slot.take() {
-                let err_msg = if i == 0 {
-                    msg.clone()
-                } else {
-                    format!("sort shuffle writer failed: {msg}")
-                };
-                let _ = sender.send(Err(DataFusionError::Execution(err_msg)));
+                let err = DataFusionError::from(&shared);
+                let _ = sender.send(Err(err));
             }
         }
         return;
@@ -1141,6 +1138,8 @@ fn compute_partition_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::BallistaError;
+    use crate::execution_plans::ChaosExec;
     use datafusion::arrow::array::{StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -1171,6 +1170,45 @@ mod tests {
             Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
 
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+    }
+
+    async fn drive_partition_results(
+        plan: Arc<SortShuffleWriterExec>,
+        task_ctx: Arc<TaskContext>,
+    ) -> Vec<crate::error::Result<Vec<RecordBatch>>> {
+        let k = plan.properties().output_partitioning().partition_count();
+        let mut handles = Vec::with_capacity(k);
+        for n in 0..k {
+            let plan = plan.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = plan.execute(n, ctx).map_err(BallistaError::from)?;
+                crate::utils::collect_stream(&mut stream).await
+            }));
+        }
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(
+                h.await
+                    .expect("drive_partition_results task should not panic"),
+            );
+        }
+        results
+    }
+
+    fn assert_shared_io_error(err: &BallistaError) {
+        let BallistaError::DataFusionError(e) = err else {
+            panic!("expected DataFusionError, got {err:?}");
+        };
+        assert!(
+            matches!(e.as_ref(), DataFusionError::Shared(_)),
+            "expected shared DataFusionError, got {e:?}"
+        );
+        assert!(
+            matches!(e.find_root(), DataFusionError::IoError(_)),
+            "expected IO root, got {:?}",
+            e.find_root()
+        );
     }
 
     #[test]
@@ -1294,6 +1332,38 @@ mod tests {
         let output_dir = work_dir.path().join("job1").join("1").join("0");
         assert!(output_dir.join("data.arrow").exists());
         assert!(output_dir.join("data.arrow.index").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_failure_is_shared_to_all_output_partitions() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan: Arc<dyn ExecutionPlan> = Arc::new(ChaosExec::new(
+            create_test_input()?,
+            1.0,
+            "transient",
+            Some(42),
+        )?);
+        let work_dir = TempDir::new()?;
+
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            input_plan,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
+            SortShuffleConfig::default(),
+        )?);
+
+        let results = drive_partition_results(writer, task_ctx).await;
+        assert_eq!(2, results.len());
+        for result in results {
+            let err = result.expect_err("expected injected write failure");
+            assert_shared_io_error(&err);
+        }
 
         Ok(())
     }
