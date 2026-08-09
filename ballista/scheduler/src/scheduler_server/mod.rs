@@ -269,7 +269,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
-        let job_id = self.state.task_manager.generate_job_id();
+        let job_id = self.state.task_manager.generate_job_id().await;
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
