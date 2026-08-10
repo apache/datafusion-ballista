@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::planner::create_shuffle_writer_with_config;
-use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use crate::state::aqe::execution_plan::{
+    AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
+};
 use crate::state::aqe::planner::AdaptiveStageInfo;
 use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
@@ -26,14 +28,12 @@ use ballista_core::execution_plans::{
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
 use datafusion::scalar::ScalarValue;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
     physical_plan::ExecutionPlan,
 };
-use log::debug;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -205,35 +205,34 @@ impl BallistaAdapter {
 }
 
 /// Walk `plan` and resolve every pending [`RangeFilterExec`]'s bounds from
-/// its downstream [`ExchangeExec`]'s stored routing. Called at
-/// `adapt_to_ballista` time, once stage-0's sketches have merged into
-/// cuts and been parked on the boundary `ExchangeExec` via
+/// its own descendant boundary `ExchangeExec`'s stored routing. Called at
+/// `adapt_to_ballista` time, once the upstream stage's sketches have
+/// merged into cuts and been parked on the boundary `ExchangeExec` via
 /// `set_repartition_routing`.
 ///
-/// Cross-referencing is by `routing_expr` equality — the rule plants both
-/// wide (below SPM) and narrow (above BWAG) filters with the same routing
-/// expression, both pointing at the same shuffle boundary.
+/// Pairing is by tree structure — each RFE descends its own subtree to
+/// the first `ExchangeExec` and takes that exchange's routing. Using
+/// `PhysicalExpr::eq` on routing exprs alone would collide in
+/// multi-legged shapes (e.g. SMJ with range-repartition on both sides
+/// sharing the same `Column(name, idx)` after independent projections);
+/// descent is unique by construction because every RFE has exactly one
+/// child. The RFE's own `routing_expr` is then cross-checked against
+/// the descendant exchange's for a plant-time invariant assert — if they
+/// disagree, the rule wired the wrong RFE to the boundary.
 ///
 /// RFE receives *unwidened* half-open ranges (`(cuts[k-1], cuts[k])` with ±∞
 /// sentinels at ends). RFE widens by its own halos internally at
 /// `resolve_bounds` time — see the separation-of-concerns note on
 /// [`RangeFilterExec`]. The scheduler stays halo-blind at this boundary.
 ///
-/// Errors if a `RangeFilterExec` is still pending after the walk: the
-/// rule promised bounds and the scheduler didn't deliver, which is either
-/// a routing_expr mismatch or a stage-progress bug.
+/// Errors if descent hits a fork (multi-child op) before reaching an
+/// `ExchangeExec`, if the RFE has anything other than 1 child, if the
+/// descendant `ExchangeExec` has no resolved routing yet, or if its
+/// routing_expr disagrees with the RFE's — all four are plant-time or
+/// stage-progress bugs.
 fn resolve_range_filter_cuts(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<(), DataFusionError> {
-    let mut routings: Vec<(Arc<dyn PhysicalExpr>, Vec<f64>)> = Vec::new();
-    plan.apply(|node| {
-        if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
-            && let Some(routing) = exchange.range_repartition_routing()
-        {
-            routings.push((routing.routing_expr, routing.cuts));
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })?;
     plan.apply(|node| {
         let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
             return Ok(TreeNodeRecursion::Continue);
@@ -241,21 +240,59 @@ fn resolve_range_filter_cuts(
         if rf.raw_bounds().is_some() {
             return Ok(TreeNodeRecursion::Continue);
         }
-        let rf_expr = rf.routing_expr();
-        let cuts = routings
-            .iter()
-            .find(|(expr, _)| expr.eq(rf_expr))
-            .map(|(_, cuts)| cuts.clone())
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "RangeFilterExec: no matching ExchangeExec routing for expr {rf_expr}"
-                ))
-            })?;
-        let raw_bounds = raw_bounds_from_cuts(&cuts);
+        let children = rf.children();
+        let [child] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "RangeFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        let routing = descend_to_boundary_routing(child)?;
+        if !rf.routing_expr().eq(&routing.routing_expr) {
+            return datafusion::common::internal_err!(
+                "RangeFilterExec routing_expr `{}` disagrees with its descendant \
+                 boundary ExchangeExec's routing_expr `{}` — plant-time invariant \
+                 broken",
+                rf.routing_expr(),
+                routing.routing_expr
+            );
+        }
+        let raw_bounds = raw_bounds_from_cuts(&routing.cuts);
         rf.resolve_bounds(raw_bounds)?;
         Ok(TreeNodeRecursion::Continue)
     })?;
     Ok(())
+}
+
+/// Descend the single-child spine below a `RangeFilterExec` until we
+/// hit an `ExchangeExec`, and return its `range_repartition_routing`.
+/// Forks in the spine are shape violations because a range-filter only
+/// makes sense above a single-input boundary.
+fn descend_to_boundary_routing(
+    start: &Arc<dyn ExecutionPlan>,
+) -> Result<RangeRepartitionRouting, DataFusionError> {
+    let mut node = Arc::clone(start);
+    loop {
+        if let Some(exchange) = node.downcast_ref::<ExchangeExec>() {
+            return exchange.range_repartition_routing().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "RangeFilterExec's descendant ExchangeExec has no resolved \
+                     range-repartition routing yet — stage progress skipped a step"
+                        .into(),
+                )
+            });
+        }
+        let children = node.children();
+        let [child] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "RangeFilterExec descent hit a fork at `{}` ({} children) — cannot \
+                 pair with a single boundary",
+                node.name(),
+                children.len()
+            );
+        };
+        node = Arc::clone(*child);
+    }
 }
 
 /// Project K-1 cuts to K half-open `(cuts[k-1], cuts[k])` ranges with `None`
