@@ -100,7 +100,7 @@ struct DefaultJobGenerator {
 impl Default for DefaultJobGenerator {
     fn default() -> Self {
         let generator = AtomicSnowflakeGenerator::new(
-            0, // machine id is hard codded to 0
+            0, // machine id is hard-coded to 0
             MonotonicClock::<1>::with_epoch(ferroid::time::UNIX_EPOCH),
         );
 
