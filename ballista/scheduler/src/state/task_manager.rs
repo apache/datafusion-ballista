@@ -44,11 +44,6 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use ferroid::base32::Base32SnowExt;
-use ferroid::futures::SnowflakeGeneratorAsyncTokioExt;
-use ferroid::generator::AtomicSnowflakeGenerator;
-use ferroid::id::SnowflakeMastodonId;
-use ferroid::time::MonotonicClock;
 use log::{debug, error, info, trace, warn};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -140,8 +135,6 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     task_max_failures: usize,
     /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
     stage_max_failures: usize,
-    /// A monotonically increasing sortable job id generator
-    generator: Arc<AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>>,
 }
 
 /// Contains the execution graph and cached data to improve performance
@@ -192,10 +185,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         scheduler_id: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
-        let generator = Arc::new(AtomicSnowflakeGenerator::new(
-            0, // machine id is hard codded to 0
-            MonotonicClock::<1>::with_epoch(ferroid::time::UNIX_EPOCH),
-        ));
         Self {
             state,
             codec,
@@ -204,7 +193,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
-            generator,
         }
     }
 
@@ -216,11 +204,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         launcher: Arc<dyn TaskLauncher>,
         config: Arc<SchedulerConfig>,
     ) -> Self {
-        let generator = Arc::new(AtomicSnowflakeGenerator::new(
-            0, // machine id is hard codded to 0
-            MonotonicClock::<1>::with_epoch(ferroid::time::UNIX_EPOCH),
-        ));
-
         Self {
             state,
             codec,
@@ -229,7 +212,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher,
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
-            generator,
         }
     }
 
@@ -955,14 +937,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         self.active_job_cache
             .remove(job_id)
             .map(|value| value.1.execution_graph)
-    }
-
-    /// Generates a new random 7-character alphanumeric job ID.
-    pub async fn generate_job_id(&self) -> JobId {
-        let id = self.generator.next_id_async().await;
-        let id = id.encode().to_string();
-
-        id.into()
     }
 
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds

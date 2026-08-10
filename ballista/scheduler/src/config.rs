@@ -27,6 +27,7 @@
 
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
+use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
@@ -376,6 +377,8 @@ pub struct SchedulerConfig {
     /// Callback invoked when new work becomes available for executors.
     /// See [`OnWorkAvailableFn`].
     pub on_work_available: Option<OnWorkAvailableFn>,
+    /// Job id generator to be used by this scheduler
+    pub job_id_generator: Option<Arc<dyn JobIdGenerator>>,
 }
 
 impl Default for SchedulerConfig {
@@ -419,6 +422,7 @@ impl Default for SchedulerConfig {
             #[cfg(feature = "rest-api")]
             web_tui_route: String::from("/"),
             on_work_available: None,
+            job_id_generator: None,
         }
     }
 }
@@ -583,6 +587,14 @@ impl SchedulerConfig {
         self.on_work_available = Some(on_work_available);
         self
     }
+    /// Sets the job id generator
+    pub fn with_job_id_generator(
+        mut self,
+        job_id_generator: Arc<dyn JobIdGenerator>,
+    ) -> Self {
+        self.job_id_generator = Some(job_id_generator);
+        self
+    }
 }
 
 /// Policy of distributing tasks to available executor slots
@@ -687,6 +699,7 @@ impl TryFrom<Config> for SchedulerConfig {
             #[cfg(feature = "rest-api")]
             web_tui_route: opt.web_tui_route,
             on_work_available: None,
+            job_id_generator: None,
         };
 
         Ok(config)

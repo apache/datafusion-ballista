@@ -30,6 +30,11 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use ferroid::base32::Base32SnowExt;
+use ferroid::futures::SnowflakeGeneratorAsyncTokioExt;
+use ferroid::generator::AtomicSnowflakeGenerator;
+use ferroid::id::SnowflakeMastodonId;
+use ferroid::time::MonotonicClock;
 
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
@@ -69,6 +74,48 @@ pub(crate) mod query_stage_scheduler;
 pub type SessionBuilder =
     Arc<dyn Fn(SessionConfig) -> datafusion::common::Result<SessionState> + Send + Sync>;
 
+/// Generates unique identifiers for submitted jobs.
+///
+/// Schedulers use one `JobIdGenerator` instance for their lifetime, calling
+/// [`next_id`](JobIdGenerator::next_id) once per job submission.
+/// Implementations must be safe to call concurrently from multiple tasks and
+/// must never return the same id twice, since job ids are used to key
+/// scheduler-wide state.
+///
+/// A default snowflake-based generator is used unless a
+/// custom implementation is supplied via
+/// [`SchedulerConfig::job_id_generator`](crate::config::SchedulerConfig::job_id_generator).
+#[async_trait::async_trait]
+pub trait JobIdGenerator: Sync + Send {
+    /// Returns a new, globally unique job id.
+    async fn next_id(&self) -> String;
+}
+
+/// A monotonically increasing sortable snowflake job id generator
+/// which does not capture machine id as part result.
+struct DefaultJobGenerator {
+    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>,
+}
+
+impl Default for DefaultJobGenerator {
+    fn default() -> Self {
+        let generator = AtomicSnowflakeGenerator::new(
+            0, // machine id is hard codded to 0
+            MonotonicClock::<1>::with_epoch(ferroid::time::UNIX_EPOCH),
+        );
+
+        Self { generator }
+    }
+}
+
+#[async_trait::async_trait]
+impl JobIdGenerator for DefaultJobGenerator {
+    async fn next_id(&self) -> String {
+        let id = self.generator.next_id_async().await;
+        id.encode().to_string()
+    }
+}
+
 /// The main scheduler server that coordinates distributed query execution.
 ///
 /// The `SchedulerServer` is responsible for:
@@ -91,6 +138,8 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
     /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
+    /// generates job ids
+    generator: Arc<dyn JobIdGenerator>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -128,6 +177,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             query_stage_scheduler.clone(),
         );
 
+        let generator = config
+            .job_id_generator
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
+
         Self {
             scheduler_name,
             start_time: timestamp_millis() as u128,
@@ -136,6 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            generator,
         }
     }
 
@@ -176,6 +231,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             query_stage_scheduler.clone(),
         );
 
+        let generator = config
+            .job_id_generator
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
+
         Self {
             scheduler_name,
             start_time: timestamp_millis() as u128,
@@ -184,6 +244,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            generator,
         }
     }
 
@@ -269,7 +330,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
-        let job_id = self.state.task_manager.generate_job_id().await;
+        let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
