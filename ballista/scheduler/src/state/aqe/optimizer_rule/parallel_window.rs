@@ -121,28 +121,9 @@ impl PhysicalOptimizerRule for ParallelWindowRule {
         // plan tree for the true source width; we use the config knob that
         // those later rules also target.
         let output_partitions = config.execution.target_partitions.max(2);
-        plan.transform_up(|node| {
-            let Some(candidate) = as_candidate(node.as_ref()) else {
-                return Ok(Transformed::no(node));
-            };
-            match rewrite_bwag(&node, &candidate, output_partitions) {
-                Ok(rewritten) => {
-                    debug!(
-                        "ParallelWindowRule: rewrote BWAG on `{}` (RANGE {} — {})",
-                        candidate.order_key,
-                        fmt_bound(&candidate.start_bound),
-                        fmt_bound(&candidate.end_bound),
-                    );
-                    Ok(Transformed::yes(rewritten))
-                }
-                Err(e) => {
-                    debug!(
-                        "ParallelWindowRule: shape matched but rewrite skipped for `{}`: {e}",
-                        candidate.order_key,
-                    );
-                    Ok(Transformed::no(node))
-                }
-            }
+        plan.transform_up(|node| match maybe_rewrite_bwag(&node, output_partitions)? {
+            Some(rewritten) => Ok(Transformed::yes(rewritten)),
+            None => Ok(Transformed::no(node)),
         })
         .map(|t| t.data)
     }
@@ -154,16 +135,6 @@ impl PhysicalOptimizerRule for ParallelWindowRule {
     fn schema_check(&self) -> bool {
         true
     }
-}
-
-/// Shape captured from a matching `BoundedWindowAggExec`. Everything the
-/// rewrite needs to build the new subtree.
-#[derive(Debug, Clone)]
-struct WindowCandidate {
-    order_key: String,
-    sort_expr: PhysicalSortExpr,
-    start_bound: WindowFrameBound,
-    end_bound: WindowFrameBound,
 }
 
 /// True if any descendant of `nodes` is an `OrderedRangeRepartitionExec`
@@ -182,57 +153,14 @@ fn subtree_contains_our_rewrite(nodes: &[&Arc<dyn ExecutionPlan>]) -> bool {
     false
 }
 
-fn as_candidate(node: &dyn ExecutionPlan) -> Option<WindowCandidate> {
-    let window = node.downcast_ref::<BoundedWindowAggExec>()?;
-    // Shape gates as slice patterns: 0 or 2+ elements simply don't match.
-    let [expr] = window.window_expr() else {
-        return None;
-    };
-    let [] = expr.partition_by() else {
-        return None;
-    };
-    let [order] = expr.order_by() else {
-        return None;
-    };
-    let column = order.expr.downcast_ref::<Column>()?;
-    let frame = expr.get_window_frame();
-    let WindowFrameUnits::Range = frame.units else {
-        return None;
-    };
-    let (Some(start), Some(end)) =
-        (as_finite(&frame.start_bound), as_finite(&frame.end_bound))
-    else {
-        return None;
-    };
-    // Idempotency: if the BWAG's subtree already contains our own
-    // range-repartition machinery, we've already rewritten this window.
-    // Re-plans (AQE fires the optimizer chain again for stage N+1) would
-    // otherwise wrap another ORRE around the previous rewrite's
-    // RangeFilterExec+ShuffleReader — and that ORRE's child doesn't claim
-    // ordering, blowing up at execute-time.
-    if subtree_contains_our_rewrite(window.children().as_slice()) {
-        return None;
-    }
-    Some(WindowCandidate {
-        order_key: column.name().to_string(),
-        sort_expr: order.clone(),
-        start_bound: start.clone(),
-        end_bound: end.clone(),
-    })
-}
-
-/// Returns the bound unchanged when it's `CurrentRow` or a non-null scalar
-/// offset. `UNBOUNDED PRECEDING/FOLLOWING` is represented as a typed-null
-/// scalar and returns `None`.
-fn as_finite(bound: &WindowFrameBound) -> Option<&WindowFrameBound> {
+/// True when the bound is `CurrentRow` or a non-null scalar offset.
+/// `UNBOUNDED PRECEDING/FOLLOWING` is a typed-null scalar and returns `false`.
+fn is_finite(bound: &WindowFrameBound) -> bool {
     match bound {
-        WindowFrameBound::CurrentRow => Some(bound),
-        WindowFrameBound::Preceding(scalar) | WindowFrameBound::Following(scalar)
-            if !scalar.is_null() =>
-        {
-            Some(bound)
+        WindowFrameBound::CurrentRow => true,
+        WindowFrameBound::Preceding(scalar) | WindowFrameBound::Following(scalar) => {
+            !scalar.is_null()
         }
-        _ => None,
     }
 }
 
@@ -244,55 +172,95 @@ fn fmt_bound(bound: &WindowFrameBound) -> String {
     }
 }
 
-/// Extract the halo width in `f64` from a bound. `CurrentRow` → 0.
-/// Errors on non-numeric scalar (e.g. Interval bounds — future work).
-fn halo_from_bound(bound: &WindowFrameBound) -> datafusion::common::Result<f64> {
+/// Extract the halo width in `f64` from a bound. `CurrentRow` → `Some(0.0)`.
+/// Non-numeric scalars (e.g. Interval bounds) return `None` — a shape gate,
+/// widened alongside KLL.
+fn halo_from_bound(bound: &WindowFrameBound) -> Option<f64> {
     let scalar = match bound {
-        WindowFrameBound::CurrentRow => return Ok(0.0),
+        WindowFrameBound::CurrentRow => return Some(0.0),
         WindowFrameBound::Preceding(s) | WindowFrameBound::Following(s) => s,
     };
-    // Widen anything Int-ish or Float-ish to f64. Interval bounds (for
-    // time-typed ORDER BYs) are the widening TODO alongside KLL.
     match scalar {
-        ScalarValue::Int8(Some(v)) => Ok(*v as f64),
-        ScalarValue::Int16(Some(v)) => Ok(*v as f64),
-        ScalarValue::Int32(Some(v)) => Ok(*v as f64),
-        ScalarValue::Int64(Some(v)) => Ok(*v as f64),
-        ScalarValue::UInt8(Some(v)) => Ok(*v as f64),
-        ScalarValue::UInt16(Some(v)) => Ok(*v as f64),
-        ScalarValue::UInt32(Some(v)) => Ok(*v as f64),
-        ScalarValue::UInt64(Some(v)) => Ok(*v as f64),
-        ScalarValue::Float32(Some(v)) => Ok(*v as f64),
-        ScalarValue::Float64(Some(v)) => Ok(*v),
-        other => datafusion::common::internal_err!(
-            "ParallelWindowRule: unsupported halo bound type {other:?}"
-        ),
+        ScalarValue::Int8(Some(v)) => Some(*v as f64),
+        ScalarValue::Int16(Some(v)) => Some(*v as f64),
+        ScalarValue::Int32(Some(v)) => Some(*v as f64),
+        ScalarValue::Int64(Some(v)) => Some(*v as f64),
+        ScalarValue::UInt8(Some(v)) => Some(*v as f64),
+        ScalarValue::UInt16(Some(v)) => Some(*v as f64),
+        ScalarValue::UInt32(Some(v)) => Some(*v as f64),
+        ScalarValue::UInt64(Some(v)) => Some(*v as f64),
+        ScalarValue::Float32(Some(v)) => Some(*v as f64),
+        ScalarValue::Float64(Some(v)) => Some(*v),
+        _ => None,
     }
 }
 
-/// Wrap BWAG in a `PartitionedBoundedWindowAggExec` and splice
-/// `SortExec → RSE#1 → source` below a fresh `ORRE → RSE#2 → RFE_wide`
-/// chain. The rule runs after DF's optimizer chain, so BWAG's descendants
-/// have the fully-materialized `SPM → SortExec → source` shape here — we
-/// strip both since our rewrite overrides BWAG's distribution and takes
-/// ownership of Sort placement (see module doc for why).
-fn rewrite_bwag(
-    bwag: &Arc<dyn ExecutionPlan>,
-    candidate: &WindowCandidate,
+/// Match the parallel-window shape rooted at `node` and, if it fits, splice
+/// `RFE_narrow → PBWAG(BWAG) → RFE_wide → RSE#2 → ORRE → SortExec → RSE#1 →
+/// <source>` in place of the DF-planted `BWAG → SPM → SortExec → <source>`
+/// subtree.
+///
+/// - `Ok(None)`: shape gate missed (not a BWAG, PARTITION BY present, ROWS
+///   frame, UNBOUNDED bound, non-Float64 ORDER BY, non-numeric bound scalar,
+///   or subtree already rewritten). No log noise on the hot path.
+/// - `Ok(Some(_))`: rewrite happened.
+/// - `Err(_)`: an invariant the shape gates should have upheld didn't — BWAG
+///   with ≠1 child, SPM/SortExec with ≠1 child, schema-lookup failure on the
+///   ORDER BY expression, or a constructor `try_new` error.
+///
+/// The rule runs after DF's optimizer chain, so BWAG's descendants have the
+/// fully-materialized `SPM → SortExec → source` shape by the time we peel
+/// here (see module doc for why the SPM and SortExec get stripped).
+fn maybe_rewrite_bwag(
+    node: &Arc<dyn ExecutionPlan>,
     output_partitions: usize,
-) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    let bwag_children = bwag.children();
-    let [immediate] = bwag_children.as_slice() else {
+) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
+    let Some(window) = node.downcast_ref::<BoundedWindowAggExec>() else {
+        return Ok(None);
+    };
+    // Shape gates as slice patterns: 0 or 2+ elements simply don't match.
+    let [expr] = window.window_expr() else {
+        return Ok(None);
+    };
+    let [] = expr.partition_by() else {
+        return Ok(None);
+    };
+    let [order] = expr.order_by() else {
+        return Ok(None);
+    };
+    let Some(column) = order.expr.downcast_ref::<Column>() else {
+        return Ok(None);
+    };
+    let frame = expr.get_window_frame();
+    let WindowFrameUnits::Range = frame.units else {
+        return Ok(None);
+    };
+    if !is_finite(&frame.start_bound) || !is_finite(&frame.end_bound) {
+        return Ok(None);
+    }
+    // Idempotency: re-plans (AQE fires the optimizer chain again for stage
+    // N+1) would otherwise wrap another ORRE around the previous rewrite's
+    // RangeFilterExec+ShuffleReader — and that ORRE's child doesn't claim
+    // ordering, blowing up at execute-time.
+    if subtree_contains_our_rewrite(window.children().as_slice()) {
+        return Ok(None);
+    }
+    let (Some(halo_lo), Some(halo_hi)) = (
+        halo_from_bound(&frame.start_bound),
+        halo_from_bound(&frame.end_bound),
+    ) else {
+        return Ok(None);
+    };
+
+    let node_children = node.children();
+    let [immediate] = node_children.as_slice() else {
         return datafusion::common::internal_err!(
             "ParallelWindowRule: BWAG must have exactly 1 child"
         );
     };
-
-    // Strip whatever DF planted above the true source purely to satisfy
-    // BWAG's SinglePartition + Sorted requirements (SPM and SortExec) —
-    // our rewrite overrides both. Loop tolerates any order (SPM→Sort or
-    // Sort→SPM) or partial shapes (source that claims ordering natively
-    // via `sort_order_for_reorder` skips the Sort entirely).
+    // Loop tolerates any order (SPM→Sort or Sort→SPM) or partial shapes
+    // (source that claims ordering natively via `sort_order_for_reorder`
+    // skips the Sort entirely).
     let mut base_source: Arc<dyn ExecutionPlan> = (*immediate).clone();
     while base_source.is::<SortPreservingMergeExec>() || base_source.is::<SortExec>() {
         let children = base_source.children();
@@ -305,16 +273,14 @@ fn rewrite_bwag(
     }
     let source_schema = base_source.schema();
 
-    // Route on the ORDER BY column. ORRE requires Float64 today.
-    let routing_type = candidate.sort_expr.expr.data_type(&source_schema)?;
+    // Route on the ORDER BY column. ORRE requires Float64 today (T-Digest
+    // restriction; lifts when the sketch swaps to KLL).
+    let routing_type = order.expr.data_type(&source_schema)?;
     if !matches!(routing_type, DataType::Float64) {
-        return datafusion::common::internal_err!(
-            "ParallelWindowRule: routing expression `{}` must be Float64, got {routing_type:?}",
-            candidate.sort_expr.expr
-        );
+        return Ok(None);
     }
 
-    let sort_expr = normalize_sort_expr(&candidate.sort_expr);
+    let sort_expr = normalize_sort_expr(order);
     let rse1: Arc<dyn ExecutionPlan> = Arc::new(RuntimeStatsExec::try_new(
         base_source,
         Some(vec![sort_expr.clone()]),
@@ -340,8 +306,6 @@ fn rewrite_bwag(
         orre,
         Some(vec![sort_expr.clone()]),
     )?);
-    let halo_lo = halo_from_bound(&candidate.start_bound)?;
-    let halo_hi = halo_from_bound(&candidate.end_bound)?;
     let wide_filter: Arc<dyn ExecutionPlan> = Arc::new(RangeFilterExec::try_new_pending(
         rse2,
         sort_expr.expr.clone(),
@@ -355,14 +319,9 @@ fn rewrite_bwag(
     // per-partition execute() runs each of the K sub-ranges independently.
     // See execution_plans::partitioned_bounded_window_agg for what makes
     // this safe (range-repartition upstream + halo).
-    let bwag_ref = bwag.downcast_ref::<BoundedWindowAggExec>().ok_or_else(|| {
-        datafusion::common::DataFusionError::Internal(
-            "ParallelWindowRule: rewrite_bwag caller passed non-BWAG".into(),
-        )
-    })?;
     let partitioned_bwag: Arc<dyn ExecutionPlan> =
         Arc::new(PartitionedBoundedWindowAggExec::try_new(
-            bwag_ref.window_expr().to_vec(),
+            window.window_expr().to_vec(),
             wide_filter,
         )?);
     // Narrow filter above BWAG drops the halo rows the wide filter let in
@@ -375,7 +334,14 @@ fn rewrite_bwag(
             ScalarValue::Float64(Some(0.0)),
             ScalarValue::Float64(Some(0.0)),
         )?);
-    Ok(narrow_filter)
+
+    debug!(
+        "ParallelWindowRule: rewrote BWAG on `{}` (RANGE {} - {})",
+        column.name(),
+        fmt_bound(&frame.start_bound),
+        fmt_bound(&frame.end_bound),
+    );
+    Ok(Some(narrow_filter))
 }
 
 /// ORRE requires `nulls_first == false` today (T-Digest has no NULL slot).
@@ -549,24 +515,22 @@ mod tests {
 
     #[test]
     fn halo_from_bound_reads_all_numeric_variants() {
-        assert_eq!(halo_from_bound(&WindowFrameBound::CurrentRow).unwrap(), 0.0);
+        assert_eq!(halo_from_bound(&WindowFrameBound::CurrentRow), Some(0.0));
         assert_eq!(
-            halo_from_bound(&WindowFrameBound::Preceding(ScalarValue::Int64(Some(3))))
-                .unwrap(),
-            3.0
+            halo_from_bound(&WindowFrameBound::Preceding(ScalarValue::Int64(Some(3)))),
+            Some(3.0)
         );
         assert_eq!(
             halo_from_bound(&WindowFrameBound::Following(ScalarValue::Float64(Some(
                 2.5
-            ))))
-            .unwrap(),
-            2.5
+            )))),
+            Some(2.5)
         );
-        assert!(
+        assert_eq!(
             halo_from_bound(&WindowFrameBound::Preceding(ScalarValue::Utf8(Some(
                 "x".into()
-            ))))
-            .is_err()
+            )))),
+            None
         );
     }
 }
