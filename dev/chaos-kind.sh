@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -29,7 +29,8 @@
 #
 # Env:
 #   CLUSTER_NAME   kind cluster name           (default: ballista-chaos)
-#   KEEP_CLUSTER   if "0", `all` deletes the cluster when done (default: 1, keep)
+#   KEEP_CLUSTER   with the `all` command: "0" tears the cluster down at the end,
+#                  any other value (default "1") leaves it running
 #
 # Examples:
 #   dev/chaos-kind.sh                       # build, (re)create, load, run everything

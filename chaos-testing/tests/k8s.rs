@@ -24,7 +24,7 @@
 //! ```sh
 //! dev/build-chaos-docker.sh
 //! kind create cluster --config chaos-testing/k8s/kind-config.yaml
-//! kind load docker-image ballista-chaos-scheduler:test ballista-chaos-executor:test
+//! kind load docker-image ballista-chaos:test
 //! CHAOS_BACKEND=kind cargo test -p ballista-chaos --features k8s --test k8s -- --test-threads=1
 //! ```
 #![cfg(feature = "k8s")]

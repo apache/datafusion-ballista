@@ -25,6 +25,11 @@
 # binary (e.g. a macOS Mach-O on Apple Silicon), which fails in a Linux pod with
 # "exec format error". BuildKit cache mounts keep the cargo registry and target
 # dir across builds, so an incremental rebuild after a chaos-only change is fast.
+#
+# Debug info is disabled (CARGO_PROFILE_DEV_DEBUG=0) and symbols are stripped: a
+# full debug binary statically links all of DataFusion + aws-lc/ring and can OOM
+# `ld` at link time, and the ~250MB result is slow (and sometimes fails) to
+# `kind load`. Without DWARF the link is light and each binary is tens of MB.
 
 FROM rust:1-bookworm AS builder
 RUN apt-get update \
@@ -32,6 +37,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
+ENV CARGO_PROFILE_DEV_DEBUG=0
+ENV RUSTFLAGS="-C strip=symbols"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build -p ballista-chaos --bin chaos-scheduler --bin chaos-executor \
@@ -44,7 +51,8 @@ ENV RUST_BACKTRACE=full
 COPY --from=builder /out/chaos-scheduler /root/chaos-scheduler
 COPY --from=builder /out/chaos-executor /root/chaos-executor
 
-# scheduler gRPC/REST (50050); executor Arrow Flight (50051) and gRPC (50052).
-EXPOSE 50050 50051 50052
+# scheduler gRPC/REST (50050); executor Arrow Flight (50051), gRPC (50052), and
+# HTTP health probes (50053).
+EXPOSE 50050 50051 50052 50053
 
 # No ENTRYPOINT: the pod manifest sets `command` to the desired binary.

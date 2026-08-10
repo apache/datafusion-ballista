@@ -23,7 +23,9 @@
 use ballista_executor::executor_process::{
     ExecutorProcessConfig, start_executor_process,
 };
+use ballista_executor::health::spawn_health_server;
 use chaos_testing::registry::chaos_function_registry;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 fn env_u16(key: &str) -> u16 {
@@ -64,5 +66,33 @@ async fn main() -> ballista_core::error::Result<()> {
         ..Default::default()
     };
 
-    start_executor_process(Arc::new(config)).await
+    // Kubernetes health probes. `start_executor_process` (the library entry
+    // point) does not serve them — only the standalone binary does — so wire the
+    // HTTP probe server here on the config's shared `ExecutorHealth` handle,
+    // exactly as `ballista-executor`'s `bin/main.rs` does. `/healthz` is process
+    // liveness; `/readyz` reflects heartbeat state. Only started when
+    // `CHAOS_EXECUTOR_HEALTH_PORT` is set (the k8s manifest sets it), so the
+    // process-based `TestCluster` harness spawns no extra server.
+    let health_server = std::env::var("CHAOS_EXECUTOR_HEALTH_PORT").ok().map(|port| {
+        let port: u16 = port
+            .parse()
+            .unwrap_or_else(|e| panic!("CHAOS_EXECUTOR_HEALTH_PORT must be a u16: {e}"));
+        let addr: SocketAddr = format!("{}:{}", config.bind_host, port)
+            .parse()
+            .expect("health server address must parse");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let handle = spawn_health_server(addr, config.health.clone(), shutdown_rx);
+        (shutdown_tx, handle)
+    });
+
+    let result = start_executor_process(Arc::new(config)).await;
+
+    // Ask the health server to stop so the process can exit cleanly.
+    if let Some((shutdown_tx, handle)) = health_server {
+        let _ = shutdown_tx.send(());
+        if let Err(e) = handle.await {
+            log::warn!("health server task join error: {e}");
+        }
+    }
+    result
 }

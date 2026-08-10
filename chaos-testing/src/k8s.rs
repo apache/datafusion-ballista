@@ -46,6 +46,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Directory shared between the harness and the pods, holding the fixture.
@@ -67,7 +68,14 @@ fn fixture_dir() -> String {
 
 const CHAOS_IMAGE: &str = "ballista-chaos:test";
 const SCHEDULER_PORT: u16 = 50050;
+/// Port the executor pods serve `/healthz` + `/readyz` on for the k8s probes.
+const EXECUTOR_HEALTH_PORT: u16 = 50053;
 const EXECUTOR_DEPLOYMENT: &str = "ballista-executor";
+
+/// Per-process counter so each `K8sCluster::start` gets a distinct namespace,
+/// even if several run in one process (`--test-threads=1` serialises them today,
+/// but this keeps namespaces unique if that ever changes or a start is retried).
+static NS_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// How an executor pod is removed.
 #[derive(Clone, Copy, Debug)]
@@ -96,15 +104,23 @@ impl K8sCluster {
         require_kubectl()?;
 
         // One cluster per process; --test-threads=1 keeps it to one at a time.
-        let namespace = format!("chaos-{}", std::process::id());
+        // The counter guards against collisions if that ever changes.
+        let namespace = format!(
+            "chaos-{}-{}",
+            std::process::id(),
+            NS_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         let shared_dir = PathBuf::from(fixture_dir());
 
-        // Ensure the shared dir exists. Do NOT remove/recreate it: it is the
-        // bind-mount root, and deleting it can sever the mount so pod writes no
-        // longer reach the node. `Fixture::write` overwrites the parquet in
-        // place, so a stale deterministic fixture is harmless.
+        // Ensure the shared dir exists, then clear its *contents* so a previous
+        // run's fixture (e.g. one written by an older build with a different
+        // schema) cannot leak into this run. This matters for local,
+        // non-ephemeral use; on CI the runner is fresh. We clear the contents
+        // rather than the directory itself: it is the bind-mount root, and
+        // removing it can sever the mount so pod writes no longer reach the node.
         std::fs::create_dir_all(&shared_dir)
             .map_err(|e| format!("create shared dir {}: {e}", shared_dir.display()))?;
+        clear_dir_contents(&shared_dir)?;
 
         let manifests = render_manifests(&namespace, executors, &shared_dir);
         kubectl_apply(&manifests).await?;
@@ -210,18 +226,29 @@ impl K8sCluster {
 
     /// How many executors the scheduler currently considers registered.
     pub async fn registered_executors(&self) -> Result<usize, String> {
-        let body: serde_json::Value =
-            reqwest::get(format!("{}/api/executors", self.rest_url()))
-                .await
-                .map_err(|e| e.to_string())?
-                .json()
-                .await
-                .map_err(|e| e.to_string())?;
+        // A short timeout so a stalled port-forward surfaces as a retryable
+        // error in the polling loop rather than hanging the whole wait.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let body: serde_json::Value = client
+            .get(format!("{}/api/executors", self.rest_url()))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(body.as_array().map(|a| a.len()).unwrap_or(0))
     }
 
     /// Scale the executor Deployment. `0` is a total loss that stays lost (the
     /// controller does not recreate the pods); scaling back up recovers.
+    ///
+    /// Not yet exercised by a scenario — this is the k8s primitive the executor
+    /// kill/loss scenarios (the #2029 follow-ups) will drive; the baseline test
+    /// only needs a healthy cluster. Kept here so the backend is complete.
     pub async fn scale_executors(&self, replicas: usize) -> Result<(), String> {
         kubectl(&[
             "-n",
@@ -308,6 +335,26 @@ fn delete_namespace(namespace: &str) {
         .status();
 }
 
+/// Remove everything *inside* `dir` without removing `dir` itself. `dir` is a
+/// bind-mount root, so deleting it can sever the mount; deleting only its
+/// entries is safe and leaves the mount intact.
+fn clear_dir_contents(dir: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| format!("read shared dir {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
+        let path = entry.path();
+        let is_dir = entry.file_type().map_err(|e| e.to_string())?.is_dir();
+        let result = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        result.map_err(|e| format!("remove {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn require_kubectl() -> Result<(), String> {
     Command::new("kubectl")
         .arg("version")
@@ -320,7 +367,25 @@ fn require_kubectl() -> Result<(), String> {
             s.success()
                 .then_some(())
                 .ok_or_else(|| "`kubectl version --client` failed".to_string())
-        })
+        })?;
+
+    // This backend creates and deletes namespaces, so refuse to run unless the
+    // current context is a kind cluster — a guard against pointing it at a real
+    // cluster by accident. kind names its context `kind-<cluster>`.
+    let output = Command::new("kubectl")
+        .args(["config", "current-context"])
+        .output()
+        .map_err(|e| format!("read kubectl current-context: {e}"))?;
+    let context = String::from_utf8_lossy(&output.stdout);
+    let context = context.trim();
+    if !context.starts_with("kind-") {
+        return Err(format!(
+            "refusing to run: current kubectl context is {context:?}, not a kind \
+             cluster (expected a `kind-` prefix). Point kubectl at a kind cluster, \
+             e.g. `kubectl config use-context kind-ballista-chaos`."
+        ));
+    }
+    Ok(())
 }
 
 /// Reserve a free local TCP port for the port-forward.
@@ -433,7 +498,7 @@ spec:
       containers:
         - name: scheduler
           image: {CHAOS_IMAGE}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           command: ["/root/chaos-scheduler"]
           env:
             - name: CHAOS_SCHEDULER_PORT
@@ -452,6 +517,24 @@ spec:
               value: "info"
           ports:
             - containerPort: {SCHEDULER_PORT}
+          # Both probes use /healthz, not /readyz: executors reach the scheduler
+          # through the Service below, and a Service only routes to Ready pods.
+          # The scheduler's /readyz gates on registered executors, so a /readyz
+          # readiness probe would deadlock (no endpoints -> executors can't
+          # register -> never ready). /healthz reports process liveness, which is
+          # all the Service needs to start routing.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {SCHEDULER_PORT}
+            periodSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {SCHEDULER_PORT}
+            periodSeconds: 10
+            failureThreshold: 3
           volumeMounts:
             - name: fixtures
               mountPath: {mount}
@@ -492,7 +575,7 @@ spec:
       containers:
         - name: executor
           image: {CHAOS_IMAGE}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           command: ["/root/chaos-executor"]
           env:
             - name: CHAOS_SCHEDULER_HOST
@@ -503,6 +586,8 @@ spec:
               value: "50051"
             - name: CHAOS_EXECUTOR_GRPC_PORT
               value: "50052"
+            - name: CHAOS_EXECUTOR_HEALTH_PORT
+              value: "{EXECUTOR_HEALTH_PORT}"
             - name: CHAOS_BIND_HOST
               value: "0.0.0.0"
             - name: CHAOS_EXECUTOR_EXTERNAL_HOST
@@ -513,6 +598,24 @@ spec:
               value: "1"
             - name: RUST_LOG
               value: "info"
+          ports:
+            - containerPort: {EXECUTOR_HEALTH_PORT}
+          # The executor is reached by pod IP (not a readiness-gated Service), so
+          # /readyz here is safe and meaningful: it reports SERVICE_UNAVAILABLE
+          # until the first heartbeat lands, then 200. Liveness stays on /healthz
+          # (process-alive) so a slow/again-disconnected executor is not killed.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {EXECUTOR_HEALTH_PORT}
+            periodSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {EXECUTOR_HEALTH_PORT}
+            periodSeconds: 10
+            failureThreshold: 3
           volumeMounts:
             - name: fixtures
               mountPath: {mount}

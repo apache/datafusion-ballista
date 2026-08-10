@@ -16,9 +16,9 @@
 # under the License.
 
 # Kubernetes (kind) chaos scenarios. Gated: runs only when the chaos harness,
-# the engine, or the docker artifacts change, plus nightly and on demand — it is
-# deliberately off the per-PR critical path, since the process-based chaos
-# harness already covers HA on every PR.
+# the engine, or the docker artifacts change, plus a nightly cron schedule and
+# on demand — it is deliberately off the per-PR critical path, since the
+# process-based chaos harness already covers HA on every PR.
 name: k8s-chaos
 
 on:
@@ -35,12 +35,25 @@ on:
       # docs-only changes cannot affect this job; exclusions are applied last
       - "!**/*.md"
   schedule:
+    # Nightly cron (not the Rust nightly toolchain — this job builds with stable).
     - cron: "0 6 * * *"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
+
+# Minimal token: this job only reads the repository.
+permissions:
+  contents: read
+
+env:
+  # Pinned tool versions, installed via curl to avoid marketplace actions that
+  # must be on the ASF allowlist.
+  KIND_VERSION: v0.30.0
+  KUBECTL_VERSION: v1.31.4
+  CLUSTER_NAME: ballista-chaos
+  CHAOS_FIXTURE_DIR: /tmp/ballista-chaos-fixtures
 
 jobs:
   k8s-chaos:
@@ -66,31 +79,30 @@ jobs:
 
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
 
-      - name: Create the fixture mount directory
-        run: mkdir -p /tmp/ballista-chaos-fixtures
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSLo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo ./kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x ./kind ./kubectl
+          sudo mv ./kind ./kubectl /usr/local/bin/
+
+      - name: Create kind cluster
+        run: |
+          mkdir -p "${CHAOS_FIXTURE_DIR}"
+          kind create cluster --name "${CLUSTER_NAME}" --config chaos-testing/k8s/kind-config.yaml
 
       - name: Build the chaos image
         run: ./dev/build-chaos-docker.sh
 
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: Create kind cluster
-        uses: helm/kind-action@v1
-        with:
-          cluster_name: ballista-chaos
-          config: chaos-testing/k8s/kind-config.yaml
-
       - name: Load the chaos image into kind
-        run: kind load docker-image ballista-chaos:test --name ballista-chaos
+        run: kind load docker-image ballista-chaos:test --name "${CLUSTER_NAME}"
 
       - name: Run the kind chaos scenarios
         env:
           CHAOS_BACKEND: kind
-          # Match the extraMounts path in chaos-testing/k8s/kind-config.yaml. On
-          # Linux runners the kind node binds host paths directly, so /tmp is
-          # fine (the $HOME default is only needed for macOS Docker Desktop).
-          CHAOS_FIXTURE_DIR: /tmp/ballista-chaos-fixtures
+          # Keep namespaces on failure so the diagnostics step below can collect
+          # logs — teardown would otherwise delete them. The runner is ephemeral.
+          CHAOS_KEEP_NS: "1"
         run: |
           cargo test -p ballista-chaos --features k8s --test k8s -- --test-threads=1 --nocapture
 
