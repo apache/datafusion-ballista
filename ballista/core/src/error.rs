@@ -77,14 +77,8 @@ impl<T> Into<Result<T>> for BallistaError {
 }
 
 impl BallistaError {
-    /// Carries a Ballista error across DataFusion's stream boundary as a single
-    /// [`DataFusionError::External`].
-    ///
-    /// This is the one wrapping convention for Ballista-origin errors. It keeps
-    /// the error structural (rather than stringifying it) so that task-failure
-    /// classification can recover it: `find_root()` traverses any `Shared` /
-    /// `Context` / `Diagnostic` layers DataFusion adds on top and lands on this
-    /// `External` node, whose payload is downcast back to a `BallistaError`.
+    /// Keeps a Ballista error structural across DataFusion's stream boundary, so
+    /// task-failure classification can recover it instead of parsing a string.
     pub fn into_datafusion(self) -> DataFusionError {
         DataFusionError::External(Box::new(self))
     }
@@ -233,9 +227,8 @@ struct FetchFailedDetails {
     desc: String,
 }
 
-/// Recovers a shuffle fetch failure carried across DataFusion as
-/// [`DataFusionError::External`], seeing through any `Shared` / `Context` /
-/// `Diagnostic` layers via [`DataFusionError::find_root`].
+/// Recovers a shuffle fetch failure carried across DataFusion, seeing through
+/// any wrapper layers.
 fn find_fetch_failed(e: &BallistaError) -> Option<FetchFailedDetails> {
     match e {
         BallistaError::FetchFailed(executor_id, map_stage_id, map_partition_id, desc) => {
@@ -256,10 +249,8 @@ fn find_fetch_failed(e: &BallistaError) -> Option<FetchFailedDetails> {
     }
 }
 
-/// Detects a retryable IO error, seeing through both native
-/// [`DataFusionError::IoError`] (e.g. object_store) and a
-/// [`BallistaError::IoError`] carried across DataFusion as
-/// [`DataFusionError::External`], including under `Shared` / `Context` layers.
+/// Whether the error is a retryable IO failure, native or carried across
+/// DataFusion under any wrapper layer.
 fn is_retryable_io(e: &BallistaError) -> bool {
     match e {
         BallistaError::IoError(_) => true,
