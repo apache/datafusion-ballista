@@ -171,6 +171,7 @@ jobs:
               --partitions 4 \
               --verify \
               -c ballista.planner.adaptive.enabled=true \
+              -c ballista.planner.parallel_window.enabled=true \
               -c ballista.scheduler.max_partitions_per_task=0
             echo "::endgroup::"
           done
