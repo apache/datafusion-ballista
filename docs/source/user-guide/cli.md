@@ -355,3 +355,19 @@ trunk serve --no-default-features --features web
 ```
 
 Then open `http://localhost:8080` in a browser.
+
+### Web TUI Screenshots
+
+The following screenshots show the Web TUI running in a browser.
+
+#### Main View
+
+![Web TUI main view](./screenshots/tui-web-main.png)
+
+#### Help
+
+![Web TUI help view](./screenshots/tui-web-help.png)
+
+#### Search
+
+![Web TUI search view](./screenshots/tui-web-search.png)
