@@ -848,6 +848,7 @@ pub fn repartition_routing_expr(
             [] => internal_err!("OrderedRangeRepartitionExec has empty ORDER BY"),
         };
     }
+    // TODO: are multiple chilren an error?
     for child in plan.children() {
         if let Some(expr) = repartition_routing_expr(child.as_ref())? {
             return Ok(Some(expr));
@@ -859,15 +860,23 @@ pub fn repartition_routing_expr(
 /// Rebuild a stage's `Vec<Vec<PartitionLocation>>` under range-repartition
 /// overlap semantics: for each producer file in `original_partitions`,
 /// find its sketch (from `reports`), and route the file into every
-/// downstream partition whose global cut range overlaps
+/// downstream partition whose *halo-widened* range overlaps
 /// `[sketch.min(), sketch.max()]`.
 ///
-/// Downstream partition ranges follow the half-open convention:
-/// - `k = 0`         → `(-∞, cuts[0])`
-/// - `0 < k < K - 1` → `[cuts[k-1], cuts[k])`
-/// - `k = K - 1`     → `[cuts[K-2], +∞)`
+/// Downstream partition ranges follow the half-open convention, widened
+/// by the downstream `RangeFilterExec`'s halos on each side:
+/// - `k = 0`         → `(-∞,                  cuts[0]   + halo_hi)`
+/// - `0 < k < K - 1` → `[cuts[k-1] - halo_lo, cuts[k]   + halo_hi)`
+/// - `k = K - 1`     → `[cuts[K-2] - halo_lo, +∞)`
 ///
 /// `[min, max]` overlaps `[lower, upper)` iff `max >= lower AND min < upper`.
+///
+/// `halo_lo`/`halo_hi` are `0.0` when the downstream stage has no halo
+/// consumer (hash-agg, no-window range-repartition) — the check collapses
+/// to raw cuts. When the downstream stage has a `RangeFilterExec` with
+/// non-zero halo (bounded RANGE-frame windows), the caller passes the
+/// widened halos so files straddling the halo band route to both sides.
+/// Skipping this widening loses boundary rows from downstream window sums.
 ///
 /// Files without a corresponding sketch (missing entirely, or present
 /// with `count == 0`) are safe to skip only when `partition_stats.num_rows`
@@ -875,19 +884,22 @@ pub fn repartition_routing_expr(
 /// row count is unknown (`None`), silently skipping would lose data —
 /// error out instead.
 ///
-/// TODO(halo-aware routing): when the downstream stage has a
-/// `RangeFilterExec` with non-zero halo (bounded RANGE-frame windows), each
-/// partition's *effective* read range is `[cuts[k-1] - halo_lo, cuts[k] +
-/// halo_hi)`. This function currently uses the raw cut range, so files
-/// straddling the halo boundary aren't routed to their halo-widened
-/// consumer. Boundary rows near cuts can be missing from downstream
-/// window sums — a correctness gap for RANGE frames that this refactor
-/// does not resolve. Fix requires reaching across stages to read the
-/// consumer RFE's halos and widening the overlap check here.
+/// # Arguments
+///
+/// * `original_partitions` — passthrough shuffle output, `partitions[k]`
+///   holds every file the writer produced for global partition `k`.
+/// * `reports` — one per completed producer task; each carries the
+///   per-sub-part sketches used for overlap lookup.
+/// * `global_cuts` — K-1 monotone quantile cuts derived from merged
+///   sketches; produce K downstream buckets.
+/// * `halo_lo` / `halo_hi` — downstream `RangeFilterExec`'s halo widths
+///   in the routing expression's units. `0.0` for non-halo consumers.
 pub fn cut_partitions(
     original_partitions: Vec<Vec<PartitionLocation>>,
     reports: &[TaskRuntimeStats],
     global_cuts: &[f64],
+    halo_lo: f64,
+    halo_hi: f64,
 ) -> Result<Vec<Vec<PartitionLocation>>> {
     use std::collections::HashMap;
 
@@ -937,13 +949,15 @@ pub fn cut_partitions(
                 }
                 continue;
             };
-            // Bucket i has (lower, upper) = (cuts[i-1], cuts[i]) with ±∞ at the
-            // ends, and matches iff `sketch_max >= lower && sketch_min < upper`.
-            // Monotone cuts → the set of matching buckets is a contiguous range
-            // [b_lo, b_hi], found by two partition_points over `global_cuts`.
+            // Bucket i has (lower, upper) = (cuts[i-1] - halo_lo, cuts[i] +
+            // halo_hi) with ±∞ at the ends, and matches iff `sketch_max +
+            // halo_lo >= cuts[i-1] && sketch_min - halo_hi < cuts[i]`.
+            // Monotone cuts → the set of matching buckets is a contiguous
+            // range [b_lo, b_hi], found by two partition_points over
+            // `global_cuts` with the sketch shifted by the halos.
             let (sketch_min, sketch_max) = (sketch.min(), sketch.max());
-            let b_lo = global_cuts.partition_point(|&c| c <= sketch_min);
-            let b_hi = global_cuts.partition_point(|&c| c <= sketch_max);
+            let b_lo = global_cuts.partition_point(|&c| c <= sketch_min - halo_hi);
+            let b_hi = global_cuts.partition_point(|&c| c <= sketch_max + halo_lo);
             for bucket in &mut remapped[b_lo..=b_hi] {
                 bucket.push(file.clone());
             }
@@ -1753,7 +1767,7 @@ mod overlap_remap_tests {
         // Passthrough map: both producers wrote to sub_part_id=0.
         let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts).unwrap();
+        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2, "K = cuts.len() + 1");
         // Partition 0: only producer 100.
         assert_eq!(remapped[0].len(), 1);
@@ -1773,7 +1787,7 @@ mod overlap_remap_tests {
         let cuts = vec![15.0];
         let original_partitions = vec![vec![location(0, 300)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts).unwrap();
+        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2);
         assert_eq!(remapped[0].len(), 1, "straddler in partition 0");
         assert_eq!(remapped[0][0].file_id, Some(300));
@@ -1793,7 +1807,7 @@ mod overlap_remap_tests {
         bad.file_id = None;
         let original_partitions = vec![vec![bad]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts)
+        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
             .expect_err("missing file_id must surface as an error");
         assert!(
             err.to_string().contains("missing file_id"),
@@ -1815,7 +1829,7 @@ mod overlap_remap_tests {
         let cuts = vec![10.0];
         let original_partitions = vec![vec![location(0, 200)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts).unwrap();
+        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -1829,7 +1843,7 @@ mod overlap_remap_tests {
         let cuts = vec![10.0];
         let original_partitions = vec![vec![location(0, 100)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts).unwrap();
+        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -1846,7 +1860,7 @@ mod overlap_remap_tests {
         orphan.partition_stats = PartitionStats::new(Some(5), None, None);
         let original_partitions = vec![vec![orphan]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts)
+        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
             .expect_err("file with rows but no sketch must error");
         let msg = err.to_string();
         assert!(
@@ -1886,7 +1900,7 @@ mod overlap_remap_tests {
             location(0, 6),
         ]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts).unwrap();
+        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 4);
         let ids = |b: &[PartitionLocation]| {
             let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
@@ -1910,12 +1924,60 @@ mod overlap_remap_tests {
         orphan.partition_stats = PartitionStats::default(); // num_rows = None
         let original_partitions = vec![vec![orphan]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts)
+        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
             .expect_err("file with unknown rows but no sketch must error");
         let msg = err.to_string();
         assert!(
             msg.contains("num_rows=None") && msg.contains("no usable sketch"),
             "unexpected error: {msg}"
+        );
+    }
+
+    /// A producer whose sketch lies entirely on one side of a cut but
+    /// within `halo_lo` of it must ALSO route to the partition on the
+    /// other side — the downstream `RangeFilterExec` widens each
+    /// partition's effective range by `[halo_lo, halo_hi]`, and any file
+    /// that could contain rows in the widened band must be visible to
+    /// that partition or the range-frame window sums it lose those rows.
+    ///
+    /// Matches h2o Q8's shape: `RANGE BETWEEN 3 PRECEDING AND CURRENT ROW`
+    /// → halo_lo = 3, halo_hi = 0.
+    // TODO: add a test that lovers 3 partitios including halo_hi
+    #[test]
+    fn overlap_remap_routes_halo_band_to_adjacent_partition() {
+        // Producer 100: sketch [13, 14] — below cut 15, but within
+        // halo_lo=3 of it. Must appear in BOTH partition 0 (its own bucket)
+        // AND partition 1 (via halo widening).
+        // Producer 200: sketch [16, 17] — above cut, no halo needed to
+        // route it to partition 1.
+        let reports = vec![
+            sketch_report(100, vec![vec![13.0, 14.0]]),
+            sketch_report(200, vec![vec![16.0, 17.0]]),
+        ];
+        let cuts = vec![15.0];
+        let halo_lo = 3.0;
+        let halo_hi = 0.0;
+        let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, halo_lo, halo_hi)
+                .unwrap();
+        let ids = |b: &[PartitionLocation]| {
+            let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(remapped.len(), 2);
+        assert_eq!(
+            ids(&remapped[0]),
+            vec![100u64],
+            "partition 0 sees only its own bucket (halo_hi=0)"
+        );
+        assert_eq!(
+            ids(&remapped[1]),
+            vec![100u64, 200],
+            "partition 1's effective range is [15-3, +∞) = [12, +∞); \
+             producer 100's [13,14] falls in the halo band and must route here",
         );
     }
 }

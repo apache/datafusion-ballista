@@ -18,7 +18,7 @@
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
-use crate::state::aqe::execution_plan::RangeRepartitionRouting;
+use crate::state::aqe::execution_plan::{ExchangeExec, RangeRepartitionRouting};
 use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
@@ -29,7 +29,8 @@ use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::{
-    cut_partitions, merge_runtime_stats_reports, repartition_routing_expr,
+    RangeFilterExec, cut_partitions, merge_runtime_stats_reports,
+    repartition_routing_expr,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -38,10 +39,13 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
+use datafusion::scalar::ScalarValue;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -372,12 +376,28 @@ impl AdaptiveExecutionGraph {
                 && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
             {
                 let reports = &stage.runtime_stats_reports;
-                let remapped = cut_partitions(partitions, reports, &routing.cuts)
-                    .map_err(|err| {
-                        BallistaError::General(format!(
-                            "range-repartition stage {stage_id}: overlap remap failed: {err}"
-                        ))
-                    })?;
+                // Reader-side halos widen each partition's effective
+                // range to `[cuts[k-1] - halo_lo, cuts[k] + halo_hi)`;
+                // files straddling that band must route to both sides.
+                // Range-repartition boundaries always have a consuming
+                // RFE (writer produces straddler duplicates that only
+                // the reader-side filter can trim), so the walker errors
+                // if none is found.
+                // TODO: do we really mean to walk the whole plan? Or just stage N+1?
+                let (halo_lo, halo_hi) =
+                    downstream_halos(&self.planner.plan, &routing.routing_expr)
+                        .map_err(|err| {
+                            BallistaError::General(format!(
+                                "range-repartition stage {stage_id}: halo lookup failed: {err}"
+                            ))
+                        })?;
+                let remapped =
+                    cut_partitions(partitions, reports, &routing.cuts, halo_lo, halo_hi)
+                        .map_err(|err| {
+                            BallistaError::General(format!(
+                                "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                            ))
+                        })?;
                 // Save boundaries to ExchangeExec so they are there for resolve_stage_partitions
                 self.planner.set_repartition_routing(stage_id, routing)?;
                 remapped
@@ -1426,6 +1446,82 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         }
 
         Ok(next_task)
+    }
+}
+
+/// Find the halos of the downstream `RangeFilterExec` planted directly on
+/// the boundary `ExchangeExec` for `routing_expr`. A range-repartition
+/// boundary always has a consuming RFE — the writer produces straddler
+/// duplicates that only the reader-side filter can trim — so absence is
+/// a shape bug, not a runtime default.
+///
+/// The rule may plant multiple RFEs (e.g. wide directly on the boundary
+/// and narrow above the window operator). Only the one whose immediate
+/// child is the boundary `ExchangeExec` describes the reader-visible
+/// halo band and matters for straddler routing.
+///
+/// # Arguments
+///
+/// * `full_plan` — the AdaptivePlanner's current plan tree; the walker
+///   descends the whole tree looking for the RFE on this boundary.
+/// * `routing_expr` — the range-repartition op's routing expression;
+///   matched by `PhysicalExpr::eq` against each candidate RFE's own.
+fn downstream_halos(
+    full_plan: &Arc<dyn ExecutionPlan>,
+    routing_expr: &Arc<dyn PhysicalExpr>,
+) -> datafusion::common::Result<(f64, f64)> {
+    let mut result: Option<(f64, f64)> = None;
+    let mut halo_err: Option<datafusion::common::DataFusionError> = None;
+    full_plan.apply(|node| {
+        let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let children = rf.children();
+        let [child] = children.as_slice() else {
+            // TODO: is this correct for multi-legged plans?
+            // we probably need to start at the leaves and walk up?
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        if !child.is::<ExchangeExec>() {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        if !rf.routing_expr().eq(routing_expr) {
+            // TODO: should hard error?
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        match (scalar_to_f64(rf.halo_lo()), scalar_to_f64(rf.halo_hi())) {
+            (Ok(lo), Ok(hi)) => {
+                result = Some((lo, hi));
+                Ok(TreeNodeRecursion::Stop)
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                halo_err = Some(e);
+                Ok(TreeNodeRecursion::Stop)
+            }
+        }
+    })?;
+    if let Some(e) = halo_err {
+        return Err(e);
+    }
+    result.ok_or_else(|| {
+        datafusion::common::DataFusionError::Internal(format!(
+            "range-repartition boundary for expr `{routing_expr}` has no consuming \
+             RangeFilterExec — straddler files would corrupt downstream partial \
+             aggregates. Check the rule that planted this ORRE.",
+        ))
+    })
+}
+
+/// Halos travel through the RFE public API as `ScalarValue` for future
+/// type widening (Interval, timestamps under KLL). Today the internal
+/// routing math is `f64`; any other variant is a shape violation upstream
+/// and we fail loud rather than silently zero-widen.
+fn scalar_to_f64(sv: &ScalarValue) -> datafusion::common::Result<f64> {
+    match sv {
+        ScalarValue::Float64(Some(v)) => Ok(*v),
+        other => datafusion::common::internal_err!(
+            "only f64 halos are implemented, got: {other:?}"
+        ),
     }
 }
 
