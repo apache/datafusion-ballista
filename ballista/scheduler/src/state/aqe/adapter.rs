@@ -108,8 +108,7 @@ impl BallistaAdapter {
                         // Ordered-writer path: when the child declared an output
                         // ordering, preserve it across the shuffle boundary with a
                         // k-way merge instead of the arrival-order concat that the
-                        // regular reader does. Fixes the silent RANGE-frame
-                        // corruption in `docs/developer/parallel-range-window.md`.
+                        // regular reader does.
                         if let Some(ordering) = exchange.input().output_ordering() {
                             Arc::new(RangeShuffleReaderExec::try_new(
                                 stage_id,
@@ -133,22 +132,6 @@ impl BallistaAdapter {
                         exchange.input().output_partitioning().partition_count(),
                     )?),
                 };
-            // The adapter no longer injects a `RangeFilterExec` above the
-            // reader. Rules that emit a range-repartition upstream (today:
-            // `ParallelWindowRule`) are also responsible for planting the
-            // read-side `RangeFilterExec`(s) at plan time with `cuts=None`;
-            // the scheduler-side `resolve_range_filter_cuts` walker fills
-            // in cuts once stage-0's sketches merge. If a range-routing
-            // ExchangeExec reaches this point without a rule-planted
-            // filter, `RangeFilterExec::execute()` fails loud rather than
-            // straddling sub-parts silently corrupting downstream partial
-            // aggregates.
-            if exchange.range_repartition_routing().is_some() {
-                debug!(
-                    "range-repartition: ExchangeExec has resolved routing for stage {stage_id}; \
-                     any rule-planted RangeFilterExec above should have been resolved by now"
-                );
-            }
             Ok(Transformed::yes(reader))
         } else {
             Ok(Transformed::no(plan))
