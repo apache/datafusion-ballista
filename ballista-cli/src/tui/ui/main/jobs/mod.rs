@@ -39,6 +39,7 @@ use crate::tui::{
     ui::vertical_scrollbar::render_scrollbar,
 };
 
+use crate::tui::app::INVALID_DATE;
 use crate::tui::domain::jobs::JobStatusExt;
 use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::components::loading_indicator::shimmer_spans_with_style;
@@ -360,8 +361,10 @@ fn render_jobs_table(
 }
 
 fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
-    let start_time = i64::try_from(job.start_time)
-        .map_or_else(|_| INVALID_DATE.to_string(), |time| app.format_datetime(time));
+    let start_time = i64::try_from(job.start_time).map_or_else(
+        |_| INVALID_DATE.to_string(),
+        |time| app.format_datetime(time),
+    );
     Cell::from(Text::from(start_time).centered())
 }
 

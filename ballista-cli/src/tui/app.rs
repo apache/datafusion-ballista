@@ -58,7 +58,7 @@ use crate::tui::ui::{
     load_metrics_data, load_stage_plan,
 };
 
-const INVALID_DATE: &str = "Invalid date";
+pub(crate) const INVALID_DATE: &str = "Invalid date";
 
 #[derive(Debug, PartialEq)]
 enum Views {
