@@ -1235,6 +1235,7 @@ dependencies = [
  "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-substrait",
+ "ferroid",
  "futures",
  "graphviz-rust",
  "http 1.5.0",
@@ -3281,8 +3282,10 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee93edf3c501f0035bbeffeccfed0b79e14c311f12195ec0e661e114a0f60da4"
 dependencies = [
+ "futures",
  "portable-atomic",
  "rand 0.10.2",
+ "tokio",
  "web-time",
 ]
 

@@ -57,6 +57,7 @@ dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-substrait = { workspace = true, optional = true }
+ferroid = { version = "2.0", features = ["alloc", "std", "snowflake", "atomic", "base32", "async-tokio"] }
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
