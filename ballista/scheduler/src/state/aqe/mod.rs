@@ -384,20 +384,27 @@ impl AdaptiveExecutionGraph {
                 // the reader-side filter can trim), so the walker errors
                 // if none is found.
                 // TODO: do we really mean to walk the whole plan? Or just stage N+1?
-                let (halo_lo, halo_hi) =
-                    downstream_halos(&self.planner.plan, &routing.routing_expr)
-                        .map_err(|err| {
-                            BallistaError::General(format!(
-                                "range-repartition stage {stage_id}: halo lookup failed: {err}"
-                            ))
-                        })?;
-                let remapped =
-                    cut_partitions(partitions, reports, &routing.cuts, halo_lo, halo_hi)
-                        .map_err(|err| {
-                            BallistaError::General(format!(
-                                "range-repartition stage {stage_id}: overlap remap failed: {err}"
-                            ))
-                        })?;
+                let (halo_lo, halo_hi) = downstream_halos(
+                    &self.planner.plan,
+                    &routing.routing_expr,
+                )
+                .map_err(|err| {
+                    BallistaError::General(format!(
+                        "range-repartition stage {stage_id}: halo lookup failed: {err}"
+                    ))
+                })?;
+                let remapped = cut_partitions(
+                    partitions,
+                    reports,
+                    &routing.cuts,
+                    halo_lo,
+                    halo_hi,
+                )
+                .map_err(|err| {
+                    BallistaError::General(format!(
+                        "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                    ))
+                })?;
                 // Save boundaries to ExchangeExec so they are there for resolve_stage_partitions
                 self.planner.set_repartition_routing(stage_id, routing)?;
                 remapped

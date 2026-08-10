@@ -1767,7 +1767,8 @@ mod overlap_remap_tests {
         // Passthrough map: both producers wrote to sub_part_id=0.
         let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2, "K = cuts.len() + 1");
         // Partition 0: only producer 100.
         assert_eq!(remapped[0].len(), 1);
@@ -1787,7 +1788,8 @@ mod overlap_remap_tests {
         let cuts = vec![15.0];
         let original_partitions = vec![vec![location(0, 300)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2);
         assert_eq!(remapped[0].len(), 1, "straddler in partition 0");
         assert_eq!(remapped[0][0].file_id, Some(300));
@@ -1829,7 +1831,8 @@ mod overlap_remap_tests {
         let cuts = vec![10.0];
         let original_partitions = vec![vec![location(0, 200)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -1843,7 +1846,8 @@ mod overlap_remap_tests {
         let cuts = vec![10.0];
         let original_partitions = vec![vec![location(0, 100)]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -1900,7 +1904,8 @@ mod overlap_remap_tests {
             location(0, 6),
         ]];
 
-        let remapped = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
         assert_eq!(remapped.len(), 4);
         let ids = |b: &[PartitionLocation]| {
             let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
