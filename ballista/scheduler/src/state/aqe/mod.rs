@@ -142,7 +142,7 @@ impl AdaptiveExecutionGraph {
         let session_id = ctx.session_id();
 
         let mut planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_name.to_owned()).await?;
+            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone()).await?;
 
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
