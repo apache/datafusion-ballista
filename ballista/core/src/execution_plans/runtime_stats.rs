@@ -1956,31 +1956,47 @@ mod overlap_remap_tests {
         );
     }
 
-    /// A producer whose sketch lies entirely on one side of a cut but
-    /// within `halo_lo` of it must ALSO route to the partition on the
-    /// other side — the downstream `RangeFilterExec` widens each
-    /// partition's effective range by `[halo_lo, halo_hi]`, and any file
-    /// that could contain rows in the widened band must be visible to
-    /// that partition or the range-frame window sums it lose those rows.
+    /// Halo widening lets each partition see files that sit within
+    /// `[halo_lo, halo_hi]` of its raw cut range — the downstream
+    /// `RangeFilterExec`'s frame-context rows come from those files, and
+    /// missing any of them causes RANGE-frame window sums to drop rows
+    /// at boundaries.
     ///
-    /// Matches h2o Q8's shape: `RANGE BETWEEN 3 PRECEDING AND CURRENT ROW`
-    /// → halo_lo = 3, halo_hi = 0.
-    // TODO: add a test that lovers 3 partitios including halo_hi
+    /// The K=5 layout with `halo_lo != halo_hi` proves three things at
+    /// once: (a) `halo_lo` widens downward, (b) `halo_hi` widens upward,
+    /// (c) the halo band stays *local* — it does not bleed across two
+    /// cut hops to far-away partitions.
     #[test]
-    fn overlap_remap_routes_halo_band_to_adjacent_partition() {
-        // Producer 100: sketch [13, 14] — below cut 15, but within
-        // halo_lo=3 of it. Must appear in BOTH partition 0 (its own bucket)
-        // AND partition 1 (via halo widening).
-        // Producer 200: sketch [16, 17] — above cut, no halo needed to
-        // route it to partition 1.
+    fn overlap_remap_halo_band_widens_both_sides_without_bleeding_to_far_partitions() {
+        // K=5, asymmetric halos so we can tell halo_lo and halo_hi apart.
+        let cuts = vec![10.0, 20.0, 30.0, 40.0];
+        let halo_lo = 1.0;
+        let halo_hi = 2.0;
+        // Effective partition ranges:
+        //   P0: (-∞, 12)   P1: [9, 22)   P2: [19, 32)   P3: [29, 42)   P4: [39, +∞)
         let reports = vec![
-            sketch_report(100, vec![vec![13.0, 14.0]]),
-            sketch_report(200, vec![vec![16.0, 17.0]]),
+            // 100 sits deep inside P0 — far from P1's halo, stays P0-only.
+            sketch_report(100, vec![vec![5.0, 6.0]]),
+            // 200 is entirely below cut 20 but within halo_lo=1 of it —
+            // routes to P1 (own bucket) AND P2 (halo band from below).
+            // Must NOT reach P0 (two cut hops away).
+            sketch_report(200, vec![vec![18.0, 19.0]]),
+            // 300 sits cleanly inside P2 — no halo participation.
+            sketch_report(300, vec![vec![25.0, 26.0]]),
+            // 400 is entirely above cut 30 but within halo_hi=2 of it —
+            // routes to P2 (halo band from above) AND P3 (own bucket).
+            // Must NOT reach P4 (two cut hops away).
+            sketch_report(400, vec![vec![31.0, 32.0]]),
+            // 500 sits deep inside P4 — far from P3's halo, stays P4-only.
+            sketch_report(500, vec![vec![45.0, 46.0]]),
         ];
-        let cuts = vec![15.0];
-        let halo_lo = 3.0;
-        let halo_hi = 0.0;
-        let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
+        let original_partitions = vec![vec![
+            location(0, 100),
+            location(0, 200),
+            location(0, 300),
+            location(0, 400),
+            location(0, 500),
+        ]];
 
         let remapped =
             cut_partitions(original_partitions, &reports, &cuts, halo_lo, halo_hi)
@@ -1990,17 +2006,31 @@ mod overlap_remap_tests {
             v.sort();
             v
         };
-        assert_eq!(remapped.len(), 2);
+        assert_eq!(remapped.len(), 5);
         assert_eq!(
             ids(&remapped[0]),
             vec![100u64],
-            "partition 0 sees only its own bucket (halo_hi=0)"
+            "P0 sees only its own bucket — 200's halo band belongs to P1/P2, not here",
         );
         assert_eq!(
             ids(&remapped[1]),
-            vec![100u64, 200],
-            "partition 1's effective range is [15-3, +∞) = [12, +∞); \
-             producer 100's [13,14] falls in the halo band and must route here",
+            vec![200u64],
+            "P1 sees its own straddler (200) below cut 20",
+        );
+        assert_eq!(
+            ids(&remapped[2]),
+            vec![200u64, 300, 400],
+            "P2 (middle) sees siblings from BOTH halo bands — 200 via halo_lo, 400 via halo_hi — plus its own 300",
+        );
+        assert_eq!(
+            ids(&remapped[3]),
+            vec![400u64],
+            "P3 sees its own straddler (400) above cut 30",
+        );
+        assert_eq!(
+            ids(&remapped[4]),
+            vec![500u64],
+            "P4 sees only its own bucket — 400's halo band belongs to P2/P3, not here",
         );
     }
 }
