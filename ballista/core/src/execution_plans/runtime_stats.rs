@@ -827,12 +827,23 @@ pub struct TaskRuntimeStats {
     pub report: RuntimeStatsReport,
 }
 
-/// Walk `plan` for the first `UnorderedRangeRepartitionExec` or
-/// `OrderedRangeRepartitionExec` and return its routing expression
-/// (`order_by[0].expr`). `Ok(None)` means no range-repartition operator
-/// in the plan; `Err(_)` means one was found but its `order_by` was
+/// Walk the partition-preserving spine of `plan` for the
+/// `UnorderedRangeRepartitionExec` or `OrderedRangeRepartitionExec` that
+/// drives this stage's output partitioning, and return its routing
+/// expression (`order_by[0].expr`).
+///
+/// The spine is the chain of partition-preserving ops (see
+/// [`preserves_partitioning`]) between the stage root and the barrier
+/// that sets the stage's output partitioning. Descent stops at any
+/// non-preserving op (join, union, hash-agg, unknown node) — an RRE
+/// below such a barrier drives a different logical partitioning that
+/// this stage's output no longer carries.
+///
+/// `Ok(None)` means no range-repartition op drives this stage's
+/// partitioning; `Err(_)` means one was found but its `order_by` was
 /// empty (invariant break — a range repartition without a routing key
-/// can't route anything).
+/// can't route anything), or the spine hit a partition-preserving node
+/// with more than one child (shape bug in the whitelist).
 pub fn repartition_routing_expr(
     plan: &dyn ExecutionPlan,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
@@ -848,13 +859,20 @@ pub fn repartition_routing_expr(
             [] => internal_err!("OrderedRangeRepartitionExec has empty ORDER BY"),
         };
     }
-    // TODO: are multiple chilren an error?
-    for child in plan.children() {
-        if let Some(expr) = repartition_routing_expr(child.as_ref())? {
-            return Ok(Some(expr));
-        }
+    if !super::preserves_partitioning(plan) {
+        return Ok(None);
     }
-    Ok(None)
+    let children = plan.children();
+    match children.as_slice() {
+        [] => Ok(None),
+        [child] => repartition_routing_expr(child.as_ref()),
+        _ => internal_err!(
+            "partition-preserving op `{}` has {} children — the whitelist \
+             assumes single-child; expand the algorithm if this fires",
+            plan.name(),
+            children.len()
+        ),
+    }
 }
 
 /// Rebuild a stage's `Vec<Vec<PartitionLocation>>` under range-repartition
