@@ -833,7 +833,7 @@ pub struct TaskRuntimeStats {
 /// expression (`order_by[0].expr`).
 ///
 /// The spine is the chain of partition-preserving ops (see
-/// [`preserves_partitioning`]) between the stage root and the barrier
+/// [`super::preserves_partitioning`]) between the stage root and the barrier
 /// that sets the stage's output partitioning. Descent stops at any
 /// non-preserving op (join, union, hash-agg, unknown node) — an RRE
 /// below such a barrier drives a different logical partitioning that

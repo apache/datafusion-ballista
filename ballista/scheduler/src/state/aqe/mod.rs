@@ -42,7 +42,6 @@ use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion::scalar::ScalarValue;
@@ -383,12 +382,8 @@ impl AdaptiveExecutionGraph {
                 // RFE (writer produces straddler duplicates that only
                 // the reader-side filter can trim), so the walker errors
                 // if none is found.
-                // TODO: do we really mean to walk the whole plan? Or just stage N+1?
-                let (halo_lo, halo_hi) = downstream_halos(
-                    &self.planner.plan,
-                    &routing.routing_expr,
-                )
-                .map_err(|err| {
+                let (halo_lo, halo_hi) = downstream_halos(&self.planner.plan, stage_id)
+                    .map_err(|err| {
                     BallistaError::General(format!(
                         "range-repartition stage {stage_id}: halo lookup failed: {err}"
                     ))
@@ -1457,10 +1452,17 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 }
 
 /// Find the halos of the downstream `RangeFilterExec` planted directly on
-/// the boundary `ExchangeExec` for `routing_expr`. A range-repartition
-/// boundary always has a consuming RFE — the writer produces straddler
-/// duplicates that only the reader-side filter can trim — so absence is
-/// a shape bug, not a runtime default.
+/// the boundary `ExchangeExec` produced by `producer_stage_id`. A
+/// range-repartition boundary always has a consuming RFE — the writer
+/// produces straddler duplicates that only the reader-side filter can
+/// trim — so absence is a shape bug, not a runtime default.
+///
+/// Boundaries are disambiguated by `ExchangeExec::stage_id()` (the id
+/// of the stage that produces to the exchange), not by routing
+/// expression: two range-repartition stages could share the same
+/// `Column(name, index)` shape after independent projections, so
+/// `PhysicalExpr::eq` isn't unique across stages. The producer stage id
+/// is.
 ///
 /// The rule may plant multiple RFEs (e.g. wide directly on the boundary
 /// and narrow above the window operator). Only the one whose immediate
@@ -1471,50 +1473,41 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 ///
 /// * `full_plan` — the AdaptivePlanner's current plan tree; the walker
 ///   descends the whole tree looking for the RFE on this boundary.
-/// * `routing_expr` — the range-repartition op's routing expression;
-///   matched by `PhysicalExpr::eq` against each candidate RFE's own.
+/// * `producer_stage_id` — the id of the completing upstream stage;
+///   matches `ExchangeExec::stage_id()` on the boundary exchange.
 fn downstream_halos(
     full_plan: &Arc<dyn ExecutionPlan>,
-    routing_expr: &Arc<dyn PhysicalExpr>,
+    producer_stage_id: usize,
 ) -> datafusion::common::Result<(f64, f64)> {
     let mut result: Option<(f64, f64)> = None;
-    let mut halo_err: Option<datafusion::common::DataFusionError> = None;
     full_plan.apply(|node| {
         let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
             return Ok(TreeNodeRecursion::Continue);
         };
         let children = rf.children();
         let [child] = children.as_slice() else {
-            // TODO: is this correct for multi-legged plans?
-            // we probably need to start at the leaves and walk up?
+            return datafusion::common::internal_err!(
+                "RangeFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        // RFE above the window op (narrow, halo=[0,0]) has a
+        // `PartitionedBoundedWindowAggExec` child, not the boundary
+        // exchange — keep looking for the wide RFE below.
+        let Some(exchange) = child.downcast_ref::<ExchangeExec>() else {
             return Ok(TreeNodeRecursion::Continue);
         };
-        if !child.is::<ExchangeExec>() {
+        if exchange.stage_id() != Some(producer_stage_id) {
             return Ok(TreeNodeRecursion::Continue);
         }
-        if !rf.routing_expr().eq(routing_expr) {
-            // TODO: should hard error?
-            return Ok(TreeNodeRecursion::Continue);
-        }
-        match (scalar_to_f64(rf.halo_lo()), scalar_to_f64(rf.halo_hi())) {
-            (Ok(lo), Ok(hi)) => {
-                result = Some((lo, hi));
-                Ok(TreeNodeRecursion::Stop)
-            }
-            (Err(e), _) | (_, Err(e)) => {
-                halo_err = Some(e);
-                Ok(TreeNodeRecursion::Stop)
-            }
-        }
+        result = Some((scalar_to_f64(rf.halo_lo())?, scalar_to_f64(rf.halo_hi())?));
+        Ok(TreeNodeRecursion::Stop)
     })?;
-    if let Some(e) = halo_err {
-        return Err(e);
-    }
     result.ok_or_else(|| {
         datafusion::common::DataFusionError::Internal(format!(
-            "range-repartition boundary for expr `{routing_expr}` has no consuming \
-             RangeFilterExec — straddler files would corrupt downstream partial \
-             aggregates. Check the rule that planted this ORRE.",
+            "range-repartition boundary for producer stage {producer_stage_id} has \
+             no consuming RangeFilterExec — straddler files would corrupt \
+             downstream partial aggregates. Check the rule that planted this ORRE."
         ))
     })
 }
