@@ -17,7 +17,7 @@
 
 //! Rewrite bounded-RANGE-frame windows into a distributed range-shuffle so
 //! `BoundedWindowAggExec`'s single-partition constraint isn't a serial
-//! bottleneck. See [[parallel-range-window]] for the design.
+//! bottleneck.
 //!
 //! # Matched shape
 //!
@@ -34,10 +34,9 @@
 //! - single-column ORDER BY on a physical `Column` (widening: multi-key,
 //!   computed exprs — separate rewrites)
 //! - `RANGE` frame with finite `PRECEDING` / `FOLLOWING` / `CurrentRow`
-//!   bounds (UNBOUNDED goes down the prefix-scan path — see
-//!   [[project-prefix-scan-two-pass-rejected]])
-//! - ORDER BY column is `Float64` today (T-Digest restriction; lifts with
-//!   [[kll-sketch]])
+//!   bounds (UNBOUNDED frames go down a different path)
+//! - ORDER BY column is `Float64` today (T-Digest restriction; lifts when
+//!   the sketch swaps to KLL)
 //!
 //! # Rewrite
 //!
