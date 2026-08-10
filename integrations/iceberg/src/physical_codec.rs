@@ -164,12 +164,8 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             IcebergPhysicalNode::Write { table_ref } => {
                 let (config, table) = table_ref.into_parts();
                 let table_obj = load_table(&config, &table)?;
-                // Writes always target the current schema — a snapshot-pinned
-                // provider is read-only.
-                let arrow_schema = snapshot_arrow_schema(&table_obj, None)
-                    .map_err(to_datafusion_error)?;
                 let input = single_input(inputs, "IcebergWriteExec")?;
-                let write = IcebergWriteExec::new(table_obj, input, arrow_schema)
+                let write = IcebergWriteExec::new(table_obj, input)
                     .with_catalog_config(Some(config));
                 Ok(Arc::new(write))
             }

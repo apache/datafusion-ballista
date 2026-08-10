@@ -16,18 +16,24 @@
 // under the License.
 
 //! Docker fixture for the Iceberg integration tests and the
-//! `standalone-iceberg-write` example: an Iceberg REST catalog backed by MinIO.
+//! `standalone-iceberg-write` / `cluster-iceberg-write` examples: an Iceberg
+//! REST catalog backed by MinIO.
 //!
 //! Each [`IcebergFixture`] is a private catalog on its own docker network, so
 //! tests holding one share no namespace, table name, or catalog state. The
-//! example includes this module by path, so it must not depend on anything
+//! examples include this module by path, so it must not depend on anything
 //! test-only.
 
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
+use iceberg_catalog_rest::RestCatalogBuilder;
+use iceberg_storage_opendal::OpenDalStorageFactory;
 use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers_modules::testcontainers::core::{
@@ -128,6 +134,56 @@ impl IcebergFixture {
     pub fn props(&self) -> HashMap<String, String> {
         self.props.clone()
     }
+}
+
+/// A REST catalog client addressing `props`, with its storage wired to the
+/// fixture's MinIO.
+pub async fn rest_catalog(props: &HashMap<String, String>) -> impl Catalog + use<> {
+    RestCatalogBuilder::default()
+        .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
+            customized_credential_load: None,
+        }))
+        .load("rest", props.clone())
+        .await
+        .expect("build rest catalog")
+}
+
+/// Creates `ballista_demo.events (id int, name string)` and returns its
+/// namespace and name.
+///
+/// For the examples: each starts its own fixture, so the catalog is always
+/// empty and this never has to reconcile with an existing table.
+pub async fn create_demo_table(
+    props: &HashMap<String, String>,
+) -> (NamespaceIdent, String) {
+    let catalog = rest_catalog(props).await;
+
+    let namespace = NamespaceIdent::new("ballista_demo".to_string());
+    catalog
+        .create_namespace(&namespace, HashMap::new())
+        .await
+        .expect("create namespace");
+
+    let schema = Schema::builder()
+        .with_schema_id(0)
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+            NestedField::required(2, "name", Type::Primitive(PrimitiveType::String))
+                .into(),
+        ])
+        .build()
+        .expect("build schema");
+    let creation = TableCreation::builder()
+        .name("events".to_string())
+        .schema(schema)
+        .properties(HashMap::new())
+        .build();
+    catalog
+        .create_table(&namespace, creation)
+        .await
+        .expect("create table");
+
+    (namespace, "events".to_string())
 }
 
 /// Creates the warehouse bucket with the `mc` the MinIO image ships.

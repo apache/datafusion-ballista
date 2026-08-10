@@ -52,10 +52,10 @@ arrow = { workspace = true }
 ballista = { path = "../../ballista/client", version = "54.0.0", features = [
     "standalone",
 ] }
-# Used by the multi-executor integration test to start a scheduler + several
-# in-process executors directly. Feature flags mirror what ballista's
-# `standalone` feature already enables, so these reuse the same compiled
-# artifacts rather than triggering a separate build.
+# Used by the multi-executor integration test and the cluster-iceberg-write
+# example to start a scheduler + executors directly. Feature flags mirror what
+# ballista's `standalone` feature already enables, so these reuse the same
+# compiled artifacts rather than triggering a separate build.
 ballista-executor = { path = "../../ballista/executor", version = "54.0.0", default-features = false, features = [
     "arrow-ipc-optimizations",
 ] }
@@ -67,7 +67,17 @@ log = { workspace = true }
 # standalone example run against. Not optional: cargo has no optional
 # dev-dependencies, so this is compiled for any `cargo test` on this crate.
 testcontainers-modules = { version = "0.15", features = ["minio", "http_wait"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `process` and `signal` are for the cluster-iceberg-write example, which runs
+# the scheduler and executors as child processes and reaps them on Ctrl-C.
+tokio = { workspace = true, features = [
+    "macros",
+    "process",
+    "rt-multi-thread",
+    "signal",
+] }
+# Serves the test scheduler's gRPC service on a pre-bound listener, so the
+# multi-executor test can keep a handle on the scheduler's cluster state.
+tokio-stream = { workspace = true }
 
 [features]
 default = []

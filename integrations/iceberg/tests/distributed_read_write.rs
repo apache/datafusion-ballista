@@ -15,12 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! End-to-end distributed Iceberg write/read test.
+//! End-to-end distributed Iceberg write/read tests.
 //!
 //! Each test starts its own Iceberg REST catalog + MinIO with testcontainers
-//! (see [`fixture`]), so this needs a working docker daemon. That is why it
-//! sits behind the `integration-tests` feature and is not part of a plain
-//! `cargo test`:
+//! (see [`fixture`]), so a docker daemon is required — hence the
+//! `integration-tests` feature gate:
 //!
 //! ```bash
 //! cargo test -p iceberg-ballista --features integration-tests --test distributed_read_write
@@ -30,7 +29,8 @@
 
 mod fixture;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,22 +39,30 @@ use ballista::datafusion::assert_batches_eq;
 use ballista::datafusion::execution::{SessionState, SessionStateBuilder};
 use ballista::datafusion::prelude::{SessionConfig, SessionContext};
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_core::ConfigProducer;
+use ballista_core::config::TaskSchedulingPolicy;
+use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
+use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
+use ballista_core::serde::protobuf::task_status;
+use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
 use ballista_executor::new_standalone_executor_from_state;
-use ballista_scheduler::standalone::new_standalone_scheduler_from_state;
+use ballista_scheduler::cluster::BallistaCluster;
+use ballista_scheduler::config::SchedulerConfig;
+use ballista_scheduler::metrics::default_metrics_collector;
+use ballista_scheduler::scheduler_server::{SchedulerServer, SessionBuilder};
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use iceberg::spec::{
     NestedField, PrimitiveType, Schema, Transform, Type, UnboundPartitionField,
     UnboundPartitionSpec,
 };
 use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
-use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
+use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_ballista::{
     IcebergCatalogConfig, register_iceberg_catalog, register_iceberg_codecs,
     register_iceberg_table,
 };
-use iceberg_catalog_rest::RestCatalogBuilder;
 use iceberg_datafusion::IcebergTableProvider;
-use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::fixture::IcebergFixture;
 
@@ -76,16 +84,6 @@ async fn run_sql(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
         .expect("run sql")
 }
 
-async fn build_rest_catalog(props: &HashMap<String, String>) -> impl Catalog + use<> {
-    RestCatalogBuilder::default()
-        .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
-            customized_credential_load: None,
-        }))
-        .load("rest", props.clone())
-        .await
-        .expect("build rest catalog")
-}
-
 /// Creates the test namespace. Each test owns its catalog, so this never races
 /// another creator.
 async fn create_namespace(catalog: &impl Catalog) -> NamespaceIdent {
@@ -105,7 +103,7 @@ async fn create_table_with(
     schema: Schema,
     partition_spec: Option<UnboundPartitionSpec>,
 ) -> NamespaceIdent {
-    let catalog = build_rest_catalog(props).await;
+    let catalog = fixture::rest_catalog(props).await;
     let namespace = create_namespace(&catalog).await;
 
     let builder = TableCreation::builder()
@@ -146,7 +144,7 @@ async fn current_snapshot_id(
     namespace: &NamespaceIdent,
     table_name: &str,
 ) -> i64 {
-    build_rest_catalog(props)
+    fixture::rest_catalog(props)
         .await
         .load_table(&TableIdent::new(namespace.clone(), table_name.to_string()))
         .await
@@ -156,9 +154,8 @@ async fn current_snapshot_id(
         .expect("table has a snapshot")
 }
 
-/// Creates a table partitioned by `region` (identity). A distributed INSERT then
-/// fans the rows out to one writer per region — exercising the partition-value
-/// expression (`PartitionExpr`) serialization across the cluster.
+/// Creates a table partitioned by `region` (identity), so an INSERT injects a
+/// partition-value expression (`PartitionExpr`) into the physical plan.
 async fn create_partitioned_table(
     props: &HashMap<String, String>,
     table_name: &str,
@@ -189,6 +186,11 @@ async fn create_partitioned_table(
     create_table_with(props, table_name, schema, Some(partition_spec)).await
 }
 
+/// The baseline: distributed INSERT and read-back on standalone Ballista.
+///
+/// Writes and reads are interleaved, because every query must plan against the
+/// snapshot current at that moment — a provider that cached its table metadata
+/// would keep serving the first read's empty snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn distributed_insert_and_read() {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -256,7 +258,16 @@ async fn distributed_insert_and_read() {
     // the snapshot current at *that* moment — the codec then pins it for the
     // executors. A provider (or a cached catalog/table) that went stale after
     // the first read would still report 3 rows here.
-    run_sql(&ctx, "INSERT INTO events VALUES (4, 'dave'), (5, 'erin')").await;
+    //
+    // A `UNION ALL` of `VALUES` branches gives the write one input partition per
+    // branch, so this one runs as concurrent writer tasks rather than a single
+    // one — see [`multi_executor_write_fans_out_across_executors`].
+    run_sql(
+        &ctx,
+        "INSERT INTO events SELECT * FROM (VALUES (4, 'dave')) \
+         UNION ALL SELECT * FROM (VALUES (5, 'erin'))",
+    )
+    .await;
 
     // The re-read must observe the interposed insert: both the original and the
     // newly inserted rows.
@@ -301,46 +312,95 @@ async fn distributed_insert_and_read() {
     );
 }
 
-/// Distributed correctness on a real multi-executor cluster, writing a
-/// **partitioned** table.
-///
-/// Where [`distributed_insert_and_read`] uses standalone Ballista (one in-process
-/// executor) and an unpartitioned table, this stands up a single scheduler with
-/// **several in-process executors** and writes a table partitioned by `region`. A
-/// partitioned write injects a partition-value expression (`PartitionExpr`) into
-/// the physical plan, so this exercises that expression's serialization through
-/// the codec on top of the plan-node serialization — and fans the rows out to one
-/// writer per region across the executors.
-///
-/// The assertions target the correctness properties of a distributed, multi-writer
-/// write:
-///   1. the write commits exactly **one** atomic snapshot (not one per task),
-///   2. the parallel writers contributed multiple data files (one per region), and
-///   3. every input row lands exactly once (no loss, no duplication).
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn parallel_multi_executor_insert_commits_all_rows() {
-    let _ = env_logger::builder().is_test(true).try_init();
-
-    const N_EXECUTORS: usize = 2;
-    const SLOTS_PER_EXECUTOR: usize = 2;
-    const WRITE_PARTITIONS: usize = 8;
-    const REGIONS: [&str; 4] = ["a", "b", "c", "d"];
-    // REGIONS.len() * 3.
-    const TOTAL_ROWS: i32 = 12;
-
-    let fixture = IcebergFixture::start().await;
-    let props = fixture.props();
-    let table_name = "parallel_events".to_string();
-    let namespace = create_partitioned_table(&props, &table_name).await;
-
-    // --- Bring up one scheduler + N executors in-process (real multi-executor) ---
-    let state = iceberg_session_state(
-        SessionConfig::new_with_ballista().with_target_partitions(WRITE_PARTITIONS),
+/// Like `ballista_scheduler::standalone::new_standalone_scheduler_from_state`,
+/// but also returns the [`BallistaCluster`] that helper discards: its job state
+/// holds the execution graphs, which record who ran each task.
+async fn start_scheduler_with_cluster(
+    session_state: &SessionState,
+) -> (SocketAddr, BallistaCluster) {
+    let codec = BallistaCodec::new(
+        session_state.config().ballista_logical_extension_codec(),
+        session_state.config().ballista_physical_extension_codec(),
     );
+    let max_message_size = session_state
+        .config()
+        .ballista_grpc_client_max_message_size();
 
-    let scheduler_addr = new_standalone_scheduler_from_state(&state)
+    let session_config = session_state.config().clone();
+    let state_for_builder = session_state.clone();
+    let session_builder: SessionBuilder =
+        Arc::new(move |_| Ok(state_for_builder.clone()));
+    let config_producer: ConfigProducer = Arc::new(move || session_config.clone());
+
+    let cluster =
+        BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
+
+    let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+        SchedulerServer::new(
+            "localhost:50050".to_owned(),
+            cluster.clone(),
+            codec,
+            Arc::new(
+                SchedulerConfig::default()
+                    .with_scheduler_policy(TaskSchedulingPolicy::PullStaged),
+            ),
+            default_metrics_collector().expect("metrics collector"),
+        );
+    scheduler_server
+        .init()
         .await
-        .expect("start scheduler");
+        .expect("init scheduler server");
+
+    let server = SchedulerGrpcServer::new(scheduler_server.clone())
+        .max_decoding_message_size(max_message_size)
+        .max_encoding_message_size(max_message_size);
+    let listener = tokio::net::TcpListener::bind("localhost:0")
+        .await
+        .expect("bind scheduler port");
+    let addr = listener.local_addr().expect("scheduler address");
+    tokio::spawn(
+        create_grpc_server(&GrpcServerConfig::default())
+            .add_service(server)
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                listener,
+            )),
+    );
+    (addr, cluster)
+}
+
+/// Executor ids that completed at least one task, across every job in the
+/// cluster's state.
+async fn executors_that_ran_tasks(cluster: &BallistaCluster) -> HashSet<String> {
+    let job_state = cluster.job_state();
+    let mut executors = HashSet::new();
+    for job_id in job_state.get_all_jobs().await.expect("list jobs") {
+        let graph = job_state
+            .get_execution_graph(&job_id)
+            .await
+            .expect("fetch execution graph")
+            .expect("job has an execution graph");
+        for stage in graph.stages().values() {
+            for task in stage.task_infos().unwrap_or_default() {
+                if let task_status::Status::Successful(t) = &task.task_status {
+                    executors.insert(t.executor_id.clone());
+                }
+            }
+        }
+    }
+    executors
+}
+
+/// Executors in the multi-executor cluster, and task slots on each.
+const N_EXECUTORS: usize = 2;
+const SLOTS_PER_EXECUTOR: usize = 2;
+
+/// One scheduler and [`N_EXECUTORS`] executors, all in-process but each its own
+/// gRPC service. Returns a context connected to the scheduler, plus the cluster
+/// handle that records task placement.
+async fn start_multi_executor_cluster(
+    state: SessionState,
+) -> (SessionContext, BallistaCluster) {
+    let (scheduler_addr, cluster) = start_scheduler_with_cluster(&state).await;
     let scheduler_url = format!("http://localhost:{}", scheduler_addr.port());
 
     // Bounded so a scheduler that never comes up fails the test instead of
@@ -374,6 +434,41 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
     let ctx = SessionContext::remote_with_state(&scheduler_url, state)
         .await
         .expect("connect to scheduler");
+    (ctx, cluster)
+}
+
+/// A **partitioned** write on a real multi-executor cluster: one scheduler,
+/// several executors, a table partitioned by `region`, and a `UNION ALL` source
+/// that gives the write one writer task per branch.
+///
+/// So the partition-value expression (`PartitionExpr`) must survive the codec,
+/// and concurrent writers must still produce:
+///
+/// 1. exactly **one** atomic snapshot, not one per task,
+/// 2. at least one data file per region, all within that snapshot,
+/// 3. every input row exactly once — predicate pushdown included.
+///
+/// Task *placement* is asserted by
+/// [`multi_executor_write_fans_out_across_executors`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn parallel_multi_executor_insert_commits_all_rows() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    const REGIONS: [&str; 4] = ["a", "b", "c", "d"];
+    // REGIONS.len() * 3.
+    const TOTAL_ROWS: i32 = 12;
+    // Rows per UNION ALL branch, so the write stage runs
+    // TOTAL_ROWS / ROWS_PER_BRANCH = 6 concurrent writer tasks.
+    const ROWS_PER_BRANCH: usize = 2;
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "parallel_events".to_string();
+    let namespace = create_partitioned_table(&props, &table_name).await;
+
+    // --- Bring up one scheduler + N executors in-process (real multi-executor) ---
+    let state = iceberg_session_state(SessionConfig::new_with_ballista());
+    let (ctx, _cluster) = start_multi_executor_cluster(state).await;
 
     let catalog_config = IcebergCatalogConfig::new("rest", "rest", props.clone());
     register_iceberg_table(
@@ -387,24 +482,27 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
     .expect("register iceberg table");
 
     // --- Distributed, partitioned INSERT across the multi-executor cluster ---
-    // A serializable VALUES source whose rows span every region; the partitioned
-    // write fans them out to one writer per region across the executors, which is
-    // the path that injects PartitionExpr into the physical plan. (A registered
-    // MemTable would not work here — it's a custom TableProvider that Ballista
-    // cannot serialize into the logical plan.)
-    let values = (0..TOTAL_ROWS)
+    // A serializable VALUES source whose rows span every region, which is the
+    // path that injects PartitionExpr into the physical plan, split into UNION
+    // ALL branches so several writer tasks run at once. (A registered MemTable
+    // would not work here — it's a custom TableProvider that Ballista cannot
+    // serialize into the logical plan.)
+    let source = (0..TOTAL_ROWS)
         .map(|i| {
             let region = REGIONS[i as usize % REGIONS.len()];
             format!("({}, '{region}')", i + 1)
         })
         .collect::<Vec<_>>()
-        .join(", ");
-    run_sql(&ctx, &format!("INSERT INTO target VALUES {values}")).await;
+        .chunks(ROWS_PER_BRANCH)
+        .map(|branch| format!("SELECT * FROM (VALUES {})", branch.join(", ")))
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    run_sql(&ctx, &format!("INSERT INTO target {source}")).await;
 
     // (1) The distributed write committed exactly once (a single atomic
     // snapshot), not one commit per task. Checked straight from the catalog so
     // it isolates write correctness from the distributed read-back below.
-    let catalog = build_rest_catalog(&props).await;
+    let catalog = fixture::rest_catalog(&props).await;
     let table = catalog
         .load_table(&TableIdent::new(namespace.clone(), table_name.clone()))
         .await
@@ -415,8 +513,8 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
         "the distributed write must produce exactly one atomic commit"
     );
 
-    // (2) The parallel writers each produced a data file (one per region), all
-    // coalesced into that single commit.
+    // (2) The writers produced at least one data file per region, all coalesced
+    // into that single commit.
     let snapshot = table
         .metadata()
         .current_snapshot()
@@ -435,8 +533,8 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
         data_files += manifest.entries().len();
     }
     assert!(
-        data_files >= 2,
-        "partitioned write should produce multiple data files, got {data_files}"
+        data_files >= REGIONS.len(),
+        "partitioned write should produce at least one data file per region, got {data_files}"
     );
 
     // (3) Every row landed exactly once: the exact id set 1..=TOTAL_ROWS, no
@@ -471,29 +569,105 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
     );
 }
 
-/// A distributed read pinned to an old snapshot must return that snapshot's rows
-/// *and* that snapshot's schema — even after the table's schema has changed.
+/// A distributed write must **fan out across the executors**, not merely run on
+/// a cluster that has several.
 ///
-/// The executor never sees the scheduler's table object; it reloads metadata from
-/// the catalog itself. So the pin has to survive both codecs to get there, and an
-/// executor that used the table's *current* schema would describe the historical
-/// rows wrongly.
+/// Placement is invisible in the query result, so it is read from the scheduler:
+/// each completed task records the executor that ran it, and the assertion fails
+/// if one executor served the whole job.
 ///
-/// One table, five phases, so both directions of schema drift are covered by a
-/// single cluster:
+/// Fanning out needs a multi-partition source. `IcebergWriteExec` reports
+/// `benefits_from_input_partitioning = false`, so nothing repartitions on its
+/// behalf — its parallelism is exactly its input's partition count, and one
+/// `VALUES` is one partition. Hence the `UNION ALL`: one partition, and so one
+/// write task, per branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn multi_executor_write_fans_out_across_executors() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    const REGIONS: [&str; 4] = ["a", "b", "c", "d"];
+    const TOTAL_ROWS: i32 = 12;
+    // Rows per UNION ALL branch, so the write stage has
+    // TOTAL_ROWS / ROWS_PER_BRANCH = 6 tasks against the cluster's
+    // N_EXECUTORS * SLOTS_PER_EXECUTOR = 4 slots.
+    const ROWS_PER_BRANCH: usize = 2;
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "fanout_events".to_string();
+    let namespace = create_partitioned_table(&props, &table_name).await;
+
+    let state = iceberg_session_state(SessionConfig::new_with_ballista());
+    let (ctx, cluster) = start_multi_executor_cluster(state).await;
+
+    let catalog_config = IcebergCatalogConfig::new("rest", "rest", props.clone());
+    register_iceberg_table(
+        &ctx,
+        "target",
+        catalog_config,
+        namespace.clone(),
+        table_name.clone(),
+    )
+    .await
+    .expect("register iceberg table");
+
+    let source = (0..TOTAL_ROWS)
+        .map(|i| {
+            let region = REGIONS[i as usize % REGIONS.len()];
+            format!("({}, '{region}')", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .chunks(ROWS_PER_BRANCH)
+        .map(|branch| format!("SELECT * FROM (VALUES {})", branch.join(", ")))
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    run_sql(&ctx, &format!("INSERT INTO target {source}")).await;
+
+    // Every executor completed at least one task. Timing-safe: the write stage
+    // has more tasks than any one executor has slots, so a single executor can
+    // never take the whole stage in one bind, and the other polls every 50ms.
+    let executors_used = executors_that_ran_tasks(&cluster).await;
+    assert_eq!(
+        executors_used.len(),
+        N_EXECUTORS,
+        "every executor should have completed tasks, got {executors_used:?}"
+    );
+
+    // The parallel writers still commit exactly one snapshot with every row.
+    let catalog = fixture::rest_catalog(&props).await;
+    let table = catalog
+        .load_table(&TableIdent::new(namespace.clone(), table_name.clone()))
+        .await
+        .expect("load committed table");
+    assert_eq!(
+        table.metadata().snapshots().count(),
+        1,
+        "the distributed write must produce exactly one atomic commit"
+    );
+    assert_batches_eq!(
+        ["+----+", "| n  |", "+----+", "| 12 |", "+----+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM target").await
+    );
+}
+
+/// A read pinned to an old snapshot must return that snapshot's rows *and* its
+/// schema, even after the table's schema has moved on.
+///
+/// Executors never see the scheduler's table object; they reload metadata from
+/// the catalog themselves. The pin must therefore survive both codecs to reach
+/// them, or an executor describes historical rows with the current schema.
+///
+/// One table, five phases, covering both directions of drift:
 ///
 /// 1. write `{id, name}` -> snapshot 1
 /// 2. add `email`, write again -> snapshot 2; a current read sees all six rows
-/// 3. read pinned to snapshot 1 — current schema has a column it lacks
+/// 3. read pinned to snapshot 1 — the table has a column that snapshot lacks
 /// 4. drop `name`, leaving `{id, email}`
-/// 5. read pinned to snapshot 2 — that snapshot has a column current lacks
+/// 5. read pinned to snapshot 2 — that snapshot has a column the table lacks
 ///
-/// Phase 3 must come before the drop, while the schemas still differ. Phase 5 is
-/// the one an executor can't get right by accident: the current schema has no
-/// `name` to project, though the pinned snapshot's rows have the values.
-///
-/// Phase 4 drops `name` rather than `email` to work around an unrelated
-/// iceberg-rust bug; see the comment there.
+/// Phase 3 must precede the drop, while the schemas still differ. Phase 5 is the
+/// one no executor gets right by accident: the current schema has no `name` to
+/// project, though the pinned rows carry the values.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn distributed_time_travel_pins_snapshot_schema() {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -533,7 +707,7 @@ async fn distributed_time_travel_pins_snapshot_schema() {
 
     // Evolve the schema: add an `email` column. Snapshot 1 keeps referencing the
     // two-column schema, so current and historical schemas now differ.
-    let catalog: Arc<dyn Catalog> = Arc::new(build_rest_catalog(&props).await);
+    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
     let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
     let table = catalog.load_table(&table_ident).await.expect("load table");
     let tx = Transaction::new(&table);

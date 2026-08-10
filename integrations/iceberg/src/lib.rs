@@ -73,11 +73,19 @@ pub use crate::physical_codec::IcebergPhysicalCodec;
 /// In a standalone cluster the scheduler and executor both derive their codecs
 /// from this config, so one call suffices. For a separately deployed scheduler
 /// and executor, set the same codecs on their process configs
-/// (`override_logical_codec` / `override_physical_codec`).
+/// (`override_logical_codec` / `override_physical_codec`); the
+/// `cluster-iceberg-write` example shows both custom binaries.
 pub fn register_iceberg_codecs(config: SessionConfig) -> SessionConfig {
+    let logical = config.ballista_logical_extension_codec();
+    let physical = config.ballista_physical_extension_codec();
+
     config
-        .with_ballista_logical_extension_codec(Arc::new(IcebergLogicalCodec::default()))
-        .with_ballista_physical_extension_codec(Arc::new(IcebergPhysicalCodec::default()))
+        .with_ballista_logical_extension_codec(Arc::new(IcebergLogicalCodec::new(
+            logical,
+        )))
+        .with_ballista_physical_extension_codec(Arc::new(IcebergPhysicalCodec::new(
+            physical,
+        )))
 }
 
 /// Builds a catalog-backed [`IcebergTableProvider`](iceberg_datafusion::IcebergTableProvider)

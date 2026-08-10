@@ -33,74 +33,13 @@
 #[path = "../tests/fixture/mod.rs"]
 mod fixture;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use ballista::datafusion::common::Result;
 use ballista::datafusion::execution::SessionStateBuilder;
 use ballista::datafusion::prelude::{SessionConfig, SessionContext};
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
-use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_ballista::{
     IcebergCatalogConfig, register_iceberg_codecs, register_iceberg_table,
 };
-use iceberg_catalog_rest::RestCatalogBuilder;
-use iceberg_storage_opendal::OpenDalStorageFactory;
-
-/// Creates the demo namespace and table in the catalog if they do not exist.
-async fn ensure_table(
-    props: &HashMap<String, String>,
-) -> Result<(NamespaceIdent, String)> {
-    let catalog = RestCatalogBuilder::default()
-        .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
-            customized_credential_load: None,
-        }))
-        .load("rest", props.clone())
-        .await
-        .expect("build rest catalog");
-
-    let namespace = NamespaceIdent::new("ballista_demo".to_string());
-    if !catalog
-        .namespace_exists(&namespace)
-        .await
-        .expect("ns exists")
-    {
-        catalog
-            .create_namespace(&namespace, HashMap::new())
-            .await
-            .expect("create namespace");
-    }
-
-    let table_ident = TableIdent::new(namespace.clone(), "events".to_string());
-    if !catalog
-        .table_exists(&table_ident)
-        .await
-        .expect("table exists")
-    {
-        let schema = Schema::builder()
-            .with_schema_id(0)
-            .with_fields(vec![
-                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int))
-                    .into(),
-                NestedField::required(2, "name", Type::Primitive(PrimitiveType::String))
-                    .into(),
-            ])
-            .build()
-            .expect("build schema");
-        let creation = TableCreation::builder()
-            .name("events".to_string())
-            .schema(schema)
-            .properties(HashMap::new())
-            .build();
-        catalog
-            .create_table(&namespace, creation)
-            .await
-            .expect("create table");
-    }
-
-    Ok((namespace, "events".to_string()))
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -113,8 +52,8 @@ async fn main() -> Result<()> {
     let catalog_fixture = fixture::IcebergFixture::start().await;
     let props = catalog_fixture.props();
 
-    // Make sure the target table exists in the catalog.
-    let (namespace, table) = ensure_table(&props).await?;
+    // Create the target table in the fresh catalog.
+    let (namespace, table) = fixture::create_demo_table(&props).await;
 
     // Build a Ballista session config with the Iceberg codecs installed, so the
     // standalone scheduler and executor can serialize the Iceberg plan nodes.
