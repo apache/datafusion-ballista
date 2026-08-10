@@ -360,7 +360,8 @@ fn render_jobs_table(
 }
 
 fn render_job_start_time_cell<'a>(job: &'a Job, app: &App) -> Cell<'a> {
-    let start_time = app.format_datetime(job.start_time as i64);
+    let start_time = i64::try_from(job.start_time)
+        .map_or_else(|_| INVALID_DATE.to_string(), |time| app.format_datetime(time));
     Cell::from(Text::from(start_time).centered())
 }
 
