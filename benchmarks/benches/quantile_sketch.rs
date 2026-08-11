@@ -115,6 +115,19 @@ fn ingest_tdigest(batches: &[Float64Array]) -> TDigest {
     sketch
 }
 
+/// Sorted-input TDigest ingest — same shape as `ingest_tdigest` but hits
+/// `merge_sorted_f64` on each pre-sorted batch. Answers the apples-to-
+/// apples question against `absorb_sorted_slice` on the ORRE-plan-shape
+/// arm: TDigest also benefits from sorted input (it skips its own
+/// pre-sort), so a matched race lines them up on equal footing.
+fn ingest_tdigest_sorted(batches: &[Float64Array]) -> TDigest {
+    let mut sketch = TDigest::new(TDIGEST_MAX_SIZE);
+    for arr in batches {
+        sketch = sketch.merge_sorted_f64(arr.values());
+    }
+    sketch
+}
+
 /// Multi-column-capable KLL ingest path — encode each batch through the
 /// arrow row converter, then push per-row `OwnedRow` into a
 /// `KllSketch<OwnedRow>`. The heap alloc per `owned()` is what the
@@ -211,13 +224,15 @@ fn ingest_kll_row_absorb(
 /// TDigest lacks a public rank API.
 fn print_parity_table(n: usize) {
     let batches = build_batches(n);
-    let all: Vec<f64> = batches.iter().flat_map(|b| b.values().iter().copied()).collect();
+    let all: Vec<f64> = batches
+        .iter()
+        .flat_map(|b| b.values().iter().copied())
+        .collect();
     let mut sorted = all.clone();
     sorted.sort_by(f64::total_cmp);
 
-    let true_rank_frac = |probe: f64| -> f64 {
-        sorted.partition_point(|x| *x < probe) as f64 / n as f64
-    };
+    let true_rank_frac =
+        |probe: f64| -> f64 { sorted.partition_point(|x| *x < probe) as f64 / n as f64 };
     // Nine interior deciles; hits TDigest's median hump (worst-case for it)
     // and both tails (KLL uniform, TDigest tightest).
     let qs: Vec<f64> = (1..10).map(|i| i as f64 / 10.0).collect();
@@ -309,6 +324,14 @@ fn bench_ingest(c: &mut Criterion) {
         });
 
         let sorted_batches = build_globally_sorted_batches(n);
+        group.bench_function(format!("tdigest_sorted/{n}"), |b| {
+            b.iter_batched(
+                || sorted_batches.clone(),
+                |bs| ingest_tdigest_sorted(&bs),
+                BatchSize::LargeInput,
+            );
+        });
+
         group.bench_function(format!("kll_ordered_float_absorb_sorted_slice/{n}"), |b| {
             b.iter_batched(
                 || sorted_batches.clone(),
