@@ -231,6 +231,15 @@ fn maybe_rewrite_bwag(
     let Some(column) = order.expr.downcast_ref::<Column>() else {
         return Ok(None);
     };
+    // TODO: DESC support. SQL RANGE frame semantics invert with the sort
+    // direction — `k PRECEDING` refers to *larger* values under a DESC
+    // ORDER BY — so the halo must widen the upper side of each bucket
+    // rather than the lower. `RangeFilterExec::sorted_on_key` also refuses
+    // DESC input, so the fast path would need to grow a mirrored branch.
+    // Land both together; until then, gate DESC to the serial path.
+    if order.options.descending {
+        return Ok(None);
+    }
     let frame = expr.get_window_frame();
     let WindowFrameUnits::Range = frame.units else {
         return Ok(None);
@@ -491,6 +500,28 @@ mod tests {
         assert!(
             !rendered.contains("OrderedRangeRepartitionExec"),
             "UNBOUNDED PRECEDING should not be rewritten:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_rewrite_on_descending_order_by() -> datafusion::common::Result<()> {
+        // DESC + RANGE flips the SQL frame semantics: `k PRECEDING` refers to
+        // larger values, not smaller. The current halo widens the lower side
+        // of each bucket, so DESC would silently miss frame ancestors that
+        // land in the next-higher bucket. Gate out until the halo-swap +
+        // RFE fast-path DESC support land together.
+        let plan = plan(
+            "SELECT sum(v2) OVER (ORDER BY v2 DESC \
+                RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) \
+             FROM large",
+        )
+        .await?;
+        let rewritten = optimize(plan)?;
+        let rendered = format!("{}", displayable(rewritten.as_ref()).indent(true));
+        assert!(
+            !rendered.contains("OrderedRangeRepartitionExec"),
+            "DESC ORDER BY should not be rewritten (halo direction bug):\n{rendered}"
         );
         Ok(())
     }
