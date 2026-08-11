@@ -417,6 +417,15 @@ impl<T: Ord + Clone> KllSketch<T> {
         if self.max.as_ref().is_none_or(|m| batch_max > m) {
             self.max = Some(batch_max.clone());
         }
+        // If a prior `insert` or `absorb_slice` left level 0 unsorted,
+        // `merge_sorted` below would interleave sorted `xs` into
+        // unsorted state and the result wouldn't be sorted. Pay the sort
+        // once here so the loop's merge-extends stay honest and the doc's
+        // "level 0 stays sorted" claim actually holds.
+        if !self.sorted[0] {
+            self.levels[0].sort_unstable();
+            self.sorted[0] = true;
+        }
         // Chunk-merge sorted `xs` into (sorted) level 0. Level 0 stays
         // sorted through the whole ingest — `sorted[0]` never flips false.
         let mut i = 0;
@@ -1111,6 +1120,39 @@ mod tests {
         assert_eq!(via_absorb_slice.quantile(0.0), via_sorted.quantile(0.0));
         assert_eq!(via_absorb_slice.quantile(0.5), via_sorted.quantile(0.5));
         assert_eq!(via_absorb_slice.quantile(1.0), via_sorted.quantile(1.0));
+    }
+
+    #[test]
+    fn absorb_sorted_slice_restores_level_0_sortedness_after_prior_insert() {
+        // Prior `insert` calls leave sorted[0] = false. absorb_sorted_slice
+        // must sort level 0 before merge-extending, otherwise it would
+        // interleave sorted input into an unsorted buffer and the doc's
+        // "level 0 stays sorted" claim would be a lie.
+        //
+        // Small enough n to avoid tripping level-0 compaction, so we can
+        // inspect the sorted[] flag and level 0 directly.
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        for x in [7u32, 3, 10, 1, 5] {
+            sketch.insert(x);
+        }
+        assert!(
+            !sketch.sorted[0],
+            "test setup: insert should leave sorted[0] = false"
+        );
+        sketch.absorb_sorted_slice(&[2u32, 4, 6, 8, 9]);
+        assert!(
+            sketch.sorted[0],
+            "absorb_sorted_slice should sort-and-set level 0 before merge-extending"
+        );
+        assert!(
+            sketch.levels[0].is_sorted(),
+            "level 0 contents must actually be sorted: {:?}",
+            sketch.levels[0]
+        );
+        // Sanity on the final counts and extremes across the mixed ingest.
+        assert_eq!(sketch.rank(&11), 10);
+        assert_eq!(sketch.quantile(0.0), Some(&1));
+        assert_eq!(sketch.quantile(1.0), Some(&10));
     }
 
     #[test]
