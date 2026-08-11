@@ -343,13 +343,11 @@ http://localhost:50050
 
 The scheduler redirects the browser to the hosted Web TUI and passes the scheduler URL so that the Web TUI can connect to it.
 
-### Using the hosted Web TUI
-
 The Scheduler provides additional configuration options for the Web TUI redirect and CORS settings. See the [Scheduler documentation](./scheduler.md#web-tui-configuration) for details.
 
 ### Running the Web TUI locally
 
-For local development, install the WebAssembly target and Trunk, then start the application from the `ballista-cli` directory:
+For local development, install the WebAssembly target and [Trunk](https://trunk-rs.github.io/trunk/), then start the application from the `ballista-cli` directory:
 
 ```bash
 rustup target add wasm32-unknown-unknown

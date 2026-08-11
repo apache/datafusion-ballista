@@ -46,7 +46,7 @@ When the Scheduler is built with the `rest-api` feature, several command-line op
 | `--cors-allowed-origins` | Comma-separated list of allowed CORS origins. By default, `http://localhost:8080` and `https://nightlies.apache.org` are allowed. |
 | `--cors-allowed-methods` | Comma-separated list of allowed CORS methods. By default, `GET`, `PATCH`, and `OPTIONS` are allowed.                              |
 
-For example, to expose the Web TUI redirect at `/tui`:
+For example, to expose the Web TUI redirect at `http://localhost:50050/tui`:
 
 ```bash
 ballista-scheduler --web-tui-route /tui

@@ -124,7 +124,7 @@ Ballista provides a browser-based Web TUI for monitoring a running cluster. It e
 
 ![Ballista Web TUI](docs/source/user-guide/screenshots/tui-web-main.png)
 
-When the scheduler HTTP endpoint is available, opening the scheduler address in a browser, for example `http://localhost:50050`, redirects to the hosted Web TUI.
+When the scheduler HTTP endpoint is available, opening the scheduler address in a browser, for example `http://localhost:50050`, redirects to a hosted Web TUI.
 
 For more information, including how to run the Web TUI locally, see the [Ballista CLI documentation](https://datafusion.apache.org/ballista/user-guide/cli.html).
 
