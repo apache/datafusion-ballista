@@ -26,7 +26,7 @@ use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::stats::Precision;
@@ -552,11 +552,11 @@ pub fn stats_for_partitions(
 }
 
 struct LocalShuffleStream {
-    reader: StreamReader<BufReader<File>>,
+    reader: FileReader<BufReader<File>>,
 }
 
 impl LocalShuffleStream {
-    pub fn new(reader: StreamReader<BufReader<File>>) -> Self {
+    pub fn new(reader: FileReader<BufReader<File>>) -> Self {
         LocalShuffleStream { reader }
     }
 }
@@ -1160,7 +1160,7 @@ pub(crate) fn fetch_partition_local(
 
 fn fetch_partition_local_inner(
     path: &Path,
-) -> result::Result<StreamReader<BufReader<File>>, BallistaError> {
+) -> result::Result<FileReader<BufReader<File>>, BallistaError> {
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!(
             "Failed to open partition file at {path:?}: {e:?}"
@@ -1170,10 +1170,10 @@ fn fetch_partition_local_inner(
     let file = BufReader::with_capacity(256 * 1024, file);
     // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
     let reader = unsafe {
-        StreamReader::try_new(file, None)
+        FileReader::try_new(file, None)
             .map_err(|e| {
                 BallistaError::General(format!(
-                    "Failed to create new arrow StreamReader at {path:?}: {e:?}"
+                    "Failed to create new arrow FileReader at {path:?}: {e:?}"
                 ))
             })?
             .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
@@ -1283,7 +1283,7 @@ mod tests {
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::writer::StreamWriter;
+    use datafusion::arrow::ipc::writer::FileWriter;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -1795,7 +1795,7 @@ mod tests {
         std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
 
         let file = File::create(&file_path).unwrap();
-        let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+        let mut writer = FileWriter::try_new(file, &schema).unwrap();
         writer.write(&batch).unwrap();
         writer.finish().unwrap();
 
@@ -1838,7 +1838,7 @@ mod tests {
             std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
             let file: File = File::create(&file_path).unwrap();
 
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+            let mut writer = FileWriter::try_new(file, &schema).unwrap();
             writer.write(&batch).unwrap();
             writer.finish().unwrap();
         }
@@ -1880,7 +1880,7 @@ mod tests {
                 create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
             std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
             let file = File::create(&file_path).unwrap();
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+            let mut writer = FileWriter::try_new(file, &schema).unwrap();
             writer.write(&batch).unwrap();
             writer.finish().unwrap();
         }
