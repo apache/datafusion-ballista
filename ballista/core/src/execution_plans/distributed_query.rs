@@ -18,6 +18,7 @@
 use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::error::BallistaError;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
@@ -28,7 +29,6 @@ use crate::serde::protobuf::{
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -47,7 +47,7 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, error, info};
 use parking_lot::Mutex;
 use std::fmt::Debug;
@@ -298,20 +298,17 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let session_config = context.session_config().clone();
 
         if session_config.ballista_config().client_pull() {
-            let stream = futures::stream::once(
-                execute_query_pull(
-                    self.scheduler_url.clone(),
-                    self.session_id.clone(),
-                    query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    Arc::clone(&self.job_id),
-                    partition,
-                    session_config,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
+            let stream = futures::stream::once(execute_query_pull(
+                self.scheduler_url.clone(),
+                self.session_id.clone(),
+                query,
+                self.config.grpc_client_max_message_size(),
+                GrpcClientConfig::from(&self.config),
+                Arc::new(self.metrics.clone()),
+                Arc::clone(&self.job_id),
+                partition,
+                session_config,
+            ))
             .try_flatten()
             .inspect(move |batch| {
                 metric_total_bytes.add(
@@ -327,19 +324,16 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             let schema = self.schema();
             Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
         } else {
-            let stream = futures::stream::once(
-                execute_query_push(
-                    self.scheduler_url.clone(),
-                    query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    Arc::clone(&self.job_id),
-                    partition,
-                    session_config,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
+            let stream = futures::stream::once(execute_query_push(
+                self.scheduler_url.clone(),
+                query,
+                self.config.grpc_client_max_message_size(),
+                GrpcClientConfig::from(&self.config),
+                Arc::new(self.metrics.clone()),
+                Arc::clone(&self.job_id),
+                partition,
+                session_config,
+            ))
             .try_flatten()
             .inspect(move |batch| {
                 metric_total_bytes.add(
@@ -610,8 +604,7 @@ async fn execute_query_pull(
                         use_tls,
                         io_retries_times,
                         io_retry_wait_time_ms,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                    );
 
                     futures::stream::once(f).try_flatten()
                 });
@@ -776,8 +769,7 @@ async fn execute_query_push(
                         use_tls,
                         io_retries_times,
                         io_retry_wait_time_ms,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                    );
 
                     futures::stream::once(f).try_flatten()
                 });
@@ -881,7 +873,7 @@ async fn fetch_partition(
             flight_transport,
         )
         .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))
+        .map_err(BallistaError::into_datafusion)
 }
 
 #[cfg(test)]

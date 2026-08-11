@@ -42,7 +42,6 @@ use crate::serde::protobuf::ShuffleWritePartition;
 
 use crate::utils::create_write_options;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -971,7 +970,6 @@ impl ExecutionPlan for SortShuffleWriterExec {
                     &job_id,
                     stage_id,
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
             })
             .try_flatten(),
         )))
