@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::JobId;
+use crate::error::BallistaError;
 use crate::execution_plans::{
     OrderedRangeRepartitionExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
     create_shuffle_path,
@@ -55,7 +56,6 @@ use datafusion::physical_plan::{
 };
 use futures::TryStreamExt;
 
-use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -575,12 +575,7 @@ impl ShuffleWriterExec {
                         compression_type,
                     )
                     .await
-                    .map_err(|e| {
-                        DataFusionError::ArrowError(
-                            Box::new(ArrowError::ExternalError(Box::new(e))),
-                            None,
-                        )
-                    })?;
+                    .map_err(BallistaError::into_datafusion)?;
                     let rows = stats.num_rows.unwrap_or(0) as usize;
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
@@ -756,7 +751,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     &job_id,
                     stage_id,
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
             })
             .try_flatten(),
         )))
@@ -1009,15 +1003,12 @@ mod tests {
             matches!(e.as_ref(), DataFusionError::Shared(_)),
             "expected shared DataFusionError, got {e:?}"
         );
-        let DataFusionError::ArrowError(arrow, _) = e.find_root() else {
-            panic!("expected ArrowError root, got {:?}", e.find_root());
-        };
-        let ArrowError::ExternalError(inner) = arrow.as_ref() else {
-            panic!("expected Arrow external error, got {arrow:?}");
+        let DataFusionError::External(inner) = e.find_root() else {
+            panic!("expected External root, got {:?}", e.find_root());
         };
         assert!(
             inner.downcast_ref::<BallistaError>().is_some(),
-            "expected Arrow external BallistaError, got {inner:?}"
+            "expected External BallistaError, got {inner:?}"
         );
     }
 

@@ -76,6 +76,14 @@ impl<T> Into<Result<T>> for BallistaError {
     }
 }
 
+impl BallistaError {
+    /// Keeps a Ballista error structural across DataFusion's stream boundary, so
+    /// task-failure classification can recover it instead of parsing a string.
+    pub fn into_datafusion(self) -> DataFusionError {
+        DataFusionError::External(Box::new(self))
+    }
+}
+
 /// Creates a general Ballista error from a string message.
 pub fn ballista_error(message: &str) -> BallistaError {
     BallistaError::General(message.to_owned())
@@ -117,6 +125,14 @@ impl From<DataFusionError> for BallistaError {
     fn from(e: DataFusionError) -> Self {
         match e {
             DataFusionError::ArrowError(e, _) => Self::from(*e),
+            // A Ballista error carried across DataFusion arrives as
+            // `External(Box<BallistaError>)`; recover the original.
+            DataFusionError::External(inner) => match inner.downcast::<BallistaError>() {
+                Ok(b) => *b,
+                Err(other) => BallistaError::DataFusionError(Box::new(
+                    DataFusionError::External(other),
+                )),
+            },
             _ => BallistaError::DataFusionError(Box::new(e)),
         }
     }
@@ -211,9 +227,8 @@ struct FetchFailedDetails {
     desc: String,
 }
 
-/// Recovers a shuffle fetch failure that crossed DataFusion as
-/// `ArrowError::ExternalError(FetchFailed)` and may now be wrapped in
-/// `DataFusionError` layers.
+/// Recovers a shuffle fetch failure carried across DataFusion, seeing through
+/// any wrapper layers.
 fn find_fetch_failed(e: &BallistaError) -> Option<FetchFailedDetails> {
     match e {
         BallistaError::FetchFailed(executor_id, map_stage_id, map_partition_id, desc) => {
@@ -224,30 +239,30 @@ fn find_fetch_failed(e: &BallistaError) -> Option<FetchFailedDetails> {
                 desc: desc.clone(),
             })
         }
-        BallistaError::ArrowError(e) => fetch_failed_in_arrow(e),
-        BallistaError::DataFusionError(e) => fetch_failed_in_datafusion(e),
+        BallistaError::DataFusionError(e) => match e.find_root() {
+            DataFusionError::External(inner) => inner
+                .downcast_ref::<BallistaError>()
+                .and_then(find_fetch_failed),
+            _ => None,
+        },
         _ => None,
     }
 }
 
-fn fetch_failed_in_datafusion(e: &DataFusionError) -> Option<FetchFailedDetails> {
-    match e.find_root() {
-        DataFusionError::ArrowError(e, _) => fetch_failed_in_arrow(e),
-        _ => None,
+/// Whether the error is a retryable IO failure, native or carried across
+/// DataFusion under any wrapper layer.
+fn is_retryable_io(e: &BallistaError) -> bool {
+    match e {
+        BallistaError::IoError(_) => true,
+        BallistaError::DataFusionError(e) => match e.find_root() {
+            DataFusionError::IoError(_) => true,
+            DataFusionError::External(inner) => inner
+                .downcast_ref::<BallistaError>()
+                .is_some_and(is_retryable_io),
+            _ => false,
+        },
+        _ => false,
     }
-}
-
-fn fetch_failed_in_arrow(e: &ArrowError) -> Option<FetchFailedDetails> {
-    let ArrowError::ExternalError(inner) = e else {
-        return None;
-    };
-    if let Some(e) = inner.downcast_ref::<BallistaError>() {
-        return find_fetch_failed(e);
-    }
-    if let Some(e) = inner.downcast_ref::<DataFusionError>() {
-        return fetch_failed_in_datafusion(e);
-    }
-    None
 }
 
 impl From<BallistaError> for FailedTask {
@@ -273,20 +288,9 @@ impl From<BallistaError> for FailedTask {
                 count_to_failures: false,
                 failed_reason: Some(FailedReason::TaskKilled(TaskKilled {})),
             },
-            BallistaError::IoError(io) => {
+            ref e if is_retryable_io(e) => {
                 FailedTask {
-                    error: format!("Task failed due to Ballista IO error: {io:?}"),
-                    // IO error is considered to be temporary and retryable
-                    retryable: true,
-                    count_to_failures: true,
-                    failed_reason: Some(FailedReason::IoError(IoError {})),
-                }
-            }
-            BallistaError::DataFusionError(e)
-                if matches!(e.find_root(), DataFusionError::IoError(_)) =>
-            {
-                FailedTask {
-                    error: format!("Task failed due to DataFusion IO error: {e:?}"),
+                    error: format!("Task failed due to IO error: {e:?}"),
                     // IO error is considered to be temporary and retryable
                     retryable: true,
                     count_to_failures: true,
@@ -329,40 +333,48 @@ mod tests {
     }
 
     #[test]
-    fn bare_datafusion_io_error_is_retryable() {
-        let e = BallistaError::DataFusionError(Box::new(DataFusionError::IoError(
-            io::Error::new(io::ErrorKind::ConnectionReset, "connection reset"),
-        )));
-        let task = io_failed_task(e);
-        assert!(task.retryable);
-        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
-    }
-
-    #[test]
-    fn shared_wrapped_io_error_is_retryable() {
-        // Errors from a join's shared build side arrive as Shared(Arc<IoError>);
-        // the classifier must see through the wrapper or it will not retry a
-        // transient IO failure.
-        let inner = DataFusionError::IoError(io::Error::new(
-            io::ErrorKind::ConnectionReset,
-            "connection reset",
-        ));
-        let shared = DataFusionError::Shared(Arc::new(inner));
-        let e = BallistaError::DataFusionError(Box::new(shared));
-        let task = io_failed_task(e);
-        assert!(task.retryable);
-        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
-    }
-
-    #[test]
-    fn context_wrapped_shared_io_error_is_retryable() {
-        let inner = DataFusionError::IoError(io::Error::other("s3 timeout"));
-        let shared = DataFusionError::Shared(Arc::new(inner));
-        let ctx = shared.context("reading join build side");
-        let e = BallistaError::DataFusionError(Box::new(ctx));
-        let task = io_failed_task(e);
-        assert!(task.retryable);
-        assert!(matches!(task.failed_reason, Some(FailedReason::IoError(_))));
+    fn io_error_is_retryable_through_any_wrapper() {
+        // Both a native DataFusion IoError and a BallistaError::IoError carried
+        // across DataFusion as External stay retryable, including under the
+        // Shared/Context layers DataFusion adds (e.g. a join's shared build side).
+        let df_io = || {
+            DataFusionError::IoError(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "connection reset",
+            ))
+        };
+        let cases: Vec<(&str, BallistaError)> = vec![
+            ("native", BallistaError::DataFusionError(Box::new(df_io()))),
+            (
+                "shared",
+                BallistaError::DataFusionError(Box::new(DataFusionError::Shared(
+                    Arc::new(df_io()),
+                ))),
+            ),
+            (
+                "context+shared",
+                BallistaError::DataFusionError(Box::new(
+                    DataFusionError::Shared(Arc::new(df_io()))
+                        .context("reading join build side"),
+                )),
+            ),
+            (
+                "external",
+                wrap_in_external(BallistaError::IoError(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "connection reset",
+                ))),
+            ),
+        ];
+        for (label, e) in cases {
+            let task = io_failed_task(e);
+            assert!(task.retryable, "{label} should be retryable");
+            assert!(task.count_to_failures, "{label} should count to failures");
+            assert!(
+                matches!(task.failed_reason, Some(FailedReason::IoError(_))),
+                "{label} should classify as IoError",
+            );
+        }
     }
 
     #[test]
@@ -402,25 +414,18 @@ mod tests {
         ));
     }
 
-    /// Builds the wrapped shape that can reach task failure classification.
-    fn wrap_in_arrow_external(inner: BallistaError) -> BallistaError {
-        BallistaError::DataFusionError(Box::new(datafusion_arrow_external(inner)))
+    /// Builds the single-wrap shape that reaches task failure classification.
+    fn wrap_in_external(inner: BallistaError) -> BallistaError {
+        BallistaError::DataFusionError(Box::new(inner.into_datafusion()))
     }
 
-    fn datafusion_arrow_external(inner: BallistaError) -> DataFusionError {
-        DataFusionError::ArrowError(
-            Box::new(ArrowError::ExternalError(Box::new(inner))),
-            None,
-        )
-    }
-
-    fn wrap_in_shared_arrow_external(inner: BallistaError) -> BallistaError {
-        let df = DataFusionError::Shared(Arc::new(datafusion_arrow_external(inner)));
+    fn wrap_in_shared_external(inner: BallistaError) -> BallistaError {
+        let df = DataFusionError::Shared(Arc::new(inner.into_datafusion()));
         BallistaError::DataFusionError(Box::new(df))
     }
 
-    fn wrap_in_context_arrow_external(inner: BallistaError) -> BallistaError {
-        let df = datafusion_arrow_external(inner).context("reading shuffle partition");
+    fn wrap_in_context_external(inner: BallistaError) -> BallistaError {
+        let df = inner.into_datafusion().context("reading shuffle partition");
         BallistaError::DataFusionError(Box::new(df))
     }
 
@@ -451,13 +456,10 @@ mod tests {
     }
 
     #[test]
-    fn datafusion_arrow_external_fetch_failed_converts_to_bare_fetch_failed() {
-        let e = BallistaError::from(datafusion_arrow_external(fetch_failed(
-            "exec-1",
-            3,
-            7,
-            "connection reset",
-        )));
+    fn datafusion_external_fetch_failed_converts_to_bare_fetch_failed() {
+        let e = BallistaError::from(
+            fetch_failed("exec-1", 3, 7, "connection reset").into_datafusion(),
+        );
 
         match e {
             BallistaError::FetchFailed(
@@ -477,29 +479,28 @@ mod tests {
 
     #[test]
     fn wrapped_fetch_failed_is_recovered_as_fetch_partition_error() {
-        let e = wrap_in_arrow_external(fetch_failed("exec-1", 3, 7, "connection reset"));
+        let e = wrap_in_external(fetch_failed("exec-1", 3, 7, "connection reset"));
         let task = FailedTask::from(e);
         assert_fetch_partition_error(task, "exec-1", 3, 7, "connection reset");
     }
 
     #[test]
     fn shared_wrapped_fetch_failed_is_recovered() {
-        let e =
-            wrap_in_shared_arrow_external(fetch_failed("exec-2", 1, 2, "peer closed"));
+        let e = wrap_in_shared_external(fetch_failed("exec-2", 1, 2, "peer closed"));
         let task = FailedTask::from(e);
         assert_fetch_partition_error(task, "exec-2", 1, 2, "peer closed");
     }
 
     #[test]
     fn context_wrapped_fetch_failed_is_recovered() {
-        let e = wrap_in_context_arrow_external(fetch_failed("exec-3", 5, 9, "timeout"));
+        let e = wrap_in_context_external(fetch_failed("exec-3", 5, 9, "timeout"));
         let task = FailedTask::from(e);
         assert_fetch_partition_error(task, "exec-3", 5, 9, "timeout");
     }
 
     #[test]
     fn wrapped_non_fetch_error_stays_execution_error() {
-        let e = wrap_in_arrow_external(BallistaError::General("boom".to_string()));
+        let e = wrap_in_external(BallistaError::General("boom".to_string()));
         let task = FailedTask::from(e);
         assert!(!task.retryable);
         assert!(matches!(

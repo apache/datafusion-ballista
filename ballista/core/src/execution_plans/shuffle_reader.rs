@@ -25,7 +25,6 @@ use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
@@ -606,7 +605,7 @@ impl AbortableReceiverStream {
 }
 
 impl Stream for AbortableReceiverStream {
-    type Item = result::Result<SendableRecordBatchStream, ArrowError>;
+    type Item = result::Result<SendableRecordBatchStream, DataFusionError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -614,7 +613,7 @@ impl Stream for AbortableReceiverStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         self.inner
             .poll_next_unpin(cx)
-            .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+            .map_err(BallistaError::into_datafusion)
     }
 }
 
@@ -1618,7 +1617,7 @@ mod tests {
 
         assert!(batches.is_err());
 
-        // BallistaError::FetchFailed -> ArrowError::ExternalError -> ballistaError::FetchFailed
+        // BallistaError::FetchFailed -> DataFusionError::External -> BallistaError::FetchFailed
         let ballista_error = batches.unwrap_err();
         assert!(matches!(
             ballista_error,

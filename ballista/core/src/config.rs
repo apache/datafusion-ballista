@@ -136,6 +136,11 @@ pub const BALLISTA_COALESCE_ENABLED: &str = "ballista.planner.coalesce.enabled";
 /// This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)
 pub const BALLISTA_PROPAGATE_EMPTY_ENABLED: &str =
     "ballista.planner.propagate_empty.enabled";
+/// Configuration key to enable the AQE `ParallelWindowRule`, which rewrites
+/// bounded-RANGE-frame windows into a distributed range-shuffle so BWAG's
+/// single-partition constraint isn't a serial bottleneck. Opt-in.
+pub const BALLISTA_PARALLEL_WINDOW_ENABLED: &str =
+    "ballista.planner.parallel_window.enabled";
 /// Configuration key for the target post-coalesce partition byte size (bytes).
 /// Mirrors Spark's `spark.sql.adaptive.advisoryPartitionSizeInBytes`.
 pub const BALLISTA_COALESCE_TARGET_PARTITION_BYTES: &str =
@@ -326,6 +331,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                         of a join, allowing downstream work to be skipped.".to_string(),
                         DataType::Boolean,
                         Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_PARALLEL_WINDOW_ENABLED.to_string(),
+                        "Enables the AQE parallel-window rule (ParallelWindowRule), which \
+                        rewrites bounded-RANGE-frame windows into a distributed range-shuffle \
+                        so BoundedWindowAggExec's single-partition constraint is not a serial \
+                        bottleneck. Disabled by default — opt in when the workload contains \
+                        matching window shapes.".to_string(),
+                        DataType::Boolean,
+                        Some(false.to_string())),
         ConfigEntry::new(
             BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
             "Target post-coalesce partition size in bytes. Mirrors Spark's \
@@ -716,6 +729,11 @@ impl BallistaConfig {
     /// Returns whether the AQE propagate empty rule is enabled.
     pub fn propagate_empty_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_PROPAGATE_EMPTY_ENABLED)
+    }
+
+    /// Returns whether the AQE parallel-window rule is enabled.
+    pub fn parallel_window_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_PARALLEL_WINDOW_ENABLED)
     }
 
     /// Returns compression codec that will be used during write stage of shuffle

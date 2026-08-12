@@ -74,11 +74,11 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 
-// The rule's `as_candidate` gates guarantee no PARTITION BY + single Column
-// ORDER BY over a sorted source, so `BWAG::try_new` is always invoked with
-// `InputOrderMode::Sorted` and `can_repartition=false` (partition_keys() is
-// empty either way when there's no PARTITION BY). Hardcode both to keep the
-// wire and the type small.
+// `maybe_rewrite_bwag`'s shape gates guarantee no PARTITION BY + single
+// Column ORDER BY over a sorted source, so `BWAG::try_new` is always invoked
+// with `InputOrderMode::Sorted` and `can_repartition=false` (partition_keys()
+// is empty either way when there's no PARTITION BY). Hardcode both to keep
+// the wire and the type small.
 const BWAG_INPUT_ORDER_MODE: InputOrderMode = InputOrderMode::Sorted;
 const BWAG_CAN_REPARTITION: bool = false;
 
