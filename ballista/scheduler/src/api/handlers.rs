@@ -55,6 +55,7 @@ struct SchedulerStateResponse {
     scheduling_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     advertise_flight_sql_endpoint: Option<String>,
+    embedded_flight_proxy: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -187,6 +188,7 @@ pub async fn get_scheduler_state<
             .config
             .advertise_flight_sql_endpoint
             .clone(),
+        embedded_flight_proxy: data_server.state.config.enable_embedded_flight_proxy,    
     };
     Json(response)
 }

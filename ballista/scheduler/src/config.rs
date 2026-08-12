@@ -77,9 +77,16 @@ pub struct Config {
         long,
         num_args = 0..=1,
         default_missing_value = "",
-        help = "Route for proxying flight results via scheduler. Use 'HOST:PORT' to let clients fetch results from the specified address. If empty a flight proxy will be started on the scheduler host and port."
+        help = "Route for proxying flight results via scheduler. Use 'HOST:PORT' to let clients fetch results from the specified address. Passing the flag with no value is deprecated; use --enable-embedded-flight-proxy to start the embedded proxy instead."
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
+    /// Start an embedded Arrow Flight proxy on the scheduler host/port.
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Start an embedded Arrow Flight proxy on the scheduler so clients can fetch results via the scheduler. Mutually independent from --advertise-flight-sql-endpoint, which advertises an external endpoint."
+    )]
+    pub enable_embedded_flight_proxy: bool,
     /// Namespace for the ballista cluster.
     #[arg(
         short = 'n',
@@ -318,6 +325,8 @@ pub struct SchedulerConfig {
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// The route endpoint for proxying flight sql results via scheduler
     pub advertise_flight_sql_endpoint: Option<String>,
+    /// Whether to enable embedded proxy
+    pub enable_embedded_flight_proxy: bool,
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
     pub job_resubmit_interval_ms: Option<u64>,
@@ -400,6 +409,7 @@ impl Default for SchedulerConfig {
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
             advertise_flight_sql_endpoint: None,
+            enable_embedded_flight_proxy: false,
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
             scheduler_event_expected_processing_duration: 0,
@@ -523,11 +533,24 @@ impl SchedulerConfig {
     }
 
     /// Sets the Flight SQL endpoint to advertise.
+    /// 
+    /// An empty string is treated as unset. (Previously an empty value enabled
+    /// the embedded flight proxy; use
+    /// [`Self::with_enable_embedded_flight_proxy`] for that)
     pub fn with_advertise_flight_sql_endpoint(
         mut self,
         endpoint: Option<String>,
     ) -> Self {
         self.advertise_flight_sql_endpoint = endpoint;
+        self
+    }
+
+    /// Sets whether to start an embedded Arrow Flight proxy on the scheduler.
+    pub fn with_enable_embedded_flight_proxy(
+        mut self,
+        enable: bool,
+    ) -> Self {
+        self.enable_embedded_flight_proxy = enable;
         self
     }
 
@@ -702,6 +725,7 @@ impl TryFrom<Config> for SchedulerConfig {
             finished_job_state_clean_up_interval_seconds: opt
                 .finished_job_state_clean_up_interval_seconds,
             advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
+            enable_embedded_flight_proxy: opt.enable_embedded_flight_proxy,
             job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
                 .then_some(opt.job_resubmit_interval_ms),
             executor_termination_grace_period: opt.executor_termination_grace_period,
