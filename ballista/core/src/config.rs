@@ -437,6 +437,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             DataType::Utf8,
             Some("".to_string())
         )
+        .with_doc_default("(none)"),
     ];
     entries
         .into_iter()

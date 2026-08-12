@@ -160,6 +160,23 @@ explanation of the sort-based shuffle writer.
 
 <!-- END GENERATED CONFIG REFERENCE -->
 
+## Checkpointing
+
+Settings for `DataFrame::checkpoint()` and `checkpoint_lazy()`, which
+materialise a DataFrame to storage and continue from a scan of that data,
+truncating the logical plan. The directory must be reachable from every node
+in the cluster — an object store URL or shared filesystem for anything but a
+standalone cluster. Checkpoints are not cleaned up automatically.
+
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.checkpoint. -->
+
+<!-- prettier-ignore -->
+| key                     | type | default | description                                                                                                                                                                                                                                                                                   |
+| ----------------------- | ---- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.checkpoint.dir | Utf8 | (none)  | Optional location where DataFrame::checkpoint() results are stored. Must be reachable from every node in the cluster, so an object store URL or a shared filesystem should be used for anything but a standalone cluster. If it is not set, calling DataFrame::checkpoint() returns an error. |
+
+<!-- END GENERATED CONFIG REFERENCE -->
+
 ## Testing and Fault Injection
 
 These settings drive chaos-monkey fault injection and exist for robustness
