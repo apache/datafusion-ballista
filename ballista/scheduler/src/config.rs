@@ -32,6 +32,7 @@ use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use log::warn;
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -235,10 +236,9 @@ pub struct Config {
     /// cluster has lost its last executor before failing the running jobs.
     #[arg(
         long,
-        default_value_t = 30,
-        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Set to 0 to fail as soon as the loss is observed."
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Must be >= the executor heartbeat interval, or an executor removed by a transient task-launch failure may not re-register before this elapses; defaults to --executor-timeout-seconds (which is always longer than the heartbeat interval). Set to 0 to fail as soon as the loss is observed."
     )]
-    pub no_executors_grace_period_seconds: u64,
+    pub no_executors_grace_period_seconds: Option<u64>,
     /// Minimum number of registered executors before /readyz returns 200
     #[arg(
         long,
@@ -339,8 +339,14 @@ pub struct SchedulerConfig {
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This
     /// bounds the otherwise-unbounded wait so that a total executor loss fails
-    /// the affected jobs instead of hanging forever. Set to 0 to fail as soon as
-    /// the loss is observed.
+    /// the affected jobs instead of hanging forever.
+    ///
+    /// Must be `>=` the executor heartbeat interval: an executor removed by a
+    /// transient task-launch failure re-registers on its next heartbeat, so a
+    /// grace shorter than that interval could fail a still-healthy executor's
+    /// jobs before it comes back. It therefore defaults to
+    /// [`Self::executor_timeout_seconds`], which is required to be longer than
+    /// the heartbeat interval. Set to 0 to fail as soon as the loss is observed.
     pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
@@ -402,7 +408,9 @@ impl Default for SchedulerConfig {
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
-            no_executors_grace_period_seconds: 30,
+            // Defaults to `executor_timeout_seconds` so the grace is always >=
+            // the executor heartbeat interval (see the field doc).
+            no_executors_grace_period_seconds: 180,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
@@ -428,6 +436,34 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
+    /// Validate invariants between interdependent configuration values.
+    ///
+    /// Suspicious combinations are logged as warnings rather than rejected,
+    /// since small values are legitimate for fail-fast setups and tests.
+    pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.no_executors_grace_period_seconds != 0
+            && self.no_executors_grace_period_seconds < self.executor_timeout_seconds
+        {
+            warn!(
+                "no_executors_grace_period_seconds ({}) is less than \
+                 executor_timeout_seconds ({}); an executor removed by a transient \
+                 task-launch failure may not re-register before the grace elapses, \
+                 which can spuriously fail its jobs (see #2226). Use 0 for \
+                 deliberate fail-fast, or a value >= executor_timeout_seconds.",
+                self.no_executors_grace_period_seconds, self.executor_timeout_seconds,
+            );
+        }
+        if self.executor_timeout_seconds <= self.expire_dead_executor_interval_seconds {
+            warn!(
+                "executor_timeout_seconds ({}) is not greater than \
+                 expire_dead_executor_interval_seconds ({}); dead executors may not \
+                 be detected within the timeout window.",
+                self.executor_timeout_seconds, self.expire_dead_executor_interval_seconds,
+            );
+        }
+        Ok(())
+    }
+
     /// Returns the scheduler name in host:port format.
     pub fn scheduler_name(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
@@ -679,7 +715,12 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
-            no_executors_grace_period_seconds: opt.no_executors_grace_period_seconds,
+            // Default to the executor-liveness timeout when unset, so the grace
+            // is always >= the executor heartbeat interval and a transiently
+            // removed but healthy executor can re-register before it elapses.
+            no_executors_grace_period_seconds: opt
+                .no_executors_grace_period_seconds
+                .unwrap_or(opt.executor_timeout_seconds),
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,
@@ -703,5 +744,69 @@ impl TryFrom<Config> for SchedulerConfig {
         };
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_grace_period_covers_executor_timeout() {
+        // The no-executors grace must be >= the executor-liveness window, so an
+        // executor removed by a transient task-launch failure can re-register on
+        // its next heartbeat before its jobs are failed. See #2226.
+        let cfg = SchedulerConfig::default();
+        assert!(
+            cfg.no_executors_grace_period_seconds >= cfg.executor_timeout_seconds,
+            "grace {} must be >= executor_timeout {}",
+            cfg.no_executors_grace_period_seconds,
+            cfg.executor_timeout_seconds,
+        );
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_grace_period_defaults_to_executor_timeout_when_unset() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--executor-timeout-seconds", "90"]);
+        assert_eq!(opt.no_executors_grace_period_seconds, None);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.no_executors_grace_period_seconds, 90);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_grace_period_explicit_value_is_respected() {
+        use clap::Parser;
+        let opt = Config::parse_from([
+            "scheduler",
+            "--executor-timeout-seconds",
+            "90",
+            "--no-executors-grace-period-seconds",
+            "5",
+        ]);
+        assert_eq!(opt.no_executors_grace_period_seconds, Some(5));
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.no_executors_grace_period_seconds, 5);
+    }
+
+    #[test]
+    fn validate_accepts_default_config() {
+        SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_allows_fail_fast_and_small_grace() {
+        // A small (or zero, fail-fast) grace only warns — it must not be rejected,
+        // since deliberate fail-fast setups and tests rely on it.
+        SchedulerConfig::default()
+            .with_no_executors_grace_period_seconds(0)
+            .validate()
+            .unwrap();
+        SchedulerConfig::default()
+            .with_no_executors_grace_period_seconds(1)
+            .validate()
+            .unwrap();
     }
 }
