@@ -1254,10 +1254,7 @@ dependencies = [
  "regex",
  "rstest",
  "serde",
-<<<<<<< HEAD
-=======
  "serde_json",
->>>>>>> upstream/main
  "tempfile",
  "tokio",
  "tokio-stream",
