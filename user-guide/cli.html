@@ -851,6 +851,46 @@ e.g. “White”); 2) RGB (e.g. “#rrggbb”); 3) Indexed (e.g. “108”)</p><
 <p>The TUI connects to the scheduler via HTTP and refreshes the data automatically every <code class="docutils literal notranslate"><span class="pre">data_reload_interval_ms</span></code> milliseconds.</p>
 </section>
 </section>
+<section id="web-terminal-user-interface-web-tui">
+<h2>Web Terminal User Interface (Web TUI)<a class="headerlink" href="#web-terminal-user-interface-web-tui" title="Link to this heading">#</a></h2>
+<p>Ballista also provides a browser-based version of the TUI, compiled to WebAssembly, that allows cluster monitoring directly from a web browser.</p>
+<section id="using-the-hosted-web-tui">
+<h3>Using the hosted Web TUI<a class="headerlink" href="#using-the-hosted-web-tui" title="Link to this heading">#</a></h3>
+<p>When the scheduler HTTP endpoint is available, open its root URL in a browser. For a scheduler using the default port:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>http://localhost:50050
+</pre></div>
+</div>
+<p>The scheduler redirects the browser to the hosted Web TUI and passes the scheduler URL so that the Web TUI can connect to it.</p>
+<p>The Scheduler provides additional configuration options for the Web TUI redirect and CORS settings. See the <a class="reference internal" href="scheduler.html#web-tui-configuration"><span class="std std-ref">Scheduler documentation</span></a> for details.</p>
+</section>
+<section id="running-the-web-tui-locally">
+<h3>Running the Web TUI locally<a class="headerlink" href="#running-the-web-tui-locally" title="Link to this heading">#</a></h3>
+<p>For local development, install the WebAssembly target and <a class="reference external" href="https://trunk-rs.github.io/trunk/">Trunk</a>, then start the application from the <code class="docutils literal notranslate"><span class="pre">ballista-cli</span></code> directory:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>rustup<span class="w"> </span>target<span class="w"> </span>add<span class="w"> </span>wasm32-unknown-unknown
+cargo<span class="w"> </span>install<span class="w"> </span>trunk
+<span class="nb">cd</span><span class="w"> </span>ballista-cli
+trunk<span class="w"> </span>serve<span class="w"> </span>--no-default-features<span class="w"> </span>--features<span class="w"> </span>web
+</pre></div>
+</div>
+<p>Then open <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> in a browser.</p>
+</section>
+<section id="web-tui-screenshots">
+<h3>Web TUI Screenshots<a class="headerlink" href="#web-tui-screenshots" title="Link to this heading">#</a></h3>
+<p>The following screenshots show the Web TUI running in a browser.</p>
+<section id="main-view">
+<h4>Main View<a class="headerlink" href="#main-view" title="Link to this heading">#</a></h4>
+<p><img alt="Web TUI main view" src="../_images/tui-web-main.png" /></p>
+</section>
+<section id="help">
+<h4>Help<a class="headerlink" href="#help" title="Link to this heading">#</a></h4>
+<p><img alt="Web TUI help view" src="../_images/tui-web-help.png" /></p>
+</section>
+<section id="search">
+<h4>Search<a class="headerlink" href="#search" title="Link to this heading">#</a></h4>
+<p><img alt="Web TUI search view" src="../_images/tui-web-search.png" /></p>
+</section>
+</section>
+</section>
 </section>
 
 
@@ -923,6 +963,17 @@ e.g. “White”); 2) RGB (e.g. “#rrggbb”); 3) Indexed (e.g. “108”)</p><
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tui-configuration">TUI Configuration</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#web-terminal-user-interface-web-tui">Web Terminal User Interface (Web TUI)</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#using-the-hosted-web-tui">Using the hosted Web TUI</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-web-tui-locally">Running the Web TUI locally</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#web-tui-screenshots">Web TUI Screenshots</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#main-view">Main View</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#help">Help</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#search">Search</a></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>
