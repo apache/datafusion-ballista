@@ -33,7 +33,6 @@ This section provides links to the source code for major areas of functionality.
 - [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler)
 - [Distributed Query Planner](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/planner.rs)
 - [gRPC Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/scheduler_server/grpc.rs)
-- [Flight Proxy Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/flight_proxy_service.rs)
 - [REST API](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/api)
 - [Prometheus Integration](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs)
 
@@ -51,4 +50,3 @@ This section provides links to the source code for major areas of functionality.
 ### PyBallista
 
 - [Source](https://github.com/apache/datafusion-ballista/tree/main/python)
-- [Context](https://github.com/apache/datafusion-ballista/blob/main/python/python/ballista/extension.py)
