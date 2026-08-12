@@ -72,7 +72,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 The scheduler provides the following interfaces:
 
 - gRPC service for submitting and managing jobs
-- optional Arrow Flight proxy for fetching query results
 - REST API for monitoring jobs
 
 Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
