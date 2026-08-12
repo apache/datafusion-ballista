@@ -56,6 +56,9 @@ message BallistaPhysicalPlanNode {
     UnorderedRangeRepartitionExecNode unordered_range_repartition = 8;
     OrderedRangeRepartitionExecNode ordered_range_repartition = 9;
     PerPartitionFilterExecNode per_partition_filter = 10;
+    PartitionedBoundedWindowAggExecNode partitioned_bounded_window_agg = 11;
+    RangeShuffleReaderExecNode range_shuffle_reader = 12;
+    RangeFilterExecNode range_filter = 13;
   }
 }
 
@@ -133,6 +136,38 @@ message PerPartitionFilterExecNode {
   repeated datafusion.PhysicalExprNode predicates = 1;
 }
 
+// Filter inputs with a per-input-partition half-open range predicate
+// widened by `halo_lo` / `halo_hi`. `raw_bounds[k]` is the cut range for
+// input partition `k` before halo widening; RFE widens internally at
+// resolve time. Zero halo recovers the exact range-repartition trim used
+// above `ShuffleReaderExec`; non-zero halo widens each partition's read
+// range to include a boundary "context" band (bounded RANGE-frame windows).
+// The child plan is plumbed by the framework as `inputs[0]` during decode.
+// Serialization requires bounds to be resolved.
+message RangeFilterExecNode {
+  datafusion.PhysicalExprNode routing_expr = 1;
+  datafusion_common.ScalarValue halo_lo = 2;
+  datafusion_common.ScalarValue halo_hi = 3;
+  repeated RangeBound raw_bounds = 4;
+}
+
+// Half-open `[lo, hi)` cut range for one input partition. Either side may be
+// unset to signal ±∞.
+message RangeBound {
+  datafusion_common.ScalarValue lo = 1;
+  datafusion_common.ScalarValue hi = 2;
+}
+
+// Wrapper for `BoundedWindowAggExec` that overrides
+// `required_input_distribution` to `Unspecified` — see the module doc on
+// `execution_plans::partitioned_bounded_window_agg` for what makes that safe.
+// The child plan is plumbed by the framework as `inputs[0]` during decode.
+// `input_order_mode` and `can_repartition` are hardcoded on the decode side
+// per the rule's shape gates; only `window_expr` needs to cross the wire.
+message PartitionedBoundedWindowAggExecNode {
+  repeated datafusion.PhysicalWindowExprNode window_expr = 1;
+}
+
 message ChaosExecNode {
   double failure_probability = 1;
   string fault_type = 2;
@@ -188,6 +223,18 @@ message ShuffleReaderExecNode {
 message ShuffleReaderPartition {
   // each partition of a shuffle read can read data from multiple locations
   repeated PartitionLocation location = 1;
+}
+
+// Ordering-preserving shuffle reader. Reuses `ShuffleReaderPartition` for the
+// M-shape source layout. Partitioning is derived from `partition.len()`
+// (always `UnknownPartitioning`, range-partitioned by `merge_ordering`).
+message RangeShuffleReaderExecNode {
+  repeated ShuffleReaderPartition partition = 1;
+  datafusion_common.Schema schema = 2;
+  uint32 stage_id = 3;
+  // Sort key the reader's k-way merge preserves. Advertised on the reader's
+  // `PlanProperties.eq_properties` for downstream consumers.
+  repeated datafusion.PhysicalSortExprNode merge_ordering = 4;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.

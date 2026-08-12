@@ -36,7 +36,9 @@
 //! flows from parent to descendants via function arguments, so sibling
 //! subtrees never share state and there's no traversal-order dependency.
 
-use ballista_core::execution_plans::{PerPartitionFilterExec, ShuffleReaderExec};
+use ballista_core::execution_plans::{
+    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec,
+};
 use datafusion::common::internal_err;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
@@ -84,27 +86,40 @@ fn restrict(
         return Ok(rewritten);
     }
 
-    // PerPartitionFilterExec: its `predicates` vec is positionally aligned
-    // with the child's output partitions (predicates[k] filters
-    // input.execute(k)). When we restrict the child from K partitions to
-    // `partitions.len()`, the predicate vec must be sliced by the same
-    // indices in the same order
-    if !under_collect && let Some(ppf) = plan.downcast_ref::<PerPartitionFilterExec>() {
+    // RangeFilterExec: raw_bounds is indexed by input partition; restriction
+    // slices bounds parallel to the input's partition subset. Halos + routing
+    // are carried over verbatim; RFE re-widens on the fresh operator.
+    if !under_collect && let Some(rf) = plan.downcast_ref::<RangeFilterExec>() {
         let children = plan.children();
         let [child] = children.as_slice() else {
             return internal_err!(
-                "PerPartitionFilterExec must have exactly 1 child, got {}",
+                "RangeFilterExec must have exactly 1 child, got {}",
                 children.len()
             );
         };
         let new_child = restrict((*child).clone(), partitions, false)?;
-        let new_predicates: Vec<_> = partitions
+        let raw_bounds = rf.raw_bounds().ok_or_else(|| {
+            datafusion::common::DataFusionError::Internal(
+                "RangeFilterExec: task-restriction before resolve_bounds()".into(),
+            )
+        })?;
+        let sliced_bounds: Vec<_> = partitions
             .iter()
-            .map(|&part_idx| ppf.predicates()[part_idx].clone())
-            .collect();
-        return Ok(Arc::new(PerPartitionFilterExec::try_new(
+            .map(|&global| {
+                raw_bounds.get(global).cloned().ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(format!(
+                        "RangeFilterExec: partition index {global} out of bounds ({} raw bounds)",
+                        raw_bounds.len()
+                    ))
+                })
+            })
+            .collect::<datafusion::common::Result<_>>()?;
+        return Ok(Arc::new(RangeFilterExec::try_new_resolved(
             new_child,
-            new_predicates,
+            rf.routing_expr().clone(),
+            rf.halo_lo().clone(),
+            rf.halo_hi().clone(),
+            sliced_bounds,
         )?));
     }
 
@@ -290,6 +305,24 @@ fn select_output_partitions(
             kept,
             reader.schema(),
             partitioning,
+        )
+        .ok()?;
+        return Some(Arc::new(restricted));
+    }
+
+    // RangeShuffleReaderExec: cross-stage inputs, ordering-preserving. Same
+    // partition-slice restriction as ShuffleReaderExec — carry the merge
+    // ordering unchanged.
+    if let Some(reader) = plan.downcast_ref::<RangeShuffleReaderExec>() {
+        let kept: Vec<Vec<_>> = indices
+            .iter()
+            .filter_map(|&p| reader.partition.get(p).cloned())
+            .collect();
+        let restricted = RangeShuffleReaderExec::try_new(
+            reader.stage_id,
+            kept,
+            reader.schema(),
+            reader.merge_ordering().clone(),
         )
         .ok()?;
         return Some(Arc::new(restricted));
@@ -657,23 +690,19 @@ mod tests {
         );
     }
 
-    /// A `PerPartitionFilterExec` restricted to a subset of partitions must
-    /// slice its `predicates` vector by the same indices, in the same order,
-    /// as its child. Otherwise the operator's construction invariant
-    /// (`predicates.len() == child.partition_count()`) breaks and
-    /// task-local partition `j` would filter through a global predicate
-    /// that no longer matches.
+    /// A `RangeFilterExec` restricted to a subset of partitions must slice
+    /// its `raw_bounds` by the same indices in the same order as its child.
+    /// Halos + routing_expr carry over unchanged.
     #[test]
-    fn per_partition_filter_predicates_are_sliced_with_partitions() {
-        use ballista_core::execution_plans::PerPartitionFilterExec;
-        use datafusion::logical_expr::Operator;
-        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
-        use datafusion::physical_expr::{Partitioning, PhysicalExpr};
-        use datafusion::scalar::ScalarValue;
+    fn range_filter_bounds_are_sliced_with_partitions() {
+        use ballista_core::execution_plans::RangeFilterExec;
+        use datafusion::physical_expr::Partitioning;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::Column;
 
-        // 4 upstream partitions, each with its own bespoke predicate so we
-        // can assert the slice ordering survives.
-        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        // 4 upstream partitions with a global 4-way range partition.
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
         let partitions_locs: Vec<Vec<PartitionLocation>> =
             (0..4).map(|i| vec![create_partition(i)]).collect();
         let reader = ShuffleReaderExec::try_new(
@@ -683,41 +712,38 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )
         .unwrap();
-        let make_pred = |lo: i64| -> Arc<dyn PhysicalExpr> {
-            Arc::new(BinaryExpr::new(
-                Arc::new(Column::new("v", 0)),
-                Operator::GtEq,
-                Arc::new(Literal::new(ScalarValue::Int64(Some(lo)))),
-            ))
-        };
-        let predicates: Vec<Arc<dyn PhysicalExpr>> =
-            (0..4).map(|i| make_pred(i as i64 * 100)).collect();
+        use datafusion::scalar::ScalarValue;
+        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        // K=4 raw bounds derived from cuts [100, 200, 300].
+        let sv = |v: f64| ScalarValue::Float64(Some(v));
+        let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
+            (None, Some(sv(100.0))),
+            (Some(sv(100.0)), Some(sv(200.0))),
+            (Some(sv(200.0)), Some(sv(300.0))),
+            (Some(sv(300.0)), None),
+        ];
         let plan: Arc<dyn ExecutionPlan> = Arc::new(
-            PerPartitionFilterExec::try_new(
+            RangeFilterExec::try_new_resolved(
                 Arc::new(reader) as Arc<dyn ExecutionPlan>,
-                predicates.clone(),
+                routing_expr,
+                ScalarValue::Float64(Some(0.0)),
+                ScalarValue::Float64(Some(0.0)),
+                raw_bounds.clone(),
             )
             .unwrap(),
         );
 
         let restricted = restrict_plan_to_partitions(plan, &[1, 3]).unwrap();
-        let ppf = restricted
-            .downcast_ref::<PerPartitionFilterExec>()
-            .expect("top must remain PerPartitionFilterExec");
-        assert_eq!(ppf.predicates().len(), 2);
-        assert_eq!(
-            ppf.predicates()[0].to_string(),
-            predicates[1].to_string(),
-            "local partition 0 must carry the global-partition-1 predicate"
-        );
-        assert_eq!(
-            ppf.predicates()[1].to_string(),
-            predicates[3].to_string(),
-            "local partition 1 must carry the global-partition-3 predicate"
-        );
+        let rf = restricted
+            .downcast_ref::<RangeFilterExec>()
+            .expect("top must remain RangeFilterExec");
+        let restricted_bounds = rf.raw_bounds().unwrap();
+        assert_eq!(restricted_bounds.len(), 2);
+        assert_eq!(restricted_bounds[0], raw_bounds[1]);
+        assert_eq!(restricted_bounds[1], raw_bounds[3]);
 
         // Reader below must have been restricted in the same order.
-        let child = ppf.children()[0].clone();
+        let child = rf.children()[0].clone();
         let reader = child
             .downcast_ref::<ShuffleReaderExec>()
             .expect("child must be a ShuffleReaderExec");

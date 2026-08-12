@@ -45,8 +45,6 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::{debug, error, info, trace, warn};
-use rand::distr::Alphanumeric;
-use rand::{RngExt, rng};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::ops::Deref;
@@ -941,17 +939,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .map(|value| value.1.execution_graph)
     }
 
-    /// Generates a new random 7-character alphanumeric job ID.
-    pub fn generate_job_id(&self) -> JobId {
-        let mut rng = rng();
-        std::iter::repeat(())
-            .map(|()| rng.sample(Alphanumeric))
-            .map(char::from)
-            .take(7)
-            .collect::<String>()
-            .into()
-    }
-
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
     pub(crate) fn clean_up_job_delayed(&self, job_id: JobId, clean_up_interval: u64) {
         if clean_up_interval == 0 {
@@ -1338,11 +1325,23 @@ mod tests {
         let manager_for_abort = manager.clone();
         let job_id_for_abort = job_id.clone();
         let abort = tokio::spawn(async move {
+            let manager_for_cancel = manager_for_abort.clone();
+            let job_id_for_cancel = job_id_for_abort.clone();
             manager_for_abort
                 .abort_job(
                     &job_id_for_abort,
                     "test failure".to_string(),
                     move |tasks| async move {
+                        let status = manager_for_cancel
+                            .get_job_status(&job_id_for_cancel)
+                            .await?
+                            .expect(
+                                "aborted job should remain visible during cancellation",
+                            );
+                        assert!(
+                            matches!(status.status, Some(Status::Failed(_))),
+                            "job must be terminal before executor tasks are cancelled"
+                        );
                         cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
                         Ok(())
                     },

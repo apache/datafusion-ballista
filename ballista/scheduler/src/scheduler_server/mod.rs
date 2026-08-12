@@ -30,17 +30,20 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use ferroid::base32::Base32SnowExt;
+use ferroid::futures::SnowflakeGeneratorAsyncTokioExt;
+use ferroid::generator::AtomicSnowflakeGenerator;
+use ferroid::id::SnowflakeMastodonId;
+use ferroid::time::MonotonicClock;
 
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{debug, error, warn};
+use log::{debug, warn};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
-
-use crate::state::executor_manager::ExecutorManager;
 
 use crate::state::SchedulerState;
 use crate::state::task_manager::TaskLauncher;
@@ -55,6 +58,13 @@ pub mod externalscaler {
 
 /// Events for the scheduler event loop.
 pub mod event;
+/// Builds `HistoryEvent`s emitted from the event loop into the event log.
+///
+/// Depends on `crate::api::dto_build`, which is only compiled with the
+/// `rest-api` feature (the default), so this module and the event-log wiring
+/// into `QueryStageScheduler` are gated the same way.
+#[cfg(feature = "rest-api")]
+mod event_log;
 #[cfg(feature = "keda-scaler")]
 mod external_scaler;
 mod grpc;
@@ -63,6 +73,50 @@ pub(crate) mod query_stage_scheduler;
 /// Function type for building DataFusion session states from configuration.
 pub type SessionBuilder =
     Arc<dyn Fn(SessionConfig) -> datafusion::common::Result<SessionState> + Send + Sync>;
+
+/// Generates unique identifiers for submitted jobs.
+///
+/// Schedulers use one `JobIdGenerator` instance for their lifetime, calling
+/// [`next_id`](JobIdGenerator::next_id) once per job submission.
+/// Implementations must be safe to call concurrently from multiple tasks and
+/// must never return the same id twice, since job ids are used to key
+/// scheduler-wide state.
+///
+/// A default snowflake-based generator is used unless a
+/// custom implementation is supplied via
+/// [`SchedulerConfig::job_id_generator`](crate::config::SchedulerConfig::job_id_generator).
+#[async_trait::async_trait]
+pub trait JobIdGenerator: Sync + Send {
+    /// Returns a new, globally unique job id.
+    async fn next_id(&self) -> String;
+}
+
+/// A monotonically increasing sortable snowflake job id generator
+/// which does not capture machine id as part result.
+struct DefaultJobGenerator {
+    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>,
+}
+
+impl Default for DefaultJobGenerator {
+    fn default() -> Self {
+        // default implementation does not support multi machine
+        // setups
+        let generator = AtomicSnowflakeGenerator::new(
+            0, // machine id is hard-coded to 0
+            MonotonicClock::<1>::default(),
+        );
+
+        Self { generator }
+    }
+}
+
+#[async_trait::async_trait]
+impl JobIdGenerator for DefaultJobGenerator {
+    async fn next_id(&self) -> String {
+        let id = self.generator.next_id_async().await;
+        id.encode().to_string()
+    }
+}
 
 /// The main scheduler server that coordinates distributed query execution.
 ///
@@ -86,6 +140,8 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
     /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
+    /// generates job ids
+    generator: Arc<dyn JobIdGenerator>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -103,16 +159,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
+        #[cfg(feature = "rest-api")]
+        let event_log = config.event_log_dir.as_ref().map(|dir| {
+            ballista_history::writer::EventLogWriter::new(
+                std::path::PathBuf::from(dir),
+                config.event_loop_buffer_size as usize,
+            )
+        });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
+            #[cfg(feature = "rest-api")]
+            event_log,
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
             query_stage_scheduler.clone(),
         );
+
+        let generator = config
+            .job_id_generator
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
 
         Self {
             scheduler_name,
@@ -122,6 +192,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            generator,
         }
     }
 
@@ -142,16 +213,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
+        #[cfg(feature = "rest-api")]
+        let event_log = config.event_log_dir.as_ref().map(|dir| {
+            ballista_history::writer::EventLogWriter::new(
+                std::path::PathBuf::from(dir),
+                config.event_loop_buffer_size as usize,
+            )
+        });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
+            #[cfg(feature = "rest-api")]
+            event_log,
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
             query_stage_scheduler.clone(),
         );
+
+        let generator = config
+            .job_id_generator
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
 
         Self {
             scheduler_name,
@@ -161,6 +246,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            generator,
         }
     }
 
@@ -246,7 +332,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
-        let job_id = self.state.task_manager.generate_job_id();
+        let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
@@ -364,7 +450,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
                     // If executor is expired, remove it immediately
                     Self::remove_executor(
-                        state.executor_manager.clone(),
+                        state.clone(),
                         sender_clone,
                         &executor_id,
                         Some(stop_reason.clone()),
@@ -389,8 +475,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    /// Removes an executor after `wait_secs`, in the background. The removal
+    /// itself is [`SchedulerState::remove_executor`], so this path and the one
+    /// taken when a task launch fails cannot drift apart.
     pub(crate) fn remove_executor(
-        executor_manager: ExecutorManager,
+        state: Arc<SchedulerState<T, U>>,
         event_sender: EventSender<QueryStageSchedulerEvent>,
         executor_id: &str,
         reason: Option<String>,
@@ -402,20 +491,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             // Wait for `wait_secs` before removing executor
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
 
-            // Update the executor manager immediately here
-            if let Err(e) = executor_manager
-                .remove_executor(&executor_id, reason.clone())
-                .await
-            {
-                error!("error removing executor {executor_id}: {e:?}");
-            }
-
-            if let Err(e) = event_sender
-                .post_event(QueryStageSchedulerEvent::ExecutorLost(executor_id, reason))
-                .await
-            {
-                error!("error sending ExecutorLost event: {e:?}");
-            }
+            state
+                .remove_executor(&executor_id, reason, &event_sender)
+                .await;
         });
     }
 

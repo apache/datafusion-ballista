@@ -737,7 +737,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             executor_id, reason
         );
 
-        let executor_manager = self.state.executor_manager.clone();
         let event_sender = self.query_stage_event_loop.get_sender().map_err(|e| {
             let msg = format!("Get query stage event loop error due to {e:?}");
             error!("{msg}");
@@ -745,7 +744,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         })?;
 
         Self::remove_executor(
-            executor_manager,
+            self.state.clone(),
             event_sender,
             &executor_id,
             Some(reason),

@@ -1026,6 +1026,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-api-types"
+version = "54.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "ballista-benchmarks"
 version = "54.0.0"
 dependencies = [
@@ -1034,10 +1041,12 @@ dependencies = [
  "clap 4.6.4",
  "criterion",
  "datafusion",
+ "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "env_logger",
  "futures",
  "mimalloc",
+ "ordered-float",
  "rand 0.10.2",
  "serde",
  "serde_json",
@@ -1202,19 +1211,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-history"
+version = "54.0.0"
+dependencies = [
+ "ballista-api-types",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ballista-scheduler"
 version = "54.0.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
  "axum",
+ "ballista-api-types",
  "ballista-core",
+ "ballista-history",
  "clap 4.6.4",
  "dashmap",
  "datafusion",
  "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-substrait",
+ "ferroid",
  "futures",
  "graphviz-rust",
  "http 1.4.2",
@@ -1231,6 +1255,8 @@ dependencies = [
  "regex",
  "rstest",
  "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -3279,8 +3305,10 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee93edf3c501f0035bbeffeccfed0b79e14c311f12195ec0e661e114a0f60da4"
 dependencies = [
+ "futures",
  "portable-atomic",
  "rand 0.10.2",
+ "tokio",
  "web-time",
 ]
 

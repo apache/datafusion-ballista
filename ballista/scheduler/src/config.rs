@@ -27,10 +27,12 @@
 
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
+use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use log::warn;
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -147,6 +149,9 @@ pub struct Config {
         help = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
     )]
     pub log_dir: Option<String>,
+    /// Directory to write per-job event logs to. Enables the history server.
+    #[arg(long)]
+    pub event_log_dir: Option<String>,
     /// Whether to print thread IDs and names in log files.
     #[arg(
         long,
@@ -231,10 +236,9 @@ pub struct Config {
     /// cluster has lost its last executor before failing the running jobs.
     #[arg(
         long,
-        default_value_t = 30,
-        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Set to 0 to fail as soon as the loss is observed."
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Must be >= the executor heartbeat interval, or an executor removed by a transient task-launch failure may not re-register before this elapses; defaults to --executor-timeout-seconds (which is always longer than the heartbeat interval). Set to 0 to fail as soon as the loss is observed."
     )]
-    pub no_executors_grace_period_seconds: u64,
+    pub no_executors_grace_period_seconds: Option<u64>,
     /// Minimum number of registered executors before /readyz returns 200
     #[arg(
         long,
@@ -335,8 +339,14 @@ pub struct SchedulerConfig {
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This
     /// bounds the otherwise-unbounded wait so that a total executor loss fails
-    /// the affected jobs instead of hanging forever. Set to 0 to fail as soon as
-    /// the loss is observed.
+    /// the affected jobs instead of hanging forever.
+    ///
+    /// Must be `>=` the executor heartbeat interval: an executor removed by a
+    /// transient task-launch failure re-registers on its next heartbeat, so a
+    /// grace shorter than that interval could fail a still-healthy executor's
+    /// jobs before it comes back. It therefore defaults to
+    /// [`Self::executor_timeout_seconds`], which is required to be longer than
+    /// the heartbeat interval. Set to 0 to fail as soon as the loss is observed.
     pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
@@ -365,12 +375,16 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
+    /// Directory to write per-job event logs to. `None` disables event logging.
+    pub event_log_dir: Option<String>,
     #[cfg(feature = "rest-api")]
     /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
     pub web_tui_route: String,
     /// Callback invoked when new work becomes available for executors.
     /// See [`OnWorkAvailableFn`].
     pub on_work_available: Option<OnWorkAvailableFn>,
+    /// Job id generator to be used by this scheduler
+    pub job_id_generator: Option<Arc<dyn JobIdGenerator>>,
 }
 
 impl Default for SchedulerConfig {
@@ -394,7 +408,9 @@ impl Default for SchedulerConfig {
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
-            no_executors_grace_period_seconds: 30,
+            // Defaults to `executor_timeout_seconds` so the grace is always >=
+            // the executor heartbeat interval (see the field doc).
+            no_executors_grace_period_seconds: 180,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
@@ -410,14 +426,44 @@ impl Default for SchedulerConfig {
             cors_allowed_origins: String::default(),
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
+            event_log_dir: None,
             #[cfg(feature = "rest-api")]
             web_tui_route: String::from("/"),
             on_work_available: None,
+            job_id_generator: None,
         }
     }
 }
 
 impl SchedulerConfig {
+    /// Validate invariants between interdependent configuration values.
+    ///
+    /// Suspicious combinations are logged as warnings rather than rejected,
+    /// since small values are legitimate for fail-fast setups and tests.
+    pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.no_executors_grace_period_seconds != 0
+            && self.no_executors_grace_period_seconds < self.executor_timeout_seconds
+        {
+            warn!(
+                "no_executors_grace_period_seconds ({}) is less than \
+                 executor_timeout_seconds ({}); an executor removed by a transient \
+                 task-launch failure may not re-register before the grace elapses, \
+                 which can spuriously fail its jobs (see #2226). Use 0 for \
+                 deliberate fail-fast, or a value >= executor_timeout_seconds.",
+                self.no_executors_grace_period_seconds, self.executor_timeout_seconds,
+            );
+        }
+        if self.executor_timeout_seconds <= self.expire_dead_executor_interval_seconds {
+            warn!(
+                "executor_timeout_seconds ({}) is not greater than \
+                 expire_dead_executor_interval_seconds ({}); dead executors may not \
+                 be detected within the timeout window.",
+                self.executor_timeout_seconds, self.expire_dead_executor_interval_seconds,
+            );
+        }
+        Ok(())
+    }
+
     /// Returns the scheduler name in host:port format.
     pub fn scheduler_name(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
@@ -556,6 +602,12 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the directory to write per-job event logs to.
+    pub fn with_event_log_dir(mut self, event_log_dir: Option<String>) -> Self {
+        self.event_log_dir = event_log_dir;
+        self
+    }
+
     /// Sets whether TLS should be used when connecting to executors (for flight proxy).
     pub fn with_use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
@@ -569,6 +621,14 @@ impl SchedulerConfig {
         on_work_available: OnWorkAvailableFn,
     ) -> Self {
         self.on_work_available = Some(on_work_available);
+        self
+    }
+    /// Sets the job id generator
+    pub fn with_job_id_generator(
+        mut self,
+        job_id_generator: Arc<dyn JobIdGenerator>,
+    ) -> Self {
+        self.job_id_generator = Some(job_id_generator);
         self
     }
 }
@@ -655,7 +715,12 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
-            no_executors_grace_period_seconds: opt.no_executors_grace_period_seconds,
+            // Default to the executor-liveness timeout when unset, so the grace
+            // is always >= the executor heartbeat interval and a transiently
+            // removed but healthy executor can re-register before it elapses.
+            no_executors_grace_period_seconds: opt
+                .no_executors_grace_period_seconds
+                .unwrap_or(opt.executor_timeout_seconds),
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,
@@ -671,11 +736,77 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_origins: opt.cors_allowed_origins,
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
+            event_log_dir: opt.event_log_dir,
             #[cfg(feature = "rest-api")]
             web_tui_route: opt.web_tui_route,
             on_work_available: None,
+            job_id_generator: None,
         };
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_grace_period_covers_executor_timeout() {
+        // The no-executors grace must be >= the executor-liveness window, so an
+        // executor removed by a transient task-launch failure can re-register on
+        // its next heartbeat before its jobs are failed. See #2226.
+        let cfg = SchedulerConfig::default();
+        assert!(
+            cfg.no_executors_grace_period_seconds >= cfg.executor_timeout_seconds,
+            "grace {} must be >= executor_timeout {}",
+            cfg.no_executors_grace_period_seconds,
+            cfg.executor_timeout_seconds,
+        );
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_grace_period_defaults_to_executor_timeout_when_unset() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--executor-timeout-seconds", "90"]);
+        assert_eq!(opt.no_executors_grace_period_seconds, None);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.no_executors_grace_period_seconds, 90);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_grace_period_explicit_value_is_respected() {
+        use clap::Parser;
+        let opt = Config::parse_from([
+            "scheduler",
+            "--executor-timeout-seconds",
+            "90",
+            "--no-executors-grace-period-seconds",
+            "5",
+        ]);
+        assert_eq!(opt.no_executors_grace_period_seconds, Some(5));
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.no_executors_grace_period_seconds, 5);
+    }
+
+    #[test]
+    fn validate_accepts_default_config() {
+        SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_allows_fail_fast_and_small_grace() {
+        // A small (or zero, fail-fast) grace only warns — it must not be rejected,
+        // since deliberate fail-fast setups and tests rely on it.
+        SchedulerConfig::default()
+            .with_no_executors_grace_period_seconds(0)
+            .validate()
+            .unwrap();
+        SchedulerConfig::default()
+            .with_no_executors_grace_period_seconds(1)
+            .validate()
+            .unwrap();
     }
 }

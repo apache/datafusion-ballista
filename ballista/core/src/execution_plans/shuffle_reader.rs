@@ -25,7 +25,6 @@ use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
@@ -606,7 +605,7 @@ impl AbortableReceiverStream {
 }
 
 impl Stream for AbortableReceiverStream {
-    type Item = result::Result<SendableRecordBatchStream, ArrowError>;
+    type Item = result::Result<SendableRecordBatchStream, DataFusionError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -614,7 +613,7 @@ impl Stream for AbortableReceiverStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         self.inner
             .poll_next_unpin(cx)
-            .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+            .map_err(BallistaError::into_datafusion)
     }
 }
 
@@ -692,7 +691,7 @@ impl RecordBatchStream for GovernedStream {
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
 /// If `force_remote_read` is true, all partitions are treated as remote.
-fn local_remote_read_split(
+pub(crate) fn local_remote_read_split(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     force_remote_read: bool,
@@ -1037,7 +1036,7 @@ async fn new_ballista_client(
     .await
 }
 
-async fn fetch_partition_remote(
+pub(crate) async fn fetch_partition_remote(
     location: &PartitionLocation,
     config: Arc<GrpcClientConfig>,
     prefer_flight: bool,
@@ -1108,7 +1107,7 @@ async fn fetch_partition_remote(
     }
 }
 
-fn fetch_partition_local(
+pub(crate) fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
@@ -1627,7 +1626,7 @@ mod tests {
 
         assert!(batches.is_err());
 
-        // BallistaError::FetchFailed -> ArrowError::ExternalError -> ballistaError::FetchFailed
+        // BallistaError::FetchFailed -> DataFusionError::External -> BallistaError::FetchFailed
         let ballista_error = batches.unwrap_err();
         assert!(matches!(
             ballista_error,
