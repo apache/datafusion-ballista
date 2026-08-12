@@ -885,13 +885,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         match config
             .advertise_flight_sql_endpoint
             .as_deref()
-            .filter(|s| !s.is_empty()) {
-                Some(endpoint) => Some(FlightProxy::External(endpoint.to_string())),
-                None if config.enable_embedded_flight_proxy => {
-                    Some(FlightProxy::Local(true))
-                },
-                None => None,
-            }
+            .filter(|s| !s.is_empty())
+        {
+            Some(endpoint) => Some(FlightProxy::External(endpoint.to_string())),
+            None if config.enable_embedded_flight_proxy => Some(FlightProxy::Local(true)),
+            None => None,
+        }
     }
 }
 
@@ -1387,11 +1386,17 @@ mod test {
         };
 
         // Neither set: nothing advertised.
-        assert_eq!(server(SchedulerConfig::default()).flight_proxy_config(), None);
+        assert_eq!(
+            server(SchedulerConfig::default()).flight_proxy_config(),
+            None
+        );
 
         // Embedded proxy: advertise the scheduler itself.
         let cfg = SchedulerConfig::default().with_enable_embedded_flight_proxy(true);
-        assert_eq!(server(cfg).flight_proxy_config(), Some(FlightProxy::Local(true)));
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::Local(true))
+        );
 
         // External endpoint wins, even alongside the embedded proxy.
         let cfg = SchedulerConfig::default()
@@ -1402,7 +1407,7 @@ mod test {
             Some(FlightProxy::External("lb.example.com:50055".into()))
         );
     }
-    
+
     #[tokio::test]
     #[cfg(feature = "substrait")]
     async fn test_substrait_compatibility() -> Result<(), BallistaError> {

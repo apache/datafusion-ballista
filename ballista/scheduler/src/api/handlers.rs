@@ -188,7 +188,7 @@ pub async fn get_scheduler_state<
             .config
             .advertise_flight_sql_endpoint
             .clone(),
-        embedded_flight_proxy: data_server.state.config.enable_embedded_flight_proxy,    
+        embedded_flight_proxy: data_server.state.config.enable_embedded_flight_proxy,
     };
     Json(response)
 }

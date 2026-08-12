@@ -114,12 +114,8 @@ pub async fn start_grpc_service<
             config.use_tls,
             customize_endpoint,
         ))
-        .max_decoding_message_size(
-            config.grpc_server_max_decoding_message_size as usize,
-        )
-        .max_encoding_message_size(
-            config.grpc_server_max_encoding_message_size as usize,
-        );
+        .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize)
+        .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize);
         tonic_builder.add_service(flight_proxy);
     }
 

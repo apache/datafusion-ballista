@@ -533,7 +533,7 @@ impl SchedulerConfig {
     }
 
     /// Sets the Flight SQL endpoint to advertise.
-    /// 
+    ///
     /// An empty string is treated as unset. (Previously an empty value enabled
     /// the embedded flight proxy; use
     /// [`Self::with_enable_embedded_flight_proxy`] for that)
@@ -546,10 +546,7 @@ impl SchedulerConfig {
     }
 
     /// Sets whether to start an embedded Arrow Flight proxy on the scheduler.
-    pub fn with_enable_embedded_flight_proxy(
-        mut self,
-        enable: bool,
-    ) -> Self {
+    pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
         self.enable_embedded_flight_proxy = enable;
         self
     }
