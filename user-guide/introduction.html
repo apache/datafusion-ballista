@@ -395,10 +395,9 @@
 <p>Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache DataFusion.</p>
 <p>Ballista has both scheduler and an executor component processes that are standard Rust executables.</p>
 <p>Dockerfiles are also provided to build images for use in containerized environments, such as Docker, Docker Compose,
-and Kubernetes. See the <a class="reference internal" href="#deployment.md"><span class="xref myst">deployment guide</span></a> for more information.</p>
-<p>SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
-Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as <a class="reference internal" href="#datagrip"><span class="xref myst">DataGrip</span></a>
-or <a class="reference internal" href="#tableau"><span class="xref myst">tableau</span></a>. For setup instructions, please see the <a class="reference internal" href="#flightsql.md"><span class="xref myst">FlightSQL guide</span></a>.</p>
+and Kubernetes. See the <a class="reference internal" href="#deployment/"><span class="xref myst">deployment guide</span></a> for more information.</p>
+<p>SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can also be submitted using the
+Ballista CLI.</p>
 <section id="how-does-this-compare-to-apache-spark">
 <h2>How does this compare to Apache Spark?<a class="headerlink" href="#how-does-this-compare-to-apache-spark" title="Link to this heading">#</a></h2>
 <p>Although Ballista is largely inspired by Apache Spark, there are some key differences:</p>
@@ -414,9 +413,6 @@ distributed compute.</p></li>
 <li><p>The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
 in any programming language with minimal serialization overhead.</p></li>
 </ul>
-<p><a class="reference internal" href="#./deployment"><span class="xref myst">deployment</span></a>
-<a class="reference external" href="https://www.jetbrains.com/datagrip/">datagrip</a>
-<a class="reference external" href="https://help.tableau.com/current/pro/desktop/en-us/examples_otherdatabases_jdbc.htm">tableau</a></p>
 </section>
 </section>
 

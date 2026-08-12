@@ -405,13 +405,13 @@ than for data science.</p>
 <section id="arrow-native">
 <h3>Arrow-native<a class="headerlink" href="#arrow-native" title="Link to this heading">#</a></h3>
 <p>Ballista uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
-shuffle files and for exchanging data between executors. Queries can be submitted using the Arrow Flight SQL API
-and the Arrow Flight SQL JDBC Driver.</p>
+shuffle files and for exchanging data between executors. Queries can be submitted from Rust and Python clients
+or the Ballista CLI.</p>
 </section>
 <section id="language-agnostic">
 <h3>Language Agnostic<a class="headerlink" href="#language-agnostic" title="Link to this heading">#</a></h3>
 <p>Although most of the implementation code is written in Rust, the scheduler and executor APIs are based on open
-standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight SQL.</p>
+standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight.</p>
 <p>This language agnostic approach will allow Ballista to eventually support UDFs in languages other than Rust,
 including Wasm.</p>
 </section>
@@ -441,7 +441,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 <p>The scheduler provides the following interfaces:</p>
 <ul class="simple">
 <li><p>gRPC service for submitting and managing jobs</p></li>
-<li><p>Flight SQL API</p></li>
 <li><p>REST API for monitoring jobs</p></li>
 </ul>
 <p>Jobs are submitted to the scheduler’s gRPC service from a client context, either in the form of a logical query
@@ -465,8 +464,6 @@ interface.</p></li>
 context with support for SQL and DataFrame operations.</p></li>
 <li><p>The <a class="reference external" href="https://crates.io/crates/ballista">ballista crate</a> provides a native Rust session context with support for
 SQL and DataFrame operations.</p></li>
-<li><p>The <a class="reference external" href="https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html">Flight SQL JDBC driver</a> can be used from
-popular SQL tools to execute SQL queries against a cluster.</p></li>
 </ul>
 </section>
 </section>
