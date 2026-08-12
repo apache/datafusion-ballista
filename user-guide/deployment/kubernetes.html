@@ -518,6 +518,14 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
 <span class="nt">spec</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">  </span><span class="c1"># The outgoing pod must be allowed to go first: a new scheduler is not Ready</span>
+<span class="w">  </span><span class="c1"># until an executor registers with it, and the executors stay attached to the</span>
+<span class="w">  </span><span class="c1"># pod it is replacing. See Rolling both Deployments together.</span>
+<span class="w">  </span><span class="nt">strategy</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RollingUpdate</span>
+<span class="w">    </span><span class="nt">rollingUpdate</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">maxSurge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">      </span><span class="nt">maxUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
 <span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span>
 <span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
@@ -560,6 +568,13 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-executor</span>
 <span class="nt">spec</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">  </span><span class="c1"># Surge new executors before retiring old ones, so capacity stays at roughly</span>
+<span class="w">  </span><span class="c1"># 100% through the roll.</span>
+<span class="w">  </span><span class="nt">strategy</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RollingUpdate</span>
+<span class="w">    </span><span class="nt">rollingUpdate</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">maxSurge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">25%</span>
+<span class="w">      </span><span class="nt">maxUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 <span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span>
 <span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-executor</span>
@@ -574,7 +589,11 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-executor:latest</span>
 <span class="w">          </span><span class="nt">args</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--bind-port=50051&quot;</span>
-<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--scheduler-host=ballista-scheduler&quot;</span>
+<span class="w">            </span><span class="c1"># Registration Service, not the client-facing one: the client-facing</span>
+<span class="w">            </span><span class="c1"># `ballista-scheduler` respects /readyz, which stays 503 until an</span>
+<span class="w">            </span><span class="c1"># executor registers, so its Endpoints are empty and executors can</span>
+<span class="w">            </span><span class="c1"># never reach it to register in the first place.</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--scheduler-host=ballista-scheduler-registration&quot;</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--scheduler-port=50050&quot;</span>
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50051</span>
@@ -690,10 +709,9 @@ field), executors that reach it during the transition are always accepted.
 The rejection happens only when a <em>new</em> scheduler sees an <em>old</em> executor,
 which is the case the version check is designed to protect against —
 mismatched pairs never exchange work, so they cannot corrupt state.</p>
-<p>Give each Deployment a <code class="docutils literal notranslate"><span class="pre">maxSurge</span></code> so Kubernetes brings new pods up before
-tearing old ones down; this keeps executor capacity at roughly 100% during
-the roll:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">spec</span><span class="p">:</span>
+<p>The two Deployments want different rollout strategies.</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># executor Deployment: keeps capacity at roughly 100% through the roll</span>
+<span class="nt">spec</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">strategy</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RollingUpdate</span>
 <span class="w">    </span><span class="nt">rollingUpdate</span><span class="p">:</span>
@@ -701,11 +719,24 @@ the roll:</p>
 <span class="w">      </span><span class="nt">maxUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 </pre></div>
 </div>
-<p>The scheduler’s <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> gate (<code class="docutils literal notranslate"><span class="pre">--min-ready-executors</span></code>, default <code class="docutils literal notranslate"><span class="pre">1</span></code>) means
-a fresh scheduler pod does not receive <code class="docutils literal notranslate"><span class="pre">Service</span></code> traffic until at least one
-matching-version executor has registered with it, so clients keep hitting
-the old scheduler until the new one has real capacity behind it. Set
-<code class="docutils literal notranslate"><span class="pre">--min-ready-executors=0</span></code> if you want the scheduler to advertise readiness
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># scheduler Deployment</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">strategy</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RollingUpdate</span>
+<span class="w">    </span><span class="nt">rollingUpdate</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">maxSurge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">      </span><span class="nt">maxUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">maxUnavailable:</span> <span class="pre">1</span></code> lets the outgoing scheduler go first, so its executors lose
+their connection and re-register through <code class="docutils literal notranslate"><span class="pre">ballista-scheduler-registration</span></code>,
+which is what makes the incoming pod Ready. With <code class="docutils literal notranslate"><span class="pre">maxUnavailable:</span> <span class="pre">0</span></code> the
+outgoing pod cannot be retired until the incoming one is Ready, and it cannot
+become Ready while the executors are still attached to the pod it is replacing.
+The cost is a short window with no scheduler, so queries in flight fail.</p>
+<p>This is not <code class="docutils literal notranslate"><span class="pre">type:</span> <span class="pre">Recreate</span></code>. With <code class="docutils literal notranslate"><span class="pre">replicas:</span> <span class="pre">3</span></code> Kubernetes still rolls one
+scheduler at a time and keeps the other two serving.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">--min-ready-executors=0</span></code> if you want the scheduler to advertise readiness
 immediately (e.g. single-node development clusters).</p>
 </section>
 </section>
