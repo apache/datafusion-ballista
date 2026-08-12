@@ -541,7 +541,7 @@ impl SchedulerConfig {
         mut self,
         endpoint: Option<String>,
     ) -> Self {
-        self.advertise_flight_sql_endpoint = endpoint;
+        self.advertise_flight_sql_endpoint = endpoint.filter(|e| !e.is_empty());
         self
     }
 
@@ -709,6 +709,21 @@ impl TryFrom<Config> for SchedulerConfig {
             TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
         };
 
+        // Backward compatibility: a bare `--advertise-flight-sql-endpoint` (empty value) used
+        // to enable the embedded flight proxy. Map it to the explicit flag
+        let (advertise_flight_sql_endpoint, legacy_embedded) =
+            match opt.advertise_flight_sql_endpoint {
+                Some(ref s) if s.is_empty() => {
+                    warn!(
+                        "Passing --advertise-flight-sql-endpoint with an empty value to \
+                        enable the embedded flight proxy is deprecated and will be \
+                        removed in a future release; use --enable-embedded-flight-proxy"
+                    );
+                    (None, true)
+                }
+                other => (other, false),
+            };
+
         let config = SchedulerConfig {
             namespace: opt.namespace,
             external_host: opt.external_host,
@@ -721,8 +736,8 @@ impl TryFrom<Config> for SchedulerConfig {
                 .finished_job_data_clean_up_interval_seconds,
             finished_job_state_clean_up_interval_seconds: opt
                 .finished_job_state_clean_up_interval_seconds,
-            advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
-            enable_embedded_flight_proxy: opt.enable_embedded_flight_proxy,
+            advertise_flight_sql_endpoint,
+            enable_embedded_flight_proxy: opt.enable_embedded_flight_proxy || legacy_embedded,
             job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
                 .then_some(opt.job_resubmit_interval_ms),
             executor_termination_grace_period: opt.executor_termination_grace_period,
@@ -815,6 +830,27 @@ mod tests {
     #[test]
     fn validate_accepts_default_config() {
         SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_bare_advertise_endpoint_enables_embedded_proxy() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--advertise-flight-sql-endpoint"]);
+        assert_eq!(opt.advertise_flight_sql_endpoint.as_deref(), Some(""));
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert!(cfg.enable_embedded_flight_proxy);
+        assert_eq!(cfg.advertise_flight_sql_endpoint, None);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_explicit_embedded_proxy_flag() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--enable-embedded-flight-proxy"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert!(cfg.enable_embedded_flight_proxy);
+        assert_eq!(cfg.advertise_flight_sql_endpoint, None);
     }
 
     #[test]
