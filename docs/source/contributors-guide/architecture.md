@@ -96,7 +96,7 @@ There are multiple clients available for submitting jobs to a Ballista cluster:
   context with support for SQL and DataFrame operations.
 - The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for
   SQL and DataFrame operations.
-- The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from
+- The [Flight SQL JDBC driver](https://arrow.apache.org/java/current/flight_sql_jdbc_driver.html) can be used from
   popular SQL tools to execute SQL queries against a cluster.
 
 ## Distributed Query Scheduling
