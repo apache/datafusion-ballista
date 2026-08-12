@@ -737,7 +737,8 @@ impl TryFrom<Config> for SchedulerConfig {
             finished_job_state_clean_up_interval_seconds: opt
                 .finished_job_state_clean_up_interval_seconds,
             advertise_flight_sql_endpoint,
-            enable_embedded_flight_proxy: opt.enable_embedded_flight_proxy || legacy_embedded,
+            enable_embedded_flight_proxy: opt.enable_embedded_flight_proxy
+                || legacy_embedded,
             job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
                 .then_some(opt.job_resubmit_interval_ms),
             executor_termination_grace_period: opt.executor_termination_grace_period,
