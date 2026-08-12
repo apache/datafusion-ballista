@@ -208,7 +208,11 @@ spec:
           image: <your-repo>/datafusion-ballista-executor:latest
           args:
             - "--bind-port=50051"
-            - "--scheduler-host=ballista-scheduler"
+            # Registration Service, not the client-facing one: the client-facing
+            # `ballista-scheduler` respects /readyz, which stays 503 until an
+            # executor registers, so its Endpoints are empty and executors can
+            # never reach it to register in the first place.
+            - "--scheduler-host=ballista-scheduler-registration"
             - "--scheduler-port=50050"
           ports:
             - containerPort: 50051
