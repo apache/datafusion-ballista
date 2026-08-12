@@ -152,6 +152,14 @@ metadata:
   name: ballista-scheduler
 spec:
   replicas: 1
+  # The outgoing pod must be allowed to go first: a new scheduler is not Ready
+  # until an executor registers with it, and the executors stay attached to the
+  # pod it is replacing. See Rolling both Deployments together.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: ballista-scheduler
@@ -194,6 +202,13 @@ metadata:
   name: ballista-executor
 spec:
   replicas: 2
+  # Surge new executors before retiring old ones, so capacity stays at roughly
+  # 100% through the roll.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: ballista-executor
@@ -208,7 +223,11 @@ spec:
           image: <your-repo>/datafusion-ballista-executor:latest
           args:
             - "--bind-port=50051"
-            - "--scheduler-host=ballista-scheduler"
+            # Registration Service, not the client-facing one: the client-facing
+            # `ballista-scheduler` respects /readyz, which stays 503 until an
+            # executor registers, so its Endpoints are empty and executors can
+            # never reach it to register in the first place.
+            - "--scheduler-host=ballista-scheduler-registration"
             - "--scheduler-port=50050"
           ports:
             - containerPort: 50051
@@ -319,11 +338,10 @@ The rejection happens only when a _new_ scheduler sees an _old_ executor,
 which is the case the version check is designed to protect against —
 mismatched pairs never exchange work, so they cannot corrupt state.
 
-Give each Deployment a `maxSurge` so Kubernetes brings new pods up before
-tearing old ones down; this keeps executor capacity at roughly 100% during
-the roll:
+The two Deployments want different rollout strategies.
 
 ```yaml
+# executor Deployment: keeps capacity at roughly 100% through the roll
 spec:
   strategy:
     type: RollingUpdate
@@ -332,11 +350,27 @@ spec:
       maxUnavailable: 0
 ```
 
-The scheduler's `/readyz` gate (`--min-ready-executors`, default `1`) means
-a fresh scheduler pod does not receive `Service` traffic until at least one
-matching-version executor has registered with it, so clients keep hitting
-the old scheduler until the new one has real capacity behind it. Set
-`--min-ready-executors=0` if you want the scheduler to advertise readiness
+```yaml
+# scheduler Deployment
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+```
+
+`maxUnavailable: 1` lets the outgoing scheduler go first, so its executors lose
+their connection and re-register through `ballista-scheduler-registration`,
+which is what makes the incoming pod Ready. With `maxUnavailable: 0` the
+outgoing pod cannot be retired until the incoming one is Ready, and it cannot
+become Ready while the executors are still attached to the pod it is replacing.
+The cost is a short window with no scheduler, so queries in flight fail.
+
+This is not `type: Recreate`. With `replicas: 3` Kubernetes still rolls one
+scheduler at a time and keeps the other two serving.
+
+Set `--min-ready-executors=0` if you want the scheduler to advertise readiness
 immediately (e.g. single-node development clusters).
 
 ## Port Forwarding
