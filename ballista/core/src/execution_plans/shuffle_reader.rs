@@ -2251,8 +2251,13 @@ mod tests {
             .compute(&reader, &StatisticsArgs::new().with_partition(Some(1)))
             .unwrap_err();
         let msg = err.to_string();
+        // DataFusion bounds-checks the partition index inside
+        // `StatisticsContext::compute` before dispatching to the operator, so
+        // this is upstream's assertion rather than the broadcast guard in
+        // `partition_statistics`. Pin the index so the test still fails if the
+        // out-of-range request stops being rejected.
         assert!(
-            msg.to_lowercase().contains("invalid partition index"),
+            msg.contains("Invalid partition index: 1"),
             "unexpected error message: {msg}"
         );
     }
