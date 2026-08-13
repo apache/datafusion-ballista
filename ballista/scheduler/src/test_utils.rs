@@ -582,6 +582,7 @@ impl SchedulerTest {
             scheduler,
             session_config,
             status_receiver: Some(status_receiver),
+            unreachable_executors: Arc::default(),
         })
     }
 

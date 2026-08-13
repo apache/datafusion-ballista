@@ -349,7 +349,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                     .remove_executor(&executor_id, Some(err_msg), &sender)
                                     .await;
 
-                                (vec![(executor_id.clone(), n_tasks as u32)], HashSet::new())
+                                (
+                                    vec![(executor_id.clone(), n_tasks as u32)],
+                                    HashSet::new(),
+                                )
                             }
                         }
                     }
@@ -580,8 +583,7 @@ mod tests {
 
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
         let sender = EventSender::new(tx_event);
-        let (unassigned_slots, failed_jobs) =
-            state.launch_tasks(bound, &sender).await?;
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
         assert_eq!(failed_jobs, HashSet::from([bad_job.clone()]));
 
