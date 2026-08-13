@@ -81,7 +81,8 @@ fn restrict(
     // Leaves: apply the algebraic partition-projection when we're not
     // under a collapse. Under collapse, leaves keep their full upstream —
     // the generic recursion below leaves them unchanged.
-    if !under_collect && let Some(rewritten) = select_output_partitions(&plan, partitions)
+    if !under_collect
+        && let Some(rewritten) = select_output_partitions(&plan, partitions)?
     {
         return Ok(rewritten);
     }
@@ -274,13 +275,13 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
 fn select_output_partitions(
     plan: &Arc<dyn ExecutionPlan>,
     indices: &[usize],
-) -> Option<Arc<dyn ExecutionPlan>> {
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     // ShuffleReaderExec: cross-stage inputs.
     if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
         // Broadcast readers serve everything from partition[0] for every
         // consumer — slicing would drop the payload. Leave intact.
         if reader.broadcast {
-            return Some(plan.clone());
+            return Ok(Some(plan.clone()));
         }
         let kept: Vec<Vec<_>> = indices
             .iter()
@@ -292,22 +293,31 @@ fn select_output_partitions(
             Partitioning::UnknownPartitioning(_) => {
                 Partitioning::UnknownPartitioning(kept.len())
             }
+            // TODO: map DataFusion's `Partitioning::Range` (new in 55) onto
+            // Ballista's own range shuffle. Restricting one means slicing its
+            // split points alongside the partition slice, the way the
+            // `RangeFilterExec` arm below slices `raw_bounds`; no reader
+            // carries those split points today. Until it does, refuse rather
+            // than downgrade to `UnknownPartitioning`, which would hand back a
+            // reader that under-reports its own partitioning.
             Partitioning::Range(_) => {
-                // Range-partitioned shuffle output is not yet produced by
-                // Ballista's writers, so we should never encounter it on the
-                // reader side. Fall back to Unknown to keep the type
-                // exhaustive without inventing new range boundaries.
-                Partitioning::UnknownPartitioning(kept.len())
+                return internal_err!(
+                    "cannot restrict a Range-partitioned ShuffleReaderExec \
+                     (stage {}): DataFusion range partitioning is not yet \
+                     mapped onto Ballista's range shuffle",
+                    reader.stage_id
+                );
             }
         };
-        let restricted = ShuffleReaderExec::try_new(
+        let Ok(restricted) = ShuffleReaderExec::try_new(
             reader.stage_id,
             kept,
             reader.schema(),
             partitioning,
-        )
-        .ok()?;
-        return Some(Arc::new(restricted));
+        ) else {
+            return Ok(None);
+        };
+        return Ok(Some(Arc::new(restricted)));
     }
 
     // RangeShuffleReaderExec: cross-stage inputs, ordering-preserving. Same
@@ -318,14 +328,15 @@ fn select_output_partitions(
             .iter()
             .filter_map(|&p| reader.partition.get(p).cloned())
             .collect();
-        let restricted = RangeShuffleReaderExec::try_new(
+        let Ok(restricted) = RangeShuffleReaderExec::try_new(
             reader.stage_id,
             kept,
             reader.schema(),
             reader.merge_ordering().clone(),
-        )
-        .ok()?;
-        return Some(Arc::new(restricted));
+        ) else {
+            return Ok(None);
+        };
+        return Ok(Some(Arc::new(restricted)));
     }
 
     // DataSourceExec: file-backed or in-memory scans.
@@ -339,27 +350,28 @@ fn select_output_partitions(
             let restricted = FileScanConfigBuilder::from(config.clone())
                 .with_file_groups(file_groups)
                 .build();
-            return Some(DataSourceExec::from_data_source(restricted));
+            return Ok(Some(DataSourceExec::from_data_source(restricted)));
         }
         if let Some(config) = source.downcast_ref::<MemorySourceConfig>() {
             let kept: Vec<Vec<_>> = indices
                 .iter()
                 .filter_map(|&i| config.partitions().get(i).cloned())
                 .collect();
-            let restricted = MemorySourceConfig::try_new(
+            let Ok(restricted) = MemorySourceConfig::try_new(
                 &kept,
                 config.original_schema(),
                 config.projection().clone(),
-            )
-            .ok()?;
-            return Some(DataSourceExec::from_data_source(restricted));
+            ) else {
+                return Ok(None);
+            };
+            return Ok(Some(DataSourceExec::from_data_source(restricted)));
         }
         warn!(
             "select_output_partitions: unrecognised DataSourceExec source \
              left unrestricted; if it distributes work from a shared queue, \
              tasks would over-read"
         );
-        return None;
+        return Ok(None);
     }
 
     // Self-generating leaves: PlaceholderRow (1 all-null row per partition)
@@ -382,13 +394,15 @@ fn select_output_partitions(
     // (identity, no restriction needed) or `[]` (handled by this branch).
     if plan.is::<PlaceholderRowExec>() || plan.is::<EmptyExec>() {
         if indices.is_empty() {
-            let stub = MemorySourceConfig::try_new(&[], plan.schema(), None).ok()?;
-            return Some(DataSourceExec::from_data_source(stub));
+            let Ok(stub) = MemorySourceConfig::try_new(&[], plan.schema(), None) else {
+                return Ok(None);
+            };
+            return Ok(Some(DataSourceExec::from_data_source(stub)));
         }
-        return None;
+        return Ok(None);
     }
 
-    None
+    Ok(None)
 }
 
 #[cfg(test)]

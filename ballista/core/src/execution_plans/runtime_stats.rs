@@ -298,17 +298,19 @@ impl ExecutionPlan for RuntimeStatsExec {
         vec![&self.input]
     }
 
-    /// When sketching, the first ORDER BY expression is evaluated per batch to
-    /// feed the T-Digest. The whole slice is reported: it is carried for serde
-    /// and for the downstream operators that consume it.
+    /// Only the first ORDER BY expression, matching the `routing_expr` that
+    /// `execute` evaluates per batch to feed the sketch. The remaining keys are
+    /// carried so multi-key `ORDER BY` survives serde for downstream operators,
+    /// which makes them ordering metadata rather than expressions this node
+    /// evaluates, and the trait contract excludes those.
     fn apply_expressions(
         &self,
         f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
         apply_expression_roots(
             self.order_by
-                .iter()
-                .flatten()
+                .as_ref()
+                .and_then(|exprs| exprs.first())
                 .map(|sort_expr| &sort_expr.expr),
             f,
         )
