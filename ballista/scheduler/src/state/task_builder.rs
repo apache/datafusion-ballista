@@ -50,9 +50,9 @@ use datafusion::physical_expr::Distribution;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
+use datafusion::physical_plan::replace_children_if_necessary;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::with_new_children_if_necessary;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use log::warn;
 use std::any::Any;
@@ -139,7 +139,7 @@ fn restrict(
             .zip(per_child)
             .map(|(child, sub)| restrict(child, &sub, false))
             .collect::<Result<Vec<_>>>()?;
-        return with_new_children_if_necessary(plan, new_children);
+        return replace_children_if_necessary(plan, new_children);
     }
 
     // Interior: compute per-child scope, recurse, rebuild the node.
@@ -151,7 +151,7 @@ fn restrict(
         .zip(per_child)
         .map(|(child, collect)| restrict(child, partitions, collect))
         .collect::<Result<Vec<_>>>()?;
-    with_new_children_if_necessary(plan, new_children)
+    replace_children_if_necessary(plan, new_children)
 }
 
 /// Bucket each parent partition of a `UnionExec` into its owning child's

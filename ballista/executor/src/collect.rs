@@ -23,8 +23,10 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics, StatisticsArgs, statistics::ChildStats,
@@ -89,6 +91,14 @@ impl ExecutionPlan for CollectExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.plan]
+    }
+
+    /// Owns no expressions — it only merges its input's partitions.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

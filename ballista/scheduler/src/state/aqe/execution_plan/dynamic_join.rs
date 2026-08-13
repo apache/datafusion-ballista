@@ -23,13 +23,15 @@ use datafusion::{
     arrow::datatypes::{DataType, Schema},
     common::{
         ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err,
-        plan_err,
+        plan_err, tree_node::TreeNodeRecursion,
     },
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
+    physical_expr::PhysicalExpr,
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
         DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
+        apply_expression_roots,
         joins::{
             HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
             utils::JoinFilter,
@@ -80,6 +82,23 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.left, &self.right]
+    }
+
+    /// Join keys and filter, same set the `HashJoinExec` / `SortMergeJoinExec`
+    /// this resolves into would report.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        let join_keys = self
+            .on
+            .iter()
+            .flat_map(|(left, right)| [Arc::clone(left), Arc::clone(right)]);
+        let filter = self
+            .filter
+            .iter()
+            .map(|filter| Arc::clone(filter.expression()));
+        apply_expression_roots(join_keys.chain(filter), f)
     }
 
     fn with_new_children(

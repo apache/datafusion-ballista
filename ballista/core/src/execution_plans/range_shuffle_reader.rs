@@ -62,17 +62,20 @@ use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionLocation;
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, Partitioning};
+use datafusion::physical_expr::{
+    EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr,
+};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-    SendableRecordBatchStream,
+    SendableRecordBatchStream, apply_expression_roots,
 };
 use futures::TryStreamExt;
 use log::debug;
@@ -204,6 +207,18 @@ impl ExecutionPlan for RangeShuffleReaderExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    /// The merge key is evaluated by the `StreamingMerge` this reader drives,
+    /// same as `SortPreservingMergeExec`.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(
+            self.merge_ordering.iter().map(|sort_expr| &sort_expr.expr),
+            f,
+        )
     }
 
     fn with_new_children(

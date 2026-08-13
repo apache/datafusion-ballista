@@ -62,9 +62,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Distribution, OrderingRequirements};
+use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{CardinalityEffect, InputOrderMode};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
@@ -149,6 +150,15 @@ impl ExecutionPlan for PartitionedBoundedWindowAggExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// The window expressions live on `inner_bwag`, which is not a plan-tree
+    /// child, so this wrapper must report them as its own.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.inner_bwag.apply_expressions(f)
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {

@@ -29,9 +29,11 @@
 // ChaosExec is inserted into query plans by physical optimizer rule, which
 // probabilistically wraps leaf nodes.
 
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::StatisticsArgs;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::MetricsSet;
@@ -131,6 +133,14 @@ impl ExecutionPlan for ChaosExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// Owns no expressions — fault injection is driven by the seeded RNG.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

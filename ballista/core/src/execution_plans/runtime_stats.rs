@@ -55,6 +55,7 @@ use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
@@ -67,7 +68,8 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    SendableRecordBatchStream, StatisticsArgs, statistics::ChildStats,
+    SendableRecordBatchStream, StatisticsArgs, apply_expression_roots,
+    statistics::ChildStats,
 };
 use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
@@ -294,6 +296,22 @@ impl ExecutionPlan for RuntimeStatsExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// When sketching, the first ORDER BY expression is evaluated per batch to
+    /// feed the T-Digest. The whole slice is reported: it is carried for serde
+    /// and for the downstream operators that consume it.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(
+            self.order_by
+                .iter()
+                .flatten()
+                .map(|sort_expr| &sort_expr.expr),
+            f,
+        )
     }
 
     /// Passthrough: no distribution requirement on the child.

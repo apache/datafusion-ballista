@@ -24,7 +24,7 @@ use datafusion::{
     error::DataFusionError,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ExecutionPlan,
+        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
         joins::{HashJoinExec, PartitionMode, SortMergeJoinExec},
     },
 };
@@ -173,8 +173,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     .to_broadcast(self.plan_id());
                                     let right = Arc::new(right);
 
-                                    let join = hash_join_exec
-                                        .with_new_children(vec![left, right])?;
+                                    let join = hash_join_exec.replace_children(
+                                        vec![left, right],
+                                        ReplaceChildrenOptions::new(
+                                            ChildrenPropertiesMode::Recompute,
+                                        ),
+                                    )?;
 
                                     let join = join
                                         .downcast_ref::<HashJoinExec>()
@@ -198,8 +202,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
 
                                     let right = hash_join_exec.right.clone();
 
-                                    let join = hash_join_exec
-                                        .with_new_children(vec![left, right])?;
+                                    let join = hash_join_exec.replace_children(
+                                        vec![left, right],
+                                        ReplaceChildrenOptions::new(
+                                            ChildrenPropertiesMode::Recompute,
+                                        ),
+                                    )?;
                                     Ok(Transformed::yes(join))
                                 }
                             }
@@ -231,8 +239,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                             data_source.repartitioned(1, config)
                                         {
                                             let right = hash_join.right.clone();
-                                            let p =
-                                                p.with_new_children(vec![left, right])?;
+                                            let p = p.replace_children(
+                                                vec![left, right],
+                                                ReplaceChildrenOptions::new(
+                                                    ChildrenPropertiesMode::Recompute,
+                                                ),
+                                            )?;
                                             Ok(Transformed::yes(p))
                                         } else if hash_join
                                             .left
@@ -256,8 +268,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                                 ))
                                             };
                                             let right = hash_join.right.clone();
-                                            let p =
-                                                p.with_new_children(vec![left, right])?;
+                                            let p = p.replace_children(
+                                                vec![left, right],
+                                                ReplaceChildrenOptions::new(
+                                                    ChildrenPropertiesMode::Recompute,
+                                                ),
+                                            )?;
                                             Ok(Transformed::yes(p))
                                         } else {
                                             Ok(Transformed::no(p))
@@ -294,8 +310,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     self.plan_id(),
                                 ));
 
-                                let dynamic_join =
-                                    dynamic_join.with_new_children(vec![left, right])?;
+                                let dynamic_join = dynamic_join.replace_children(
+                                    vec![left, right],
+                                    ReplaceChildrenOptions::new(
+                                        ChildrenPropertiesMode::Recompute,
+                                    ),
+                                )?;
 
                                 Ok(Transformed::yes(dynamic_join))
                             }

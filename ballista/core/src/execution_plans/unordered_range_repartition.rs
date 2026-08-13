@@ -73,6 +73,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::runtime::SpawnedTask;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
@@ -85,7 +86,7 @@ use datafusion::physical_plan::execution_plan::{
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    SendableRecordBatchStream,
+    SendableRecordBatchStream, apply_expression_roots,
 };
 use futures::stream::StreamExt;
 use tokio::sync::mpsc;
@@ -251,6 +252,15 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// The ORDER BY expressions are evaluated on the scatter side to route rows
+    /// by value range.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(self.order_by.iter().map(|sort_expr| &sort_expr.expr), f)
     }
 
     /// Input distribution is irrelevant — the operator re-routes every row

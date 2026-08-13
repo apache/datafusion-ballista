@@ -46,6 +46,7 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -58,8 +59,8 @@ use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, StatisticsArgs, displayable,
-    statistics::ChildStats,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
+    displayable, statistics::ChildStats,
 };
 use futures::{StreamExt, TryStreamExt};
 use log::{debug, warn};
@@ -870,6 +871,19 @@ impl ExecutionPlan for SortShuffleWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.plan]
+    }
+
+    /// This writer hashes rows itself rather than relying on an upstream
+    /// `RepartitionExec`, so the partitioning expressions are its own.
+    /// `try_new` rejects anything but `Hash`.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        match &self.shuffle_output_partitioning {
+            Partitioning::Hash(exprs, _) => apply_expression_roots(exprs, f),
+            _ => Ok(TreeNodeRecursion::Continue),
+        }
     }
 
     fn with_new_children(

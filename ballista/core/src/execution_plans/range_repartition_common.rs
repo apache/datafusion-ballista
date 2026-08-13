@@ -289,9 +289,10 @@ pub(super) mod test_util {
     use datafusion::arrow::array::RecordBatch;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::common::Result;
+    use datafusion::common::tree_node::TreeNodeRecursion;
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::{
-        EquivalenceProperties, LexOrdering, Partitioning, PhysicalSortExpr,
+        EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr,
     };
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -374,6 +375,13 @@ pub(super) mod test_util {
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
             vec![]
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn with_new_children(

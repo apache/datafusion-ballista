@@ -64,6 +64,7 @@ use datafusion::arrow::array::{Array, RecordBatch};
 use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::cast::{as_boolean_array, as_float64_array};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Operator;
@@ -78,7 +79,7 @@ use datafusion::physical_plan::stream::{
 };
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    RecordBatchStream, SendableRecordBatchStream,
+    RecordBatchStream, SendableRecordBatchStream, apply_expression_roots,
 };
 use datafusion::scalar::ScalarValue;
 use futures::{Stream, StreamExt, ready};
@@ -309,6 +310,16 @@ impl ExecutionPlan for RangeFilterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// The routing expression is evaluated per batch to test each row against
+    /// the partition's cut range. The bounds themselves are `ScalarValue`s,
+    /// not expressions.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots([&self.routing_expr], f)
     }
 
     fn with_new_children(

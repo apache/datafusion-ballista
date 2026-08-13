@@ -28,7 +28,9 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::{ExecutionPlan, execution_plan};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, execution_plan,
+};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -81,9 +83,10 @@ impl DistributedExchangeRule {
                 right
             };
             let right = Arc::new(CoalescePartitionsExec::new(right));
-            return Ok(Transformed::yes(
-                execution_plan.with_new_children(vec![left, right])?,
-            ));
+            return Ok(Transformed::yes(execution_plan.replace_children(
+                vec![left, right],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?));
         }
 
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
@@ -97,9 +100,10 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(sort_preserving_merge) =
             execution_plan.downcast_ref::<SortPreservingMergeExec>()
@@ -114,9 +118,10 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(repartition) = execution_plan.downcast_ref::<RepartitionExec>()
             && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
@@ -143,10 +148,12 @@ impl DistributedExchangeRule {
                             self.plan_id_generator
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                         );
-                        return Ok(Transformed::yes(
-                            execution_plan
-                                .with_new_children(vec![Arc::new(exchange_exec)])?,
-                        ));
+                        return Ok(Transformed::yes(execution_plan.replace_children(
+                            vec![Arc::new(exchange_exec)],
+                            ReplaceChildrenOptions::new(
+                                ChildrenPropertiesMode::Recompute,
+                            ),
+                        )?));
                     }
                 }
                 many => {

@@ -47,7 +47,8 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
-    ExecutionPlan, Partitioning, with_new_children_if_necessary,
+    ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
+    replace_children_if_necessary,
 };
 use log::debug;
 
@@ -186,8 +187,10 @@ impl DefaultDistributedPlanner {
             )?;
             stages.append(&mut probe_stages);
 
-            let new_join =
-                execution_plan.with_new_children(vec![broadcast_left, probe])?;
+            let new_join = execution_plan.replace_children(
+                vec![broadcast_left, probe],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             return Ok((new_join, stages));
         }
 
@@ -234,7 +237,7 @@ impl DefaultDistributedPlanner {
                 stages.push(writer);
             }
             return Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                replace_children_if_necessary(execution_plan, children)?,
                 stages,
             ));
         }
@@ -253,7 +256,7 @@ impl DefaultDistributedPlanner {
 
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                replace_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(_sort_preserving_merge) =
@@ -269,7 +272,7 @@ impl DefaultDistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(shuffle_writer.as_ref());
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                replace_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
@@ -299,7 +302,7 @@ impl DefaultDistributedPlanner {
             }
         } else {
             Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                replace_children_if_necessary(execution_plan, children)?,
                 stages,
             ))
         }
@@ -607,13 +610,13 @@ impl DefaultDistributedPlanner {
         };
         let new_right = promoted_join.right().clone();
         let rebuilt_join =
-            with_new_children_if_necessary(join_node, vec![new_left, new_right])?;
+            replace_children_if_necessary(join_node, vec![new_left, new_right])?;
 
         // Re-wrap in the projection if `swap_inputs` added one. The recursive
         // lowering descends into the projection and broadcasts the build side of
         // the inner `HashJoinExec(CollectLeft)`.
         match projection {
-            Some(proj) => Ok(with_new_children_if_necessary(proj, vec![rebuilt_join])?),
+            Some(proj) => Ok(replace_children_if_necessary(proj, vec![rebuilt_join])?),
             None => Ok(rebuilt_join),
         }
     }
@@ -784,7 +787,7 @@ pub fn remove_unresolved_shuffles(
             )?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(replace_children_if_necessary(stage, new_children)?)
 }
 
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
@@ -828,7 +831,7 @@ pub fn rollback_resolved_shuffles(
             new_children.push(rollback_resolved_shuffles(child.clone())?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(replace_children_if_necessary(stage, new_children)?)
 }
 
 /// Rewrites every multi-partition [`EmptyExec`] into a round-robin [`RepartitionExec`]

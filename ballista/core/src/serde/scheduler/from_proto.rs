@@ -480,10 +480,12 @@ pub fn get_task_definition_vec<
 fn reset_metrics_for_execution_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
+    // `reset_state` rebuilds each node around its existing children, which is
+    // what drops the decoded metrics sets. Its default implementation is
+    // `replace_children(.., Keep)` — the children are unchanged here, so there
+    // is nothing to recompute.
     plan.transform(&|plan: Arc<dyn ExecutionPlan>| {
-        let children: Vec<Arc<dyn ExecutionPlan>> =
-            plan.children().into_iter().cloned().collect();
-        plan.with_new_children(children).map(Transformed::yes)
+        plan.reset_state().map(Transformed::yes)
     })
     .data()
     .map_err(|e| BallistaError::DataFusionError(Box::new(e)))
