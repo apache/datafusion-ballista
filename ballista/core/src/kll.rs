@@ -202,6 +202,19 @@ fn level_capacity(k: usize, num_levels: usize, height: usize) -> usize {
     raw.max(MIN_LEVEL_WIDTH)
 }
 
+/// Summarizes rather than dumping the compactor stack, which holds on the
+/// order of `3k` items and would bury whatever else a caller was printing.
+impl<T: Ord + Clone> std::fmt::Debug for KllSketch<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KllSketch")
+            .field("k", &self.k)
+            .field("count", &self.count())
+            .field("levels", &self.levels.len())
+            .field("retained", &self.levels.iter().map(Vec::len).sum::<usize>())
+            .finish()
+    }
+}
+
 /// Clone copies the compactor stack and the tracked extremes, and gives
 /// the copy a fresh PRNG rather than duplicating the original's position.
 ///
@@ -530,6 +543,33 @@ impl<T: Ord + Clone> KllSketch<T> {
         if total_weight == 0 {
             return None;
         }
+        self.at_rank((q * total_weight as f64) as u64)
+    }
+
+    /// Return the item at `rank`, counting cumulative weight from the
+    /// smallest item up. `None` if the sketch is empty.
+    ///
+    /// Semantics: the smallest retained item whose cumulative weight is at
+    /// least `rank`. Ranks at or beyond the ends give the tracked extremes,
+    /// which bypass the compactor so coin-flip history can't move them.
+    ///
+    /// This is the primitive [`Self::quantile`] is expressed in, and the
+    /// one to prefer whenever the caller already knows the rank it wants.
+    /// Converting a known rank into a fraction and back loses it: for 99
+    /// items, rank 59 becomes `59/99`, and multiplying that back by 99
+    /// yields `58.999…`, which truncates to 58. Callers that adjust a rank
+    /// — stepping over a run of NULLs, say — must stay in integers.
+    pub fn at_rank(&self, rank: u64) -> Option<&T> {
+        let total_weight = self.count();
+        if total_weight == 0 {
+            return None;
+        }
+        if rank == 0 {
+            return self.min.as_ref();
+        }
+        if rank >= total_weight {
+            return self.max.as_ref();
+        }
         let mut pairs: Vec<(&T, u64)> = self
             .levels
             .iter()
@@ -541,17 +581,16 @@ impl<T: Ord + Clone> KllSketch<T> {
             .collect();
         pairs.sort_by_key(|(item, _)| *item);
 
-        let target = (q * total_weight as f64) as u64;
         let mut cumulative = 0u64;
         for (item, weight) in &pairs {
             cumulative += weight;
-            if cumulative >= target {
+            if cumulative >= rank {
                 return Some(*item);
             }
         }
-        // total_weight > 0 and q ≤ 1 ⇒ cumulative reaches total_weight ≥ target
-        // on the final iteration, so the loop always returns.
-        unreachable!("quantile: threshold not reached despite non-empty sketch")
+        // rank < total_weight ⇒ cumulative reaches total_weight > rank on
+        // the final iteration, so the loop always returns.
+        unreachable!("at_rank: threshold not reached despite non-empty sketch")
     }
 
     /// Compact until every level fits within its (dynamically shrinking)

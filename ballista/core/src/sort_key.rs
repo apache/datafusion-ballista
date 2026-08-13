@@ -15,9 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Order-preserving `u64` encoding of a single fixed-width `ORDER BY` key,
-//! so [`crate::kll::KllSketch`] can sketch it without knowing the column's
-//! type or sort direction.
+//! Sketching a single fixed-width `ORDER BY` key.
+//!
+//! [`crate::sort_key::SortKeyCodec`] is the ordering spec for one key —
+//! its type, its direction, where its NULLs go — and encodes values to an
+//! order-preserving `u64` and back. [`crate::sort_key::SortKeySketch`]
+//! pairs that with a [`crate::kll::KllSketch`] over the encoded values and
+//! a count of the NULLs, and answers quantiles over the whole population.
+//!
+//! Consumers want the sketch, not the codec. It is the type that knows how
+//! to merge two observations, how a NULL run shifts a quantile, and what
+//! goes on the wire.
 //!
 //! # Why an integer key
 //!
@@ -41,12 +49,18 @@
 //!
 //! # NULLs are out of band
 //!
-//! Encoding skips NULLs entirely; callers track the count separately. A
-//! NULL has no position among the values, only a side, and `nulls_first` /
-//! `nulls_last` says which — that is one bit of plan-time information, not
-//! something the sketch needs to carry. Keeping it out of the key leaves
-//! the key 8 bytes wide rather than 16, which the same benchmark measured
-//! at 1.23× versus 1.58×.
+//! Encoding skips NULLs entirely and `SortKeySketch` counts them instead.
+//! A NULL has no position among the values, only a side, and `nulls_first`
+//! / `nulls_last` says which — that is one bit of plan-time information,
+//! not something the key needs to carry. Keeping it out leaves the key 8
+//! bytes wide rather than 16, which the same benchmark measured at 1.23×
+//! versus 1.58×.
+//!
+//! The cost is that a rank over the population is no longer a rank over
+//! the values: the NULL run has to be stepped over first. That remap lives
+//! in [`crate::sort_key::SortKeySketch::quantile`] and nowhere else.
+//! Spread across call sites it would be reimplemented per consumer, and
+//! getting it wrong skews every cut without failing anything.
 //!
 //! # The row format is the rulebook
 //!
@@ -95,6 +109,7 @@
 //! to the arrow-row path.
 
 use datafusion::arrow::array::{Array, ArrowPrimitiveType, AsArray, PrimitiveArray};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{
     DataType, Date32Type, Date64Type, DurationMicrosecondType, DurationMillisecondType,
     DurationNanosecondType, DurationSecondType, Float32Type, Float64Type, Int8Type,
@@ -104,6 +119,8 @@ use datafusion::arrow::datatypes::{
     UInt16Type, UInt32Type, UInt64Type,
 };
 use datafusion::common::{Result, ScalarValue, internal_datafusion_err};
+
+use crate::kll::KllSketch;
 
 /// Bijection between a primitive's native value and a `u64` whose ascending
 /// order matches the native ascending order.
@@ -311,23 +328,28 @@ macro_rules! dispatch_sortable {
     };
 }
 
-/// Encodes one fixed-width `ORDER BY` key to `u64` and back. See the module
-/// docs for the encoding and for why NULLs are handled out of band.
+/// The complete ordering spec for one fixed-width `ORDER BY` key: its
+/// type, its direction, and where its NULLs go. Encodes values to `u64`
+/// and back. See the module docs for the encoding and for why NULLs are
+/// handled out of band.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortKeyCodec {
     /// The column's full arrow type, retained so [`Self::decode`] can
     /// rebuild a `ScalarValue` that keeps the parts the key doesn't carry
     /// — a `Timestamp`'s timezone above all.
     data_type: DataType,
-    /// `true` inverts every key bit, reversing the sketch's ascending order
-    /// into the `DESC` order the plan asked for.
-    descending: bool,
+    /// `descending` inverts every key bit, reversing the sketch's ascending
+    /// order into the order the plan asked for. `nulls_first` never touches
+    /// a key, since NULLs are not encoded; it tells a sketch which end of
+    /// the distribution its NULL count occupies.
+    options: SortOptions,
 }
 
 impl SortKeyCodec {
-    /// Build a codec for `data_type`, or `None` if this module doesn't
-    /// encode that type and the caller should fall back to arrow-row.
-    pub fn try_new(data_type: &DataType, descending: bool) -> Option<Self> {
+    /// Build a codec for `data_type` under `options`, or `None` if this
+    /// module doesn't encode that type and the caller should fall back to
+    /// arrow-row.
+    pub fn try_new(data_type: &DataType, options: SortOptions) -> Option<Self> {
         macro_rules! supported {
             ($arrow_type:ty) => {
                 true
@@ -336,13 +358,24 @@ impl SortKeyCodec {
         let supported = dispatch_sortable!(data_type, supported, false);
         supported.then(|| Self {
             data_type: data_type.clone(),
-            descending,
+            options,
         })
     }
 
     /// The arrow type this codec was built for.
     pub fn data_type(&self) -> &DataType {
         &self.data_type
+    }
+
+    /// The sort direction and NULL placement this codec encodes for.
+    pub fn options(&self) -> SortOptions {
+        self.options
+    }
+
+    /// A typed NULL of this codec's column type. What a quantile query
+    /// answers when the rank it asks for lands in the NULL run.
+    pub fn null_value(&self) -> Result<ScalarValue> {
+        ScalarValue::try_from(&self.data_type)
     }
 
     /// Encode `array`'s non-NULL values in row order.
@@ -393,7 +426,7 @@ impl SortKeyCodec {
         T: ArrowPrimitiveType,
         T::Native: SortableNative,
     {
-        let descending = self.descending;
+        let descending = self.options.descending;
         let orient = move |key: u64| if descending { !key } else { key };
         if array.null_count() == 0 {
             array.values().iter().map(|v| orient(v.to_key())).collect()
@@ -410,7 +443,7 @@ impl SortKeyCodec {
     /// type.
     pub fn decode(&self, key: u64) -> Result<ScalarValue> {
         // Bitwise NOT is an involution, so the same branch undoes DESC.
-        let key = if self.descending { !key } else { key };
+        let key = if self.options.descending { !key } else { key };
         macro_rules! decode_as {
             ($arrow_type:ty) => {{
                 let native =
@@ -430,10 +463,213 @@ impl SortKeyCodec {
     }
 }
 
+/// KLL top-level compactor capacity. Picked for worst-case rank-error
+/// parity with the T-Digest sizing it replaces (`max_size = 100`), so the
+/// swap changes the sketch's cost and exactness without changing its
+/// accuracy: on a uniform 1M stream, 0.0016 worst-case normalized rank
+/// error against T-Digest's 0.0021. Rerun with `KLL_PARITY_CHECK=1 cargo
+/// bench --bench quantile_sketch`.
+const KLL_K: usize = 800;
+
+/// One `ORDER BY` key's observed distribution: a quantile sketch over the
+/// non-NULL values, plus the count of the NULLs that have no place in it.
+///
+/// Holding both together is the point. NULLs sit at one end of the order
+/// rather than among the values, so any quantile over the *population*
+/// has to account for the NULL run before consulting the sketch. Doing
+/// that remap at call sites would mean every consumer reimplementing it,
+/// and getting it wrong skews cuts silently rather than failing. So merge,
+/// quantile, and the wire format all live here, once.
+#[derive(Debug, Clone)]
+pub struct SortKeySketch {
+    /// How values become keys, and which end the NULLs occupy.
+    codec: SortKeyCodec,
+    /// Quantile structure over the non-NULL values only.
+    sketch: KllSketch<u64>,
+    /// Rows whose key was NULL. Not in `sketch`, and not recoverable from
+    /// it.
+    null_count: u64,
+}
+
+impl SortKeySketch {
+    /// An empty sketch for the key `codec` describes.
+    pub fn new(codec: SortKeyCodec) -> Self {
+        Self {
+            codec,
+            sketch: KllSketch::new(KLL_K),
+            null_count: 0,
+        }
+    }
+
+    /// Observe every row of `array`: encode the non-NULL values into the
+    /// sketch and add the NULLs to the count.
+    ///
+    /// Errors if `array`'s type disagrees with the codec's, which would
+    /// mean the routing expression changed type between planning and
+    /// execution.
+    pub fn ingest(&mut self, array: &dyn Array) -> Result<()> {
+        let keys = self.codec.encode(array)?;
+        self.sketch.absorb_slice(&keys);
+        self.null_count += array.null_count() as u64;
+        Ok(())
+    }
+
+    /// Fold `other` into `self`.
+    ///
+    /// Errors when the two describe different keys. Merging a sketch of
+    /// one column into a sketch of another produces a plausible-looking
+    /// distribution of nothing in particular, so it is caught rather than
+    /// tolerated.
+    pub fn merge(&mut self, other: Self) -> Result<()> {
+        if self.codec != other.codec {
+            return Err(internal_datafusion_err!(
+                "SortKeySketch::merge: {:?} and {:?} describe different sort keys",
+                self.codec,
+                other.codec
+            ));
+        }
+        self.sketch.merge(other.sketch);
+        self.null_count += other.null_count;
+        Ok(())
+    }
+
+    /// Rows observed, NULLs included.
+    pub fn count(&self) -> u64 {
+        self.sketch.count() + self.null_count
+    }
+
+    /// Rows observed whose key was NULL.
+    pub fn null_count(&self) -> u64 {
+        self.null_count
+    }
+
+    /// The ordering spec these observations were made under.
+    pub fn codec(&self) -> &SortKeyCodec {
+        &self.codec
+    }
+
+    /// The least value in sort order, or `None` when nothing was observed.
+    ///
+    /// A typed NULL when NULLs sort first and at least one was seen, since
+    /// then the least *row* is a NULL rather than a value.
+    pub fn min(&self) -> Result<Option<ScalarValue>> {
+        self.extreme(self.codec.options().nulls_first, self.sketch.min())
+    }
+
+    /// The greatest value in sort order, or `None` when nothing was
+    /// observed. A typed NULL when NULLs sort last and at least one was
+    /// seen.
+    pub fn max(&self) -> Result<Option<ScalarValue>> {
+        self.extreme(!self.codec.options().nulls_first, self.sketch.max())
+    }
+
+    /// Shared body of [`Self::min`] and [`Self::max`]: the extreme is a
+    /// NULL when the NULL run is on `nulls_are_on_this_end` and non-empty,
+    /// otherwise it is `value_extreme` decoded.
+    fn extreme(
+        &self,
+        nulls_are_on_this_end: bool,
+        value_extreme: Option<&u64>,
+    ) -> Result<Option<ScalarValue>> {
+        if nulls_are_on_this_end && self.null_count > 0 {
+            return Ok(Some(self.codec.null_value()?));
+        }
+        value_extreme.map(|key| self.codec.decode(*key)).transpose()
+    }
+
+    /// The value at the `q`-quantile of everything observed, NULLs
+    /// included. `q` is clamped to `[0, 1]`.
+    ///
+    /// `Ok(None)` means nothing was observed at all. `Ok(Some(null))` means
+    /// the rank `q` asks for lands inside the NULL run, which is a real
+    /// answer: a cut there says the partition below it holds only NULLs.
+    ///
+    /// # The remap
+    ///
+    /// NULLs occupy a contiguous run at one end, so a rank over the
+    /// population maps onto a rank over the values by subtracting the run
+    /// when it sits below, and by nothing when it sits above:
+    ///
+    /// ```text
+    ///  nulls_first        nulls_last
+    ///  ┌────────┬─────┐   ┌─────┬────────┐
+    ///  │ NULLs  │ vals│   │ vals│ NULLs  │
+    ///  └────────┴─────┘   └─────┴────────┘
+    ///   0      n     N     0    v        N
+    ///
+    ///  rank = (q · N) as integer
+    ///  rank <= n  -> NULL          rank <= v -> values, at rank
+    ///  else       -> values,       else      -> NULL
+    ///                at rank - n
+    /// ```
+    ///
+    /// The subtraction stays in integers on purpose. Rescaling the rank
+    /// into a fraction of the value run and letting the sketch multiply it
+    /// back loses it: with 99 values, rank 59 becomes `59/99`, and `59/99 ·
+    /// 99` is `58.999…`, which truncates to 58. That off-by-one was caught
+    /// by `quantiles_match_the_nulls_in_key_oracle`.
+    pub fn quantile(&self, q: f64) -> Result<Option<ScalarValue>> {
+        let total = self.count();
+        if total == 0 {
+            return Ok(None);
+        }
+        // No NULL run to step over, so the population rank *is* the value
+        // rank and the sketch can answer directly. Also the only path that
+        // reaches the sketch's exact-extreme handling at q = 0 and q = 1.
+        if self.null_count == 0 {
+            return self
+                .sketch
+                .quantile(q)
+                .map(|key| self.codec.decode(*key))
+                .transpose();
+        }
+        let values = self.sketch.count();
+        if values == 0 {
+            return Ok(Some(self.codec.null_value()?));
+        }
+
+        // Same rank arithmetic the sketch itself would do, so that
+        // stepping over the NULL run is the only difference between this
+        // answer and a sketch of the whole population.
+        let rank = (q.clamp(0.0, 1.0) * total as f64) as u64;
+        let value_rank = if self.codec.options().nulls_first {
+            if rank <= self.null_count {
+                return Ok(Some(self.codec.null_value()?));
+            }
+            rank - self.null_count
+        } else {
+            if rank > values {
+                return Ok(Some(self.codec.null_value()?));
+            }
+            rank
+        };
+        self.sketch
+            .at_rank(value_rank)
+            .map(|key| self.codec.decode(*key))
+            .transpose()
+    }
+
+    /// The `partitions - 1` boundaries that split everything observed into
+    /// `partitions` equally-sized runs, in sort order.
+    ///
+    /// Empty when `partitions < 2` or nothing was observed. Entries may
+    /// repeat where one value dominates, and may be typed NULLs where the
+    /// NULL run spans a boundary; both are faithful answers about a skewed
+    /// distribution rather than errors.
+    pub fn cuts(&self, partitions: usize) -> Result<Vec<ScalarValue>> {
+        if partitions < 2 {
+            return Ok(Vec::new());
+        }
+        (1..partitions)
+            .map(|cut| self.quantile(cut as f64 / partitions as f64))
+            .collect::<Result<Vec<_>>>()
+            .map(|cuts| cuts.into_iter().flatten().collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kll::KllSketch;
     use datafusion::arrow::array::{
         Float64Array, Int64Array, TimestampNanosecondArray, UInt64Array,
     };
@@ -456,7 +692,8 @@ mod tests {
             i64::MAX - 1,
             i64::MAX,
         ];
-        let codec = SortKeyCodec::try_new(&DataType::Int64, false).unwrap();
+        let codec =
+            SortKeyCodec::try_new(&DataType::Int64, sort_options(false, false)).unwrap();
         let keys = codec.encode(&Int64Array::from(values.clone())).unwrap();
         assert!(
             keys.windows(2).all(|w| w[0] < w[1]),
@@ -468,7 +705,8 @@ mod tests {
     #[test]
     fn descending_keys_reverse_value_order() {
         let values = vec![-5i64, 0, 5, 100];
-        let codec = SortKeyCodec::try_new(&DataType::Int64, true).unwrap();
+        let codec =
+            SortKeyCodec::try_new(&DataType::Int64, sort_options(true, false)).unwrap();
         let keys = codec.encode(&Int64Array::from(values.clone())).unwrap();
         assert!(
             keys.windows(2).all(|w| w[0] > w[1]),
@@ -495,7 +733,8 @@ mod tests {
             1.5,
             f64::INFINITY,
         ];
-        let codec = SortKeyCodec::try_new(&DataType::Float64, false).unwrap();
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sort_options(false, false))
+            .unwrap();
         let keys = codec.encode(&Float64Array::from(values.clone())).unwrap();
         assert!(
             keys.windows(2).all(|w| w[0] < w[1]),
@@ -538,7 +777,8 @@ mod tests {
             "test premise: the fixture is in total_cmp order"
         );
 
-        let codec = SortKeyCodec::try_new(&DataType::Float64, false).unwrap();
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sort_options(false, false))
+            .unwrap();
         let keys = codec.encode(&Float64Array::from(values.clone())).unwrap();
         assert!(
             keys.windows(2).all(|w| w[0] < w[1]),
@@ -578,7 +818,8 @@ mod tests {
         ];
         let array = Float64Array::from(values.clone());
 
-        let codec = SortKeyCodec::try_new(&DataType::Float64, false).unwrap();
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sort_options(false, false))
+            .unwrap();
         let keys = codec.encode(&array).unwrap();
 
         let converter =
@@ -597,6 +838,14 @@ mod tests {
             by_key, by_row,
             "integer keys and arrow-row bytes must induce the same permutation"
         );
+    }
+
+    /// `SortOptions` without the struct-literal noise at every call site.
+    fn sort_options(descending: bool, nulls_first: bool) -> SortOptions {
+        SortOptions {
+            descending,
+            nulls_first,
+        }
     }
 
     /// Ingest keys through a sketch, one `absorb_slice` per batch.
@@ -622,7 +871,8 @@ mod tests {
     /// over every element has no such blind spot.
     #[test]
     fn extremes_survive_a_batch_whose_ends_are_nan() {
-        let codec = SortKeyCodec::try_new(&DataType::Float64, false).unwrap();
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sort_options(false, false))
+            .unwrap();
         let sketch = sketch_batches(
             &codec,
             vec![
@@ -651,7 +901,8 @@ mod tests {
     /// appeared in the same batch as the infinities.
     #[test]
     fn infinities_are_reported_as_the_extremes_they_are() {
-        let codec = SortKeyCodec::try_new(&DataType::Float64, false).unwrap();
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sort_options(false, false))
+            .unwrap();
         let sketch = sketch_batches(
             &codec,
             vec![vec![1.0, 5.0], vec![f64::INFINITY, f64::NEG_INFINITY]],
@@ -672,7 +923,8 @@ mod tests {
     /// different bounds depending on which batch landed first.
     #[test]
     fn extremes_do_not_depend_on_batch_order() {
-        let codec = SortKeyCodec::try_new(&DataType::Float64, false).unwrap();
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sort_options(false, false))
+            .unwrap();
         let nan_batch = vec![f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
         let plain_batch = vec![1.0, 5.0];
 
@@ -682,6 +934,348 @@ mod tests {
 
         assert_eq!(nan_first.min(), nan_second.min(), "min is order dependent");
         assert_eq!(nan_first.max(), nan_second.max(), "max is order dependent");
+    }
+
+    /// Build a sketch over `values`, ingested as one batch.
+    fn int_sketch(values: Vec<Option<i64>>, options: SortOptions) -> SortKeySketch {
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let mut sketch = SortKeySketch::new(codec);
+        sketch.ingest(&Int64Array::from(values)).unwrap();
+        sketch
+    }
+
+    /// NULLs are counted, not sketched, so they must show up in the total
+    /// without disturbing the values.
+    #[test]
+    fn nulls_are_counted_beside_the_values() {
+        let sketch = int_sketch(
+            vec![Some(10), None, Some(20), None, None],
+            sort_options(false, true),
+        );
+        assert_eq!(sketch.count(), 5, "population is values plus NULLs");
+        assert_eq!(sketch.null_count(), 3);
+    }
+
+    /// With no NULLs the population rank is the value rank, so the remap
+    /// must be a no-op. This is the case the general path's `rank <= n`
+    /// test would get wrong at q = 0, which is why it has its own branch.
+    #[test]
+    fn quantiles_are_unshifted_when_nothing_is_null() {
+        let values: Vec<Option<i64>> = (1..=100).map(Some).collect();
+        let sketch = int_sketch(values, sort_options(false, true));
+        assert_eq!(
+            sketch.quantile(0.0).unwrap(),
+            Some(ScalarValue::Int64(Some(1))),
+            "q=0 must be the smallest value, not a NULL"
+        );
+        assert_eq!(
+            sketch.quantile(1.0).unwrap(),
+            Some(ScalarValue::Int64(Some(100)))
+        );
+    }
+
+    /// Half NULL, NULLs first. The bottom half of the population is the
+    /// NULL run, so every quantile below the midpoint is a NULL and the
+    /// top half compresses the whole value range into `q > 0.5`. A
+    /// consumer that skipped the remap would report the value median at
+    /// q=0.5 and skew every cut.
+    #[test]
+    fn nulls_first_shifts_the_value_range_upward() {
+        let mut values: Vec<Option<i64>> = (1..=50).map(Some).collect();
+        values.extend(std::iter::repeat_n(None, 50));
+        let sketch = int_sketch(values, sort_options(false, true));
+        assert_eq!(sketch.count(), 100);
+        assert_eq!(sketch.null_count(), 50);
+
+        let null = ScalarValue::Int64(None);
+        assert_eq!(sketch.quantile(0.0).unwrap(), Some(null.clone()));
+        assert_eq!(sketch.quantile(0.25).unwrap(), Some(null.clone()));
+        assert_eq!(
+            sketch.quantile(0.5).unwrap(),
+            Some(null),
+            "the NULL run reaches exactly the midpoint"
+        );
+        // Past the run, rank 0.75·100 = 75 is value 25 of 50.
+        assert_eq!(
+            sketch.quantile(0.75).unwrap(),
+            Some(ScalarValue::Int64(Some(25)))
+        );
+        assert_eq!(
+            sketch.quantile(1.0).unwrap(),
+            Some(ScalarValue::Int64(Some(50)))
+        );
+    }
+
+    /// Same data, NULLs last: the values now occupy the bottom half and
+    /// the NULL run the top.
+    #[test]
+    fn nulls_last_leaves_the_value_range_at_the_bottom() {
+        let mut values: Vec<Option<i64>> = (1..=50).map(Some).collect();
+        values.extend(std::iter::repeat_n(None, 50));
+        let sketch = int_sketch(values, sort_options(false, false));
+
+        assert_eq!(
+            sketch.quantile(0.25).unwrap(),
+            Some(ScalarValue::Int64(Some(25))),
+            "rank 25 of 100 is value 25 of 50"
+        );
+        assert_eq!(
+            sketch.quantile(0.5).unwrap(),
+            Some(ScalarValue::Int64(Some(50))),
+            "the value run ends exactly at the midpoint"
+        );
+        assert_eq!(
+            sketch.quantile(0.75).unwrap(),
+            Some(ScalarValue::Int64(None))
+        );
+        assert_eq!(
+            sketch.quantile(1.0).unwrap(),
+            Some(ScalarValue::Int64(None))
+        );
+    }
+
+    /// All NULL: every quantile is a NULL, and nothing consults the empty
+    /// value sketch.
+    #[test]
+    fn an_all_null_column_answers_null_everywhere() {
+        let sketch = int_sketch(vec![None; 8], sort_options(false, true));
+        for q in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                sketch.quantile(q).unwrap(),
+                Some(ScalarValue::Int64(None)),
+                "q={q}"
+            );
+        }
+        assert_eq!(sketch.count(), 8);
+    }
+
+    /// Nothing observed at all is distinct from observing NULLs.
+    #[test]
+    fn an_empty_sketch_answers_none_not_null() {
+        let codec =
+            SortKeyCodec::try_new(&DataType::Int64, sort_options(false, true)).unwrap();
+        let sketch = SortKeySketch::new(codec);
+        assert_eq!(sketch.count(), 0);
+        assert_eq!(sketch.quantile(0.5).unwrap(), None);
+        assert_eq!(sketch.min().unwrap(), None);
+        assert!(sketch.cuts(4).unwrap().is_empty());
+    }
+
+    /// The extremes follow NULL placement: with NULLs first the least row
+    /// is a NULL, and the greatest is still the largest value.
+    #[test]
+    fn extremes_account_for_where_nulls_sort() {
+        let values = vec![Some(10), None, Some(20)];
+        let first = int_sketch(values.clone(), sort_options(false, true));
+        assert_eq!(first.min().unwrap(), Some(ScalarValue::Int64(None)));
+        assert_eq!(first.max().unwrap(), Some(ScalarValue::Int64(Some(20))));
+
+        let last = int_sketch(values, sort_options(false, false));
+        assert_eq!(last.min().unwrap(), Some(ScalarValue::Int64(Some(10))));
+        assert_eq!(last.max().unwrap(), Some(ScalarValue::Int64(None)));
+    }
+
+    /// Merging folds both the value sketches and the NULL counts. Losing
+    /// the second sketch's NULLs would silently shift every quantile.
+    #[test]
+    fn merge_folds_values_and_null_counts() {
+        let options = sort_options(false, true);
+        let mut left = int_sketch(vec![Some(1), Some(2), None], options);
+        let right = int_sketch(vec![Some(3), Some(4), None, None], options);
+        left.merge(right).unwrap();
+
+        assert_eq!(left.count(), 7, "3 + 4 rows");
+        assert_eq!(left.null_count(), 3, "1 + 2 NULLs");
+        assert_eq!(left.max().unwrap(), Some(ScalarValue::Int64(Some(4))));
+        assert_eq!(left.min().unwrap(), Some(ScalarValue::Int64(None)));
+    }
+
+    /// Sketches of different keys must not fold together. The result would
+    /// look like a perfectly ordinary distribution of nothing in
+    /// particular.
+    #[test]
+    fn merge_rejects_a_different_sort_key() {
+        let options = sort_options(false, true);
+        let mut ints = int_sketch(vec![Some(1)], options);
+
+        let float_codec = SortKeyCodec::try_new(&DataType::Float64, options).unwrap();
+        let floats = SortKeySketch::new(float_codec);
+        let err = ints
+            .merge(floats)
+            .expect_err("merging Int64 with Float64 must be refused");
+        assert!(
+            err.to_string().contains("different sort keys"),
+            "got: {err}"
+        );
+
+        // Direction is part of the key's identity too: the same column
+        // sketched ASC and DESC has keys running opposite ways.
+        let mut ascending = int_sketch(vec![Some(1)], sort_options(false, true));
+        let descending = int_sketch(vec![Some(1)], sort_options(true, true));
+        assert!(
+            ascending.merge(descending).is_err(),
+            "ASC and DESC keys are inverses; folding them is meaningless"
+        );
+    }
+
+    /// `cuts` splits the population, NULL run included, so a mostly-NULL
+    /// column spends its low cuts inside that run and only crosses into
+    /// the values once the run is behind it.
+    ///
+    /// 60 NULLs then values 1..=40, NULLs first. Quartile ranks are 25, 50
+    /// and 75 of 100; the first two sit inside the 60-row NULL run, and the
+    /// third is 15 rows past it, which is value 15 of 40.
+    #[test]
+    fn cuts_split_the_population_including_nulls() {
+        let mut values: Vec<Option<i64>> = vec![None; 60];
+        values.extend((1..=40).map(Some));
+        let sketch = int_sketch(values, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+        assert_eq!(cuts.len(), 3, "K-1 cuts for K partitions");
+        assert_eq!(
+            cuts[0],
+            ScalarValue::Int64(None),
+            "the first quarter is entirely NULL"
+        );
+        assert_eq!(cuts[1], ScalarValue::Int64(None), "so is the second");
+        assert_eq!(
+            cuts[2],
+            ScalarValue::Int64(Some(15)),
+            "the third crosses out of the run"
+        );
+    }
+
+    /// A NULL run ending exactly on a cut still belongs to the NULL side:
+    /// the rank it occupies is the run's last row, not the values' first.
+    /// 75 NULLs of 100 rows puts the 0.75 cut precisely there.
+    #[test]
+    fn a_cut_landing_on_the_end_of_the_null_run_is_null() {
+        let mut values: Vec<Option<i64>> = vec![None; 75];
+        values.extend((1..=25).map(Some));
+        let sketch = int_sketch(values, sort_options(false, true));
+        assert_eq!(
+            sketch.quantile(0.75).unwrap(),
+            Some(ScalarValue::Int64(None)),
+            "rank 75 of 100 is the last NULL, so three of four partitions \
+             hold only NULLs"
+        );
+    }
+
+    /// The design priced and dropped in `benchmarks/benches/
+    /// quantile_sketch.rs` as `kll_norm_u128`, kept here as an oracle.
+    ///
+    /// It puts NULLs *inside* the key, tagged above the value bits, so the
+    /// sketch sees the whole population in order and a quantile is a
+    /// straight lookup with no arithmetic. That makes it the independent
+    /// check on [`SortKeySketch::quantile`], whose whole job is to
+    /// reproduce this answer while keeping the key 8 bytes wide.
+    ///
+    /// Value encoding is shared, so a disagreement can only come from NULL
+    /// placement or the rank remap.
+    struct NullsInKeyOracle {
+        sketch: KllSketch<u128>,
+        codec: SortKeyCodec,
+        null_tag: u128,
+    }
+
+    impl NullsInKeyOracle {
+        fn new(values: &[Option<i64>], options: SortOptions) -> Self {
+            let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+            // The tag alone decides which side the NULL run sits on.
+            let (null_tag, value_tag) = if options.nulls_first {
+                (0u128, 1u128)
+            } else {
+                (1u128, 0u128)
+            };
+            let keys: Vec<u128> = values
+                .iter()
+                .map(|value| match value {
+                    None => null_tag << 64,
+                    Some(value) => {
+                        let key =
+                            codec.encode(&Int64Array::from(vec![*value])).unwrap()[0];
+                        (value_tag << 64) | key as u128
+                    }
+                })
+                .collect();
+            let mut sketch = KllSketch::<u128>::new(KLL_K);
+            sketch.absorb_slice(&keys);
+            Self {
+                sketch,
+                codec,
+                null_tag,
+            }
+        }
+
+        fn quantile(&self, q: f64) -> Option<ScalarValue> {
+            let key = self.sketch.quantile(q)?;
+            if (key >> 64) == self.null_tag {
+                Some(self.codec.null_value().unwrap())
+            } else {
+                Some(self.codec.decode(*key as u64).unwrap())
+            }
+        }
+    }
+
+    /// Differential test: the shipped out-of-band-NULL sketch must answer
+    /// exactly what the nulls-in-the-key oracle answers, across every NULL
+    /// fraction and both placements.
+    ///
+    /// Both sketches are exact here — the fixtures are far below `KLL_K`,
+    /// so nothing compacts — which means any disagreement is the rank
+    /// remap and not sketch error.
+    #[test]
+    fn quantiles_match_the_nulls_in_key_oracle() {
+        // Deliberately includes 0 and every-row-NULL, plus fractions whose
+        // ranks land exactly on the run boundary for some q.
+        let null_counts = [0usize, 1, 25, 50, 60, 75, 99, 100];
+        let quantile_probes: Vec<f64> = (0..=20).map(|step| step as f64 / 20.0).collect();
+
+        for nulls in null_counts {
+            let mut values: Vec<Option<i64>> = vec![None; nulls];
+            values.extend((1..=(100 - nulls) as i64).map(Some));
+            for nulls_first in [true, false] {
+                let options = sort_options(false, nulls_first);
+                let oracle = NullsInKeyOracle::new(&values, options);
+                let sketch = int_sketch(values.clone(), options);
+
+                assert_eq!(
+                    sketch.count(),
+                    100,
+                    "nulls={nulls} nulls_first={nulls_first}: population size"
+                );
+                for &q in &quantile_probes {
+                    assert_eq!(
+                        sketch.quantile(q).unwrap(),
+                        oracle.quantile(q),
+                        "nulls={nulls} nulls_first={nulls_first} q={q}: \
+                         out-of-band NULLs disagreed with nulls-in-key"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The same agreement has to hold under `DESC`, where the value keys
+    /// are inverted but the NULL run still sits where `nulls_first` says.
+    #[test]
+    fn descending_quantiles_match_the_nulls_in_key_oracle() {
+        let mut values: Vec<Option<i64>> = vec![None; 30];
+        values.extend((1..=70).map(Some));
+        for nulls_first in [true, false] {
+            let options = sort_options(true, nulls_first);
+            let oracle = NullsInKeyOracle::new(&values, options);
+            let sketch = int_sketch(values.clone(), options);
+            for step in 0..=20 {
+                let q = step as f64 / 20.0;
+                assert_eq!(
+                    sketch.quantile(q).unwrap(),
+                    oracle.quantile(q),
+                    "DESC nulls_first={nulls_first} q={q}"
+                );
+            }
+        }
     }
 
     /// Indices of `keys` in ascending key order.
@@ -728,7 +1322,8 @@ mod tests {
     #[test]
     fn unsigned_keys_span_full_range_in_order() {
         let values = vec![0u64, 1, 1 << 62, u64::MAX - 1, u64::MAX];
-        let codec = SortKeyCodec::try_new(&DataType::UInt64, false).unwrap();
+        let codec =
+            SortKeyCodec::try_new(&DataType::UInt64, sort_options(false, false)).unwrap();
         let keys = codec.encode(&UInt64Array::from(values.clone())).unwrap();
         assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
         for (key, value) in keys.iter().zip(&values) {
@@ -757,7 +1352,8 @@ mod tests {
 
         let array = TimestampNanosecondArray::from(values.clone())
             .with_timezone("UTC".to_string());
-        let codec = SortKeyCodec::try_new(&data_type, false).unwrap();
+        let codec =
+            SortKeyCodec::try_new(&data_type, sort_options(false, false)).unwrap();
         let keys = codec.encode(&array).unwrap();
         assert!(
             keys.windows(2).all(|w| w[0] < w[1]),
@@ -777,7 +1373,8 @@ mod tests {
     #[test]
     fn encode_skips_nulls_and_keeps_value_order() {
         let array = Int64Array::from(vec![Some(3), None, Some(1), None, Some(2)]);
-        let codec = SortKeyCodec::try_new(&DataType::Int64, false).unwrap();
+        let codec =
+            SortKeyCodec::try_new(&DataType::Int64, sort_options(false, false)).unwrap();
         let keys = codec.encode(&array).unwrap();
         assert_eq!(keys.len(), 3, "one key per non-NULL value");
         assert_eq!(array.null_count(), 2, "count stays available on the array");
@@ -805,7 +1402,7 @@ mod tests {
             DataType::Boolean,
         ] {
             assert!(
-                SortKeyCodec::try_new(&data_type, false).is_none(),
+                SortKeyCodec::try_new(&data_type, sort_options(false, false)).is_none(),
                 "{data_type:?} must fall through to the arrow-row path"
             );
         }
@@ -815,7 +1412,8 @@ mod tests {
     /// reinterpreting its bits.
     #[test]
     fn encode_rejects_mismatched_array_type() {
-        let codec = SortKeyCodec::try_new(&DataType::Int64, false).unwrap();
+        let codec =
+            SortKeyCodec::try_new(&DataType::Int64, sort_options(false, false)).unwrap();
         let array: Arc<dyn Array> = Arc::new(Float64Array::from(vec![1.0, 2.0]));
         let err = codec
             .encode(array.as_ref())
