@@ -403,12 +403,16 @@ impl ExecutorManager {
     }
 
     /// Launches multiple tasks on the specified executor.
+    ///
+    /// `Ok` means the RPC was dispatched; the returned set holds job IDs the
+    /// executor rejected (could not decode) and failed individually. `Err` is
+    /// only returned for a transport-level failure of the whole RPC.
     pub async fn launch_multi_task(
         &self,
         executor_id: &str,
         multi_tasks: Vec<MultiTaskDefinition>,
         scheduler_id: String,
-    ) -> Result<Vec<JobId>> {
+    ) -> Result<HashSet<JobId>> {
         let mut client = self
             .get_client(executor_id, &self.grpc_client_config)
             .await?;

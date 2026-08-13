@@ -19,7 +19,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::catalog::Session;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -341,8 +341,8 @@ impl TaskLauncher for BlackholeTaskLauncher {
         _executor: &ExecutorMetadata,
         _tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<Vec<JobId>> {
-        Ok(vec![])
+    ) -> Result<HashSet<JobId>> {
+        Ok(HashSet::new())
     }
 }
 
@@ -359,7 +359,7 @@ impl TaskLauncher for VirtualTaskLauncher {
         executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<Vec<JobId>> {
+    ) -> Result<HashSet<JobId>> {
         let virtual_executor = self.executors.get(&executor.id).ok_or_else(|| {
             BallistaError::Internal(format!(
                 "No virtual executor with ID {} found",
@@ -378,7 +378,7 @@ impl TaskLauncher for VirtualTaskLauncher {
             .map_err(|e| {
                 BallistaError::Internal(format!("Error sending task status: {e:?}"))
             })?;
-        Ok(vec![])
+        Ok(HashSet::new())
     }
 }
 
@@ -396,15 +396,11 @@ impl TaskLauncher for RejectingTaskLauncher {
         _executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<Vec<JobId>> {
-        let mut failed: Vec<JobId> = Vec::new();
-        for t in &tasks {
-            let job_id = JobId::from(t.job_id.clone());
-            if !failed.contains(&job_id) {
-                failed.push(job_id);
-            }
-        }
-        Ok(failed)
+    ) -> Result<HashSet<JobId>> {
+        Ok(tasks
+            .iter()
+            .map(|t| JobId::from(t.job_id.clone()))
+            .collect())
     }
 }
 

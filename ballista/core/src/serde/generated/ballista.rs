@@ -1415,9 +1415,9 @@ pub struct LaunchTaskResult {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchMultiTaskResult {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-    /// TODO when part of the task set are scheduled successfully
+    /// Job IDs the executor could not decode/validate. These jobs are failed
+    /// individually while the rest of the batch still runs; an empty list means
+    /// the whole batch was accepted. A successful RPC does not imply every job ran.
     #[prost(string, repeated, tag = "2")]
     pub failed_jobs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }

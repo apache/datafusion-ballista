@@ -23,7 +23,7 @@
 
 use ballista_core::BALLISTA_VERSION;
 use memory_stats::memory_stats;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -889,7 +889,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             scheduler_id,
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
-        let mut failed_jobs = vec![];
+        let mut failed_jobs: HashSet<String> = HashSet::new();
         for multi_task in multi_tasks {
             let job_id = multi_task.job_id.clone();
             let multi_task: Vec<TaskDefinition> = match get_task_definition_vec(
@@ -908,7 +908,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 Ok(tasks) => tasks,
                 Err(e) => {
                     error!("failed to decode tasks for {job_id} : {e}");
-                    failed_jobs.push(job_id);
+                    failed_jobs.insert(job_id);
                     continue;
                 }
             };
@@ -924,8 +924,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             }
         }
         Ok(Response::new(LaunchMultiTaskResult {
-            success: true,
-            failed_jobs,
+            failed_jobs: failed_jobs.into_iter().collect(),
         }))
     }
 

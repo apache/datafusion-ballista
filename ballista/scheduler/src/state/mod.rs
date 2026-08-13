@@ -34,7 +34,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use prost::Message;
 use std::any::type_name;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -272,10 +272,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     /// 2. Then launch the task set vector to each executor one by one.
     ///
     /// If it fails to launch a task set, the related [`ExecutorSlot`] will be returned.
+    ///
+    /// Returns the freed executor slots and the set of job IDs the executors
+    /// rejected (failed individually while the rest of the batch ran).
     async fn launch_tasks(
         &self,
         bound_tasks: Vec<BoundTask>,
-    ) -> Result<(Vec<ExecutorSlot>, Vec<JobId>)> {
+    ) -> Result<(Vec<ExecutorSlot>, HashSet<JobId>)> {
         // Put tasks to the same executor together
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
         let mut executor_stage_assignments: HashMap<
@@ -325,7 +328,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             Ok(rejected) => {
                                 let freed = job_ids
                                     .iter()
-                                    .filter(|j| rejected.contains(j))
+                                    .filter(|j| rejected.contains(*j))
                                     .count()
                                     as u32;
                                 (vec![(executor_id.clone(), freed)], rejected)
@@ -334,7 +337,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                 let err_msg = format!("Failed to launch new task: {e}");
                                 error!("{err_msg}");
                                 state.remove_executor(&executor_id, Some(err_msg)).await;
-                                (vec![(executor_id.clone(), n_tasks as u32)], vec![])
+                                (vec![(executor_id.clone(), n_tasks as u32)], HashSet::new())
                             }
                         }
                     }
@@ -342,7 +345,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
-                        (vec![(executor_id.clone(), n_tasks as u32)], vec![])
+                        (vec![(executor_id.clone(), n_tasks as u32)], HashSet::new())
                     }
                 }
             });
@@ -353,12 +356,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .await
             .into_iter()
             .collect::<std::result::Result<
-            Vec<(Vec<ExecutorSlot>, Vec<JobId>)>,
+            Vec<(Vec<ExecutorSlot>, HashSet<JobId>)>,
             tokio::task::JoinError,
         >>()?;
 
         let mut unassigned_executor_slots = Vec::new();
-        let mut failed_jobs = Vec::new();
+        let mut failed_jobs = HashSet::new();
         for (slots, jobs) in results {
             unassigned_executor_slots.extend(slots);
             failed_jobs.extend(jobs);
@@ -467,7 +470,7 @@ mod tests {
             _executor: &ExecutorMetadata,
             tasks: Vec<MultiTaskDefinition>,
             _executor_manager: &ExecutorManager,
-        ) -> Result<Vec<JobId>> {
+        ) -> Result<HashSet<JobId>> {
             Ok(tasks
                 .iter()
                 .map(|t| JobId::from(t.job_id.clone()))
@@ -565,7 +568,7 @@ mod tests {
 
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound).await?;
 
-        assert_eq!(failed_jobs, vec![bad_job.clone()]);
+        assert_eq!(failed_jobs, HashSet::from([bad_job.clone()]));
 
         let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
         assert_eq!(freed, bad_task_count);
