@@ -93,10 +93,24 @@
 //! `f64` would round it to a 256 ns grid at 2020s epoch magnitudes, since
 //! those sit above `f64`'s 2^53 integer limit.
 //!
-//! Exactness matters most at the extremes. A sketch's `min` and `max` are
-//! what decide which shuffle files overlap which output partition, so an
-//! extreme that gets dropped drops rows with it. Keys compare with `Ord`
-//! over every element, which has no value it silently ignores.
+//! Where that exactness is worth something is narrower than it looks, and
+//! worth stating so nobody over-claims it. It is not the quantiles: those
+//! carry the sketch's own rank error, which on a uniform 1M stream is
+//! ~0.2%, and 0.2% of a partition covering one day is about three minutes.
+//! A 256 ns rounding is nine orders of magnitude beneath that. Any
+//! argument resting on quantile precision is noise.
+//!
+//! It is the extremes. `min` and `max` are exact by construction, tracked
+//! outside the compactor so no coin flip can move them, and `cut_partitions`
+//! routes shuffle files on exactly those two values. There the error bars
+//! are zero, so anything a cast rounds away is error introduced where none
+//! existed. Keys compare with `Ord` over every element, which has no value
+//! it silently ignores.
+//!
+//! The other case is a narrow spread at a large magnitude, since float
+//! precision is relative: a partition spanning a day is unaffected, one
+//! spanning 100 µs at 2020s epoch nanos is past the point where the cast
+//! costs more than the sketch does.
 //!
 //! # Coverage
 //!

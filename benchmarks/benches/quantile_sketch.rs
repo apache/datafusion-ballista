@@ -21,22 +21,62 @@
 //! (nullability, sort direction, non-`Float64` types, multi-column keys)
 //! and pays a different price for it.
 //!
-//! Most of these arms are **not** designs we adopted. They are the
-//! alternatives that were priced and dropped, kept here so the reasons
-//! stay checkable rather than becoming folklore. Two arms describe what
-//! the code actually does; the rest are receipts.
+//! # What ships
 //!
-//! Measured at n=1M on a Ryzen 9 9950X (64 MiB L3), ratio to `tdigest`:
+//! The `sort_key_sketch_*` arms run `SortKeySketch::ingest`, which is what
+//! `RuntimeStatsExec` calls. Every other arm open-codes a transform to
+//! isolate one cost and describes a design that was priced and dropped;
+//! they are kept as receipts, not as options.
+//!
+//! Ryzen 9 9950X, 64 MiB L3:
+//!
+//! ```text
+//!  Rows   Column               TDigest             SortKeySketch       Ratio
+//!  100K   Float64              1.38 ms (72 M/s)    1.23 ms (81 M/s)    0.89×
+//!  100K   Float64, 10% NULL    1.38 ms (72 M/s)    1.27 ms (78 M/s)    0.92×
+//!  100K   Int64                unsupported         1.22 ms (82 M/s)    0.88×
+//!  100K   Timestamp(ns, UTC)   unsupported         1.21 ms (83 M/s)    0.87×
+//!  1M     Float64              13.8 ms (73 M/s)    16.4 ms (61 M/s)    1.19×
+//!  1M     Float64, 10% NULL    13.8 ms (73 M/s)    15.5 ms (65 M/s)    1.13×
+//!  1M     Int64                unsupported         16.5 ms (61 M/s)    1.20×
+//!  1M     Timestamp(ns, UTC)   unsupported         16.4 ms (61 M/s)    1.20×
+//! ```
+//!
+//! T-Digest is `Float64`-only, so the integer and temporal rows have no
+//! baseline to divide by; their ratios are against T-Digest sketching a
+//! float, which is the comparison that answers "what does widening cost".
+//!
+//! Three things to read off it:
+//!
+//! - **Column type does not move the cost.** 1.19× / 1.20× / 1.20× for
+//!   float, integer and timestamp. The integer transform is one XOR
+//!   against the float's sign-bit branch and the difference is noise,
+//!   because compaction dominates ingest and the sketch only ever sees
+//!   `u64`. One number covers every fixed-width column.
+//! - **NULLs are a discount.** 1.13× against 1.19×, because a tenth of the
+//!   rows are counted rather than sketched. Out-of-band NULLs make a
+//!   nullable column cheaper than a populated one.
+//! - **The sign flips with scale.** At 100K every arm beats T-Digest by
+//!   11–13%; by 1M it is 13–20% behind. KLL's per-row cost grows with its
+//!   compaction stack, so the crossover sits between the two sizes.
+//!
+//! # Representations that were priced and dropped
+//!
+//! Measured at n=1M, ratio to `tdigest`:
 //!
 //! | arm                              | ×tdigest | outcome                  |
 //! |----------------------------------|---------:|--------------------------|
-//! | `tdigest`                        |     1.00 | incumbent, being removed |
-//! | `kll_norm_u64`                   |     1.23 | **adopted**: fixed-width |
+//! | `tdigest`                        |     1.00 | incumbent                |
+//! | `kll_norm_u64`                   |     1.23 | shape adopted, see above |
 //! | `kll_norm_u128`                  |     1.58 | dropped: NULL in the key |
 //! | `kll_ordered_float_absorb_slice` |     1.80 | dropped: slower, Float64 |
 //! | `kll_row_key`                    |     3.75 | dropped: no real saving  |
 //! | `kll_row_absorb`                 |     5.85 | **adopted**: arrow-row   |
 //! | `kll_row`                        |     6.85 | dropped: per-row insert  |
+//!
+//! `kll_norm_u64` open-codes what `SortKeySketch` does for a non-null
+//! float; the gap to `sort_key_sketch_f64` is the real type's overhead,
+//! which measures as nothing.
 //!
 //! Three results drive the dispatch design:
 //!
@@ -71,11 +111,6 @@
 //!    matters. That is the `kll_row_absorb` tier, where arrow-row encodes
 //!    NULLs inline at no extra cost.
 //!
-//! The `n=100K` numbers tell a second story: there `kll_norm_u64` is
-//! *faster* than TDigest (1.219 ms vs 1.358 ms). KLL's per-row cost grows
-//! with its compaction stack, so the advantage inverts by 1M — TDigest
-//! scales 10.1× across the 10× row jump, `kll_norm_u64` 13.8×.
-//!
 //! Caveat on the 64 MiB L3: at n=1M the whole working set is cache-
 //! resident, including the key vector each KLL arm materializes per batch
 //! (8 MB for `u64`, 16 MB for `u128`). On a core with a smaller cache
@@ -96,9 +131,13 @@
 use std::sync::Arc;
 
 use ballista_core::kll::KllSketch;
+use ballista_core::sort_key::{SortKeyCodec, SortKeySketch};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use datafusion::arrow::array::{ArrayRef, Float64Array};
-use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::array::{
+    ArrayRef, Float64Array, Int64Array, TimestampNanosecondArray,
+};
+use datafusion::arrow::compute::SortOptions;
+use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion_functions_aggregate_common::tdigest::TDigest;
 use ordered_float::OrderedFloat;
@@ -364,6 +403,79 @@ fn ingest_kll_norm_u128(batches: &[Float64Array]) -> KllSketch<u128> {
     sketch
 }
 
+/// Fraction of rows made NULL in the nullable arm. Low enough to be a
+/// realistic "this column is mostly populated" case rather than one where
+/// skipping NULLs does most of the work for us.
+const NULL_FRACTION: f64 = 0.1;
+
+/// `Float64` batches with `NULL_FRACTION` of the rows null. Same value
+/// stream as `build_batches` so the arms stay comparable.
+fn build_nullable_batches(n: usize) -> Vec<ArrayRef> {
+    let mut rng = StdRng::seed_from_u64(SEED);
+    build_batches(n)
+        .into_iter()
+        .map(|arr| {
+            let values: Vec<Option<f64>> = arr
+                .values()
+                .iter()
+                .map(|v| (rng.random::<f64>() >= NULL_FRACTION).then_some(*v))
+                .collect();
+            Arc::new(Float64Array::from(values)) as ArrayRef
+        })
+        .collect()
+}
+
+/// `Int64` batches. The integer transform is one XOR where the float one
+/// branches on the sign bit, so this isolates whether column type moves
+/// ingest cost at all once the sketch sees `u64` either way.
+fn build_int_batches(n: usize) -> Vec<ArrayRef> {
+    let mut rng = StdRng::seed_from_u64(SEED);
+    (0..n.div_ceil(BATCH_SIZE))
+        .map(|chunk| {
+            let take = BATCH_SIZE.min(n - chunk * BATCH_SIZE);
+            let values: Vec<i64> = (0..take).map(|_| rng.random::<i64>()).collect();
+            Arc::new(Int64Array::from(values)) as ArrayRef
+        })
+        .collect()
+}
+
+/// `Timestamp(Nanosecond, UTC)` batches at 2020s epoch magnitudes, which
+/// is where an `f64` cast would quantize onto a 256 ns grid. Physically an
+/// `i64`, so this should track the `Int64` arm; it is here because it is
+/// the column type the widening actually exists to serve, and because
+/// T-Digest cannot sketch it at all.
+fn build_timestamp_batches(n: usize) -> Vec<ArrayRef> {
+    let mut rng = StdRng::seed_from_u64(SEED);
+    // 2026-08-13T00:00:00Z, plus up to a day of jitter.
+    let base = 1_786_320_000_000_000_000i64;
+    let day = 86_400_000_000_000i64;
+    (0..n.div_ceil(BATCH_SIZE))
+        .map(|chunk| {
+            let take = BATCH_SIZE.min(n - chunk * BATCH_SIZE);
+            let values: Vec<i64> = (0..take)
+                .map(|_| base + (rng.random::<f64>() * day as f64) as i64)
+                .collect();
+            Arc::new(
+                TimestampNanosecondArray::from(values).with_timezone("UTC".to_string()),
+            ) as ArrayRef
+        })
+        .collect()
+}
+
+/// The shipped path: `SortKeySketch::ingest` per batch, which encodes the
+/// column to `u64` keys, absorbs them, and counts the NULLs it skipped.
+///
+/// Every other KLL arm here open-codes a transform to isolate one cost.
+/// This one measures what `RuntimeStatsExec` will actually run, so it is
+/// the arm the ship/no-ship numbers come from.
+fn ingest_sort_key_sketch(batches: &[ArrayRef], codec: SortKeyCodec) -> SortKeySketch {
+    let mut sketch = SortKeySketch::new(codec);
+    for arr in batches {
+        sketch.ingest(arr.as_ref()).unwrap();
+    }
+    sketch
+}
+
 /// Print worst-case quantile-inversion error at deciles for TDigest at
 /// `TDIGEST_MAX_SIZE=100` and KLL at a sweep of `k`. Called from
 /// `bench_ingest` when `KLL_PARITY_CHECK=1` is set. Reproducibility
@@ -484,6 +596,38 @@ fn bench_ingest(c: &mut Criterion) {
                 BatchSize::LargeInput,
             );
         });
+
+        let ascending = SortOptions {
+            descending: false,
+            nulls_first: true,
+        };
+        let shipped: [(&str, DataType, Vec<ArrayRef>); 4] = [
+            (
+                "f64",
+                DataType::Float64,
+                batches
+                    .iter()
+                    .map(|b| Arc::new(b.clone()) as ArrayRef)
+                    .collect(),
+            ),
+            ("f64_nulls", DataType::Float64, build_nullable_batches(n)),
+            ("i64", DataType::Int64, build_int_batches(n)),
+            (
+                "timestamp_ns",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                build_timestamp_batches(n),
+            ),
+        ];
+        for (label, data_type, arrays) in shipped {
+            let codec = SortKeyCodec::try_new(&data_type, ascending).unwrap();
+            group.bench_function(format!("sort_key_sketch_{label}/{n}"), |b| {
+                b.iter_batched(
+                    || arrays.clone(),
+                    |bs| ingest_sort_key_sketch(&bs, codec.clone()),
+                    BatchSize::LargeInput,
+                );
+            });
+        }
 
         group.bench_function(format!("kll_ordered_float/{n}"), |b| {
             b.iter_batched(
