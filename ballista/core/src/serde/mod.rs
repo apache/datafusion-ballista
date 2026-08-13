@@ -57,7 +57,8 @@ use std::{convert::TryInto, io::Cursor};
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PerPartitionFilterExec, RuntimeStatsExec, ShuffleReaderExec,
+    PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
+    RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec,
     ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
     UnresolvedShuffleExec,
 };
@@ -507,6 +508,46 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 };
                 Ok(Arc::new(exec))
             }
+            PhysicalPlanType::RangeShuffleReader(range_reader) => {
+                let stage_id = range_reader.stage_id as usize;
+                let schema: SchemaRef = Arc::new(convert_required!(range_reader.schema)?);
+                let partition_location: Vec<Vec<PartitionLocation>> = range_reader
+                    .partition
+                    .iter()
+                    .map(|p| {
+                        p.location
+                            .iter()
+                            .map(|l| {
+                                l.clone().try_into().map_err(|e| {
+                                    DataFusionError::Internal(format!(
+                                        "Fail to get partition location due to {e:?}"
+                                    ))
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let merge_ordering_exprs = parse_physical_sort_exprs(
+                    &range_reader.merge_ordering,
+                    &decode_ctx,
+                    schema.as_ref(),
+                    &converter,
+                )?;
+                let merge_ordering = datafusion::physical_expr::LexOrdering::new(
+                    merge_ordering_exprs,
+                )
+                .ok_or_else(|| {
+                    proto_error(
+                        "RangeShuffleReaderExec: merge_ordering must be non-empty",
+                    )
+                })?;
+                Ok(Arc::new(RangeShuffleReaderExec::try_new(
+                    stage_id,
+                    partition_location,
+                    schema,
+                    merge_ordering,
+                )?))
+            }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
@@ -662,6 +703,87 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     predicates,
                 )?))
             }
+            PhysicalPlanType::RangeFilter(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "RangeFilterExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let schema = input.schema();
+                let routing_expr_proto = node.routing_expr.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "RangeFilterExecNode missing routing_expr".into(),
+                    )
+                })?;
+                let routing_expr =
+                    datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+                        routing_expr_proto,
+                        ctx,
+                        schema.as_ref(),
+                        self,
+                    )?;
+                let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
+                    datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
+                        DataFusionError::Internal(format!(
+                            "RangeFilterExec: failed to decode ScalarValue: {e:?}"
+                        ))
+                    })
+                };
+                let halo_lo_proto = node.halo_lo.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "RangeFilterExecNode missing halo_lo".into(),
+                    )
+                })?;
+                let halo_lo = sv_from_proto(halo_lo_proto)?;
+                let halo_hi_proto = node.halo_hi.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "RangeFilterExecNode missing halo_hi".into(),
+                    )
+                })?;
+                let halo_hi = sv_from_proto(halo_hi_proto)?;
+                let raw_bounds = node
+                    .raw_bounds
+                    .iter()
+                    .map(|b| {
+                        let lo = b.lo.as_ref().map(sv_from_proto).transpose()?;
+                        let hi = b.hi.as_ref().map(sv_from_proto).transpose()?;
+                        Ok::<_, DataFusionError>((lo, hi))
+                    })
+                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                Ok(Arc::new(RangeFilterExec::try_new_resolved(
+                    input.clone(),
+                    routing_expr,
+                    halo_lo,
+                    halo_hi,
+                    raw_bounds,
+                )?))
+            }
+            PhysicalPlanType::PartitionedBoundedWindowAgg(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PartitionedBoundedWindowAggExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let input_schema = input.schema();
+                let window_expr = node
+                    .window_expr
+                    .iter()
+                    .map(|we| {
+                        datafusion_proto::physical_plan::from_proto::parse_physical_window_expr(
+                            we,
+                            &decode_ctx,
+                            input_schema.as_ref(),
+                            &converter,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(PartitionedBoundedWindowAggExec::try_new(
+                    window_expr,
+                    input.clone(),
+                )?))
+            }
         }
     }
 
@@ -776,6 +898,46 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode shuffle reader execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeShuffleReaderExec>() {
+            let stage_id = exec.stage_id as u32;
+            let mut partition = vec![];
+            for location in &exec.partition {
+                partition.push(protobuf::ShuffleReaderPartition {
+                    location: location
+                        .iter()
+                        .map(|l| {
+                            l.clone().try_into().map_err(|e| {
+                                DataFusionError::Internal(format!(
+                                    "Fail to get partition location due to {e:?}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                });
+            }
+            let converter = DefaultPhysicalProtoConverter {};
+            let merge_ordering = serialize_physical_sort_exprs(
+                exec.merge_ordering().iter().cloned(),
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeShuffleReader(
+                    protobuf::RangeShuffleReaderExecNode {
+                        stage_id,
+                        partition,
+                        schema: Some(exec.schema().as_ref().try_into()?),
+                        merge_ordering,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode range shuffle reader execution plan: {e:?}"
                 ))
             })?;
 
@@ -919,6 +1081,75 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode PerPartitionFilterExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeFilterExec>() {
+            let raw_bounds = exec.raw_bounds().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "RangeFilterExec: cannot serialize before resolve_bounds()".into(),
+                )
+            })?;
+            let routing_expr =
+                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                    exec.routing_expr(),
+                    self.default_codec.as_ref(),
+                )?;
+            let encode_sv = |sv: &datafusion::scalar::ScalarValue| {
+                datafusion_proto_common::ScalarValue::try_from(sv).map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "failed to encode RangeFilterExec ScalarValue: {e:?}"
+                    ))
+                })
+            };
+            let halo_lo = encode_sv(exec.halo_lo())?;
+            let halo_hi = encode_sv(exec.halo_hi())?;
+            let raw_bounds_proto = raw_bounds
+                .iter()
+                .map(|(lo, hi)| {
+                    let lo = lo.as_ref().map(&encode_sv).transpose()?;
+                    let hi = hi.as_ref().map(&encode_sv).transpose()?;
+                    Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
+                })
+                .collect::<Result<Vec<_>, DataFusionError>>()?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeFilter(
+                    protobuf::RangeFilterExecNode {
+                        routing_expr: Some(routing_expr),
+                        halo_lo: Some(halo_lo),
+                        halo_hi: Some(halo_hi),
+                        raw_bounds: raw_bounds_proto,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode RangeFilterExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PartitionedBoundedWindowAggExec>()
+        {
+            let converter = DefaultPhysicalProtoConverter {};
+            let window_expr = exec
+                .window_expr()
+                .iter()
+                .map(|we| {
+                    datafusion_proto::physical_plan::to_proto::serialize_physical_window_expr(
+                        we,
+                        self.default_codec.as_ref(),
+                        &converter,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PartitionedBoundedWindowAgg(
+                    protobuf::PartitionedBoundedWindowAggExecNode { window_expr },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PartitionedBoundedWindowAggExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -1166,6 +1397,67 @@ mod test {
             decoded_exec.coalesce.is_none(),
             "absent coalesce field must decode to None (codec inertness)"
         );
+    }
+
+    /// `RangeShuffleReaderExec` carries its merge ordering across the wire —
+    /// the reader's k-way merge machinery is inert without it, and the
+    /// scheduler side plants the reader with the child's declared ordering.
+    #[tokio::test]
+    async fn test_range_shuffle_reader_exec_roundtrip() {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema = create_test_schema();
+        let sort_expr = PhysicalSortExpr {
+            expr: col("id", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let merge_ordering = LexOrdering::new(vec![sort_expr.clone()]).unwrap();
+
+        let original = RangeShuffleReaderExec::try_new(
+            7,
+            vec![vec![]; 4],
+            schema.clone(),
+            merge_ordering.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<RangeShuffleReaderExec>()
+            .expect("Expected RangeShuffleReaderExec");
+
+        assert_eq!(decoded.stage_id, 7);
+        assert_eq!(decoded.schema().as_ref(), schema.as_ref());
+        assert_eq!(decoded.partition.len(), 4, "partition shape must survive");
+        assert_eq!(
+            decoded.merge_ordering().len(),
+            1,
+            "merge_ordering must round-trip"
+        );
+        assert_eq!(
+            decoded.merge_ordering().first().expr.to_string(),
+            sort_expr.expr.to_string(),
+        );
+        // The ordering must land on `PlanProperties.eq_properties` — downstream
+        // consumers (BWAG, SMJ build side) read it there.
+        let advertised = decoded
+            .properties()
+            .eq_properties
+            .oeq_class()
+            .iter()
+            .next()
+            .cloned()
+            .expect("advertised ordering");
+        assert_eq!(advertised, merge_ordering);
     }
 
     /// The sort shuffle writer's per-task memory budget must survive the
@@ -1854,6 +2146,91 @@ mod test {
                 "predicate {k} mismatched after roundtrip",
             );
         }
+    }
+
+    /// `RangeFilterExec` round-trips through the codec: routing expr, raw
+    /// bounds, and halo widths reappear identical on the other side.
+    #[tokio::test]
+    async fn test_range_filter_exec_roundtrip() {
+        use crate::execution_plans::RangeFilterExec;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_plan::repartition::RepartitionExec;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let source: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(schema.clone()),
+        );
+        let input: Arc<dyn ExecutionPlan> = Arc::new(
+            RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(3)).unwrap(),
+        );
+        use datafusion::scalar::ScalarValue;
+        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        // K=3 raw bounds: (-∞, 10), [10, 20), [20, +∞)
+        let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
+            (None, Some(ScalarValue::Float64(Some(10.0)))),
+            (
+                Some(ScalarValue::Float64(Some(10.0))),
+                Some(ScalarValue::Float64(Some(20.0))),
+            ),
+            (Some(ScalarValue::Float64(Some(20.0))), None),
+        ];
+        let original = RangeFilterExec::try_new_resolved(
+            input.clone(),
+            routing_expr.clone(),
+            ScalarValue::Float64(Some(3.0)),
+            ScalarValue::Float64(Some(0.0)),
+            raw_bounds.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec.try_encode(Arc::new(original), &mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[input], &ctx).unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<RangeFilterExec>()
+            .expect("Expected RangeFilterExec");
+        assert_eq!(decoded.raw_bounds().unwrap(), raw_bounds);
+        assert_eq!(decoded.halo_lo(), &ScalarValue::Float64(Some(3.0)));
+        assert_eq!(decoded.halo_hi(), &ScalarValue::Float64(Some(0.0)));
+        assert_eq!(decoded.routing_expr().to_string(), routing_expr.to_string());
+    }
+
+    /// A pending RangeFilterExec (unresolved bounds) refuses to serialize —
+    /// wire plans must always carry resolved bounds.
+    #[tokio::test]
+    async fn test_range_filter_exec_pending_refuses_serialization() {
+        use crate::execution_plans::RangeFilterExec;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_plan::repartition::RepartitionExec;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let source: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(schema.clone()),
+        );
+        let input: Arc<dyn ExecutionPlan> = Arc::new(
+            RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(2)).unwrap(),
+        );
+        use datafusion::scalar::ScalarValue;
+        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let pending = RangeFilterExec::try_new_pending(
+            input,
+            routing_expr,
+            ScalarValue::Float64(Some(0.0)),
+            ScalarValue::Float64(Some(0.0)),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        let err = codec.try_encode(Arc::new(pending), &mut buf).unwrap_err();
+        assert!(err.to_string().contains("before resolve_bounds"));
     }
 
     /// `BufferExec` in `Dam` mode round-trips through the codec.

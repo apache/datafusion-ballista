@@ -407,9 +407,9 @@ checksum = "f4de21c0feef7e5a556e51af767c953f0501f7f300ba785cc99c47bdc8081a50"
 
 [[package]]
 name = "async-trait"
-version = "0.1.91"
+version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -492,6 +492,8 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e317fc86983a7914549f930dea98b56ea77771a837880896495a09c71e1bf4"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -506,12 +508,13 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cb77c44dde3d4a1a4a7c415707f78399627d96e4f1a62cb94ac81cacff8a389"
 dependencies = [
  "arrow-flight",
  "async-trait",
  "chrono",
  "datafusion",
- "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-proto-common",
  "futures",
@@ -537,6 +540,8 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16060c35ab004ffdf81173f71f2e54a2dc128cd627b8d4f9a9c20da9d7e0a02c"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -565,6 +570,8 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8789717042777ccbe9f255de073030ceedc74bb2fc4c8a86ac2b1854e5a6f3b"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1849,7 +1856,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3119,7 +3126,7 @@ dependencies = [
  "datafusion-python",
  "log",
  "pyo3",
- "pyo3-build-config 0.29.0",
+ "pyo3-build-config 0.29.2",
  "pyo3-log",
  "tokio",
  "tonic",
@@ -3165,9 +3172,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.29.0"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5e2a7d2f0d013342f295c048ad19237add5154a55b1c5a254c0ec93d4109078"
+checksum = "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9"
 dependencies = [
  "target-lexicon",
 ]
@@ -3290,7 +3297,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3508,7 +3515,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3956,7 +3963,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4511,7 +4518,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

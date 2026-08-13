@@ -57,8 +57,13 @@ use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalSortExpr};
+use datafusion::physical_expr::{
+    Distribution, OrderingRequirements, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -67,6 +72,11 @@ use datafusion::physical_plan::{
 use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
 use log::debug;
+
+use crate::serde::protobuf::{
+    QuantileSketchState, RuntimeStatsPartitionEntry, RuntimeStatsReport,
+};
+use crate::serde::scheduler::PartitionLocation;
 
 /// T-Digest centroid budget. 100 is DataFusion's default and gives ~1%
 /// quantile error, plenty of margin over the sub-partition counts we
@@ -89,6 +99,7 @@ pub struct RuntimeStatsExec {
     /// keep writes off any shared lock.
     sketches: Option<Arc<[Mutex<TDigest>]>>,
     properties: Arc<PlanProperties>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl RuntimeStatsExec {
@@ -147,6 +158,7 @@ impl RuntimeStatsExec {
             row_counts,
             sketches,
             properties,
+            metrics: ExecutionPlanMetricsSet::new(),
         })
     }
 
@@ -316,6 +328,10 @@ impl ExecutionPlan for RuntimeStatsExec {
         CardinalityEffect::Equal
     }
 
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -360,19 +376,37 @@ impl ExecutionPlan for RuntimeStatsExec {
             .and_then(|exprs| exprs.first())
             .map(|e| e.expr.clone());
 
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        // Separates sketch cost from the rest so we can tell whether the
+        // hot path in sketching mode is the T-Digest merge_unsorted_f64
+        // or something else (evaluate/downcast/flatten).
+        let sketch_time =
+            MetricBuilder::new(&self.metrics).subset_time("sketch_time", partition);
+        let sketch_batches =
+            MetricBuilder::new(&self.metrics).counter("sketch_batches", partition);
+
         let state = StreamState {
             input: input_stream,
             row_counts,
             sketches,
             routing_expr,
             partition,
+            baseline,
+            sketch_time,
+            sketch_batches,
         };
         let out = futures::stream::unfold(state, |mut state| async move {
-            let batch = state.input.next().await?;
-            let forwarded = batch.and_then(|batch| {
+            // Await the child first so upstream shuffle IO / parquet
+            // reads aren't billed to our elapsed_compute.
+            let next = state.input.next().await?;
+            let elapsed = state.baseline.elapsed_compute().clone();
+            let timer = elapsed.timer();
+            let forwarded = next.and_then(|batch| {
                 state.ingest(&batch)?;
+                state.baseline.record_output(batch.num_rows());
                 Ok(batch)
             });
+            timer.done();
             Some((forwarded, state))
         });
 
@@ -389,6 +423,9 @@ struct StreamState {
     sketches: Option<Arc<[Mutex<TDigest>]>>,
     routing_expr: Option<Arc<dyn datafusion::physical_plan::PhysicalExpr>>,
     partition: usize,
+    baseline: BaselineMetrics,
+    sketch_time: Time,
+    sketch_batches: Count,
 }
 
 impl StreamState {
@@ -450,7 +487,10 @@ impl StreamState {
                         self.partition
                     )
                 })?;
+                let sketch_timer = self.sketch_time.timer();
                 *sketch = sketch.merge_unsorted_f64(values);
+                sketch_timer.done();
+                self.sketch_batches.add(1);
             }
         }
 
@@ -506,7 +546,7 @@ impl Drop for StreamState {
     }
 }
 
-/// Walk `plan` and collect one [`crate::serde::protobuf::RuntimeStatsReport`]
+/// Walk `plan` and collect one [`RuntimeStatsReport`]
 /// per [`RuntimeStatsExec`] that remains valid at the plan's output.
 /// "Valid" means reachable through single-child chains of distribution-
 /// preserving operators only — see the `preserves_distribution`
@@ -519,9 +559,7 @@ impl Drop for StreamState {
 ///
 /// Executors call this once per task at completion to package what to
 /// return to the scheduler.
-pub fn collect_reports(
-    plan: &Arc<dyn ExecutionPlan>,
-) -> Result<Vec<crate::serde::protobuf::RuntimeStatsReport>> {
+pub fn collect_reports(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<RuntimeStatsReport>> {
     use datafusion_proto::physical_plan::{
         DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
     };
@@ -549,7 +587,7 @@ fn collect_reachable_stats<'a>(
         out.push(stats);
         // Continue descending — a plan could conceivably chain multiple
         // stats-taps; `preserves_distribution` still guards the recursion.
-    } else if !super::range_repartition_common::preserves_distribution(plan.as_ref()) {
+    } else if !super::plan_algebra::preserves_distribution(plan.as_ref()) {
         return;
     }
     let children = plan.children();
@@ -563,7 +601,7 @@ fn stats_to_report(
     stats: &RuntimeStatsExec,
     codec: &dyn datafusion_proto::physical_plan::PhysicalExtensionCodec,
     converter: &datafusion_proto::physical_plan::DefaultPhysicalProtoConverter,
-) -> Result<crate::serde::protobuf::RuntimeStatsReport> {
+) -> Result<RuntimeStatsReport> {
     use datafusion_proto::physical_plan::to_proto::serialize_physical_sort_exprs;
     let order_by = match stats.order_by() {
         Some(order_by) => {
@@ -582,27 +620,25 @@ fn stats_to_report(
             Some(sk) if sk.count() > 0.0 => Some(sketch_to_proto(&sk)?),
             _ => None,
         };
-        partitions.push(crate::serde::protobuf::RuntimeStatsPartitionEntry {
+        partitions.push(RuntimeStatsPartitionEntry {
             partition_id: partition_id as u32,
             row_count,
             sketch,
         });
     }
-    Ok(crate::serde::protobuf::RuntimeStatsReport {
+    Ok(RuntimeStatsReport {
         order_by,
         partitions,
     })
 }
 
 /// Serialize a T-Digest to the on-wire
-/// [`crate::serde::protobuf::QuantileSketchState`].
+/// [`QuantileSketchState`].
 ///
 /// Wraps `TDigest::to_scalar_state()` — the 6-element canonical form
 /// `(max_size, sum, count, max, min, centroids_as_list)` — each element
 /// encoded via `datafusion_proto_common::ScalarValue::try_from`.
-pub fn sketch_to_proto(
-    sketch: &TDigest,
-) -> Result<crate::serde::protobuf::QuantileSketchState> {
+pub fn sketch_to_proto(sketch: &TDigest) -> Result<QuantileSketchState> {
     let state = sketch.to_scalar_state();
     let proto_state = state
         .iter()
@@ -611,18 +647,16 @@ pub fn sketch_to_proto(
         .map_err(|e| {
             internal_datafusion_err!("failed to encode TDigest to proto: {e:?}")
         })?;
-    Ok(crate::serde::protobuf::QuantileSketchState { state: proto_state })
+    Ok(QuantileSketchState { state: proto_state })
 }
 
-/// Deserialize a [`crate::serde::protobuf::QuantileSketchState`] into a
+/// Deserialize a [`QuantileSketchState`] into a
 /// T-Digest.
 ///
 /// Reverses [`sketch_to_proto`]. Guards against corrupted wire input by
 /// checking the element count before calling
 /// `TDigest::from_scalar_state`, which would panic on invalid shape.
-pub fn sketch_from_proto(
-    proto: &crate::serde::protobuf::QuantileSketchState,
-) -> Result<TDigest> {
+pub fn sketch_from_proto(proto: &QuantileSketchState) -> Result<TDigest> {
     let scalars = proto
         .state
         .iter()
@@ -672,15 +706,7 @@ pub struct MergedRuntimeStats {
 
 /// Group `RuntimeStatsReport`s by `order_by` wire tag, merge the T-Digests
 /// within each group, and return one [`MergedRuntimeStats`] per group.
-///
-/// Errors surface planner / wire invariants the caller can't quietly
-/// paper over: mismatched partition counts within a group (the planner
-/// gave two tasks in the same stage different plans), or a sketch that
-/// won't decode (wire corruption). The caller decides whether to log
-/// and drop, propagate to the user, or fail the stage.
-pub fn merge_reports(
-    reports: &[crate::serde::protobuf::RuntimeStatsReport],
-) -> Result<Vec<MergedRuntimeStats>> {
+pub fn merge_reports(reports: &[RuntimeStatsReport]) -> Result<Vec<MergedRuntimeStats>> {
     use prost::Message;
     use std::collections::HashMap;
 
@@ -691,8 +717,7 @@ pub fn merge_reports(
     // Group by the bytes of the encoded `order_by`. Prost-encoding each
     // `PhysicalSortExprNode` and concatenating gives a stable, cheap
     // grouping key without needing `Hash` on the generated proto types.
-    let mut groups: HashMap<Vec<u8>, Vec<&crate::serde::protobuf::RuntimeStatsReport>> =
-        HashMap::new();
+    let mut groups: HashMap<Vec<u8>, Vec<&RuntimeStatsReport>> = HashMap::new();
     for report in reports {
         let mut group_key = Vec::new();
         for expr in &report.order_by {
@@ -712,9 +737,7 @@ pub fn merge_reports(
 /// Merge one group of reports (all sharing the same `order_by` tag).
 /// Kept separate from `merge_reports` so the group iteration reads as a
 /// single fallible step per group.
-fn merge_group(
-    group: &[&crate::serde::protobuf::RuntimeStatsReport],
-) -> Result<MergedRuntimeStats> {
+fn merge_group(group: &[&RuntimeStatsReport]) -> Result<MergedRuntimeStats> {
     let [first, rest @ ..] = group else {
         // `merge_reports` only builds groups from `HashMap::entry().push()`,
         // so an empty group is unreachable. Surface as internal error
@@ -791,8 +814,9 @@ fn merge_group(
 /// `producer_task_id` that emitted it. The scheduler stores these on
 /// `RunningStage.runtime_stats_reports` so downstream stages can address
 /// individual producer files as `(producer_task_id, partition_id)` pairs —
-/// the partition_id inside a report is producer-local (0..K URRE sub-parts),
-/// so the pair is what uniquely identifies a shuffle file across producers.
+/// the partition_id inside a report is producer-local (0..K range-repartition
+/// sub-parts), so the pair is what uniquely identifies a shuffle file across
+/// producers.
 #[derive(Debug, Clone)]
 pub struct TaskRuntimeStats {
     /// Producer task's task_id at the time it emitted the report. Matches
@@ -800,7 +824,164 @@ pub struct TaskRuntimeStats {
     pub producer_task_id: usize,
     /// The report itself: per-partition row counts and (in sketch mode)
     /// quantile sketches for the routing expression.
-    pub report: crate::serde::protobuf::RuntimeStatsReport,
+    pub report: RuntimeStatsReport,
+}
+
+/// Walk the partition-preserving spine of `plan` for the
+/// `UnorderedRangeRepartitionExec` or `OrderedRangeRepartitionExec` that
+/// drives this stage's output partitioning, and return its routing
+/// expression (`order_by[0].expr`).
+///
+/// The spine is the chain of partition-preserving ops (see
+/// [`super::preserves_partitioning`]) between the stage root and the barrier
+/// that sets the stage's output partitioning. Descent stops at any
+/// non-preserving op (join, union, hash-agg, unknown node) — an RRE
+/// below such a barrier drives a different logical partitioning that
+/// this stage's output no longer carries.
+///
+/// `Ok(None)` means no range-repartition op drives this stage's
+/// partitioning; `Err(_)` means one was found but its `order_by` was
+/// empty (invariant break — a range repartition without a routing key
+/// can't route anything), or the spine hit a partition-preserving node
+/// with more than one child (shape bug in the whitelist).
+pub fn repartition_routing_expr(
+    plan: &dyn ExecutionPlan,
+) -> Result<Option<Arc<dyn PhysicalExpr>>> {
+    if let Some(rre) = plan.downcast_ref::<super::UnorderedRangeRepartitionExec>() {
+        return match rre.order_by() {
+            [first, ..] => Ok(Some(first.expr.clone())),
+            [] => internal_err!("UnorderedRangeRepartitionExec has empty ORDER BY"),
+        };
+    }
+    if let Some(rre) = plan.downcast_ref::<super::OrderedRangeRepartitionExec>() {
+        return match rre.order_by() {
+            [first, ..] => Ok(Some(first.expr.clone())),
+            [] => internal_err!("OrderedRangeRepartitionExec has empty ORDER BY"),
+        };
+    }
+    if !super::preserves_partitioning(plan) {
+        return Ok(None);
+    }
+    let children = plan.children();
+    match children.as_slice() {
+        [] => Ok(None),
+        [child] => repartition_routing_expr(child.as_ref()),
+        _ => internal_err!(
+            "partition-preserving op `{}` has {} children — the whitelist \
+             assumes single-child; expand the algorithm if this fires",
+            plan.name(),
+            children.len()
+        ),
+    }
+}
+
+/// Rebuild a stage's `Vec<Vec<PartitionLocation>>` under range-repartition
+/// overlap semantics: for each producer file in `original_partitions`,
+/// find its sketch (from `reports`), and route the file into every
+/// downstream partition whose *halo-widened* range overlaps
+/// `[sketch.min(), sketch.max()]`.
+///
+/// Downstream partition ranges follow the half-open convention, widened
+/// by the downstream `RangeFilterExec`'s halos on each side:
+/// - `k = 0`         → `(-∞,                  cuts[0]   + halo_hi)`
+/// - `0 < k < K - 1` → `[cuts[k-1] - halo_lo, cuts[k]   + halo_hi)`
+/// - `k = K - 1`     → `[cuts[K-2] - halo_lo, +∞)`
+///
+/// `[min, max]` overlaps `[lower, upper)` iff `max >= lower AND min < upper`.
+///
+/// `halo_lo`/`halo_hi` are `0.0` when the downstream stage has no halo
+/// consumer (hash-agg, no-window range-repartition) — the check collapses
+/// to raw cuts. When the downstream stage has a `RangeFilterExec` with
+/// non-zero halo (bounded RANGE-frame windows), the caller passes the
+/// widened halos so files straddling the halo band route to both sides.
+/// Skipping this widening loses boundary rows from downstream window sums.
+///
+/// Files without a corresponding sketch (missing entirely, or present
+/// with `count == 0`) are safe to skip only when `partition_stats.num_rows`
+/// confirms the file is empty (`Some(0)`). If the file has rows or the
+/// row count is unknown (`None`), silently skipping would lose data —
+/// error out instead.
+///
+/// # Arguments
+///
+/// * `original_partitions` — passthrough shuffle output, `partitions[k]`
+///   holds every file the writer produced for global partition `k`.
+/// * `reports` — one per completed producer task; each carries the
+///   per-sub-part sketches used for overlap lookup.
+/// * `global_cuts` — K-1 monotone quantile cuts derived from merged
+///   sketches; produce K downstream buckets.
+/// * `halo_lo` / `halo_hi` — downstream `RangeFilterExec`'s halo widths
+///   in the routing expression's units. `0.0` for non-halo consumers.
+pub fn cut_partitions(
+    original_partitions: Vec<Vec<PartitionLocation>>,
+    reports: &[TaskRuntimeStats],
+    global_cuts: &[f64],
+    halo_lo: f64,
+    halo_hi: f64,
+) -> Result<Vec<Vec<PartitionLocation>>> {
+    use std::collections::HashMap;
+
+    // Index sketches by (producer_task_id, sub_part_id). Under
+    // ShuffleWriter(Passthrough) file_id == task_id, so PartitionLocation's
+    // (file_id, partition_id.partition_id) is the same pair.
+    let sketches: HashMap<(usize, u32), &QuantileSketchState> = reports
+        .iter()
+        .flat_map(|stats| {
+            stats.report.partitions.iter().filter_map(move |entry| {
+                let sketch = entry.sketch.as_ref()?;
+                Some(((stats.producer_task_id, entry.partition_id), sketch))
+            })
+        })
+        .collect();
+
+    debug_assert!(
+        global_cuts.windows(2).all(|w| w[0] <= w[1]),
+        "global_cuts must be non-decreasing: {global_cuts:?}"
+    );
+
+    let partition_count = global_cuts.len() + 1;
+    let mut remapped: Vec<Vec<PartitionLocation>> = vec![Vec::new(); partition_count];
+    for partition in original_partitions {
+        for file in partition {
+            let Some(task_id) = file.file_id else {
+                return internal_err!(
+                    "range-repartition remap: missing file_id (partition_id={})",
+                    file.partition_id.partition_id
+                );
+            };
+            let sub_part_id = file.partition_id.partition_id as u32;
+            // Fold "no sketch" and "empty sketch" into one Option — both
+            // mean "no routing info for this file"
+            let sketch = sketches
+                .get(&(task_id as usize, sub_part_id))
+                .map(|proto| sketch_from_proto(proto))
+                .transpose()?
+                .filter(|s| s.count() > 0.0);
+            let Some(sketch) = sketch else {
+                // No routing info. Safe to skip only if the file has zero rows
+                if file.partition_stats.num_rows != Some(0) {
+                    return internal_err!(
+                        "range-repartition remap: file has num_rows={:?} but no usable sketch (task_id={task_id}, sub_part_id={sub_part_id})",
+                        file.partition_stats.num_rows
+                    );
+                }
+                continue;
+            };
+            // Bucket i has (lower, upper) = (cuts[i-1] - halo_lo, cuts[i] +
+            // halo_hi) with ±∞ at the ends, and matches iff `sketch_max +
+            // halo_lo >= cuts[i-1] && sketch_min - halo_hi < cuts[i]`.
+            // Monotone cuts → the set of matching buckets is a contiguous
+            // range [b_lo, b_hi], found by two partition_points over
+            // `global_cuts` with the sketch shifted by the halos.
+            let (sketch_min, sketch_max) = (sketch.min(), sketch.max());
+            let b_lo = global_cuts.partition_point(|&c| c <= sketch_min - halo_hi);
+            let b_hi = global_cuts.partition_point(|&c| c <= sketch_max + halo_lo);
+            for bucket in &mut remapped[b_lo..=b_hi] {
+                bucket.push(file.clone());
+            }
+        }
+    }
+    Ok(remapped)
 }
 
 /// Merge `reports` and log each group's merged view at `debug!`
@@ -813,8 +994,7 @@ pub fn log_merged_runtime_stats(
     stage_id: usize,
     reports: &[TaskRuntimeStats],
 ) {
-    let raw: Vec<crate::serde::protobuf::RuntimeStatsReport> =
-        reports.iter().map(|t| t.report.clone()).collect();
+    let raw: Vec<RuntimeStatsReport> = reports.iter().map(|t| t.report.clone()).collect();
     let merged_groups = match merge_reports(&raw) {
         Ok(groups) => groups,
         Err(err) => {
@@ -897,7 +1077,7 @@ mod wire_tests {
     #[test]
     fn sketch_from_proto_rejects_wrong_shape() {
         use datafusion::common::ScalarValue;
-        let proto = crate::serde::protobuf::QuantileSketchState {
+        let proto = QuantileSketchState {
             state: (0..3)
                 .map(|_| {
                     datafusion_proto_common::ScalarValue::try_from(&ScalarValue::Float64(
@@ -1357,7 +1537,6 @@ mod merge_tests {
     /// getting silently dropped.
     #[test]
     fn merge_reports_propagates_sketch_decode_errors() {
-        use crate::serde::protobuf::QuantileSketchState;
         use datafusion::common::ScalarValue;
 
         // Six scalars is the valid shape; three is a corrupted wire.
@@ -1391,5 +1570,467 @@ mod merge_tests {
     #[test]
     fn merge_reports_empty_input_is_empty_output() {
         assert!(merge_reports(&[]).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod plan_walker_tests {
+    //! `range_repartition_routing_expr` — recursive walk that recognizes
+    //! both `UnorderedRangeRepartitionExec` and `OrderedRangeRepartitionExec`
+    //! at any depth.
+
+    use super::*;
+    use crate::execution_plans::{
+        OrderedRangeRepartitionExec, UnorderedRangeRepartitionExec,
+    };
+    use datafusion::arrow::compute::SortOptions;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::expressions::col;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+
+    fn v_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
+    }
+
+    fn v_source() -> Arc<dyn ExecutionPlan> {
+        let schema = v_schema();
+        let memory =
+            Arc::new(MemorySourceConfig::try_new(&[vec![]], schema, None).unwrap());
+        Arc::new(DataSourceExec::new(memory))
+    }
+
+    fn sort_expr_v() -> PhysicalSortExpr {
+        let schema = v_schema();
+        PhysicalSortExpr {
+            expr: col("v", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        }
+    }
+
+    fn urre_over_source(k: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            UnorderedRangeRepartitionExec::try_new(v_source(), vec![sort_expr_v()], k)
+                .unwrap(),
+        )
+    }
+
+    fn orre_over_source(k: usize) -> Arc<dyn ExecutionPlan> {
+        // ORRE demands sorted input.
+        let sort = Arc::new(SortExec::new(
+            LexOrdering::new(vec![sort_expr_v()]).unwrap(),
+            v_source(),
+        ));
+        Arc::new(
+            OrderedRangeRepartitionExec::try_new(sort, vec![sort_expr_v()], k).unwrap(),
+        )
+    }
+
+    #[test]
+    fn range_repartition_routing_expr_bare_source_returns_none() {
+        assert!(
+            repartition_routing_expr(v_source().as_ref())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn range_repartition_routing_expr_urre_returns_first_order_by_expr() {
+        let urre = urre_over_source(4);
+        let expr = repartition_routing_expr(urre.as_ref())
+            .unwrap()
+            .expect("URRE at root should yield a routing expression");
+        // The expression is the `v` column — verify by string equality since
+        // PhysicalExpr doesn't implement PartialEq.
+        assert_eq!(format!("{expr}"), format!("{}", sort_expr_v().expr));
+    }
+
+    #[test]
+    fn range_repartition_routing_expr_orre_returns_first_order_by_expr() {
+        let orre = orre_over_source(4);
+        let expr = repartition_routing_expr(orre.as_ref())
+            .unwrap()
+            .expect("ORRE at root should yield a routing expression");
+        assert_eq!(format!("{expr}"), format!("{}", sort_expr_v().expr));
+    }
+
+    #[test]
+    fn range_repartition_routing_expr_descends_through_stats_wrapper() {
+        // Canonical shape: RuntimeStatsExec above URRE — the walker must
+        // recurse through the stats wrapper to find the URRE beneath.
+        let urre = urre_over_source(4);
+        let stats: Arc<dyn ExecutionPlan> =
+            Arc::new(RuntimeStatsExec::try_new(urre, Some(vec![sort_expr_v()])).unwrap());
+        let expr = repartition_routing_expr(stats.as_ref())
+            .unwrap()
+            .expect("walker must descend past RuntimeStatsExec");
+        assert_eq!(format!("{expr}"), format!("{}", sort_expr_v().expr));
+    }
+
+    #[test]
+    fn range_repartition_routing_expr_urre_nested_returns_expr() {
+        // Two stats-wrapper layers to prove the walk descends more than once.
+        let urre = urre_over_source(4);
+        let inner_stats =
+            Arc::new(RuntimeStatsExec::try_new(urre, Some(vec![sort_expr_v()])).unwrap());
+        let outer: Arc<dyn ExecutionPlan> = Arc::new(
+            RuntimeStatsExec::try_new(inner_stats, Some(vec![sort_expr_v()])).unwrap(),
+        );
+        assert!(repartition_routing_expr(outer.as_ref()).unwrap().is_some());
+    }
+
+    #[test]
+    fn range_repartition_routing_expr_orre_nested_returns_expr() {
+        let orre = orre_over_source(4);
+        let inner_stats =
+            Arc::new(RuntimeStatsExec::try_new(orre, Some(vec![sort_expr_v()])).unwrap());
+        let outer: Arc<dyn ExecutionPlan> = Arc::new(
+            RuntimeStatsExec::try_new(inner_stats, Some(vec![sort_expr_v()])).unwrap(),
+        );
+        assert!(repartition_routing_expr(outer.as_ref()).unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod overlap_remap_tests {
+    //! `overlap_remap_partitions` — takes a passthrough
+    //! `Vec<Vec<PartitionLocation>>` and rewrites it under overlap semantics
+    //! computed from merged sketches. Straddling sub-parts appear in every
+    //! downstream partition whose range they touch; bookkeeping mismatches
+    //! surface as errors rather than silent misroutes.
+
+    use super::*;
+    use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
+    use crate::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId, PartitionLocation, PartitionStats,
+    };
+
+    /// Build a `PartitionLocation` for a producer file identified by
+    /// `(producer_task_id, sub_part_id)`. `file_id = producer_task_id`
+    /// matches the passthrough writer's convention.
+    fn location(sub_part_id: usize, producer_task_id: usize) -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: 0,
+            partition_id: PartitionId {
+                job_id: "test-job".into(),
+                stage_id: 0,
+                partition_id: sub_part_id,
+            },
+            executor_meta: ExecutorMetadata {
+                id: format!("exec-{producer_task_id}"),
+                host: "".to_string(),
+                port: 0,
+                grpc_port: 0,
+                specification: ExecutorSpecification::default().with_vcores(0),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+            // `Some(0)` — helper's default is "empty file". Tests that
+            // need rows overwrite `.partition_stats` explicitly.
+            partition_stats: PartitionStats::new(Some(0), None, None),
+            file_id: Some(producer_task_id as u64),
+            is_sort_shuffle: false,
+        }
+    }
+
+    /// Build a report whose sub-parts each carry a T-Digest sketch over
+    /// `values`. Slot `sub_part_id` gets a sketch of `values[sub_part_id]`.
+    fn sketch_report(
+        producer_task_id: usize,
+        values_per_sub_part: Vec<Vec<f64>>,
+    ) -> TaskRuntimeStats {
+        let partitions = values_per_sub_part
+            .into_iter()
+            .enumerate()
+            .map(|(sub_part_id, samples)| {
+                let sketch = if samples.is_empty() {
+                    None
+                } else {
+                    let digest = TDigest::new(100).merge_unsorted_f64(samples.clone());
+                    Some(sketch_to_proto(&digest).unwrap())
+                };
+                RuntimeStatsPartitionEntry {
+                    partition_id: sub_part_id as u32,
+                    row_count: samples.len() as u64,
+                    sketch,
+                }
+            })
+            .collect();
+        TaskRuntimeStats {
+            producer_task_id,
+            report: RuntimeStatsReport {
+                order_by: vec![],
+                partitions,
+            },
+        }
+    }
+
+    /// Two producers with disjoint value ranges + one downstream cut →
+    /// each downstream partition gets exactly one producer's files.
+    #[test]
+    fn overlap_remap_disjoint_producers_route_to_single_partition() {
+        // Producer 100 covers [0, 10); producer 200 covers [20, 30).
+        let reports = vec![
+            sketch_report(100, vec![vec![0.0, 5.0, 9.0]]),
+            sketch_report(200, vec![vec![20.0, 25.0, 29.0]]),
+        ];
+        // Cut at 15 → partition 0 = (-∞, 15), partition 1 = [15, +∞).
+        let cuts = vec![15.0];
+        // Passthrough map: both producers wrote to sub_part_id=0.
+        let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        assert_eq!(remapped.len(), 2, "K = cuts.len() + 1");
+        // Partition 0: only producer 100.
+        assert_eq!(remapped[0].len(), 1);
+        assert_eq!(remapped[0][0].file_id, Some(100));
+        // Partition 1: only producer 200.
+        assert_eq!(remapped[1].len(), 1);
+        assert_eq!(remapped[1][0].file_id, Some(200));
+    }
+
+    /// A straddling sub-part — one whose sketched [min, max] spans the cut
+    /// — appears in BOTH downstream partitions' lists. This is the case
+    /// RangeFilterExec exists to clean up.
+    #[test]
+    fn overlap_remap_straddling_producer_appears_in_both_partitions() {
+        // Producer 300 covers [5, 25) — straddles the cut at 15.
+        let reports = vec![sketch_report(300, vec![vec![5.0, 15.0, 25.0]])];
+        let cuts = vec![15.0];
+        let original_partitions = vec![vec![location(0, 300)]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        assert_eq!(remapped.len(), 2);
+        assert_eq!(remapped[0].len(), 1, "straddler in partition 0");
+        assert_eq!(remapped[0][0].file_id, Some(300));
+        assert_eq!(remapped[1].len(), 1, "straddler in partition 1");
+        assert_eq!(remapped[1][0].file_id, Some(300));
+    }
+
+    /// A producer file without `file_id` means the writer that produced it
+    /// wasn't the passthrough writer — remap can't identify the file, so
+    /// error rather than silently misroute.
+    #[test]
+    fn overlap_remap_missing_file_id_errors() {
+        let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
+        let cuts = vec![10.0];
+        // Loc has file_id=None — invalid for URRE/ORRE stages.
+        let mut bad = location(0, 100);
+        bad.file_id = None;
+        let original_partitions = vec![vec![bad]];
+
+        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
+            .expect_err("missing file_id must surface as an error");
+        assert!(
+            err.to_string().contains("missing file_id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A report entry with no corresponding PartitionLocation is silently
+    /// ignored — the walk is driven by `original_partitions`, so orphan
+    /// reports never get consulted. `SuccessfulTask` bundles the shuffle
+    /// files and their runtime-stats report together, so this scenario
+    /// shouldn't happen in practice; the shape just doesn't need to
+    /// enforce it.
+    #[test]
+    fn orphan_report_is_silently_ignored() {
+        // Report from producer 100, but original_partitions only has
+        // producer 200 — no file to route.
+        let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
+        let cuts = vec![10.0];
+        let original_partitions = vec![vec![location(0, 200)]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        assert_eq!(remapped.len(), 2);
+        assert!(remapped[0].is_empty());
+        assert!(remapped[1].is_empty());
+    }
+
+    /// Empty-sketch entries contribute no locations when the file is
+    /// itself empty (num_rows == 0). No data lost, no error.
+    #[test]
+    fn overlap_remap_empty_sketches_produce_empty_partitions() {
+        let reports = vec![sketch_report(100, vec![vec![]])];
+        let cuts = vec![10.0];
+        let original_partitions = vec![vec![location(0, 100)]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        assert_eq!(remapped.len(), 2);
+        assert!(remapped[0].is_empty());
+        assert!(remapped[1].is_empty());
+    }
+
+    /// A file with rows but no matching sketch cannot be routed by
+    /// overlap — silently skipping would drop rows. Surface as an error.
+    #[test]
+    fn missing_sketch_with_rows_errors() {
+        let reports = vec![sketch_report(100, vec![vec![1.0, 2.0]])];
+        let cuts = vec![10.0];
+        // File 200 has 5 rows but no report entry exists for it.
+        let mut orphan = location(0, 200);
+        orphan.partition_stats = PartitionStats::new(Some(5), None, None);
+        let original_partitions = vec![vec![orphan]];
+
+        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
+            .expect_err("file with rows but no sketch must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("num_rows=Some(5)") && msg.contains("no usable sketch"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Multi-cut layout: with K = 4 buckets and cuts [10, 20, 30], a sketch
+    /// covering [15, 25] must land in exactly buckets 1 and 2 — verifying the
+    /// `partition_point` range walk lines up with the original inclusive
+    /// `lower ≤ sketch_max` / exclusive `sketch_min < upper` semantics.
+    #[test]
+    fn overlap_remap_multi_cut_range_matches_bucket_semantics() {
+        let reports = vec![
+            // A: covers only bucket 0
+            sketch_report(1, vec![vec![1.0, 5.0, 9.0]]),
+            // B: straddles cuts[0]=10 → buckets 0 and 1
+            sketch_report(2, vec![vec![5.0, 10.0, 15.0]]),
+            // C: fully inside bucket 1
+            sketch_report(3, vec![vec![11.0, 15.0, 19.0]]),
+            // D: sketch_min == cuts[1] → excluded from bucket 1 (upper is exclusive),
+            //    included in buckets 2 and 3
+            sketch_report(4, vec![vec![20.0, 25.0, 35.0]]),
+            // E: covers only the last bucket
+            sketch_report(5, vec![vec![31.0, 40.0, 50.0]]),
+            // F: spans the whole range → every bucket
+            sketch_report(6, vec![vec![0.0, 20.0, 100.0]]),
+        ];
+        let cuts = vec![10.0, 20.0, 30.0];
+        let original_partitions = vec![vec![
+            location(0, 1),
+            location(0, 2),
+            location(0, 3),
+            location(0, 4),
+            location(0, 5),
+            location(0, 6),
+        ]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        assert_eq!(remapped.len(), 4);
+        let ids = |b: &[PartitionLocation]| {
+            let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&remapped[0]), vec![1u64, 2, 6]);
+        assert_eq!(ids(&remapped[1]), vec![2u64, 3, 6]);
+        assert_eq!(ids(&remapped[2]), vec![4u64, 6]);
+        assert_eq!(ids(&remapped[3]), vec![4u64, 5, 6]);
+    }
+
+    /// A file with an unknown row count (`None`) and no usable sketch
+    /// also errors — we can't confirm the file is empty, so we can't
+    /// safely skip it.
+    #[test]
+    fn missing_sketch_with_unknown_rows_errors() {
+        let reports: Vec<TaskRuntimeStats> = vec![];
+        let cuts = vec![10.0];
+        let mut orphan = location(0, 100);
+        orphan.partition_stats = PartitionStats::default(); // num_rows = None
+        let original_partitions = vec![vec![orphan]];
+
+        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
+            .expect_err("file with unknown rows but no sketch must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("num_rows=None") && msg.contains("no usable sketch"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Halo widening lets each partition see files that sit within
+    /// `[halo_lo, halo_hi]` of its raw cut range — the downstream
+    /// `RangeFilterExec`'s frame-context rows come from those files, and
+    /// missing any of them causes RANGE-frame window sums to drop rows
+    /// at boundaries.
+    ///
+    /// The K=5 layout with `halo_lo != halo_hi` proves three things at
+    /// once: (a) `halo_lo` widens downward, (b) `halo_hi` widens upward,
+    /// (c) the halo band stays *local* — it does not bleed across two
+    /// cut hops to far-away partitions.
+    #[test]
+    fn overlap_remap_halo_band_widens_both_sides_without_bleeding_to_far_partitions() {
+        // K=5, asymmetric halos so we can tell halo_lo and halo_hi apart.
+        let cuts = vec![10.0, 20.0, 30.0, 40.0];
+        let halo_lo = 1.0;
+        let halo_hi = 2.0;
+        // Effective partition ranges:
+        //   P0: (-∞, 12)   P1: [9, 22)   P2: [19, 32)   P3: [29, 42)   P4: [39, +∞)
+        let reports = vec![
+            // 100 sits deep inside P0 — far from P1's halo, stays P0-only.
+            sketch_report(100, vec![vec![5.0, 6.0]]),
+            // 200 is entirely below cut 20 but within halo_lo=1 of it —
+            // routes to P1 (own bucket) AND P2 (halo band from below).
+            // Must NOT reach P0 (two cut hops away).
+            sketch_report(200, vec![vec![18.0, 19.0]]),
+            // 300 sits cleanly inside P2 — no halo participation.
+            sketch_report(300, vec![vec![25.0, 26.0]]),
+            // 400 is entirely above cut 30 but within halo_hi=2 of it —
+            // routes to P2 (halo band from above) AND P3 (own bucket).
+            // Must NOT reach P4 (two cut hops away).
+            sketch_report(400, vec![vec![31.0, 32.0]]),
+            // 500 sits deep inside P4 — far from P3's halo, stays P4-only.
+            sketch_report(500, vec![vec![45.0, 46.0]]),
+        ];
+        let original_partitions = vec![vec![
+            location(0, 100),
+            location(0, 200),
+            location(0, 300),
+            location(0, 400),
+            location(0, 500),
+        ]];
+
+        let remapped =
+            cut_partitions(original_partitions, &reports, &cuts, halo_lo, halo_hi)
+                .unwrap();
+        let ids = |b: &[PartitionLocation]| {
+            let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(remapped.len(), 5);
+        assert_eq!(
+            ids(&remapped[0]),
+            vec![100u64],
+            "P0 sees only its own bucket — 200's halo band belongs to P1/P2, not here",
+        );
+        assert_eq!(
+            ids(&remapped[1]),
+            vec![200u64],
+            "P1 sees its own straddler (200) below cut 20",
+        );
+        assert_eq!(
+            ids(&remapped[2]),
+            vec![200u64, 300, 400],
+            "P2 (middle) sees siblings from BOTH halo bands — 200 via halo_lo, 400 via halo_hi — plus its own 300",
+        );
+        assert_eq!(
+            ids(&remapped[3]),
+            vec![400u64],
+            "P3 sees its own straddler (400) above cut 30",
+        );
+        assert_eq!(
+            ids(&remapped[4]),
+            vec![500u64],
+            "P4 sees only its own bucket — 400's halo band belongs to P2/P3, not here",
+        );
     }
 }

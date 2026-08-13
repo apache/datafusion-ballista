@@ -319,6 +319,7 @@ impl SessionStateExt for SessionState {
             .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())))
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
+            .with_optimizer_rules(crate::optimizer::ballista_default_optimizer_rules())
             .with_scalar_functions(ballista_scalar_functions())
             .with_aggregate_functions(ballista_aggregate_functions())
             .with_window_functions(ballista_window_functions())
@@ -338,8 +339,12 @@ impl SessionStateExt for SessionState {
 
         let ballista_config = session_config.ballista_config();
 
+        let optimizer_rules =
+            crate::optimizer::with_ballista_optimizer_rules(self.optimizers());
+
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
+            .with_optimizer_rules(optimizer_rules)
             .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())));
 
         let builder = match planner_override {

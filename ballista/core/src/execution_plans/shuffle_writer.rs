@@ -27,8 +27,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::JobId;
-use crate::execution_plans::SortShuffleWriterExec;
-use crate::execution_plans::create_shuffle_path;
+use crate::error::BallistaError;
+use crate::execution_plans::{
+    OrderedRangeRepartitionExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    create_shuffle_path,
+};
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
@@ -53,7 +56,6 @@ use datafusion::physical_plan::{
 };
 use futures::TryStreamExt;
 
-use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -73,9 +75,15 @@ enum GlobalPartitionMap {
     /// The plan collapses to a single output partition (e.g.
     /// `SortPreservingMergeExec`). Every local index → global partition 0.
     Collapsed,
-    /// The plan re-establishes a hash-partition K-space (e.g.
-    /// `RepartitionExec::Hash(_, K)`). Local index == global (0..K).
-    HashSpace,
+    /// The plan re-establishes a fresh K-space of output partitions — every
+    /// operator that fans rows into K distinct outputs and assigns each output
+    /// a fresh index. `RepartitionExec::Hash(_, K)` and
+    /// `RepartitionExec::RoundRobinBatch(K)` qualify;
+    /// `UnorderedRangeRepartitionExec` (range-routed) qualifies too. Local
+    /// index == global (0..K) regardless of the routing algorithm — the K-space
+    /// is per-stage and per-task-slot, `file_id` disambiguates the same
+    /// `partition_id` across producers.
+    KSpace,
     /// Nothing between the writer and the leaves rewrites partitioning —
     /// local index `i` is `slice[i]` globally. Empty when no slice was
     /// stamped, in which case local is used as-is (identity).
@@ -86,7 +94,7 @@ impl GlobalPartitionMap {
     fn resolve(&self, local: usize) -> u64 {
         match self {
             GlobalPartitionMap::Collapsed => 0,
-            GlobalPartitionMap::HashSpace => local as u64,
+            GlobalPartitionMap::KSpace => local as u64,
             GlobalPartitionMap::PassThrough(slice) => {
                 slice.get(local).copied().unwrap_or(local) as u64
             }
@@ -98,7 +106,14 @@ impl GlobalPartitionMap {
 /// determines the output partitioning shape:
 ///
 /// - `SortPreservingMergeExec` → `Collapsed` (fan-in to 1).
-/// - `RepartitionExec` producing a hash / round-robin K-space → `HashSpace`.
+/// - `RepartitionExec(Hash|RoundRobin)` → `KSpace` (fresh K-space by hash /
+///   round-robin routing).
+/// - `UnorderedRangeRepartitionExec` / `OrderedRangeRepartitionExec` →
+///   `KSpace` (fresh K-space by range routing, unordered or order-preserving).
+///   Same shape as hash-repartition from the writer's perspective: K distinct
+///   outputs, local index == global partition, `file_id` disambiguates across
+///   producers. Content-range info (which K-slot holds which value range)
+///   travels through the separate `RuntimeStatsExec` sketch-report channel.
 /// - Otherwise recurse into the sole child (Filter/Sort/Projection/… are
 ///   partitioning-preserving passthroughs).
 /// - If we hit a leaf or a fan-in without recognising it, treat it as
@@ -107,13 +122,13 @@ fn walk_child_partition_mapping(
     plan: &Arc<dyn ExecutionPlan>,
     global_output_partition_ids: &[usize],
 ) -> GlobalPartitionMap {
-    if plan.downcast_ref::<SortPreservingMergeExec>().is_some() {
+    if plan.is::<SortPreservingMergeExec>() {
         return GlobalPartitionMap::Collapsed;
     }
     if let Some(repart) = plan.downcast_ref::<RepartitionExec>() {
         match repart.partitioning() {
             Partitioning::Hash(_, _) | Partitioning::RoundRobinBatch(_) => {
-                return GlobalPartitionMap::HashSpace;
+                return GlobalPartitionMap::KSpace;
             }
             Partitioning::UnknownPartitioning(_) => {
                 // RepartitionExec still exchanges rows and freshly numbers
@@ -127,6 +142,11 @@ fn walk_child_partition_mapping(
                 );
             }
         }
+    }
+    if plan.is::<UnorderedRangeRepartitionExec>()
+        || plan.is::<OrderedRangeRepartitionExec>()
+    {
+        return GlobalPartitionMap::KSpace;
     }
     let children = plan.children();
     if children.len() == 1 {
@@ -144,7 +164,7 @@ fn walk_child_partition_mapping(
 ///
 /// Two cases:
 ///
-/// - `SortShuffleWriter(Hash(K))` — HashSpace by construction; the K-space
+/// - `SortShuffleWriter(Hash(K))` — KSpace by construction; the K-space
 ///   `[0..K-1]` is intrinsic. Input ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
@@ -164,14 +184,14 @@ pub fn compute_global_output_partition_ids(
         };
         return (0..*k).collect();
     }
-    if stage_plan.downcast_ref::<ShuffleWriterExec>().is_some() {
+    if stage_plan.is::<ShuffleWriterExec>() {
         let children = stage_plan.children();
         let [child] = children.as_slice() else {
             unreachable!("ShuffleWriterExec always has exactly one child");
         };
         return match walk_child_partition_mapping(child, global_input_partition_ids) {
             GlobalPartitionMap::Collapsed => vec![0],
-            GlobalPartitionMap::HashSpace => {
+            GlobalPartitionMap::KSpace => {
                 let k = child.properties().output_partitioning().partition_count();
                 (0..k).collect()
             }
@@ -494,7 +514,7 @@ impl ShuffleWriterExec {
     /// operator's output_partitioning). `summary.partition_id` is the
     /// **global** output partition id downstream will address, computed via
     /// `walk_child_partition_mapping` over the child plan — either
-    /// `global_output_partition_ids[local]`, `local` (hash K-space), or `0`
+    /// `global_output_partition_ids[local]`, `local` (K-space), or `0`
     /// (collapsed / SPM).
     pub fn execute_shuffle_write(
         self,
@@ -555,7 +575,7 @@ impl ShuffleWriterExec {
                         compression_type,
                     )
                     .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                    .map_err(BallistaError::into_datafusion)?;
                     let rows = stats.num_rows.unwrap_or(0) as usize;
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
@@ -718,15 +738,12 @@ impl ExecutionPlan for ShuffleWriterExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema,
             futures::stream::once(async move {
-                let summaries = rx
-                    .await
-                    .map_err(|_| {
-                        DataFusionError::Internal(
-                            "ShuffleWriterExec coordinator dropped without sending"
-                                .to_owned(),
-                        )
-                    })?
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                let summaries = rx.await.map_err(|_| {
+                    DataFusionError::Internal(
+                        "ShuffleWriterExec coordinator dropped without sending"
+                            .to_owned(),
+                    )
+                })??;
                 summaries_to_batch(
                     summaries,
                     schema_captured,
@@ -734,7 +751,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     &job_id,
                     stage_id,
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
             })
             .try_flatten(),
         )))
@@ -827,15 +843,13 @@ async fn run_coordinator(
             }
         }
         Err(e) => {
-            let msg = format!("{e:?}");
-            for (i, slot) in senders.iter_mut().enumerate() {
+            // Share the original error with every output handoff so classification
+            // preserves FetchFailed/IO details regardless of stream completion order.
+            let shared = Arc::new(e);
+            for slot in senders.iter_mut() {
                 if let Some(sender) = slot.take() {
-                    let err_msg = if i == 0 {
-                        msg.clone()
-                    } else {
-                        format!("shuffle writer failed: {msg}")
-                    };
-                    let _ = sender.send(Err(DataFusionError::Execution(err_msg)));
+                    let err = DataFusionError::from(&shared);
+                    let _ = sender.send(Err(err));
                 }
             }
         }
@@ -916,6 +930,8 @@ pub(crate) fn summaries_to_batch(
 #[allow(dead_code, unused_imports)] // clippy false positive with local imports
 mod tests {
     use super::*;
+    use crate::error::BallistaError;
+    use crate::execution_plans::ChaosExec;
     use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
@@ -953,6 +969,47 @@ mod tests {
             all.extend(batches);
         }
         Ok(all)
+    }
+
+    async fn drive_partition_results(
+        plan: Arc<ShuffleWriterExec>,
+        task_ctx: Arc<TaskContext>,
+    ) -> Vec<crate::error::Result<Vec<RecordBatch>>> {
+        let k = plan.properties().output_partitioning().partition_count();
+        let mut handles = Vec::with_capacity(k);
+        for n in 0..k {
+            let plan = plan.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = plan.execute(n, ctx).map_err(BallistaError::from)?;
+                utils::collect_stream(&mut stream).await
+            }));
+        }
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(
+                h.await
+                    .expect("drive_partition_results task should not panic"),
+            );
+        }
+        results
+    }
+
+    fn assert_shared_structural_error(err: &BallistaError) {
+        let BallistaError::DataFusionError(e) = err else {
+            panic!("expected DataFusionError, got {err:?}");
+        };
+        assert!(
+            matches!(e.as_ref(), DataFusionError::Shared(_)),
+            "expected shared DataFusionError, got {e:?}"
+        );
+        let DataFusionError::External(inner) = e.find_root() else {
+            panic!("expected External root, got {:?}", e.find_root());
+        };
+        assert!(
+            inner.downcast_ref::<BallistaError>().is_some(),
+            "expected External BallistaError, got {inner:?}"
+        );
     }
 
     #[tokio::test]
@@ -1042,36 +1099,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_repart_write_failure_propagates() -> Result<()> {
+    async fn write_failure_is_shared_to_all_output_partitions() -> Result<()> {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 
-        // Place a directory at the data-{file_id}.arrow path so File::create
-        // fails inside write_stream_to_disk, not at create_dir_all.
-        // Path: work_dir / job_id / stage_id / partition / data-{file_id}.arrow
-        // task_slot defaults to 0 in try_new, so file_id is 0.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let data_arrow_dir = tmp
-            .path()
-            .join("jobOne")
-            .join("1")
-            .join("0")
-            .join("data-0.arrow");
-        std::fs::create_dir_all(&data_arrow_dir).unwrap();
-        let work_dir = tmp.path().to_str().unwrap().to_owned();
-
-        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let input_plan: Arc<dyn ExecutionPlan> = Arc::new(ChaosExec::new(
+            create_input_plan()?,
+            1.0,
+            "transient",
+            Some(42),
+        )?);
+        let work_dir = TempDir::new()?;
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             "jobOne".into(),
             1,
             input_plan,
-            work_dir,
+            work_dir.path().to_str().unwrap().to_owned(),
         )?);
-        let result = drive_all_partitions(query_stage, task_ctx).await;
-        assert!(
-            result.is_err(),
-            "expected File::create failure in write_stream_to_disk to propagate"
-        );
+        let results = drive_partition_results(query_stage, task_ctx).await;
+        assert_eq!(2, results.len());
+        for result in results {
+            let err = result.expect_err("expected injected write failure");
+            assert_shared_structural_error(&err);
+        }
         Ok(())
     }
 

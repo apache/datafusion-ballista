@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -61,6 +61,12 @@ pub mod ballista_physical_plan_node {
         OrderedRangeRepartition(super::OrderedRangeRepartitionExecNode),
         #[prost(message, tag = "10")]
         PerPartitionFilter(super::PerPartitionFilterExecNode),
+        #[prost(message, tag = "11")]
+        PartitionedBoundedWindowAgg(super::PartitionedBoundedWindowAggExecNode),
+        #[prost(message, tag = "12")]
+        RangeShuffleReader(super::RangeShuffleReaderExecNode),
+        #[prost(message, tag = "13")]
+        RangeFilter(super::RangeFilterExecNode),
     }
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
@@ -144,6 +150,49 @@ pub struct PerPartitionFilterExecNode {
     #[prost(message, repeated, tag = "1")]
     pub predicates: ::prost::alloc::vec::Vec<
         ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
+}
+/// Filter inputs with a per-input-partition half-open range predicate
+/// widened by `halo_lo` / `halo_hi`. `raw_bounds\[k\]` is the cut range for
+/// input partition `k` before halo widening; RFE widens internally at
+/// resolve time. Zero halo recovers the exact range-repartition trim used
+/// above `ShuffleReaderExec`; non-zero halo widens each partition's read
+/// range to include a boundary "context" band (bounded RANGE-frame windows).
+/// The child plan is plumbed by the framework as `inputs\[0\]` during decode.
+/// Serialization requires bounds to be resolved.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeFilterExecNode {
+    #[prost(message, optional, tag = "1")]
+    pub routing_expr: ::core::option::Option<
+        ::datafusion_proto::protobuf::PhysicalExprNode,
+    >,
+    #[prost(message, optional, tag = "2")]
+    pub halo_lo: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, optional, tag = "3")]
+    pub halo_hi: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, repeated, tag = "4")]
+    pub raw_bounds: ::prost::alloc::vec::Vec<RangeBound>,
+}
+/// Half-open `[lo, hi)` cut range for one input partition. Either side may be
+/// unset to signal ±∞.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeBound {
+    #[prost(message, optional, tag = "1")]
+    pub lo: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, optional, tag = "2")]
+    pub hi: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+}
+/// Wrapper for `BoundedWindowAggExec` that overrides
+/// `required_input_distribution` to `Unspecified` — see the module doc on
+/// `execution_plans::partitioned_bounded_window_agg` for what makes that safe.
+/// The child plan is plumbed by the framework as `inputs\[0\]` during decode.
+/// `input_order_mode` and `can_repartition` are hardcoded on the decode side
+/// per the rule's shape gates; only `window_expr` needs to cross the wire.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PartitionedBoundedWindowAggExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub window_expr: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalWindowExprNode,
     >,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -233,6 +282,24 @@ pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
     pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+}
+/// Ordering-preserving shuffle reader. Reuses `ShuffleReaderPartition` for the
+/// M-shape source layout. Partitioning is derived from `partition.len()`
+/// (always `UnknownPartitioning`, range-partitioned by `merge_ordering`).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeShuffleReaderExecNode {
+    #[prost(message, repeated, tag = "1")]
+    pub partition: ::prost::alloc::vec::Vec<ShuffleReaderPartition>,
+    #[prost(message, optional, tag = "2")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+    #[prost(uint32, tag = "3")]
+    pub stage_id: u32,
+    /// Sort key the reader's k-way merge preserves. Advertised on the reader's
+    /// `PlanProperties.eq_properties` for downstream consumers.
+    #[prost(message, repeated, tag = "4")]
+    pub merge_ordering: ::prost::alloc::vec::Vec<
+        ::datafusion_proto::protobuf::PhysicalSortExprNode,
+    >,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).

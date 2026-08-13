@@ -53,7 +53,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -350,6 +350,10 @@ impl TaskLauncher for BlackholeTaskLauncher {
 pub struct VirtualTaskLauncher {
     sender: Sender<(String, Vec<TaskStatus>)>,
     executors: HashMap<String, VirtualExecutor>,
+    /// Executors whose launches must fail, as if the process had died between
+    /// binding and launch. Shared with the owning [`SchedulerTest`], which adds
+    /// to it through [`SchedulerTest::make_launches_fail`].
+    unreachable: Arc<Mutex<HashSet<String>>>,
 }
 
 #[async_trait::async_trait]
@@ -360,6 +364,13 @@ impl TaskLauncher for VirtualTaskLauncher {
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
     ) -> Result<HashSet<JobId>> {
+        if self.unreachable.lock().contains(&executor.id) {
+            return Err(BallistaError::Internal(format!(
+                "test: executor {} is unreachable",
+                executor.id
+            )));
+        }
+
         let virtual_executor = self.executors.get(&executor.id).ok_or_else(|| {
             BallistaError::Internal(format!(
                 "No virtual executor with ID {} found",
@@ -409,6 +420,7 @@ pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     session_config: SessionConfig,
     status_receiver: Option<Receiver<(String, Vec<TaskStatus>)>>,
+    unreachable_executors: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SchedulerTest {
@@ -445,9 +457,12 @@ impl SchedulerTest {
 
         let (status_sender, status_receiver) = channel(1000);
 
+        let unreachable_executors: Arc<Mutex<HashSet<String>>> = Arc::default();
+
         let launcher = VirtualTaskLauncher {
             sender: status_sender,
             executors: executors.clone(),
+            unreachable: unreachable_executors.clone(),
         };
 
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -489,6 +504,7 @@ impl SchedulerTest {
             scheduler,
             session_config,
             status_receiver: Some(status_receiver),
+            unreachable_executors,
         })
     }
 
@@ -579,6 +595,11 @@ impl SchedulerTest {
         self.scheduler.running_job_number()
     }
 
+    /// Returns job state events from the underlying scheduler.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.scheduler.job_state_events().await
+    }
+
     /// Returns the session context for tests.
     pub async fn ctx(&self) -> Result<Arc<SessionContext>> {
         self.scheduler
@@ -640,6 +661,39 @@ impl SchedulerTest {
             .query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobCancel(job_id.to_owned()))
+            .await
+    }
+
+    /// Simulates the loss of an executor. This mirrors the reaper's
+    /// `remove_executor` path without waiting out the heartbeat timeout.
+    pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
+        self.scheduler
+            .state
+            .remove_executor(
+                executor_id,
+                Some("test: executor lost".to_owned()),
+                &self.scheduler.query_stage_event_loop.get_sender()?,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Makes every subsequent task launch onto `executor_id` fail, as if the
+    /// process had died after its tasks were bound to it. The scheduler then
+    /// discovers the loss through the failing launch rather than through
+    /// heartbeat expiry.
+    pub fn make_launches_fail(&self, executor_id: &str) {
+        self.unreachable_executors
+            .lock()
+            .insert(executor_id.to_owned());
+    }
+
+    /// Returns the current status of a job, if known.
+    pub async fn job_status(&self, job_id: &JobId) -> Result<Option<JobStatus>> {
+        self.scheduler
+            .state
+            .task_manager
+            .get_job_status(job_id)
             .await
     }
 

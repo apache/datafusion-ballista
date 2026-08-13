@@ -21,6 +21,14 @@ LABEL org.opencontainers.image.source="https://github.com/apache/datafusion-ball
 LABEL org.opencontainers.image.description="Apache DataFusion Ballista Distributed SQL Query Engine"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
+# ca-certificates so DataFusion's object_store S3 client can verify TLS
+# certs. Ubuntu's minimal image doesn't populate /etc/ssl/certs, and
+# reads from s3:// paths fail with InvalidCertificate(UnknownIssuer)
+# otherwise.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 ARG RELEASE_FLAG=release
 
 ENV RELEASE_FLAG=${RELEASE_FLAG}
@@ -30,6 +38,7 @@ ENV RUST_BACKTRACE=full
 COPY target/${RELEASE_FLAG}/ballista-scheduler /root/ballista-scheduler
 COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
 COPY target/${RELEASE_FLAG}/tpch /root/tpch
+COPY target/${RELEASE_FLAG}/h2o /root/h2o
 
 COPY benchmarks/run.sh /root/run.sh
 COPY benchmarks/queries/ /root/benchmarks/queries
