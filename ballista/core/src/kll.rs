@@ -202,6 +202,26 @@ fn level_capacity(k: usize, num_levels: usize, height: usize) -> usize {
     raw.max(MIN_LEVEL_WIDTH)
 }
 
+/// Clone copies the compactor stack and the tracked extremes, and gives
+/// the copy a fresh PRNG rather than duplicating the original's position.
+///
+/// Written by hand because `StdRng` is not `Clone`. Reseeding is the
+/// correct behaviour anyway: two sketches sharing a coin-flip sequence
+/// would correlate their compaction decisions, and every quantile the
+/// clone can answer is already determined by the state that was copied.
+impl<T: Ord + Clone> Clone for KllSketch<T> {
+    fn clone(&self) -> Self {
+        Self {
+            levels: self.levels.clone(),
+            sorted: self.sorted.clone(),
+            k: self.k,
+            rng: StdRng::seed_from_u64(rand::random::<u64>()),
+            min: self.min.clone(),
+            max: self.max.clone(),
+        }
+    }
+}
+
 impl<T: Ord + Clone> KllSketch<T> {
     /// Construct an empty sketch with top-level compactor capacity `k`,
     /// seeded from OS entropy.
@@ -443,6 +463,35 @@ impl<T: Ord + Clone> KllSketch<T> {
         }
     }
 
+    /// The stream's true minimum, or `None` if nothing has been ingested.
+    ///
+    /// Tracked outside the compactor stack, so this is exact rather than
+    /// estimated — a coin flip can evict the smallest retained item but
+    /// cannot move this.
+    pub fn min(&self) -> Option<&T> {
+        self.min.as_ref()
+    }
+
+    /// The stream's true maximum, or `None` if nothing has been ingested.
+    /// Exact for the same reason as [`Self::min`].
+    pub fn max(&self) -> Option<&T> {
+        self.max.as_ref()
+    }
+
+    /// Number of items ingested so far.
+    ///
+    /// Exact, not estimated. Compaction halves an even buffer while
+    /// doubling the survivors' weight, and leaves the odd item behind at
+    /// its original weight, so the weighted sum over levels is invariant
+    /// under compaction and equals the ingested count.
+    pub fn count(&self) -> u64 {
+        self.levels
+            .iter()
+            .enumerate()
+            .map(|(h, level)| (1u64 << h) * level.len() as u64)
+            .sum()
+    }
+
     /// Return the estimated number of items strictly less than `x`.
     ///
     /// Sum over levels `h` of `2^h · | { y ∈ levels[h] : y < x } |`.
@@ -477,12 +526,7 @@ impl<T: Ord + Clone> KllSketch<T> {
         if q == 1.0 {
             return self.max.as_ref();
         }
-        let total_weight: u64 = self
-            .levels
-            .iter()
-            .enumerate()
-            .map(|(h, level)| (1u64 << h) * level.len() as u64)
-            .sum();
+        let total_weight = self.count();
         if total_weight == 0 {
             return None;
         }

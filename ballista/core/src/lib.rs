@@ -77,6 +77,8 @@ pub mod planner;
 pub mod registry;
 /// Serialization and deserialization for Ballista messages and plans.
 pub mod serde;
+/// Order-preserving `u64` encoding of a fixed-width `ORDER BY` key.
+pub mod sort_key;
 /// General utility functions for Ballista operations.
 pub mod utils;
 
