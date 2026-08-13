@@ -21,19 +21,24 @@
 //! (nullability, sort direction, non-`Float64` types, multi-column keys)
 //! and pays a different price for it.
 //!
+//! Most of these arms are **not** designs we adopted. They are the
+//! alternatives that were priced and dropped, kept here so the reasons
+//! stay checkable rather than becoming folklore. Two arms describe what
+//! the code actually does; the rest are receipts.
+//!
 //! Measured at n=1M on a Ryzen 9 9950X (64 MiB L3), ratio to `tdigest`:
 //!
-//! | arm                              | ×tdigest | buys                     |
+//! | arm                              | ×tdigest | outcome                  |
 //! |----------------------------------|---------:|--------------------------|
-//! | `tdigest`                        |     1.00 | Float64, non-null, ASC   |
-//! | `kll_norm_u64`                   |     1.23 | + any fixed-width dtype  |
-//! | `kll_norm_u128`                  |     1.58 | + NULL slot              |
-//! | `kll_ordered_float_absorb_slice` |     1.80 | Float64 only             |
-//! | `kll_row_key`                    |     3.75 | + arrow-row null/dir     |
-//! | `kll_row_absorb`                 |     5.85 | + multi-column, Utf8     |
-//! | `kll_row`                        |     6.85 | (per-row `insert`)       |
+//! | `tdigest`                        |     1.00 | incumbent, being removed |
+//! | `kll_norm_u64`                   |     1.23 | **adopted**: fixed-width |
+//! | `kll_norm_u128`                  |     1.58 | dropped: NULL in the key |
+//! | `kll_ordered_float_absorb_slice` |     1.80 | dropped: slower, Float64 |
+//! | `kll_row_key`                    |     3.75 | dropped: no real saving  |
+//! | `kll_row_absorb`                 |     5.85 | **adopted**: arrow-row   |
+//! | `kll_row`                        |     6.85 | dropped: per-row insert  |
 //!
-//! Two results drive the dispatch design:
+//! Three results drive the dispatch design:
 //!
 //! 1. **arrow-row can't reach the native-`Ord` tier.** `kll_row_key`
 //!    holds the row bytes inline in a `Copy` array, eliminating
@@ -47,9 +52,24 @@
 //!    despite both being 8-byte `Copy`. Compaction's `sort_unstable`
 //!    dominates ingest, and a `u64` compare is one instruction where
 //!    `OrderedFloat`'s total order is bit manipulation plus branches.
-//!    Folding sort direction and NULL placement into the key also keeps
-//!    them runtime data instead of type parameters, so one sketch type
-//!    covers all four ASC/DESC × nulls-first/last combinations.
+//!    Folding sort direction into the key also keeps it runtime data
+//!    instead of a type parameter, so one sketch type serves both ASC and
+//!    DESC instead of one per direction.
+//!
+//! 3. **A NULL does not belong in the key.** `kll_norm_u128` gives NULL
+//!    its own slot by tagging a bit above the value bits. Every one of the
+//!    2^64 keys is already spoken for, so that slot costs a 65th bit and
+//!    in practice a 16-byte key: 1.58× against `u64`'s 1.23×. Counting
+//!    NULLs beside the sketch instead reproduces the same total order for
+//!    free, because a NULL has no position *among* values, only a side,
+//!    and `nulls_first` fixes that side at plan time. So `SortKeyCodec`
+//!    skips NULLs and `KllSketch<u64>` never sees one. This arm exists to
+//!    price the alternative, not to describe the code.
+//!
+//!    The exception is a composite key, where a NULL in one column sits
+//!    beside a real value in another and the interleaving genuinely
+//!    matters. That is the `kll_row_absorb` tier, where arrow-row encodes
+//!    NULLs inline at no extra cost.
 //!
 //! The `n=100K` numbers tell a second story: there `kll_norm_u64` is
 //! *faster* than TDigest (1.219 ms vs 1.358 ms). KLL's per-row cost grows
