@@ -67,6 +67,7 @@
 //! | arm                              | ×tdigest | outcome                  |
 //! |----------------------------------|---------:|--------------------------|
 //! | `tdigest`                        |     1.00 | incumbent                |
+//! | `kll_norm_u32`                   |     1.20 | dropped: 2% for an enum  |
 //! | `kll_norm_u64`                   |     1.23 | shape adopted, see above |
 //! | `kll_norm_u128`                  |     1.58 | dropped: NULL in the key |
 //! | `kll_ordered_float_absorb_slice` |     1.80 | dropped: slower, Float64 |
@@ -111,11 +112,23 @@
 //!    matters. That is the `kll_row_absorb` tier, where arrow-row encodes
 //!    NULLs inline at no extra cost.
 //!
+//! 4. **Width costs at the register boundary, not by the byte.**
+//!    `kll_norm_u32` halves the key and buys 2–3%; `kll_norm_u128` doubles
+//!    it and costs 29% at 1M. Bytes moved would make those roughly
+//!    symmetric. `u32` and `u64` are both a single register, so only their
+//!    memory traffic differs and that traffic is not the bottleneck, while
+//!    `u128` is not a register and compaction's `sort_unstable` compares it
+//!    multi-word. Getting paid for a key narrower than a register needs
+//!    SIMD over it, which is a long reach for 2%. So `SortKeyCodec` widens
+//!    every fixed-width column to one `u64` tier rather than carrying a
+//!    width enum through the sketch, its wire format and its consumers.
+//!
 //! Caveat on the 64 MiB L3: at n=1M the whole working set is cache-
 //! resident, including the key vector each KLL arm materializes per batch
-//! (8 MB for `u64`, 16 MB for `u128`). On a core with a smaller cache
-//! share that traffic is charged to DRAM, so `kll_norm_u128`'s penalty
-//! over `kll_norm_u64` should be read as a lower bound.
+//! (4 MB for `u32`, 8 MB for `u64`, 16 MB for `u128`). On a core with a
+//! smaller cache share that traffic is charged to DRAM. `kll_norm_u32`
+//! bounds how much that can matter: halving the vector is worth 2–3%, so
+//! cache pressure is a small term beside the register-width effect.
 //!
 //! Merge and quantile query are excluded: for N=1M rows at P=64 partitions
 //! and K=64 cuts, both are 3+ orders of magnitude cheaper than ingest and
@@ -380,11 +393,49 @@ fn ingest_kll_norm_u64(batches: &[Float64Array]) -> KllSketch<u64> {
     sketch
 }
 
+/// `f64_to_sortable_u64` one width down, over `f32`'s 8-bit exponent and
+/// 23-bit mantissa. Same branch, same resulting `total_cmp` order.
+fn f32_to_sortable_u32(x: f32) -> u32 {
+    let bits = x.to_bits();
+    if bits >> 31 == 1 {
+        !bits
+    } else {
+        bits ^ (1 << 31)
+    }
+}
+
+/// Half-width counterpart to `ingest_kll_norm_u64`, pricing the key width
+/// the shipped path gives up: `SortKeyCodec` widens every 32-bit column to
+/// `u64`, so a `Float32` or `Int32` column carries eight bytes through
+/// `absorb_slice` and the compactor's sorts where four would order it
+/// identically.
+///
+/// It is also the control on *why* `kll_norm_u128` is slow. Halving the
+/// key buys 2–3% where doubling it costs 29%, so the penalty tracks
+/// whether the key fits a register rather than how many bytes move.
+///
+/// Values are the same stream as every other arm, cast to `f32`. The cast
+/// costs mantissa bits, not distribution, so compaction sees the same
+/// shape.
+fn ingest_kll_norm_u32(batches: &[Float64Array]) -> KllSketch<u32> {
+    let mut sketch = KllSketch::<u32>::new(KLL_K);
+    for arr in batches {
+        let keys: Vec<u32> = arr
+            .values()
+            .iter()
+            .map(|v| f32_to_sortable_u32(*v as f32))
+            .collect();
+        sketch.absorb_slice(&keys);
+    }
+    sketch
+}
+
 /// Nullable variant of `ingest_kll_norm_u64`: a tag above the value bits
 /// gives NULL its own slot, ordered per `nulls_first` (tag 0 here, so
-/// NULLs sort below every value). Measures what the null slot costs —
-/// the key doubles to 16 bytes, which doubles memory traffic through
-/// `absorb_slice` relative to the `u64` arm.
+/// NULLs sort below every value). Measures what the null slot costs: the
+/// key doubles to 16 bytes and stops fitting a register, so compaction's
+/// sorts compare it multi-word. `ingest_kll_norm_u32` separates those two
+/// effects.
 ///
 /// The bench stream has no NULLs, so this measures the encode branch and
 /// the wider key, not NULL handling itself.
@@ -577,6 +628,14 @@ fn bench_ingest(c: &mut Criterion) {
             b.iter_batched(
                 || batches.clone(),
                 |bs| ingest_kll_row_key(&bs, &converter),
+                BatchSize::LargeInput,
+            );
+        });
+
+        group.bench_function(format!("kll_norm_u32/{n}"), |b| {
+            b.iter_batched(
+                || batches.clone(),
+                |bs| ingest_kll_norm_u32(&bs),
                 BatchSize::LargeInput,
             );
         });
