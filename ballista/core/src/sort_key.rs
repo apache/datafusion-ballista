@@ -401,6 +401,13 @@ impl SortKeyCodec {
     /// Errors if `array`'s type doesn't match the one this codec was built
     /// for, which would mean the routing expression changed type between
     /// planning and execution.
+    ///
+    /// The match is exact `DataType` equality, so a codec built for
+    /// `Timestamp(ns, Some("UTC"))` rejects an array tagged `Some("+00:00")`
+    /// even though the two encode to identical keys. Strict because the
+    /// codec's type is what [`Self::decode`] rebuilds a `ScalarValue` from,
+    /// so accepting an array of a type the codec doesn't carry would
+    /// relabel every cut it later produces.
     pub fn encode(&self, array: &dyn Array) -> Result<Vec<u64>> {
         if array.data_type() != &self.data_type {
             return Err(internal_datafusion_err!(
