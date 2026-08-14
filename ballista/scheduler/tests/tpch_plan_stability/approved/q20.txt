@@ -42,7 +42,7 @@ SortShuffleWriterExec: partitioning=Hash([l_partkey@0, l_suppkey@1], 16)
 === Stage 8 ===
 SortShuffleWriterExec: partitioning=Hash([ps_suppkey@0], 16)
   ProjectionExec: expr=[ps_suppkey@1 as ps_suppkey]
-    SortMergeJoinExec: join_type=Inner, on=[(ps_partkey@0, l_partkey@1), (ps_suppkey@1, l_suppkey@2)], filter=CAST(ps_availqty@0 AS Float64) > Float64(0.5) * sum(lineitem.l_quantity)@1
+    SortMergeJoinExec: join_type=LeftSemi, on=[(ps_partkey@0, l_partkey@1), (ps_suppkey@1, l_suppkey@2)], filter=CAST(ps_availqty@0 AS Float64) > Float64(0.5) * sum(lineitem.l_quantity)@1
       SortExec: expr=[ps_partkey@0 ASC, ps_suppkey@1 ASC], preserve_partitioning=[true]
         UnresolvedShuffleExec: stage=6, partitioning: Hash([ps_partkey@0, ps_suppkey@1], 16)
       SortExec: expr=[l_partkey@1 ASC, l_suppkey@2 ASC], preserve_partitioning=[true]

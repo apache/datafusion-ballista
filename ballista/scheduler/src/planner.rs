@@ -36,16 +36,19 @@ use datafusion::arrow::datatypes::DataType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
+use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
+use datafusion::physical_plan::StatisticsArgs;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
-    ExecutionPlan, Partitioning, with_new_children_if_necessary,
+    ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
+    replace_children_if_necessary,
 };
 use log::debug;
 
@@ -80,8 +83,9 @@ pub trait DistributedPlanner {
 pub struct DefaultDistributedPlanner {
     /// Counter for generating unique stage IDs.
     next_stage_id: usize,
-    /// Optimizer rule for enforcing sort requirements after stage splitting.
-    optimizer_enforce_sorting: EnforceSorting,
+    /// Optimizer rule for re-enforcing distribution and sort requirements after
+    /// stage splitting.
+    optimizer_ensure_requirements: EnsureRequirements,
 }
 
 impl DefaultDistributedPlanner {
@@ -91,8 +95,8 @@ impl DefaultDistributedPlanner {
             next_stage_id: 0,
             // when plan is broken into stages some sorting information may get lost in the process
             // thus stage re-optimisation is needed to adjust sort information
-            optimizer_enforce_sorting:
-                datafusion::physical_optimizer::enforce_sorting::EnforceSorting::default(),
+            optimizer_ensure_requirements:
+                datafusion::physical_optimizer::ensure_requirements::EnsureRequirements::default(),
         }
     }
 }
@@ -183,8 +187,10 @@ impl DefaultDistributedPlanner {
             )?;
             stages.append(&mut probe_stages);
 
-            let new_join =
-                execution_plan.with_new_children(vec![broadcast_left, probe])?;
+            let new_join = execution_plan.replace_children(
+                vec![broadcast_left, probe],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             return Ok((new_join, stages));
         }
 
@@ -231,14 +237,14 @@ impl DefaultDistributedPlanner {
                 stages.push(writer);
             }
             return Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                replace_children_if_necessary(execution_plan, children)?,
                 stages,
             ));
         }
 
         if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
-            let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+            let input = self.optimizer_ensure_requirements.optimize(input, config)?;
             let shuffle_writer = create_shuffle_writer_with_config(
                 job_id,
                 self.next_stage_id(),
@@ -250,7 +256,7 @@ impl DefaultDistributedPlanner {
 
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                replace_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(_sort_preserving_merge) =
@@ -266,14 +272,15 @@ impl DefaultDistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(shuffle_writer.as_ref());
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                replace_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
                     let input = children[0].clone();
-                    let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+                    let input =
+                        self.optimizer_ensure_requirements.optimize(input, config)?;
 
                     let shuffle_writer = create_shuffle_writer_with_config(
                         job_id,
@@ -295,7 +302,7 @@ impl DefaultDistributedPlanner {
             }
         } else {
             Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                replace_children_if_necessary(execution_plan, children)?,
                 stages,
             ))
         }
@@ -314,9 +321,10 @@ impl DefaultDistributedPlanner {
         plan: &dyn ExecutionPlan,
         threshold: usize,
     ) -> Option<bool> {
-        let Ok(stats) = plan.partition_statistics(None) else {
+        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+        else {
             debug!(
-                "broadcast check: partition_statistics returned error for {}",
+                "broadcast check: statistics computation returned error for {}",
                 plan.name()
             );
             return None;
@@ -602,13 +610,13 @@ impl DefaultDistributedPlanner {
         };
         let new_right = promoted_join.right().clone();
         let rebuilt_join =
-            with_new_children_if_necessary(join_node, vec![new_left, new_right])?;
+            replace_children_if_necessary(join_node, vec![new_left, new_right])?;
 
         // Re-wrap in the projection if `swap_inputs` added one. The recursive
         // lowering descends into the projection and broadcasts the build side of
         // the inner `HashJoinExec(CollectLeft)`.
         match projection {
-            Some(proj) => Ok(with_new_children_if_necessary(proj, vec![rebuilt_join])?),
+            Some(proj) => Ok(replace_children_if_necessary(proj, vec![rebuilt_join])?),
             None => Ok(rebuilt_join),
         }
     }
@@ -779,7 +787,7 @@ pub fn remove_unresolved_shuffles(
             )?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(replace_children_if_necessary(stage, new_children)?)
 }
 
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
@@ -823,7 +831,7 @@ pub fn rollback_resolved_shuffles(
             new_children.push(rollback_resolved_shuffles(child.clone())?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(replace_children_if_necessary(stage, new_children)?)
 }
 
 /// Rewrites every multi-partition [`EmptyExec`] into a round-robin [`RepartitionExec`]
@@ -838,8 +846,12 @@ pub fn rollback_resolved_shuffles(
 /// its partitioning on the wire, so the count arrives intact.
 ///
 /// This runs at the point the stage plan is built for the wire, after all physical
-/// optimizer rules, so no later rule can collapse the rewrite. It can be removed once
-/// the partition count survives `EmptyExec` serialization upstream.
+/// optimizer rules, so no later rule can collapse the rewrite.
+///
+/// Retained even though upstream #23642 preserves the partition count on the wire:
+/// the round-robin re-wrap is a defensive belt-and-suspenders that also normalises
+/// legacy plans decoded from persisted job state, so keep it until we have a
+/// migration story for those.
 fn make_empty_exec_serde_safe(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -1107,10 +1119,10 @@ mod test {
 
         // verify stage 1
         let stage1 = stages[1].children()[0].clone();
-        let sort = downcast_exec!(stage1, SortExec);
-        let projection = sort.children()[0].clone();
-        let projection = downcast_exec!(projection, ProjectionExec);
-        let final_hash = projection.children()[0].clone();
+        let projection = downcast_exec!(stage1, ProjectionExec);
+        let sort = projection.children()[0].clone();
+        let sort = downcast_exec!(sort, SortExec);
+        let final_hash = sort.children()[0].clone();
         let final_hash = downcast_exec!(final_hash, AggregateExec);
         assert!(*final_hash.mode() == AggregateMode::FinalPartitioned);
         let unresolved_shuffle = final_hash.children()[0].clone();
@@ -1523,12 +1535,13 @@ order by
         assert_plan!(stages[0].as_ref(), @r"
         ShuffleWriterExec: partitioning: None
           AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            ProjectionExec: expr=[]
-              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
+            RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
+              ProjectionExec: expr=[]
+                SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
+                  SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
+                  SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         Ok(())
@@ -2173,9 +2186,9 @@ order by
         assert_eq!(Some(&Column::new("l_shipmode", 1)), partition_col);
 
         // stage1
-        let sort = downcast_exec!(stages[1].children()[0], SortExec);
-        let projection = downcast_exec!(sort.children()[0], ProjectionExec);
-        let filter = downcast_exec!(projection.children()[0], FilterExec);
+        let projection = downcast_exec!(stages[1].children()[0], ProjectionExec);
+        let sort = downcast_exec!(projection.children()[0], SortExec);
+        let filter = downcast_exec!(sort.children()[0], FilterExec);
         let window = downcast_exec!(filter.children()[0], BoundedWindowAggExec);
         let partition_by = window.partition_keys();
         let partition_by = match partition_by[..] {

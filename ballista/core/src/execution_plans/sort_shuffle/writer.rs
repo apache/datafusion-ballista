@@ -46,6 +46,8 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
+use datafusion::common::internal_err;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -58,7 +60,8 @@ use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, displayable,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
+    displayable, statistics::ChildStats,
 };
 use futures::{StreamExt, TryStreamExt};
 use log::{debug, warn};
@@ -871,6 +874,23 @@ impl ExecutionPlan for SortShuffleWriterExec {
         vec![&self.plan]
     }
 
+    /// This writer hashes rows itself rather than relying on an upstream
+    /// `RepartitionExec`, so the partitioning expressions are its own.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        // `try_new` rejects every other scheme, so a non-`Hash` partitioning
+        // here means the operator was built around that check.
+        let Partitioning::Hash(exprs, _) = &self.shuffle_output_partitioning else {
+            return internal_err!(
+                "SortShuffleWriterExec only supports Hash partitioning, got: {:?}",
+                self.shuffle_output_partitioning
+            );
+        };
+        apply_expression_roots(exprs, f)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
@@ -979,8 +999,16 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 }
 

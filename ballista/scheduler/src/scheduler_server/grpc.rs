@@ -855,7 +855,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             }
             #[cfg(feature = "substrait")]
             Query::SubstraitPlan(bytes) => {
-                let plan = deserialize_bytes(bytes).await.map_err(|e| BallistaError::DataFusionError(e.into()))?;
+                let plan = deserialize_bytes(&bytes).map_err(|e| BallistaError::DataFusionError(e.into()))?;
 
                 let ctx = session_ctx.clone();
                 from_substrait_plan(&ctx.state(), &plan)

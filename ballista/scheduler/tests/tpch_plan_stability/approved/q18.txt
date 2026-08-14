@@ -36,7 +36,7 @@ ShuffleWriterExec: partitioning: None
             SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
               UnresolvedShuffleExec: stage=4, partitioning: Hash([l_orderkey@0], 16)
         SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-          FilterExec: sum(lineitem.l_quantity)@1 > Some(30000),25,2, projection=[l_orderkey@0]
+          FilterExec: sum(lineitem.l_quantity)@1 > 300.00, projection=[l_orderkey@0]
             AggregateExec: mode=FinalPartitioned, gby=[l_orderkey@0 as l_orderkey], aggr=[sum(lineitem.l_quantity)]
               UnresolvedShuffleExec: stage=5, partitioning: Hash([l_orderkey@0], 16)
 

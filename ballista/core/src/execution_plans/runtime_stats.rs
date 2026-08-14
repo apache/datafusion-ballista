@@ -55,6 +55,7 @@ use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
@@ -67,7 +68,8 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    SendableRecordBatchStream,
+    SendableRecordBatchStream, StatisticsArgs, apply_expression_roots,
+    statistics::ChildStats,
 };
 use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
@@ -296,6 +298,24 @@ impl ExecutionPlan for RuntimeStatsExec {
         vec![&self.input]
     }
 
+    /// Only the first ORDER BY expression, matching the `routing_expr` that
+    /// `execute` evaluates per batch to feed the sketch. The remaining keys are
+    /// carried so multi-key `ORDER BY` survives serde for downstream operators,
+    /// which makes them ordering metadata rather than expressions this node
+    /// evaluates, and the trait contract excludes those.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(
+            self.order_by
+                .as_ref()
+                .and_then(|exprs| exprs.first())
+                .map(|sort_expr| &sort_expr.expr),
+            f,
+        )
+    }
+
     /// Passthrough: no distribution requirement on the child.
     fn required_input_distribution(&self) -> Vec<Distribution> {
         vec![Distribution::UnspecifiedDistribution]
@@ -319,8 +339,16 @@ impl ExecutionPlan for RuntimeStatsExec {
     }
 
     /// Row count and per-column stats pass through unchanged.
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.input.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 
     /// Every input row is emitted exactly once. Overrides default `Unknown`.
