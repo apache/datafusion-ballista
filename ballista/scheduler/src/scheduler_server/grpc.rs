@@ -878,12 +878,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
-    /// Where clients should fetch flight results from, advertised in
-    /// job-status responses.
+    /// Where clients should fetch result partitions from over Arrow Flight,
+    /// advertised in job-status responses. An explicitly advertised endpoint
+    /// wins over the embedded proxy, so a load balancer can front it.
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
         let config = &self.state.config;
         match config
-            .advertise_flight_sql_endpoint
+            .advertise_flight_endpoint
             .as_deref()
             .filter(|s| !s.is_empty())
         {
@@ -1378,8 +1379,8 @@ mod test {
         let server = |config: SchedulerConfig| {
             SchedulerServer::<LogicalPlanNode, PhysicalPlanNode>::new(
                 "localhost:50050".to_owned(),
-                crate::test_utils::test_cluster_context(),
-                ballista_core::serde::BallistaCodec::default(),
+                test_cluster_context(),
+                BallistaCodec::default(),
                 Arc::new(config),
                 default_metrics_collector().unwrap(),
             )
@@ -1398,13 +1399,33 @@ mod test {
             Some(FlightProxy::Local(true))
         );
 
-        // External endpoint wins, even alongside the embedded proxy.
+        // An advertised endpoint alone points clients elsewhere without starting
+        // anything locally.
         let cfg = SchedulerConfig::default()
-            .with_enable_embedded_flight_proxy(true)
-            .with_advertise_flight_sql_endpoint(Some("lb.example.com:50055".into()));
+            .with_advertise_flight_endpoint(Some("lb.example.com:50055".into()));
         assert_eq!(
             server(cfg).flight_proxy_config(),
             Some(FlightProxy::External("lb.example.com:50055".into()))
+        );
+
+        // External endpoint wins, even alongside the embedded proxy.
+        let cfg = SchedulerConfig::default()
+            .with_enable_embedded_flight_proxy(true)
+            .with_advertise_flight_endpoint(Some("lb.example.com:50055".into()));
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::External("lb.example.com:50055".into()))
+        );
+
+        // An empty endpoint is not advertised, and does not suppress the proxy.
+        let cfg = SchedulerConfig {
+            advertise_flight_endpoint: Some(String::new()),
+            enable_embedded_flight_proxy: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::Local(true))
         );
     }
 

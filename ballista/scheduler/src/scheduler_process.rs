@@ -108,9 +108,11 @@ pub async fn start_grpc_service<
             .clone()
             .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
 
+        // `BallistaFlightProxyService::new` takes decoding before encoding; these sizes
+        // configure the proxy's own client to the executors.
         let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
-            config.grpc_server_max_encoding_message_size as usize,
             config.grpc_server_max_decoding_message_size as usize,
+            config.grpc_server_max_encoding_message_size as usize,
             config.use_tls,
             customize_endpoint,
         ))
