@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::assert_plan;
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
@@ -24,6 +23,7 @@ use crate::state::aqe::test::{
 };
 use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::JobId;
+use ballista_core::assert_plan;
 use ballista_core::execution_plans::SortShuffleWriterExec;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};

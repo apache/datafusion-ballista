@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    assert_plan,
-    state::aqe::{planner::AdaptivePlanner, test::mock_partitions_with_statistics},
+use crate::state::aqe::{
+    planner::AdaptivePlanner, test::mock_partitions_with_statistics,
 };
+use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
 use datafusion::{
     arrow::{
