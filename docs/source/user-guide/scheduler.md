@@ -35,10 +35,10 @@ from, and can optionally host an Arrow Flight proxy itself.
 
 Two independent options control this:
 
-| Option                           | Description                                                                                                                                                                  |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--enable-embedded-flight-proxy` | Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port. The proxy forwards each fetch to the executor that owns the partition.        |
-| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors. Use it to point clients at a load balancer or a standalone proxy.                  |
+| Option                           | Description                                                                                                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--enable-embedded-flight-proxy` | Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port. The proxy forwards each fetch to the executor that owns the partition. |
+| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors. Use it to point clients at a load balancer or a standalone proxy.           |
 
 The first controls whether a proxy _runs_; the second controls what clients are _told_. Setting
 both is a supported combination: the embedded proxy runs, and clients are pointed at the advertised
