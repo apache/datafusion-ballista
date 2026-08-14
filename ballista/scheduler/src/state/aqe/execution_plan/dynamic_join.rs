@@ -16,18 +16,22 @@
 // under the License.
 
 use ballista_core::config::BallistaConfig;
+use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::{
     arrow::compute::SortOptions,
     arrow::datatypes::{DataType, Schema},
     common::{
         ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err,
-        plan_err,
+        plan_err, tree_node::TreeNodeRecursion,
     },
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
+    physical_expr::PhysicalExpr,
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
         DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
+        apply_expression_roots,
         joins::{
             HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
             utils::JoinFilter,
@@ -78,6 +82,23 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.left, &self.right]
+    }
+
+    /// Join keys and filter, same set the `HashJoinExec` / `SortMergeJoinExec`
+    /// this resolves into would report.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        let join_keys = self
+            .on
+            .iter()
+            .flat_map(|(left, right)| [Arc::clone(left), Arc::clone(right)]);
+        let filter = self
+            .filter
+            .iter()
+            .map(|filter| Arc::clone(filter.expression()));
+        apply_expression_roots(join_keys.chain(filter), f)
     }
 
     fn with_new_children(
@@ -209,8 +230,8 @@ impl DynamicJoinSelectionExec {
             .map(|(l, r)| (Arc::clone(l), Arc::clone(r)))
             .unzip();
         vec![
-            Distribution::HashPartitioned(left_expr),
-            Distribution::HashPartitioned(right_expr),
+            Distribution::KeyPartitioned(left_expr),
+            Distribution::KeyPartitioned(right_expr),
         ]
     }
 
@@ -290,8 +311,10 @@ impl DynamicJoinSelectionExec {
             self.join_type
         };
 
-        let stats_left = self.left.partition_statistics(None)?;
-        let stats_right = self.right.partition_statistics(None)?;
+        let stats_left = StatisticsContext::new()
+            .compute(self.left.as_ref(), &StatisticsArgs::new())?;
+        let stats_right = StatisticsContext::new()
+            .compute(self.right.as_ref(), &StatisticsArgs::new())?;
         let build_stats = if swap_inputs {
             &stats_right
         } else {
@@ -437,7 +460,8 @@ impl DynamicJoinSelectionExec {
     ) -> bool {
         // Currently we do not trust the 0 value from stats, due to stats collection might have bug
         // TODO check the logic in datasource::get_statistics_with_limit()
-        let Ok(stats) = plan.partition_statistics(None) else {
+        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+        else {
             return false;
         };
 

@@ -26,9 +26,10 @@ use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::array::StringBuilder;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, internal_err};
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -113,6 +114,14 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.query_exec]
+    }
+
+    /// Owns no expressions — the plan it explains lives on the child.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

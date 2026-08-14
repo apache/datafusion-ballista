@@ -75,15 +75,16 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
-use datafusion::physical_expr::{Distribution, OrderingRequirements};
+use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    SendableRecordBatchStream,
+    SendableRecordBatchStream, StatisticsArgs, statistics::ChildStats,
 };
 use futures::stream::{Stream, StreamExt, TryStreamExt};
 
@@ -199,6 +200,15 @@ impl ExecutionPlan for BufferExec {
         vec![&self.input]
     }
 
+    /// Owns no expressions — buffering is driven by memory pressure, not by
+    /// any evaluated expression.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -238,8 +248,16 @@ impl ExecutionPlan for BufferExec {
     }
 
     /// Row count and per-column stats pass through unchanged.
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.input.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 
     /// Every input row is emitted exactly once. Overrides default `Unknown`.

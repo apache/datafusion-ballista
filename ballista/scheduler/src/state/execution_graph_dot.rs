@@ -363,6 +363,9 @@ fn format_partitioning(x: Partitioning) -> String {
         Partitioning::Hash(expr, n) => {
             format!("{} partitions, expr={}", n, format_expr_list(&expr))
         }
+        Partitioning::Range(range) => {
+            format!("{} partitions, range", range.partition_count())
+        }
     }
 }
 

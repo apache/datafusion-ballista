@@ -43,7 +43,9 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -52,7 +54,7 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, statistics::ChildStats,
 };
 use futures::TryStreamExt;
 
@@ -128,6 +130,12 @@ fn walk_child_partition_mapping(
     if let Some(repart) = plan.downcast_ref::<RepartitionExec>() {
         match repart.partitioning() {
             Partitioning::Hash(_, _) | Partitioning::RoundRobinBatch(_) => {
+                return GlobalPartitionMap::KSpace;
+            }
+            Partitioning::Range(_) => {
+                // Range-partitioning also freshly numbers its K outputs by
+                // range bucket, so it forms a K-space just like Hash. Global
+                // input ids from before the repartition are meaningless here.
                 return GlobalPartitionMap::KSpace;
             }
             Partitioning::UnknownPartitioning(_) => {
@@ -649,6 +657,15 @@ impl ExecutionPlan for ShuffleWriterExec {
         vec![&self.plan]
     }
 
+    /// Owns no expressions — this writer preserves its input partitioning, so
+    /// any partitioning expressions belong to the child plan.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
@@ -760,8 +777,16 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 }
 
