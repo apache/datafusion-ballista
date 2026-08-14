@@ -534,6 +534,43 @@ maturin<span class="w"> </span>develop<span class="w"> </span>--release<span cla
 <li><p>Running load tests</p></li>
 </ul>
 </section>
+<section id="datafusion-dependency">
+<h2>DataFusion dependency<a class="headerlink" href="#datafusion-dependency" title="Link to this heading">#</a></h2>
+<p>Between releases, <code class="docutils literal notranslate"><span class="pre">main</span></code> depends on a pinned git revision of
+<a class="reference external" href="https://github.com/apache/datafusion"><code class="docutils literal notranslate"><span class="pre">apache/datafusion</span></code></a> <code class="docutils literal notranslate"><span class="pre">main</span></code> rather than a crates.io release, so
+that breaking changes arrive in small increments instead of piling up at release time.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">datafusion*</span></code> entries in the workspace <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> move through one cycle per release:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Phase</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">datafusion*</span></code> dependency</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Between releases</p></td>
+<td><p>pinned git <code class="docutils literal notranslate"><span class="pre">rev</span></code> of DataFusion <code class="docutils literal notranslate"><span class="pre">main</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>DataFusion release candidate</p></td>
+<td><p>the RC tag, to validate early</p></td>
+</tr>
+<tr class="row-even"><td><p>DataFusion released</p></td>
+<td><p>the crates.io version</p></td>
+</tr>
+<tr class="row-odd"><td><p>Ballista release branch cut</p></td>
+<td><p>(branch keeps the crates.io version)</p></td>
+</tr>
+<tr class="row-even"><td><p>Back on <code class="docutils literal notranslate"><span class="pre">main</span></code></p></td>
+<td><p>pinned git <code class="docutils literal notranslate"><span class="pre">rev</span></code> of DataFusion <code class="docutils literal notranslate"><span class="pre">main</span></code> again</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A release branch therefore only ever depends on published crates. Each <code class="docutils literal notranslate"><span class="pre">rev</span></code> bump on <code class="docutils literal notranslate"><span class="pre">main</span></code> is a PR
+that ports any DataFusion API changes, refreshes affected golden files, and keeps <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code> and
+<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">clippy</span> <span class="pre">--all-targets</span> <span class="pre">--workspace</span> <span class="pre">--</span> <span class="pre">-D</span> <span class="pre">warnings</span></code> green.</p>
+<p>The remaining release steps are described in the
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md">release process</a>.</p>
+</section>
 <section id="upgrade-notes">
 <h2>Upgrade notes<a class="headerlink" href="#upgrade-notes" title="Link to this heading">#</a></h2>
 <p>When a change breaks a public API, renames or removes a configuration key or CLI
@@ -607,6 +644,7 @@ complete for the next release.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#datafusion-dependency">DataFusion dependency</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrade-notes">Upgrade notes</a></li>
 </ul>
   </nav></div>
