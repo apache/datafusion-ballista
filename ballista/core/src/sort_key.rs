@@ -483,7 +483,7 @@ impl SortKeyCodec {
 /// accuracy: on a uniform 1M stream, 0.0016 worst-case normalized rank
 /// error against T-Digest's 0.0021. Rerun with `KLL_PARITY_CHECK=1 cargo
 /// bench --bench quantile_sketch`.
-const KLL_K: usize = 800;
+pub const KLL_K: usize = 800;
 
 /// One `ORDER BY` key's observed distribution: a quantile sketch over the
 /// non-NULL values, plus the count of the NULLs that have no place in it.

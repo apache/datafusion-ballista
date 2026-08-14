@@ -144,6 +144,19 @@
 use std::sync::Arc;
 
 use ballista_core::kll::KllSketch;
+/// The shipped capacity, imported rather than restated: `kll_norm_u64` is
+/// only comparable to `sort_key_sketch_f64` while the two sketches are
+/// sized identically, and a local copy could drift out from under that
+/// claim. Picked for worst-case rank-error parity with TDigest at
+/// `TDIGEST_MAX_SIZE=100` on the uniform 1M stream this bench feeds:
+///
+/// | sketch                       | worst rank err (9 deciles) |
+/// |------------------------------|---------------------------:|
+/// | TDigest max_size=100         |                     0.0021 |
+/// | KLL k=800                    |                     0.0016 |
+///
+/// Rerun via `KLL_PARITY_CHECK=1 cargo bench --bench quantile_sketch`.
+use ballista_core::sort_key::KLL_K;
 use ballista_core::sort_key::{SortKeyCodec, SortKeySketch};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{
@@ -159,18 +172,6 @@ use rand::{RngExt, SeedableRng};
 
 /// Matches `runtime_stats::TDIGEST_MAX_SIZE` — production sizing.
 const TDIGEST_MAX_SIZE: usize = 100;
-
-/// KLL top-level compactor capacity picked empirically for worst-case
-/// rank-error parity with TDigest at `TDIGEST_MAX_SIZE=100`. Measured on
-/// the uniform 1M stream this bench feeds:
-///
-/// | sketch                       | worst rank err (9 deciles) |
-/// |------------------------------|---------------------------:|
-/// | TDigest max_size=100         |                     0.0021 |
-/// | KLL k=800                    |                     0.0016 |
-///
-/// Rerun via `KLL_PARITY_CHECK=1 cargo bench --bench quantile_sketch`.
-const KLL_K: usize = 800;
 
 /// RuntimeStatsExec observes one batch at a time from the upstream
 /// operator. 8192 is DataFusion's default target batch size.
