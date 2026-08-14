@@ -585,7 +585,11 @@ impl SortKeySketch {
         nulls_are_on_this_end: bool,
         value_extreme: Option<&u64>,
     ) -> Result<Option<ScalarValue>> {
-        if nulls_are_on_this_end && self.null_count > 0 {
+        // With no values at all the run is unbounded on both sides, so the
+        // end it does not nominally occupy is a NULL too. Answering `None`
+        // there would claim nothing was observed while `count` says
+        // otherwise, and would hand `cut_partitions` half a range.
+        if self.null_count > 0 && (nulls_are_on_this_end || value_extreme.is_none()) {
             return Ok(Some(self.codec.null_value()?));
         }
         value_extreme.map(|key| self.codec.decode(*key)).transpose()
@@ -1061,6 +1065,30 @@ mod tests {
             );
         }
         assert_eq!(sketch.count(), 8);
+    }
+
+    /// With no values at all the NULL run is unbounded on both sides, so
+    /// both extremes are NULL whichever end the run nominally occupies.
+    ///
+    /// The end it does not occupy has no value to fall back to, and
+    /// answering `None` there would claim nothing was observed while
+    /// `count` says otherwise. `cut_partitions` routes files on the pair,
+    /// so half a range routes half the rows.
+    #[test]
+    fn an_all_null_column_is_null_at_both_extremes() {
+        for nulls_first in [true, false] {
+            let sketch = int_sketch(vec![None; 8], sort_options(false, nulls_first));
+            assert_eq!(
+                sketch.min().unwrap(),
+                Some(ScalarValue::Int64(None)),
+                "nulls_first={nulls_first}"
+            );
+            assert_eq!(
+                sketch.max().unwrap(),
+                Some(ScalarValue::Int64(None)),
+                "nulls_first={nulls_first}"
+            );
+        }
     }
 
     /// Nothing observed at all is distinct from observing NULLs.
