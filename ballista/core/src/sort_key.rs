@@ -1410,6 +1410,110 @@ mod tests {
         }
     }
 
+    /// Encode `ascending` under both directions, asserting the keys run
+    /// the way the direction asks and that each one decodes back to the
+    /// value it came from.
+    ///
+    /// `ascending` must be in `total_cmp` order and free of duplicates,
+    /// since the keys are checked for strict monotonicity.
+    fn check_dispatched<T: ArrowPrimitiveType>(ascending: Vec<T::Native>) {
+        let array = PrimitiveArray::<T>::from_iter_values(ascending.iter().copied());
+        let data_type = array.data_type().clone();
+        for descending in [false, true] {
+            let codec = SortKeyCodec::try_new(&data_type, sort_options(descending, true))
+                .unwrap_or_else(|| {
+                    panic!("{data_type:?} is dispatched but try_new declined it")
+                });
+            let keys = codec.encode(&array).unwrap();
+            assert_eq!(keys.len(), ascending.len(), "{data_type:?}");
+
+            for pair in keys.windows(2) {
+                let [lo, hi] = pair else {
+                    unreachable!("windows(2) yields pairs")
+                };
+                let ordered = if descending { lo > hi } else { lo < hi };
+                assert!(
+                    ordered,
+                    "{data_type:?} descending={descending}: {lo:#018x} then {hi:#018x}"
+                );
+            }
+
+            for (key, value) in keys.iter().zip(&ascending) {
+                let expected =
+                    ScalarValue::new_primitive::<T>(Some(*value), &data_type).unwrap();
+                assert_eq!(
+                    codec.decode(*key).unwrap(),
+                    expected,
+                    "{data_type:?} descending={descending}"
+                );
+            }
+        }
+    }
+
+    /// Every type `dispatch_sortable!` admits, end to end: the allowlist
+    /// accepts it, the keys run the way the direction asks, and the decode
+    /// arm hands back the value that went in.
+    ///
+    /// The narrow widths are their own code rather than a special case of
+    /// the 64-bit ones. `impl_sortable_float!(f32, u32, 32)` zero-extends a
+    /// 32-bit key that DESC then inverts across all 64 bits, and the narrow
+    /// signed arms sign-extend on the way out and truncate on the way back.
+    #[test]
+    fn every_dispatched_type_encodes_in_order_and_decodes_back() {
+        check_dispatched::<Int8Type>(vec![i8::MIN, -1, 0, 1, i8::MAX]);
+        check_dispatched::<Int16Type>(vec![i16::MIN, -1, 0, 1, i16::MAX]);
+        check_dispatched::<Int32Type>(vec![i32::MIN, -1, 0, 1, i32::MAX]);
+        check_dispatched::<Int64Type>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+
+        check_dispatched::<UInt8Type>(vec![0, 1, u8::MAX]);
+        check_dispatched::<UInt16Type>(vec![0, 1, u16::MAX]);
+        check_dispatched::<UInt32Type>(vec![0, 1, u32::MAX]);
+        check_dispatched::<UInt64Type>(vec![0, 1, u64::MAX]);
+
+        // `total_cmp` order, so both NaNs sit outside their own infinity
+        // and the two zeros are distinct.
+        check_dispatched::<Float32Type>(vec![
+            -f32::NAN,
+            f32::NEG_INFINITY,
+            -1.0,
+            -0.0,
+            0.0,
+            1.0,
+            f32::INFINITY,
+            f32::NAN,
+        ]);
+        check_dispatched::<Float64Type>(vec![
+            -f64::NAN,
+            f64::NEG_INFINITY,
+            -1.0,
+            -0.0,
+            0.0,
+            1.0,
+            f64::INFINITY,
+            f64::NAN,
+        ]);
+
+        check_dispatched::<Date32Type>(vec![i32::MIN, -1, 0, 1, i32::MAX]);
+        check_dispatched::<Date64Type>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+
+        // Times are an offset within a day, so their range is bounded by
+        // the unit rather than by the width that carries it.
+        check_dispatched::<Time32SecondType>(vec![0, 1, 86_399]);
+        check_dispatched::<Time32MillisecondType>(vec![0, 1, 86_399_999]);
+        check_dispatched::<Time64MicrosecondType>(vec![0, 1, 86_399_999_999]);
+        check_dispatched::<Time64NanosecondType>(vec![0, 1, 86_399_999_999_999]);
+
+        check_dispatched::<TimestampSecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+        check_dispatched::<TimestampMillisecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+        check_dispatched::<TimestampMicrosecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+        check_dispatched::<TimestampNanosecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+
+        check_dispatched::<DurationSecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+        check_dispatched::<DurationMillisecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+        check_dispatched::<DurationMicrosecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+        check_dispatched::<DurationNanosecondType>(vec![i64::MIN, -1, 0, 1, i64::MAX]);
+    }
+
     /// NULLs leave the key stream entirely, so the caller can count them
     /// separately and place them by `nulls_first` at routing time.
     #[test]
