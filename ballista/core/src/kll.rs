@@ -244,6 +244,11 @@ impl<T: Ord + Clone> KllSketch<T> {
 
     /// Construct an empty sketch with top-level compactor capacity `k`
     /// and a fixed PRNG seed. Intended for deterministic tests.
+    ///
+    /// The seed does not survive [`Clone`], which reseeds from OS entropy
+    /// to keep two sketches from correlating their compaction decisions. A
+    /// test that needs two reproducible sketches builds both with
+    /// `with_seed` rather than cloning one.
     pub fn with_seed(k: usize, seed: u64) -> Self {
         Self {
             levels: vec![Vec::new()],
