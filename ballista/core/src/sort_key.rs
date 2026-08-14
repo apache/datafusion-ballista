@@ -670,18 +670,30 @@ impl SortKeySketch {
     /// The `partitions - 1` boundaries that split everything observed into
     /// `partitions` equally-sized runs, in sort order.
     ///
-    /// Empty when `partitions < 2` or nothing was observed. Entries may
-    /// repeat where one value dominates, and may be typed NULLs where the
-    /// NULL run spans a boundary; both are faithful answers about a skewed
-    /// distribution rather than errors.
+    /// Empty when `partitions < 2` or nothing was observed, and otherwise
+    /// exactly `partitions - 1` long so a caller can index it by output
+    /// partition. Entries may repeat where one value dominates, and may be
+    /// typed NULLs where the NULL run spans a boundary; both are faithful
+    /// answers about a skewed distribution rather than errors.
     pub fn cuts(&self, partitions: usize) -> Result<Vec<ScalarValue>> {
-        if partitions < 2 {
+        if partitions < 2 || self.count() == 0 {
             return Ok(Vec::new());
         }
         (1..partitions)
-            .map(|cut| self.quantile(cut as f64 / partitions as f64))
-            .collect::<Result<Vec<_>>>()
-            .map(|cuts| cuts.into_iter().flatten().collect())
+            .map(|cut| {
+                let q = cut as f64 / partitions as f64;
+                // Having observed something, every rank in `0..count` names
+                // a row, so the only way back is a full vector. Dropping a
+                // missing cut instead would renumber every partition above
+                // it, and silently.
+                self.quantile(q)?.ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "SortKeySketch: no value at quantile {q} of {} observations",
+                        self.count()
+                    )
+                })
+            })
+            .collect()
     }
 }
 
