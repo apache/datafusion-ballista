@@ -20,6 +20,7 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
 use ballista_core::serde::{
     BallistaCodec, protobuf::scheduler_grpc_client::SchedulerGrpcClient,
 };
@@ -251,6 +252,34 @@ pub async fn remote_context_with_state() -> SessionContext {
         .with_config(config)
         .with_default_features()
         .build();
+    let (host, port) = setup_test_cluster_with_state(state.clone()).await;
+    SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
+        .await
+        .unwrap()
+}
+
+/// Session state with the adaptive (AQE) planner enabled, which is off by
+/// default.
+#[allow(dead_code)]
+fn adaptive_planner_state() -> SessionState {
+    let config = SessionConfig::new_with_ballista()
+        .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, true);
+    SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build()
+}
+
+#[allow(dead_code)]
+pub async fn standalone_context_with_aqe() -> SessionContext {
+    SessionContext::standalone_with_state(adaptive_planner_state())
+        .await
+        .unwrap()
+}
+
+#[allow(dead_code)]
+pub async fn remote_context_with_aqe() -> SessionContext {
+    let state = adaptive_planner_state();
     let (host, port) = setup_test_cluster_with_state(state.clone()).await;
     SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
         .await
