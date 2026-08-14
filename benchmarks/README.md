@@ -400,4 +400,12 @@ scheduler + executor on every push/PR touching `ballista/**` or
 `EmptyExec invalid partition` assertion (issue #2047); re-enable an AQE-on run
 once that is fixed.
 
+### Forcing empty intermediate stages
+
+`--empty-tables lineitem,orders` registers the named tables as zero-row
+Parquet tables (schema preserved) in both the Ballista session and the
+`--verify` oracle. Every query touching an emptied table then produces empty
+intermediate stages, exercising the scheduler's empty-stage plan rewrites.
+Requires `--format parquet` (TPC-H) and is incompatible with `--expected`.
+
 [1]: http://www.tpc.org/tpch/
