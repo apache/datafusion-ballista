@@ -634,44 +634,42 @@ impl SortKeySketch {
     /// 99` is `58.999…`, which truncates to 58. That off-by-one was caught
     /// by `quantiles_match_the_nulls_in_key_oracle`.
     pub fn quantile(&self, q: f64) -> Result<Option<ScalarValue>> {
-        let total = self.count();
-        if total == 0 {
+        if self.count() == 0 {
             return Ok(None);
         }
-        // No NULL run to step over, so the population rank *is* the value
-        // rank and the sketch can answer directly. Also the only path that
-        // reaches the sketch's exact-extreme handling at q = 0 and q = 1.
-        if self.null_count == 0 {
-            return self
+        match self.value_rank(q) {
+            None => Ok(Some(self.codec.null_value()?)),
+            Some(rank) => self
                 .sketch
-                .quantile(q)
+                .at_rank(rank)
                 .map(|key| self.codec.decode(*key))
-                .transpose();
+                .transpose(),
+        }
+    }
+
+    /// The rank *among the values* that population-quantile `q` asks for,
+    /// or `None` when it lands inside the NULL run.
+    ///
+    /// This is the remap [`Self::quantile`] documents, split out so that
+    /// [`Self::cuts`] can resolve every boundary against one pass over the
+    /// sketch. Callers must have checked that something was observed.
+    fn value_rank(&self, q: f64) -> Option<u64> {
+        let rank = (q.clamp(0.0, 1.0) * self.count() as f64) as u64;
+        // No NULL run to step over, so the population rank *is* the value
+        // rank. This is also the only path that reaches the sketch's
+        // exact-extreme handling at q = 0 and q = 1.
+        if self.null_count == 0 {
+            return Some(rank);
         }
         let values = self.sketch.count();
         if values == 0 {
-            return Ok(Some(self.codec.null_value()?));
+            return None;
         }
-
-        // Same rank arithmetic the sketch itself would do, so that
-        // stepping over the NULL run is the only difference between this
-        // answer and a sketch of the whole population.
-        let rank = (q.clamp(0.0, 1.0) * total as f64) as u64;
-        let value_rank = if self.codec.options().nulls_first {
-            if rank <= self.null_count {
-                return Ok(Some(self.codec.null_value()?));
-            }
-            rank - self.null_count
+        if self.codec.options().nulls_first {
+            (rank > self.null_count).then(|| rank - self.null_count)
         } else {
-            if rank > values {
-                return Ok(Some(self.codec.null_value()?));
-            }
-            rank
-        };
-        self.sketch
-            .at_rank(value_rank)
-            .map(|key| self.codec.decode(*key))
-            .transpose()
+            (rank <= values).then_some(rank)
+        }
     }
 
     /// The `partitions - 1` boundaries that split everything observed into
@@ -686,19 +684,33 @@ impl SortKeySketch {
         if partitions < 2 || self.count() == 0 {
             return Ok(Vec::new());
         }
-        (1..partitions)
-            .map(|cut| {
-                let q = cut as f64 / partitions as f64;
-                // Having observed something, every rank in `0..count` names
-                // a row, so the only way back is a full vector. Dropping a
-                // missing cut instead would renumber every partition above
-                // it, and silently.
-                self.quantile(q)?.ok_or_else(|| {
-                    internal_datafusion_err!(
-                        "SortKeySketch: no value at quantile {q} of {} observations",
-                        self.count()
-                    )
-                })
+        let targets: Vec<Option<u64>> = (1..partitions)
+            .map(|cut| self.value_rank(cut as f64 / partitions as f64))
+            .collect();
+        // One sorted pass over the retained items for every boundary. Going
+        // through `quantile` per cut instead re-sorts the whole retained set
+        // each time, which at 256 partitions costs more than the ingest that
+        // built the sketch.
+        let value_ranks: Vec<u64> = targets.iter().flatten().copied().collect();
+        let mut value_keys = self.sketch.at_ranks(&value_ranks).into_iter();
+
+        targets
+            .iter()
+            .map(|target| match target {
+                None => self.codec.null_value(),
+                // Having observed something, every rank the remap produces
+                // names a row, so the only way back is a full vector.
+                // Dropping a missing cut would renumber every partition
+                // above it, and silently.
+                Some(rank) => {
+                    let key = value_keys.next().flatten().ok_or_else(|| {
+                        internal_datafusion_err!(
+                            "SortKeySketch: no value at rank {rank} of {} values",
+                            self.sketch.count()
+                        )
+                    })?;
+                    self.codec.decode(*key)
+                }
             })
             .collect()
     }

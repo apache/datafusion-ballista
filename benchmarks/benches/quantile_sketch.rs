@@ -130,9 +130,25 @@
 //! bounds how much that can matter: halving the vector is worth 2–3%, so
 //! cache pressure is a small term beside the register-width effect.
 //!
-//! Merge and quantile query are excluded: for N=1M rows at P=64 partitions
-//! and K=64 cuts, both are 3+ orders of magnitude cheaper than ingest and
-//! would not move the swap decision.
+//! Merge is excluded: it does not move the swap decision.
+//!
+//! Cut extraction is not, and is measured in `runtime_stats_cuts`.
+//! Resolving a rank means materializing every retained item with its level
+//! weight and sorting them, work that does not depend on the rank, so
+//! asking one rank at a time makes `cuts(P)` P-1 sorts of the whole
+//! retained set. `KllSketch::at_ranks` resolves the batch against one
+//! sorted pass instead. Measured against the ingest that built the sketch:
+//!
+//! | arm          | per rank | batched | of ingest |
+//! |--------------|---------:|--------:|----------:|
+//! | `cuts(64)`   |   279 µs | 7.56 µs |    0.045% |
+//! | `cuts(256)`  |  1.13 ms | 16.6 µs |    0.098% |
+//!
+//! Both at n=1M. Batched, the P-dependence is close to flat, since only
+//! the scatter over the answers grows with P. Per rank it is the dominant
+//! term at any stage that is not huge: at n=100K, `cuts(64)` was 30% of
+//! ingest and `cuts(256)` cost more than the ingest itself, because a
+//! smaller stage has less ingest to hide the sorts behind.
 //!
 //! Sketch sizing is empirical, not analytical. TDigest is held at
 //! `TDIGEST_MAX_SIZE=100` (production), and `KLL_K` is picked so KLL's
@@ -726,5 +742,42 @@ fn bench_ingest(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_ingest);
+/// Cut extraction, measured against the ingest that produced the sketch.
+///
+/// Ingest is amortized over every row; `cuts` runs once per stage over the
+/// retained items alone, so the two are only comparable as a ratio at a
+/// fixed `n`. That ratio is the question: `KllSketch::at_rank` materializes
+/// and sorts the retained pairs on each call and `cuts(P)` calls it `P - 1`
+/// times, which is a different shape from T-Digest's interpolation over
+/// ~100 centroids.
+///
+/// Partition counts span what a stage plausibly asks for. 64 is the width
+/// the module docs quote.
+fn bench_cuts(c: &mut Criterion) {
+    let ascending = SortOptions {
+        descending: false,
+        nulls_first: true,
+    };
+    let codec = SortKeyCodec::try_new(&DataType::Float64, ascending).unwrap();
+
+    let mut group = c.benchmark_group("runtime_stats_cuts");
+    group.sample_size(10);
+    for &n in ROW_COUNTS {
+        let arrays: Vec<ArrayRef> = build_batches(n)
+            .into_iter()
+            .map(|b| Arc::new(b) as ArrayRef)
+            .collect();
+        // Ingest once, outside the timing loop: `cuts` is a read over the
+        // finished sketch and every partition count reads the same one.
+        let sketch = ingest_sort_key_sketch(&arrays, codec.clone());
+        for partitions in [8usize, 64, 256] {
+            group.bench_function(format!("cuts_{partitions}/{n}"), |b| {
+                b.iter(|| sketch.cuts(partitions).unwrap());
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_ingest, bench_cuts);
 criterion_main!(benches);
