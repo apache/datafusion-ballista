@@ -108,7 +108,7 @@ SortShuffleWriterExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplyco
       UnresolvedShuffleExec: stage=16, partitioning: Hash([ps_partkey@0], 16)
 
 === Stage 18 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([p_partkey@3, ps_supplycost@7], 16)
   SortExec: TopK(fetch=100), expr=[s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], preserve_partitioning=[true]
     ProjectionExec: expr=[s_acctbal@5 as s_acctbal, s_name@2 as s_name, n_name@8 as n_name, p_partkey@0 as p_partkey, p_mfgr@1 as p_mfgr, s_address@3 as s_address, s_phone@4 as s_phone, s_comment@6 as s_comment]
       SortMergeJoinExec: join_type=LeftSemi, on=[(p_partkey@0, ps_partkey@1), (ps_supplycost@7, min(partsupp.ps_supplycost)@0)]
@@ -118,6 +118,6 @@ ShuffleWriterExec: partitioning: None
           UnresolvedShuffleExec: stage=17, partitioning: Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 16)
 
 === Stage 19 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], fetch=100
     UnresolvedShuffleExec: stage=18, partitioning: Hash([p_partkey@3, ps_supplycost@7], 16)

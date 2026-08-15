@@ -32,13 +32,13 @@ SortShuffleWriterExec: partitioning=Hash([p_brand@0, p_type@1, p_size@2], 16)
           UnresolvedShuffleExec: stage=4, partitioning: Hash([s_suppkey@0], 16)
 
 === Stage 6 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([p_brand@0, p_type@1, p_size@2], 16)
   ProjectionExec: expr=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size, count(alias1)@3 as supplier_cnt]
     SortExec: expr=[count(alias1)@3 DESC, p_brand@0 ASC NULLS LAST, p_type@1 ASC NULLS LAST, p_size@2 ASC NULLS LAST], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size], aggr=[count(alias1)]
         UnresolvedShuffleExec: stage=5, partitioning: Hash([p_brand@0, p_type@1, p_size@2], 16)
 
 === Stage 7 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [supplier_cnt@3 DESC, p_brand@0 ASC NULLS LAST, p_type@1 ASC NULLS LAST, p_size@2 ASC NULLS LAST]
     UnresolvedShuffleExec: stage=6, partitioning: Hash([p_brand@0, p_type@1, p_size@2], 16)

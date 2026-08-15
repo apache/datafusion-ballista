@@ -13,7 +13,7 @@ SortShuffleWriterExec: partitioning=Hash([l_partkey@0], 16)
     StatsExec: rows=600037902
 
 === Stage 4 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([p_partkey@2], 16)
   AggregateExec: mode=Partial, gby=[], aggr=[sum(lineitem.l_extendedprice)]
     ProjectionExec: expr=[l_extendedprice@1 as l_extendedprice]
       SortMergeJoinExec: join_type=LeftSemi, on=[(p_partkey@2, l_partkey@1)], filter=CAST(l_quantity@0 AS Decimal128(30, 15)) < Float64(0.2) * avg(lineitem.l_quantity)@1
@@ -29,7 +29,7 @@ ShuffleWriterExec: partitioning: None
               UnresolvedShuffleExec: stage=3, partitioning: Hash([l_partkey@0], 16)
 
 === Stage 5 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
     AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice)]
       CoalescePartitionsExec

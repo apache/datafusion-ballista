@@ -20,13 +20,13 @@ SortShuffleWriterExec: partitioning=Hash([c_count@0], 16)
               UnresolvedShuffleExec: stage=2, partitioning: Hash([o_custkey@1], 16)
 
 === Stage 4 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([c_count@0], 16)
   ProjectionExec: expr=[c_count@0 as c_count, count(Int64(1))@1 as custdist]
     SortExec: expr=[count(Int64(1))@1 DESC, c_count@0 DESC], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[c_count@0 as c_count], aggr=[count(Int64(1))]
         UnresolvedShuffleExec: stage=3, partitioning: Hash([c_count@0], 16)
 
 === Stage 5 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [custdist@1 DESC, c_count@0 DESC]
     UnresolvedShuffleExec: stage=4, partitioning: Hash([c_count@0], 16)
