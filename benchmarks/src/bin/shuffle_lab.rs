@@ -159,6 +159,136 @@ async fn write_shuffle(
 }
 
 // ---------------------------------------------------------------------------
+// Experiment 9: what an in-memory shuffle hand-off would save.
+//
+// The writer buffers rows in memory and, at finalize, always materializes
+// them, IPC-encodes them, compresses them and writes a file — even when
+// nothing ever spilled and the consumer runs on the same node. That consumer
+// then reopens the file, decompresses and decodes it back into the batches the
+// writer already had.
+//
+// This measures the ceiling on removing that round trip: the same hash
+// partitioning and the same `interleave`-based materialization, stopping once
+// the per-partition batches exist in memory. Anything between this number and
+// the write+read total is what an in-memory hand-off could give back.
+// ---------------------------------------------------------------------------
+
+/// Materializes every partition's batches in memory, exactly as the writer's
+/// finalize step does, but without encoding or writing anything. Returns
+/// (batches, rows, resident bytes).
+fn materialize_in_memory(
+    batches: &[RecordBatch],
+    assignments: &[Vec<(u32, u32)>],
+    batch_size: usize,
+) -> (usize, usize, usize) {
+    use datafusion::arrow::compute::interleave_record_batch;
+    let refs: Vec<&RecordBatch> = batches.iter().collect();
+    let mut out_batches = 0usize;
+    let mut out_rows = 0usize;
+    let mut resident = 0usize;
+    let mut scratch: Vec<(usize, usize)> = Vec::with_capacity(batch_size);
+    for indices in assignments {
+        let mut pos = 0usize;
+        while pos < indices.len() {
+            let end = (pos + batch_size).min(indices.len());
+            scratch.clear();
+            scratch.extend(
+                indices[pos..end]
+                    .iter()
+                    .map(|&(b, r)| (b as usize, r as usize)),
+            );
+            pos = end;
+            let batch = interleave_record_batch(&refs, &scratch).unwrap();
+            out_rows += batch.num_rows();
+            resident += batch.get_array_memory_size();
+            out_batches += 1;
+            // Dropped immediately: an in-memory hand-off would retain these,
+            // but retaining them here would measure the allocator, not the
+            // materialization the writer already performs.
+        }
+    }
+    (out_batches, out_rows, resident)
+}
+
+async fn exp_in_memory(
+    label: &str,
+    schema: &SchemaRef,
+    num_batches: usize,
+    partitions: usize,
+) {
+    let exprs: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("i0", 0))];
+    let input: Vec<RecordBatch> = (0..num_batches)
+        .map(|i| build_batch(schema, i as i64))
+        .collect();
+
+    // Hash every row and build the same (batch_idx, row_idx) index lists the
+    // writer's buffer holds.
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut assignments: Vec<Vec<(u32, u32)>> = vec![Vec::new(); partitions];
+    let t_hash = Instant::now();
+    for (bi, batch) in input.iter().enumerate() {
+        let arrays = evaluate_expressions_to_arrays(&exprs, batch).unwrap();
+        hashes.clear();
+        hashes.resize(batch.num_rows(), 0);
+        create_hashes(
+            &arrays,
+            REPARTITION_RANDOM_STATE.random_state(),
+            &mut hashes,
+        )
+        .unwrap();
+        for (row, &h) in hashes.iter().enumerate() {
+            assignments[(h % partitions as u64) as usize].push((bi as u32, row as u32));
+        }
+    }
+    let hash_time = t_hash.elapsed();
+
+    let t_mem = Instant::now();
+    let (mem_batches, mem_rows, resident) =
+        materialize_in_memory(&input, &assignments, BATCH_ROWS);
+    let materialize_time = t_mem.elapsed();
+
+    // The shipped path, for comparison: full write then full read back.
+    let dir = tempfile::TempDir::new().unwrap();
+    let t_w = Instant::now();
+    let (data, index) =
+        write_shuffle(schema, num_batches, partitions, dir.path(), None).await;
+    let write_time = t_w.elapsed();
+    let file_len = std::fs::metadata(&data).unwrap().len();
+
+    let t_r = Instant::now();
+    let mut read_rows = 0usize;
+    for k in 0..partitions {
+        let mut s = stream_sort_shuffle_partition(&data, &index, k).unwrap();
+        while let Some(b) = s.try_next().await.unwrap() {
+            read_rows += b.num_rows();
+        }
+    }
+    let read_time = t_r.elapsed();
+    assert_eq!(
+        read_rows, mem_rows,
+        "in-memory and on-disk row counts differ"
+    );
+
+    let in_mem_total = hash_time + materialize_time;
+    let on_disk_total = write_time + read_time;
+    println!(
+        "[in-mem] {label:<22} K={partitions:<5} write={write_time:>8.2?} read={read_time:>8.2?} \
+         (total {on_disk_total:>8.2?}) | in-memory: hash={hash_time:>7.2?} materialize={materialize_time:>8.2?} \
+         (total {in_mem_total:>8.2?})",
+    );
+    println!(
+        "{:<9} {:<22}         cache-local-reads-only saves {:>5.0}% | full in-memory saves {:>5.0}% \
+         | file={:>9} resident={:>9} batches={mem_batches}",
+        "",
+        "",
+        100.0 * read_time.as_secs_f64() / on_disk_total.as_secs_f64(),
+        100.0 * (1.0 - in_mem_total.as_secs_f64() / on_disk_total.as_secs_f64()),
+        human(file_len),
+        human(resident as u64),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Experiment 1: read path — cost and batch granularity of reading every
 // partition of a sort-shuffle file back through the shipped reader.
 // ---------------------------------------------------------------------------
@@ -668,7 +798,15 @@ async fn main() {
     let wide = schema_with(30, 5);
     let narrow = schema_with(4, 1);
 
-    println!("== experiment 8: spill file-descriptor pressure ==");
+    println!("== experiment 9: in-memory hand-off ceiling ==");
+    for k in [200usize, 1000, 4000] {
+        exp_in_memory("narrow(5 cols)", &narrow, 40, k).await;
+    }
+    for k in [200usize, 1000] {
+        exp_in_memory("wide(35 cols)", &wide, 40, k).await;
+    }
+
+    println!("\n== experiment 8: spill file-descriptor pressure ==");
     for k in [200usize, 1000, 4000] {
         exp_spill_files(&narrow, 40, k).await;
     }
