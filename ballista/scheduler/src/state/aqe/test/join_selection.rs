@@ -373,7 +373,7 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
 
     // plan for first stage
     assert_plan!(stage.plan.as_ref(), @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: UnknownPartitioning(4)
       DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 

@@ -1096,13 +1096,13 @@ mod test {
           AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
             DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_extendedprice, l_returnflag], file_type=csv, has_header=false
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: Hash([l_returnflag@0], 2)
           SortExec: expr=[l_returnflag@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_returnflag@0 as l_returnflag, sum(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
               AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
                 UnresolvedShuffleExec: stage=1, partitioning: Hash([l_returnflag@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
           SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
             UnresolvedShuffleExec: stage=2, partitioning: Hash([l_returnflag@0], 2)
         */
@@ -1221,13 +1221,13 @@ order by
               UnresolvedShuffleExec: stage=1, partitioning: Hash([l_orderkey@0], 2)
               UnresolvedShuffleExec: stage=2, partitioning: Hash([o_orderkey@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
           SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
             AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
               UnresolvedShuffleExec: stage=3, partitioning: Hash([l_shipmode@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
           SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
             UnresolvedShuffleExec: stage=4, partitioning: Hash([l_shipmode@0], 2)
         */
@@ -1530,7 +1530,7 @@ order by
         // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
         // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
         assert_plan!(stages[0].as_ref(), @r"
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: RoundRobinBatch(2)
           AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
             RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
               ProjectionExec: expr=[]
@@ -2151,7 +2151,7 @@ order by
               DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], file_type=csv, has_header=false
 
             Stage 1:
-            ShuffleWriterExec: partitioning: None
+            ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
               SortExec: expr=[l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST], preserve_partitioning=[true]
                 ProjectionExec: expr=[l_shipmode@1 as l_shipmode, l_shipdate@0 as l_shipdate, rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rk]
                 FilterExec: rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 <= 100
@@ -2160,7 +2160,7 @@ order by
                       UnresolvedShuffleExec: stage=1, partitioning: Hash([l_shipmode@1], 2)
 
             Stage 2:
-            ShuffleWriterExec: partitioning: None
+            ShuffleWriterExec: partitioning: UnknownPartitioning(1)
               SortPreservingMergeExec: [l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST]
                 UnresolvedShuffleExec: stage=2, partitioning: Hash([l_shipmode@0], 2)
 

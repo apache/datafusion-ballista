@@ -79,7 +79,7 @@
 #       "input_rows": 1,
 #       "output_rows": 2,
 #       "elapsed_compute": "6.00ms",
-#       "stage_plan": "ShuffleWriterExec: partitioning: None\n  ProjectionExec: expr=[1 as Int64(1)]\n    PlaceholderRowExec\n",
+#       "stage_plan": "ShuffleWriterExec: partitioning: UnknownPartitioning(1)\n  ProjectionExec: expr=[1 as Int64(1)]\n    PlaceholderRowExec\n",
 #       "task_duration_percentiles": {
 #         "min": 6,
 #         "p25": 6,
