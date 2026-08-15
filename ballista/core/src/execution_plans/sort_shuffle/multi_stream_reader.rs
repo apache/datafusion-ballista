@@ -26,10 +26,17 @@ use datafusion::common::DataFusionError;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::Stream;
 use std::fs::File;
-use std::io::{Seek, SeekFrom};
+use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+/// Upper bound on the read-ahead buffer placed in front of each sub-stream.
+/// `StreamReader` does no buffering of its own and issues a separate read for
+/// each message's length prefix, metadata and body, so an unbuffered `File`
+/// costs several syscalls per record batch — which bites hardest exactly when
+/// batches are small, the case a spilling writer produces.
+const READ_BUFFER_CAPACITY: usize = 256 * 1024;
 
 /// Reads `RecordBatch`es from `[start_offset, end_offset)` of `data_path`,
 /// where the byte range contains zero or more concatenated Arrow IPC streams.
@@ -37,14 +44,22 @@ pub(crate) struct MultiStreamPartitionStream {
     data_path: PathBuf,
     schema: SchemaRef,
     end_offset: u64,
+    /// Handle kept open across sub-streams. `StreamReader` takes its reader by
+    /// value and offers no way to get it back, so each sub-stream needs its own
+    /// handle; duplicating this one is cheaper than re-resolving the path, and
+    /// a partition's range holds one sub-stream per spill run.
+    handle: Option<File>,
     state: State,
 }
 
 enum State {
     /// Next sub-stream begins at this absolute byte offset.
     Pending(u64),
-    /// Currently draining a sub-stream.
-    Reading(StreamReader<File>),
+    /// Currently draining a sub-stream. The reader may buffer past the
+    /// sub-stream's end; `BufReader::stream_position` discounts whatever is
+    /// still sitting in the buffer, so the offset it reports is the logical
+    /// end of the sub-stream, not the file position the kernel is at.
+    Reading(Box<StreamReader<BufReader<File>>>),
     /// Range exhausted or an error has terminated the stream.
     Done,
 }
@@ -68,8 +83,21 @@ impl MultiStreamPartitionStream {
             data_path,
             schema,
             end_offset,
+            handle: None,
             state,
         }
+    }
+
+    /// A handle positioned at `offset`, reusing the cached one when present.
+    fn open_at(&mut self, offset: u64) -> Result<File, std::io::Error> {
+        let base = match self.handle.take() {
+            Some(f) => f,
+            None => File::open(&self.data_path)?,
+        };
+        let mut file = base.try_clone()?;
+        self.handle = Some(base);
+        file.seek(SeekFrom::Start(offset))?;
+        Ok(file)
     }
 
     /// Synchronous core: pulls the next batch, advancing across sub-stream
@@ -97,9 +125,24 @@ impl MultiStreamPartitionStream {
                     if next >= self.end_offset {
                         return Ok(None);
                     }
-                    let mut file = File::open(&self.data_path)?;
-                    file.seek(SeekFrom::Start(next))?;
-                    self.state = State::Reading(StreamReader::try_new(file, None)?);
+                    let file = self.open_at(next)?;
+                    // Never buffer more than the range still holds: a shuffle
+                    // into many partitions leaves each one small, and a fixed
+                    // 256 KiB buffer per partition read would dwarf the data.
+                    let remaining = (self.end_offset - next) as usize;
+                    let buffered = BufReader::with_capacity(
+                        remaining.clamp(1, READ_BUFFER_CAPACITY),
+                        file,
+                    );
+                    // Safety: setting `skip_validation` requires `unsafe`; these
+                    // bytes were produced by this cluster's own shuffle writer,
+                    // the same trust assumption the hash-shuffle reader makes.
+                    let reader = unsafe {
+                        StreamReader::try_new(buffered, None)?.with_skip_validation(cfg!(
+                            feature = "arrow-ipc-optimizations"
+                        ))
+                    };
+                    self.state = State::Reading(Box::new(reader));
                 }
             }
         }
