@@ -23,7 +23,7 @@
 
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{BufWriter, Seek, Write};
+use std::io::{BufWriter, Read, Seek, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,7 +31,7 @@ use tokio::sync::oneshot;
 
 use super::super::shuffle_writer::{result_schema, summaries_to_batch};
 use super::super::shuffle_writer_trait::ShuffleWriter;
-use super::buffer::BufferedBatches;
+use super::buffer::{BufferedBatches, PartitionAssignment};
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
@@ -517,6 +517,10 @@ impl SortShuffleWriterExec {
                     .register(&context.runtime_env().memory_pool);
 
             let mut hash_buffer: Vec<u64> = Vec::new();
+            // Scratch reused across input batches so the per-batch partition
+            // assignment allocates nothing once it has warmed up.
+            let mut partition_of_row: Vec<u32> = Vec::new();
+            let mut assignment = PartitionAssignment::default();
             let mut spill_events: u64 = 0;
             let mut spill_triggers = SpillTriggerCounts::default();
             // Absolute buffered-bytes counter, independent of the runtime
@@ -535,20 +539,19 @@ impl SortShuffleWriterExec {
 
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
-                let per_partition_rows = compute_partition_indices(
+                compute_partition_indices(
                     &input_batch,
                     &exprs,
                     num_output_partitions,
                     &mut hash_buffer,
+                    &mut partition_of_row,
+                    &mut assignment,
                 )?;
                 timer.done();
 
                 // Estimate memory growth: input batch + index Vec growth.
                 let mut growth = input_batch.get_array_memory_size();
-                let before = buffered.indices_allocated_size();
-                buffered.push_batch(input_batch, &per_partition_rows);
-                let after = buffered.indices_allocated_size();
-                growth += after.saturating_sub(before);
+                growth += buffered.push_batch(input_batch, &assignment);
 
                 // Mirror the growth in the runtime pool reservation so the pool
                 // sees this writer's memory usage. A rejected grow means the
@@ -697,9 +700,10 @@ impl SortShuffleWriterExec {
     }
 }
 
-/// Spills *all* buffered partitions: for each partition, materializes its
-/// indices through `PartitionedBatchIterator` and appends each yielded batch
-/// to that partition's spill file. After this call, `buffered.is_empty()` is
+/// Spills *all* buffered partitions into one spill run: for each partition in
+/// ascending order, materializes its indices through `PartitionedBatchIterator`
+/// and appends each yielded batch to the run. Closing the run records where
+/// each partition's bytes landed. After this call, `buffered.is_empty()` is
 /// true and `reservation.size() == 0`.
 ///
 /// Returns `(batches_written, bytes_written)` for this single spill event so
@@ -731,6 +735,11 @@ fn spill_all_partitions(
             bytes_written += written;
         }
     }
+    // Close the run so its per-partition byte ranges are recorded and the
+    // single file handle it held is released.
+    spill_manager
+        .finish_run()
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     reservation.free();
     Ok((batches_written, bytes_written))
 }
@@ -792,9 +801,13 @@ fn finalize_output(
         let (spill_batches, spill_rows, spill_bytes) =
             spill_manager.partition_stats(partition_id);
 
-        if let Some(spill_path) = spill_manager.spill_path(partition_id) {
+        // Concatenate this partition's slice of every spill run, in flush
+        // order. Each slice is a complete IPC stream, so the bytes go across
+        // verbatim — no decode/re-encode round-trip.
+        for (spill_path, start, end) in spill_manager.partition_segments(partition_id) {
             let mut spill_file = File::open(spill_path)?;
-            std::io::copy(&mut spill_file, output.get_mut())?;
+            spill_file.seek(std::io::SeekFrom::Start(start))?;
+            std::io::copy(&mut spill_file.take(end - start), output.get_mut())?;
         }
 
         let mut mem_batches: u64 = 0;
@@ -1131,20 +1144,22 @@ impl std::fmt::Display for SortShuffleWriterExec {
     }
 }
 
-/// Computes per-row output partition assignments for hash partitioning.
+/// Computes per-row output partition assignments for hash partitioning,
+/// writing the result into `assignment` in CSR form (see
+/// [`PartitionAssignment`]). Hash semantics are byte-identical to
+/// `datafusion::physical_plan::repartition::BatchPartitioner::Hash`.
 ///
-/// Returns a `Vec` of length `num_partitions`, where entry `p` lists the
-/// row indices in `batch` that hash to partition `p`. Hash semantics are
-/// byte-identical to `datafusion::physical_plan::repartition::BatchPartitioner::Hash`.
-///
-/// `hash_buffer` is reused across calls to amortize allocations; it is
-/// cleared and resized internally.
+/// `hash_buffer`, `partition_of_row` and `assignment` are all caller-owned
+/// scratch reused across calls to amortize allocations; each is cleared and
+/// resized internally.
 fn compute_partition_indices(
     batch: &RecordBatch,
     exprs: &[Arc<dyn PhysicalExpr>],
     num_partitions: usize,
     hash_buffer: &mut Vec<u64>,
-) -> Result<Vec<Vec<u32>>> {
+    partition_of_row: &mut Vec<u32>,
+    assignment: &mut PartitionAssignment,
+) -> Result<()> {
     let arrays = evaluate_expressions_to_arrays(exprs, batch)?;
     hash_buffer.clear();
     hash_buffer.resize(batch.num_rows(), 0);
@@ -1154,11 +1169,15 @@ fn compute_partition_indices(
         hash_buffer,
     )?;
 
-    let mut out: Vec<Vec<u32>> = (0..num_partitions).map(|_| Vec::new()).collect();
-    for (row, &h) in hash_buffer.iter().enumerate() {
-        out[(h % num_partitions as u64) as usize].push(row as u32);
-    }
-    Ok(out)
+    partition_of_row.clear();
+    partition_of_row.reserve(batch.num_rows());
+    partition_of_row.extend(
+        hash_buffer
+            .iter()
+            .map(|&h| (h % num_partitions as u64) as u32),
+    );
+    assignment.rebuild(partition_of_row, num_partitions);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1222,6 +1241,29 @@ mod tests {
         results
     }
 
+    /// Test-only view of `compute_partition_indices` as one row-index list per
+    /// partition, which is easier to assert against than the CSR form.
+    fn partition_indices_nested(
+        batch: &RecordBatch,
+        exprs: &[Arc<dyn PhysicalExpr>],
+        num_partitions: usize,
+    ) -> Result<Vec<Vec<u32>>> {
+        let mut hash_buffer = Vec::new();
+        let mut partition_of_row = Vec::new();
+        let mut assignment = PartitionAssignment::default();
+        compute_partition_indices(
+            batch,
+            exprs,
+            num_partitions,
+            &mut hash_buffer,
+            &mut partition_of_row,
+            &mut assignment,
+        )?;
+        Ok((0..num_partitions)
+            .map(|p| assignment.rows_for(p).to_vec())
+            .collect())
+    }
+
     fn assert_shared_io_error(err: &BallistaError) {
         let BallistaError::DataFusionError(e) = err else {
             panic!("expected DataFusionError, got {err:?}");
@@ -1262,9 +1304,7 @@ mod tests {
                 datafusion::physical_expr::expressions::Column::new("k", 0),
             )];
 
-        let mut hash_buffer: Vec<u64> = Vec::new();
-        let result =
-            compute_partition_indices(&batch, &exprs, 8, &mut hash_buffer).unwrap();
+        let result = partition_indices_nested(&batch, &exprs, 8).unwrap();
 
         // 8 partition slots
         assert_eq!(result.len(), 8);
@@ -1757,9 +1797,7 @@ mod tests {
             )];
 
         // Our implementation
-        let mut hash_buffer: Vec<u64> = Vec::new();
-        let ours =
-            compute_partition_indices(&batch, &exprs, 4, &mut hash_buffer).unwrap();
+        let ours = partition_indices_nested(&batch, &exprs, 4).unwrap();
 
         // Reference: DataFusion's BatchPartitioner::new_hash_partitioner
         let mut ref_partitioner =

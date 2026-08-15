@@ -151,6 +151,46 @@ impl ShuffleIndex {
 
         Ok(Self { offsets })
     }
+
+    /// Reads just the `[start, end)` byte range of one partition, without
+    /// materializing the whole index.
+    ///
+    /// A reduce task looks up one partition per map-output file, so reading
+    /// the full index costs `O(partition_count)` per lookup for two numbers.
+    /// Both offsets are adjacent on disk, so a single positioned read gets
+    /// them in `O(1)`.
+    pub fn read_partition_range(path: &Path, partition_id: usize) -> Result<(i64, i64)> {
+        use std::os::unix::fs::FileExt;
+
+        let file = File::open(path).map_err(BallistaError::IoError)?;
+        let file_size = file.metadata().map_err(BallistaError::IoError)?.len() as usize;
+
+        if !file_size.is_multiple_of(8) {
+            return Err(BallistaError::General(format!(
+                "Invalid index file size: {file_size} (must be multiple of 8)"
+            )));
+        }
+        let partition_count = (file_size / 8).saturating_sub(1);
+        if partition_count == 0 {
+            return Err(BallistaError::General(format!(
+                "Index file too small: {} entries (need at least 2)",
+                file_size / 8
+            )));
+        }
+        if partition_id >= partition_count {
+            return Err(BallistaError::General(format!(
+                "Partition {partition_id} not found in index (max: {partition_count})"
+            )));
+        }
+
+        let mut buf = [0u8; 16];
+        file.read_exact_at(&mut buf, (partition_id * 8) as u64)
+            .map_err(BallistaError::IoError)?;
+        Ok((
+            i64::from_le_bytes(buf[..8].try_into().expect("8 bytes")),
+            i64::from_le_bytes(buf[8..].try_into().expect("8 bytes")),
+        ))
+    }
 }
 
 #[cfg(test)]

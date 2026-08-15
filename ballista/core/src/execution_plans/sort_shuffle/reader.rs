@@ -27,6 +27,7 @@ use crate::error::{BallistaError, Result};
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 
 use super::index::ShuffleIndex;
@@ -53,20 +54,16 @@ pub fn stream_sort_shuffle_partition(
     index_path: &Path,
     partition_id: usize,
 ) -> Result<SendableRecordBatchStream> {
-    let index = ShuffleIndex::read_from_file(index_path)?;
-
-    if partition_id >= index.partition_count() {
-        return Err(BallistaError::General(format!(
-            "Partition {partition_id} not found in index (max: {})",
-            index.partition_count()
-        )));
-    }
+    // Only this partition's two offsets are needed, so skip materializing the
+    // whole index — it holds one entry per output partition.
+    let (start, end) = ShuffleIndex::read_partition_range(index_path, partition_id)?;
 
     // Read the schema from the leading header stream.
     let header_file = File::open(data_path)?;
-    let schema = StreamReader::try_new(header_file, None)?.schema();
+    let schema =
+        StreamReader::try_new(BufReader::with_capacity(64 * 1024, header_file), None)?
+            .schema();
 
-    let (start, end) = index.get_partition_range(partition_id);
     if start < 0 || end < start {
         return Err(BallistaError::General(format!(
             "Invalid partition byte range for partition {partition_id}: ({start}, {end})"
