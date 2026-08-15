@@ -173,6 +173,60 @@ written under that cluster's own temp directory, in a `logs/` subdirectory
 (`TestCluster::log_dir()`). When a scenario fails, those logs are the first
 place to look for what the scheduler and executors were actually doing.
 
+## Running on Kubernetes (kind)
+
+The harness also has an opt-in Kubernetes backend (`K8sCluster`, in
+`src/k8s.rs`) that runs the scheduler and executors as pods in a local
+[kind](https://kind.sigs.k8s.io) cluster rather than as local processes. It is
+gated behind the `k8s` feature _and_ `CHAOS_BACKEND=kind`, so a plain `cargo
+test` never touches a cluster. Today it runs a single baseline scenario — a real
+query whose result must match plain local DataFusion — as a walking skeleton for
+the executor-kill scenarios the
+[#2029](https://github.com/apache/datafusion-ballista/issues/2029) follow-ups
+will add. It needs [Docker](https://docs.docker.com/get-docker/),
+[kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), and
+`kubectl`.
+
+`dev/chaos-kind.sh` wraps the whole loop — build the image, create the cluster,
+load the image, run the tests:
+
+```sh
+dev/chaos-kind.sh                       # build image, create cluster, load, test
+dev/chaos-kind.sh test -- --nocapture   # re-run against an existing cluster
+dev/chaos-kind.sh down                  # delete the cluster
+```
+
+or run the steps by hand: `dev/build-chaos-docker.sh`, then `kind create cluster
+--config chaos-testing/k8s/kind-config.yaml`, `kind load docker-image
+ballista-chaos:test`, and `CHAOS_BACKEND=kind cargo test -p ballista-chaos
+--features k8s --test k8s -- --test-threads=1`. Behavior is tuned through
+`CHAOS_FIXTURE_DIR` (host dir shared into the pods, default
+`$HOME/.ballista-chaos-fixtures`), `CHAOS_KEEP_NS` (keep the namespace for
+`kubectl` inspection), `CLUSTER_NAME`, `KEEP_CLUSTER`, and `KIND_NODE_IMAGE`.
+
+Because the harness runs outside the cluster, a few pieces bridge the gap:
+
+- **Fixture sharing.** The harness writes the deterministic parquet fixture to
+  `CHAOS_FIXTURE_DIR` on the host; kind's `extraMounts` bind that path into the
+  node and both pods `hostPath`-mount it, so the path is identical on host, node,
+  and pod and the schema-inferring `CREATE EXTERNAL TABLE ... LOCATION` resolves
+  the same everywhere, with no object store. The directory lives under `$HOME`
+  because Docker Desktop shares the home dir into its VM but not `/tmp` (the
+  static `k8s/kind-config.yaml` uses `/tmp` for Linux CI; `dev/chaos-kind.sh`
+  generates a `$HOME` config for local use).
+- **Reaching the cluster.** The client talks to the scheduler's gRPC + REST
+  (both on one port) through a `kubectl port-forward`, and fetches query results
+  through the scheduler's embedded Flight proxy, so it never contacts executor
+  pod IPs directly.
+- **Pods.** Both expose `/healthz` + `/readyz` with liveness/readiness probes
+  (the scheduler's readiness uses `/healthz`, not `/readyz`, so its Service
+  routes before executors register), and use `imagePullPolicy: Never` since the
+  image is only ever `kind load`ed. The backend refuses any `kubectl` context
+  without a `kind-` prefix, since it creates and deletes namespaces.
+
+CI runs this on the gated `k8s-chaos` workflow (path-filtered plus nightly), not
+per-PR — the process harness above already covers HA on every PR.
+
 ## Scenarios
 
 Every scenario runs under both `ballista.planner.adaptive.enabled=false` (AQE
