@@ -74,17 +74,19 @@ async fn main() -> ballista_core::error::Result<()> {
     // liveness; `/readyz` reflects heartbeat state. Only started when
     // `CHAOS_EXECUTOR_HEALTH_PORT` is set (the k8s manifest sets it), so the
     // process-based `TestCluster` harness spawns no extra server.
-    let health_server = std::env::var("CHAOS_EXECUTOR_HEALTH_PORT").ok().map(|port| {
-        let port: u16 = port
-            .parse()
-            .unwrap_or_else(|e| panic!("CHAOS_EXECUTOR_HEALTH_PORT must be a u16: {e}"));
-        let addr: SocketAddr = format!("{}:{}", config.bind_host, port)
-            .parse()
-            .expect("health server address must parse");
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let handle = spawn_health_server(addr, config.health.clone(), shutdown_rx);
-        (shutdown_tx, handle)
-    });
+    let health_server = std::env::var("CHAOS_EXECUTOR_HEALTH_PORT")
+        .ok()
+        .map(|port| {
+            let port: u16 = port.parse().unwrap_or_else(|e| {
+                panic!("CHAOS_EXECUTOR_HEALTH_PORT must be a u16: {e}")
+            });
+            let addr: SocketAddr = format!("{}:{}", config.bind_host, port)
+                .parse()
+                .expect("health server address must parse");
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+            let handle = spawn_health_server(addr, config.health.clone(), shutdown_rx);
+            (shutdown_tx, handle)
+        });
 
     let result = start_executor_process(Arc::new(config)).await;
 
