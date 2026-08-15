@@ -51,7 +51,7 @@ SortShuffleWriterExec: partitioning=Hash([ps_suppkey@0], 16)
             UnresolvedShuffleExec: stage=7, partitioning: Hash([l_partkey@0, l_suppkey@1], 16)
 
 === Stage 9 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([s_suppkey@0], 16)
   SortExec: expr=[s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
     ProjectionExec: expr=[s_name@1 as s_name, s_address@2 as s_address]
       SortMergeJoinExec: join_type=LeftSemi, on=[(s_suppkey@0, ps_suppkey@0)]
@@ -61,6 +61,6 @@ ShuffleWriterExec: partitioning: None
           UnresolvedShuffleExec: stage=8, partitioning: Hash([ps_suppkey@0], 16)
 
 === Stage 10 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [s_name@0 ASC NULLS LAST]
     UnresolvedShuffleExec: stage=9, partitioning: Hash([s_suppkey@0], 16)

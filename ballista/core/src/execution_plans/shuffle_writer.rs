@@ -627,14 +627,16 @@ impl DisplayAs for ShuffleWriterExec {
         t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
+        // This writer never repartitions, so its output partitioning is its
+        // input's. `shuffle_output_partitioning()` is the *repartitioning
+        // scheme*, always None here, which says nothing a reader can use.
+        let partitioning = self.properties().output_partitioning();
         match t {
-            // "None" is retained for plan-shape stability: this writer never
-            // repartitions, so the value can only ever be None.
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ShuffleWriterExec: partitioning: None")
+                write!(f, "ShuffleWriterExec: partitioning: {partitioning}")
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "partitioning=None")
+                write!(f, "partitioning={partitioning}")
             }
         }
     }
@@ -961,6 +963,7 @@ mod tests {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use datafusion::physical_plan::display::DefaultDisplay;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
@@ -1120,6 +1123,41 @@ mod tests {
             rendered.contains("elapsed_compute"),
             "expected populated elapsed_compute metric in rendered plan:\n{rendered}"
         );
+        Ok(())
+    }
+
+    /// The rendered partitioning has to track the input plan, not be a constant.
+    /// Two plans with different partitioning must render differently.
+    #[tokio::test]
+    async fn display_as_reports_real_partitioning() -> Result<()> {
+        fn render(input: Arc<dyn ExecutionPlan>) -> Result<String> {
+            let work_dir = TempDir::new()?;
+            let writer = ShuffleWriterExec::try_new(
+                JobId::new("jobPartitioning"),
+                1,
+                input,
+                work_dir.path().to_str().unwrap().to_owned(),
+            )?;
+            Ok(format!("{}", DefaultDisplay(writer)))
+        }
+
+        // the passthrough case: the writer inherits its input's partitioning
+        let passthrough = render(create_input_plan()?)?;
+        assert!(
+            passthrough.contains("UnknownPartitioning(2)"),
+            "expected the input plan's 2 partitions:\n{passthrough}"
+        );
+
+        // a hash-partitioned input has to come through as such, exprs and all
+        let hashed = render(Arc::new(RepartitionExec::try_new(
+            create_input_plan()?,
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+        )?))?;
+        assert!(
+            hashed.contains("Hash([a@0], 4)"),
+            "expected the input plan's hash partitioning:\n{hashed}"
+        );
+
         Ok(())
     }
 
