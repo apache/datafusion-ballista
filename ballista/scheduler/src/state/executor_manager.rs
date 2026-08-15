@@ -381,10 +381,7 @@ impl ExecutorManager {
         reason: Option<String>,
     ) -> Result<()> {
         info!("Removing executor {executor_id}: {reason:?}");
-        // Drop the cached client first, so that it goes even if the cluster
-        // state fails to remove the executor. Nothing else ever removes from
-        // `clients`, and an executor is never seen again under the same id, so
-        // a client left here is retained for the lifetime of the scheduler.
+        // Drop the cached client
         self.clients.remove(executor_id);
         self.cluster_state.remove_executor(executor_id).await
     }
