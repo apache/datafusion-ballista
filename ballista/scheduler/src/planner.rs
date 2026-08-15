@@ -928,9 +928,9 @@ pub(crate) fn create_shuffle_writer_with_config(
 #[cfg(test)]
 mod test {
     use super::{can_stay_inline, holds_a_broadcast};
-    use crate::assert_plan;
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
+    use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
@@ -968,10 +968,10 @@ mod test {
 
         let rewritten = make_empty_exec_serde_safe(plan).unwrap();
 
-        assert_eq!(
-            displayable(rewritten.as_ref()).indent(false).to_string(),
-            "RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1\n  EmptyExec\n"
-        );
+        assert_plan!(rewritten.as_ref(), @r"
+        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+          EmptyExec
+        ");
     }
 
     #[test]
@@ -985,10 +985,7 @@ mod test {
 
         let rewritten = make_empty_exec_serde_safe(plan).unwrap();
 
-        assert_eq!(
-            displayable(rewritten.as_ref()).indent(false).to_string(),
-            "EmptyExec\n"
-        );
+        assert_plan!(rewritten.as_ref(), @"EmptyExec");
     }
 
     /// A plain scan branch restricts away cleanly, so it can stay inline in

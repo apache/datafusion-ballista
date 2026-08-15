@@ -46,6 +46,22 @@ pub fn print_version() {
     println!("Ballista version: {BALLISTA_VERSION}")
 }
 
+/// Asserts an indented physical plan against an inline snapshot.
+///
+/// Keeping plan assertions behind one macro makes plan changes easier to
+/// review and update consistently across Ballista crates.
+#[macro_export]
+macro_rules! assert_plan {
+    ($plan:expr, @ $expected_lines:literal $(,)?) => {{
+        let plan = datafusion::physical_plan::displayable($plan)
+            .indent(true)
+            .to_string();
+        let actual_lines = plan.trim();
+
+        insta::assert_snapshot!(actual_lines, @ $expected_lines);
+    }};
+}
+
 /// Client utilities for connecting to Ballista schedulers.
 pub mod client;
 /// Connection pool for reusing `BallistaClient` instances across requests.

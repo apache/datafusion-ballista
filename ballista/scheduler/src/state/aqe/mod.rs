@@ -1524,15 +1524,3 @@ fn scalar_to_f64(sv: &ScalarValue) -> datafusion::common::Result<f64> {
         ),
     }
 }
-
-/// Checks is the plan same as expected string representation
-#[cfg(test)]
-#[macro_export]
-macro_rules! assert_plan {
-    ($PLAN: expr, @ $EXPECTED_LINES: literal $(,)?) => {
-        let plan = datafusion::physical_plan::displayable($PLAN).indent(true).to_string();
-        let actual_lines = plan.trim();
-
-        insta::assert_snapshot!(actual_lines, @ $EXPECTED_LINES);
-    };
-}

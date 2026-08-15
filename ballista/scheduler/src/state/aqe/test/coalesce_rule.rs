@@ -24,9 +24,9 @@
 //! `coalesce_target_partition_bytes` so the bin-pack outcome is hand-traceable
 //! against `split_size_list_by_target_size`.
 
-use crate::assert_plan;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{mock_batch, mock_schema};
+use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
