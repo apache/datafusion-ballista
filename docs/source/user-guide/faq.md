@@ -30,7 +30,8 @@ Ballista is a distributed compute platform for DataFusion workloads.
 ## Why does Ballista write shuffle data to disk instead of streaming it between stages?
 
 Ballista uses a blocking shuffle, like Apache Spark: each query stage runs to completion and
-writes its output to local disk before any downstream stage starts. Other DataFusion-based
+writes its output to local storage (a disk, or a RAM-backed filesystem if you have the memory
+for it) before any downstream stage starts. Other DataFusion-based
 distributed engines, such as [DataFusion Distributed](https://datafusion-contrib.github.io/datafusion-distributed/)
 and [Sail](https://github.com/lakehq/sail), stream data between stages instead.
 

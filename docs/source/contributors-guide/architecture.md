@@ -194,9 +194,12 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-The shuffle is _blocking_: a stage runs to completion and materializes its output to local disk before any
-downstream stage starts. See [Shuffle Design](shuffle.md) for why Ballista made that choice, what it costs, and
-how it compares to the pipelined shuffle used by engines such as DataFusion Distributed and Sail.
+The shuffle is _blocking_: a stage materializes its output to local storage, and today a downstream stage waits
+for the whole upstream stage to complete before it starts. Waiting on the whole stage is a property of the current
+scheduler rather than of the design — the output of a finished task is readable as soon as its files are closed,
+so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See
+[Shuffle Design](shuffle.md) for why Ballista materializes shuffle output at all, what that costs, and how it
+compares to the pipelined shuffle used by engines such as DataFusion Distributed and Sail.
 
 [shufflewriterexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
 [shufflereaderexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs

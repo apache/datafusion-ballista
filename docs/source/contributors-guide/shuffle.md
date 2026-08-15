@@ -20,7 +20,7 @@
 # Shuffle Design
 
 Ballista uses a **blocking shuffle**: a query stage runs to completion and
-materializes its output to local disk before any downstream stage starts. This
+materializes its output to local storage before any downstream stage starts. This
 is the same model Apache Spark uses, and it is deliberately different from the
 **pipelined shuffle** used by engines such as Apache Flink,
 [DataFusion Distributed], and [Sail], where a downstream stage streams data from
@@ -101,10 +101,15 @@ machinery handles executors disappearing outright
 Repeated failures are capped: once a stage exceeds its retry budget the job
 fails rather than looping.
 
-A pipelined engine generally cannot do this. There is no durable copy of the
-producer's output, so a consumer failure forces the producer to run again, and
-in the common case the whole query restarts. DataFusion Distributed is explicit
-about this in its own documentation:
+A pipelined engine has to work harder for the same guarantee. Without a durable
+copy of the producer's output, recovery means either re-running the producer or
+restoring from a checkpoint, and checkpointing a distributed dataflow is a hard
+problem in its own right — Flink got there with
+[asynchronous barrier snapshotting], but it took years of work, and it recovers
+by rewinding a whole pipeline region to the last snapshot rather than by
+re-running the handful of tasks that were actually lost. Engines that have not
+taken that on restart the query. DataFusion Distributed is explicit about this
+in its own documentation:
 
 > If any node fails mid-query, the whole query fails; there are no retries.
 > There's no persistence of intermediate results, so queries can't checkpoint or
@@ -114,6 +119,8 @@ For a query that runs for seconds, restarting is cheap and this hardly matters.
 For an ETL job that runs for an hour on a cluster where a spot instance
 disappears every few minutes, it is the difference between a job that finishes
 and one that never does.
+
+[asynchronous barrier snapshotting]: https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/stateful-stream-processing/
 
 ### The filesystem absorbs producer/consumer skew
 
@@ -157,6 +164,14 @@ downstream exchange with an empty node and propagates emptiness up the plan,
 requires knowing a stage produced zero rows, and no sample can establish that
 before the stage ends.
 
+Exact per-partition counts are also what makes skew mitigation tractable. The
+AQE `CoalescePartitionsRule` already uses them to merge undersized shuffle
+partitions before the next stage is scheduled, and the same information is what
+a future rule would need to go the other way and split an oversized partition,
+or to choose range boundaries that spread a hot key across several downstream
+tasks. Skew is listed below as a cost of the barrier, but the barrier is also
+where the statistics to fix it come from.
+
 ### Executors can come and go between stages
 
 Because a stage's inputs are files rather than live connections, cluster
@@ -166,6 +181,12 @@ autoscaling (including the KEDA scaler) straightforward. Shuffle files are
 cleaned up after the job finishes, on the interval set by
 `finished-job-data-clean-up-interval-seconds`.
 
+For deployments that scale continuously with demand and run on spot capacity,
+this and partial re-execution above are the same property seen twice: a fleet
+whose size changes under the query only works if a departing executor costs a
+few re-run tasks and an arriving one can be handed work with no setup. Both
+follow from stage output being a file rather than a connection.
+
 ## What the barrier costs
 
 The trade-off is real, and it is worth stating plainly.
@@ -173,16 +194,25 @@ The trade-off is real, and it is worth stating plainly.
 - **Straggler stall.** A stage finishes when its slowest task finishes. Until
   then no downstream work can start, even if 99% of the input is ready. On a
   skewed join key or a slow node, most of the cluster sits idle waiting. This is
-  the single largest source of avoidable latency in Ballista today.
+  the single largest source of avoidable latency in Ballista today — and the
+  word to note is _avoidable_: waiting on the whole stage is how the scheduler
+  works now, not something materialization forces (see
+  [partial-input early start](#directions-that-do-not-require-abandoning-the-model)).
 - **Write amplification.** Every intermediate byte is written, then read, then
   often served over the network — even when the intermediate result is a few
   kilobytes. For small queries this dominates the runtime.
-- **Poor interactive latency.** The cost above is roughly fixed per stage
+- **Higher interactive latency.** The cost above is roughly fixed per stage
   boundary, so a query with many small stages pays it repeatedly. Pipelined
   engines report substantially better latency on interactive benchmarks, and the
-  gap is structural, not an implementation detail.
-- **Local storage is required.** Executors need writable local disk sized for
-  the largest shuffle they will handle, plus cleanup.
+  gap is structural, not an implementation detail. This is a gap relative to a
+  pipelined engine, not an absolute verdict: Ballista is in production on
+  workloads where queries return in around a second.
+- **Local storage is required.** Executors need writable local storage sized for
+  the largest shuffle they will handle, plus cleanup. It does not have to be a
+  physical disk — deployments on memory-rich instances point `work_dir` at a
+  RAM-backed filesystem and never touch one — but the space has to exist
+  somewhere, and today that somewhere is attached to the executor rather than
+  to a shuffle service.
 - **No path to streaming.** A blocking barrier cannot express an unbounded
   input. Any future support for continuous queries would need a different
   exchange model.
@@ -209,15 +239,32 @@ The barrier is not all-or-nothing, and several ideas would recover part of the
 latency without giving up recovery or the ability to run wider than the cluster.
 These are open directions rather than commitments:
 
-- **Partial-input early start.** Let a consumer task begin once _some_ producer
-  tasks have finished, learning about additional `PartitionLocation`s
-  incrementally, instead of requiring `resolvable()` to be true for the whole
-  stage. This keeps files, keeps retries, and shortens the straggler stall
-  without introducing co-scheduling.
+- **Partial-input early start.** Nothing about the design requires a consumer to
+  wait for the _whole_ producer stage; that is just what `resolvable()` does
+  today. A consumer task could begin once some producer tasks have finished,
+  learning about additional `PartitionLocation`s incrementally. Where the
+  cluster has spare capacity this overlaps stages and shortens the straggler
+  stall, and it keeps files, retries, and slot accounting exactly as they are.
+  The general form of this — deciding how much of the DAG is in flight at once
+  rather than always running exactly one stage — is sometimes called bubble
+  execution.
 - **Hybrid exchange.** Stream to a consumer when one is already running and fall
   back to writing files otherwise, in the spirit of Flink's hybrid shuffle. This
   gets the latency win where capacity allows and degrades to today's behavior
   where it does not.
+- **In-memory shuffle.** Small intermediates are written and read back through
+  the filesystem regardless of size. Keeping them in memory, with a spill path
+  to files when they grow, would remove most of the write amplification for
+  short queries while leaving the durable path in place for the ones that need
+  it.
+- **A cheaper shuffle format.** The write side currently produces a file per
+  output partition per task and a metadata round-trip per partition, which is a
+  lot of small files and small reads at high partition counts. Writing one
+  indexed file per task, coalescing batches across partitions, and trimming the
+  per-partition metadata would cut the fixed cost of a stage boundary without
+  changing where the data lives.
+- **Shuffle affinity.** Schedule a consumer task on the executor that already
+  holds most of its input, turning Flight fetches into local reads.
 - **Remote shuffle service.** Offload shuffle storage to a service such as
   Apache Celeborn or Apache Uniffle
   ([#1539](https://github.com/apache/datafusion-ballista/issues/1539)), which
