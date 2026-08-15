@@ -73,8 +73,15 @@ serves them over the same paths as the live scheduler:
 Because the TUI talks to that same API, you can browse history with:
 
 ```shell
-ballista-cli --tui --host localhost --port 50060
+BALLISTA__SCHEDULER__URL=http://localhost:50060 ballista-cli --tui
 ```
+
+The TUI reads its URL from configuration rather than from the `--host` and
+`--port` flags, which set the gRPC scheduler address used for running queries.
+Pointing the TUI somewhere else means setting `BALLISTA__SCHEDULER__URL`, or
+`scheduler.url` in the TUI's config file. Passing `--port 50060` alone leaves
+the TUI on its default of `http://localhost:50050`, where it either finds your
+live scheduler or reports that the scheduler is down.
 
 The directory is scanned once at startup, so restart the history server to pick
 up jobs that finished since it launched.
