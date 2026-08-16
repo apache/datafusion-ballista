@@ -65,6 +65,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::debug;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use super::shuffle_writer_trait::ShuffleWriter;
 
@@ -549,7 +550,7 @@ impl ShuffleWriterExec {
             // and deadlocks the scatter side.
             let num_partitions =
                 plan.properties().output_partitioning().partition_count();
-            let mut handles = Vec::with_capacity(num_partitions);
+            let mut handles = JoinSet::new();
             for local_input_partition in 0..num_partitions {
                 // Each drain owns its own metric bucket, keyed by the
                 // operator-local input partition it drains. Passthrough
@@ -574,7 +575,7 @@ impl ShuffleWriterExec {
                 debug!("Writing results to {path:?}");
 
                 let mut stream = plan.execute(local_input_partition, context.clone())?;
-                handles.push(tokio::spawn(async move {
+                handles.spawn(async move {
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
                         path.as_path(),
@@ -588,12 +589,18 @@ impl ShuffleWriterExec {
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
                     Ok::<_, DataFusionError>((local_input_partition, stats))
-                }));
+                });
             }
 
+            // Joined as they complete, not in partition order: the K drains
+            // share one plan instance, so a panic while its `CollectLeft` build
+            // side (DataFusion's `OnceFut`) is polled leaves the others parked
+            // on that future forever — joining in order would block on one of
+            // them and hang the job instead of failing it. Dropping the
+            // `JoinSet` on the way out aborts whatever is still parked.
             let mut results = Vec::with_capacity(num_partitions);
-            for handle in handles {
-                let (local_input_partition, stats) = handle.await.map_err(|e| {
+            while let Some(joined) = handles.join_next().await {
+                let (local_input_partition, stats) = joined.map_err(|e| {
                     DataFusionError::Execution(format!(
                         "shuffle-write drain task panicked: {e}"
                     ))

@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use super::super::shuffle_writer::{result_schema, summaries_to_batch};
 use super::super::shuffle_writer_trait::ShuffleWriter;
@@ -1062,19 +1063,24 @@ async fn run_coordinator(
     // Spawn per-input-partition write tasks concurrently — this matches the
     // parallelism main's design achieved by having DataFusion drive
     // `execute(0..M)` concurrently.
-    let handles: Vec<_> = (0..num_input_partitions)
-        .map(|input_partition| {
-            let w = writer.clone();
-            let c = ctx.clone();
-            tokio::spawn(async move { w.execute_shuffle_write(input_partition, c).await })
-        })
-        .collect();
+    //
+    // Joined as they complete, not in partition order, and the first failure
+    // abandons the rest: the M writes share one plan instance, so a panic while
+    // its `CollectLeft` build side (DataFusion's `OnceFut`) is polled leaves the
+    // others parked on that future forever — joining in order would block on one
+    // of them and hang the job instead of failing it.
+    let mut writes = JoinSet::new();
+    for input_partition in 0..num_input_partitions {
+        let w = writer.clone();
+        let c = ctx.clone();
+        writes.spawn(async move { w.execute_shuffle_write(input_partition, c).await });
+    }
 
     let mut grouped: Vec<Vec<ShuffleWritePartition>> =
         (0..k).map(|_| Vec::new()).collect();
     let mut first_error: Option<DataFusionError> = None;
-    for handle in handles {
-        match handle.await {
+    while let Some(joined) = writes.join_next().await {
+        match joined {
             Ok(Ok(summaries)) => {
                 for summary in summaries {
                     let idx = summary.partition_id as usize;
@@ -1084,15 +1090,18 @@ async fn run_coordinator(
                 }
             }
             Ok(Err(e)) => {
-                first_error.get_or_insert(e);
+                first_error = Some(e);
+                break;
             }
             Err(join_err) => {
-                first_error.get_or_insert_with(|| {
-                    DataFusionError::Execution(format!("write task panicked: {join_err}"))
-                });
+                first_error = Some(DataFusionError::Execution(format!(
+                    "write task panicked: {join_err}"
+                )));
+                break;
             }
         }
     }
+    writes.abort_all();
 
     if let Some(e) = first_error {
         // Share the original error with every output handoff so classification
