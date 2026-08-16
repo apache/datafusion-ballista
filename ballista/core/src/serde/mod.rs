@@ -18,7 +18,7 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
-use crate::extension::BallistaCacheNode;
+use crate::extension::{BallistaCacheNode, BallistaCheckpointNode};
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
@@ -264,6 +264,19 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
                         .clone(),
                 )),
             }),
+            LogicalPlanType::CheckpointNode(plan_checkpoint) => Ok(Extension {
+                node: Arc::new(BallistaCheckpointNode::new(
+                    plan_checkpoint.checkpoint_id,
+                    plan_checkpoint.session_id,
+                    plan_checkpoint.location,
+                    inputs
+                        .first()
+                        .ok_or(DataFusionError::Plan(
+                            "expected input size of 1".to_string(),
+                        ))?
+                        .clone(),
+                )),
+            }),
         }
     }
 
@@ -288,6 +301,24 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
                 ))
             })?;
 
+            Ok(())
+        } else if let Some(node) =
+            node.node.as_any().downcast_ref::<BallistaCheckpointNode>()
+        {
+            let proto = protobuf::BallistaLogicalPlanNode {
+                logical_plan_type: Some(LogicalPlanType::CheckpointNode(
+                    protobuf::LogicalPlanCheckpointNode {
+                        session_id: node.session_id().to_owned(),
+                        checkpoint_id: node.checkpoint_id().to_owned(),
+                        location: node.location().to_owned(),
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode checkpoint node: {e:?}"
+                ))
+            })?;
             Ok(())
         } else {
             self.default_codec.try_encode(node, buf)
@@ -1241,6 +1272,54 @@ mod test {
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
         ]))
+    }
+
+    #[tokio::test]
+    async fn checkpoint_node_serialization_roundtrip() {
+        use crate::extension::BallistaCheckpointNode;
+        use datafusion::logical_expr::Extension;
+
+        let ctx = SessionContext::new().task_ctx();
+        let input = LogicalPlan::EmptyRelation(EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(DFSchema::empty()),
+        });
+
+        let original_plan = LogicalPlan::Extension(Extension {
+            node: Arc::new(BallistaCheckpointNode::new(
+                "checkpoint-id".to_string(),
+                "session-id".to_string(),
+                "s3://bucket/checkpoints/session-id/checkpoint-id".to_string(),
+                input,
+            )),
+        });
+
+        let codec = crate::serde::BallistaLogicalExtensionCodec::default();
+        let plan_message =
+            LogicalPlanNode::try_from_logical_plan(&original_plan, &codec).unwrap();
+
+        let mut buf: Vec<u8> = vec![];
+        plan_message.try_encode(&mut buf).unwrap();
+
+        let decoded_message = LogicalPlanNode::try_decode(&buf).unwrap();
+        let decoded_plan = decoded_message.try_into_logical_plan(&ctx, &codec).unwrap();
+
+        let LogicalPlan::Extension(extension) = decoded_plan else {
+            panic!("expected an extension node, got {decoded_plan:?}");
+        };
+
+        let node = extension
+            .node
+            .as_any()
+            .downcast_ref::<BallistaCheckpointNode>()
+            .expect("expected a BallistaCheckpointNode");
+
+        assert_eq!(node.checkpoint_id(), "checkpoint-id");
+        assert_eq!(node.session_id(), "session-id");
+        assert_eq!(
+            node.location(),
+            "s3://bucket/checkpoints/session-id/checkpoint-id"
+        );
     }
 
     // Regression coverage for #1838 and the removed `make_filter_projection_serde_safe`

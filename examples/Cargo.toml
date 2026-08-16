@@ -51,6 +51,11 @@ required-features = ["ballista-core/spark-compat"]
 name = "standalone-substrait"
 required-features = ["ballista-scheduler/substrait"]
 
+[[example]]
+name = "standalone-checkpoint"
+path = "examples/standalone-checkpoint.rs"
+required-features = ["ballista/standalone"]
+
 [dependencies]
 # Optional dependency for TLS support
 rustls = { version = "0.23", features = ["ring"], optional = true }

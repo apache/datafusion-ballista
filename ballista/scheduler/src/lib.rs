@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 /// REST API endpoints for scheduler operations.
 pub mod api;
+pub(crate) mod checkpoint;
 /// Cluster management and executor coordination.
 pub mod cluster;
 /// Scheduler configuration options.

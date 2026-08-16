@@ -176,6 +176,9 @@ pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compressi
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
     "ballista.scheduler.max_partitions_per_task";
 
+/// Configuration key for the base object-store location used by `DataFrame::checkpoint()`.
+pub const BALLISTA_CHECKPOINT_DIR: &str = "ballista.checkpoint.dir";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -425,6 +428,16 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             DataType::UInt64,
             Some(1.to_string()),
         ),
+        ConfigEntry::new(
+            BALLISTA_CHECKPOINT_DIR.to_string(),
+            "Optional location where DataFrame::checkpoint() results are stored. \
+             Must be reachable from every node in the cluster, so an object store URL \
+             or a shared filesystem should be used for anything but a standalone cluster. \
+             If it is not set, calling DataFrame::checkpoint() returns an error.".to_string(),
+            DataType::Utf8,
+            Some("".to_string())
+        )
+        .with_doc_default("(none)"),
     ];
     entries
         .into_iter()
@@ -809,6 +822,12 @@ impl BallistaConfig {
     /// Returns the wait time in milliseconds between IO retries in the Ballista client.
     pub fn io_retry_wait_time_ms(&self) -> usize {
         self.get_usize_setting(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS)
+    }
+
+    /// Returns configured checkpoint directory (local FS, HDFS, S3 etc.)
+    pub fn checkpoint_dir(&self) -> Option<String> {
+        let dir = self.get_string_setting(BALLISTA_CHECKPOINT_DIR);
+        if dir.is_empty() { None } else { Some(dir) }
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {

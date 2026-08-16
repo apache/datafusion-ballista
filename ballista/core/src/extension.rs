@@ -17,9 +17,10 @@
 
 use crate::config::{
     BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS,
-    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
-    BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
-    BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_CHECKPOINT_DIR, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
+    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
+    BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
@@ -286,6 +287,10 @@ pub trait SessionConfigExt {
     fn ballista_coalesce_merged_partition_factor(&self) -> f64;
     /// Sets the merged-partition early-flush factor (Spark legacy).
     fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self;
+    /// Returns the configured checkpoint directory
+    fn ballista_checkpoint_dir(&self) -> Option<String>;
+    /// Sets the base object-store location for `DataFrame::checkpoint()`.
+    fn with_ballista_checkpoint_dir(self, dir: String) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -709,6 +714,19 @@ impl SessionConfigExt for SessionConfig {
             })
     }
 
+    fn with_ballista_checkpoint_dir(self, dir: String) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_CHECKPOINT_DIR, &dir)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_CHECKPOINT_DIR, &dir)
+        }
+    }
+
+    fn ballista_checkpoint_dir(&self) -> Option<String> {
+        self.ballista_config().checkpoint_dir()
+    }
+
     // f64 setter — uses set_str because SessionConfig has no set_f64 in this
     // workspace; the stored string is round-tripped via f64::to_string() /
     // f64::from_str(), mirroring the `with_ballista_job_name` set_str pattern.
@@ -1079,6 +1097,95 @@ impl UserDefinedLogicalNodeCore for BallistaCacheNode {
         })
     }
 }
+
+/// Ballista logical [Extension] marking a lazy checkpoint boundary.
+///
+/// It is inserted by `DataFrame::checkpoint_lazy()` and is never executed
+/// directly on the client. The scheduler splits the plan at this node when the
+/// first action reaches it, which is what makes the checkpoint lazy in the same
+/// sense as Spark's `Dataset.checkpoint(eager = false)`.
+#[derive(Hash, Eq, PartialEq, PartialOrd, Debug)]
+pub struct BallistaCheckpointNode {
+    checkpoint_id: String,
+    session_id: String,
+    location: String,
+    input: LogicalPlan,
+    exprs: Vec<Expr>,
+}
+
+impl BallistaCheckpointNode {
+    /// Creates new checkpoint node to be saved to the desired location
+    pub fn new(
+        checkpoint_id: String,
+        session_id: String,
+        location: String,
+        input: LogicalPlan,
+    ) -> Self {
+        Self {
+            checkpoint_id,
+            session_id,
+            location,
+            input,
+            exprs: vec![],
+        }
+    }
+
+    /// Returns the checkpoint_id
+    pub fn checkpoint_id(&self) -> &str {
+        self.checkpoint_id.as_str()
+    }
+
+    /// Returns the sessiond id which created this checkpoint
+    pub fn session_id(&self) -> &str {
+        self.session_id.as_str()
+    }
+
+    /// Returns the location this checkpoint is saved to
+    pub fn location(&self) -> &str {
+        self.location.as_str()
+    }
+}
+
+impl UserDefinedLogicalNodeCore for BallistaCheckpointNode {
+    fn name(&self) -> &str {
+        "BallistaCheckpointNode"
+    }
+
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.input]
+    }
+
+    fn schema(&self) -> &DFSchemaRef {
+        self.input.schema()
+    }
+
+    fn expressions(&self) -> Vec<Expr> {
+        self.exprs.clone()
+    }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}: location={}", self.name(), self.location)
+    }
+
+    fn with_exprs_and_inputs(
+        &self,
+        exprs: Vec<datafusion::prelude::Expr>,
+        inputs: Vec<LogicalPlan>,
+    ) -> datafusion::error::Result<Self> {
+        let [input] = <[LogicalPlan; 1]>::try_from(inputs).map_err(|_| {
+            datafusion::error::DataFusionError::Plan("input size must be one".to_string())
+        })?;
+
+        Ok(Self {
+            checkpoint_id: self.checkpoint_id.clone(),
+            session_id: self.session_id.clone(),
+            location: self.location.clone(),
+            input,
+            exprs,
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use datafusion::{

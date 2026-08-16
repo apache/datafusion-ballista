@@ -4,7 +4,7 @@
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BallistaLogicalPlanNode {
-    #[prost(oneof = "ballista_logical_plan_node::LogicalPlanType", tags = "1")]
+    #[prost(oneof = "ballista_logical_plan_node::LogicalPlanType", tags = "1, 2")]
     pub logical_plan_type: ::core::option::Option<
         ballista_logical_plan_node::LogicalPlanType,
     >,
@@ -15,6 +15,8 @@ pub mod ballista_logical_plan_node {
     pub enum LogicalPlanType {
         #[prost(message, tag = "1")]
         CacheNode(super::LogicalPlanCacheNode),
+        #[prost(message, tag = "2")]
+        CheckpointNode(super::LogicalPlanCheckpointNode),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -23,6 +25,15 @@ pub struct LogicalPlanCacheNode {
     pub cache_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LogicalPlanCheckpointNode {
+    #[prost(string, tag = "1")]
+    pub checkpoint_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub location: ::prost::alloc::string::String,
 }
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Physical Plan
