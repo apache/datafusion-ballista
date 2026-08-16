@@ -1063,12 +1063,6 @@ async fn run_coordinator(
     // Spawn per-input-partition write tasks concurrently — this matches the
     // parallelism main's design achieved by having DataFusion drive
     // `execute(0..M)` concurrently.
-    //
-    // Joined as they complete, not in partition order, and the first failure
-    // abandons the rest: the M writes share one plan instance, so a panic while
-    // its `CollectLeft` build side (DataFusion's `OnceFut`) is polled leaves the
-    // others parked on that future forever — joining in order would block on one
-    // of them and hang the job instead of failing it.
     let mut writes = JoinSet::new();
     for input_partition in 0..num_input_partitions {
         let w = writer.clone();

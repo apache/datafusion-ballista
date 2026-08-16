@@ -592,12 +592,6 @@ impl ShuffleWriterExec {
                 });
             }
 
-            // Joined as they complete, not in partition order: the K drains
-            // share one plan instance, so a panic while its `CollectLeft` build
-            // side (DataFusion's `OnceFut`) is polled leaves the others parked
-            // on that future forever — joining in order would block on one of
-            // them and hang the job instead of failing it. Dropping the
-            // `JoinSet` on the way out aborts whatever is still parked.
             let mut results = Vec::with_capacity(num_partitions);
             while let Some(joined) = handles.join_next().await {
                 let (local_input_partition, stats) = joined.map_err(|e| {
