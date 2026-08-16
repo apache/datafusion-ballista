@@ -393,6 +393,59 @@
 -->
 <section id="ballista-scheduler">
 <h1>Ballista Scheduler<a class="headerlink" href="#ballista-scheduler" title="Link to this heading">#</a></h1>
+<section id="fetching-query-results">
+<h2>Fetching Query Results<a class="headerlink" href="#fetching-query-results" title="Link to this heading">#</a></h2>
+<p>By default a client fetches the result partitions of a query directly from the executors that
+produced them, over Arrow Flight. This keeps the scheduler out of the data path, but it requires
+every client to have network access to every executor — which is not the case in isolated
+environments where only the scheduler is reachable.</p>
+<p>For those deployments the scheduler can advertise a different address for clients to fetch results
+from, and can optionally host an Arrow Flight proxy itself.</p>
+<blockquote>
+<div><p>Note: this is plain Arrow Flight, used to move result partitions. It is not Flight SQL, which was
+removed in Ballista 46.0.0 — the proxy only serves Ballista’s <code class="docutils literal notranslate"><span class="pre">FetchPartition</span></code> action, so generic
+Flight SQL or JDBC clients cannot use this endpoint.</p>
+</div></blockquote>
+<p>Two independent options control this:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code></p></td>
+<td><p>Runs an Arrow Flight proxy inside the scheduler process, on the scheduler’s own host and port. The proxy forwards each fetch to the executor that owns the partition.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code></p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">HOST:PORT</span></code> address clients are told to fetch results from, instead of the executors. Use it to point clients at a load balancer or a standalone proxy.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The first controls whether a proxy <em>runs</em>; the second controls what clients are <em>told</em>. Setting
+both is a supported combination: the embedded proxy runs, and clients are pointed at the advertised
+address, which is how you put a load balancer in front of one or more schedulers.</p>
+<p>To let clients fetch results through the scheduler itself:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--enable-embedded-flight-proxy
+</pre></div>
+</div>
+<p>To point clients at a load balancer that fronts the schedulers:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--enable-embedded-flight-proxy<span class="w"> </span><span class="se">\</span>
+<span class="w">                   </span>--advertise-flight-endpoint<span class="w"> </span>ballista-flight.example.com:50050
+</pre></div>
+</div>
+<p>Both options are disabled by default, and the embedded proxy should be enabled deliberately: it
+puts result traffic on the scheduler’s process and thread pool, competing with query planning and
+task scheduling. Under load this is a known source of scheduler congestion, so prefer a separate
+proxy — advertised with <code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code> — for clusters where result volume is
+significant.</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-sql-endpoint</span></code> is accepted as a deprecated alias of
+<code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code>. Passing either flag with no value used to start the embedded proxy;
+that is deprecated too and logs a warning — use <code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code> instead.</p>
+</div></blockquote>
+</section>
 <section id="rest-api">
 <h2>REST API<a class="headerlink" href="#rest-api" title="Link to this heading">#</a></h2>
 <p>The scheduler also provides a REST API that allows jobs to be monitored.</p>
@@ -520,6 +573,7 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fetching-query-results">Fetching Query Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rest-api">REST API</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#web-tui-configuration">Web TUI Configuration</a></li>
 </ul>
