@@ -1074,6 +1074,13 @@ mod supported {
         #[case]
         ctx: SessionContext,
     ) {
+        // Golden plan text is the static planner's stage layout.
+        ctx.sql("SET ballista.planner.adaptive.enabled = false")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
         let result = ctx
             .sql("EXPLAIN select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id")
             .await
@@ -1131,6 +1138,11 @@ mod supported {
         #[case]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
+        // Golden plan text is the static planner's stage layout.
+        ctx.sql("SET ballista.planner.adaptive.enabled = false")
+            .await?
+            .collect()
+            .await?;
         let result = ctx
             .sql(
                 "EXPLAIN ANALYZE select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id",

@@ -30,8 +30,8 @@ use datafusion::{
     physical_expr::PhysicalExpr,
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
-        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
-        apply_expression_roots,
+        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan,
+        ExecutionPlanProperties, PlanProperties, apply_expression_roots,
         joins::{
             HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
             utils::JoinFilter,
@@ -349,7 +349,19 @@ impl DynamicJoinSelectionExec {
             PartitionMode::Partitioned
         };
 
-        let action = match (&self.selection_state, partition_mode) {
+        // Repartitioning exists to give the resolver measured statistics. When
+        // the inputs are already co-partitioned there is nothing to wait for,
+        // so resolve now instead of inserting an exchange that reshuffles data
+        // already in the right place (TPC-H q18 moved 60M rows twice).
+        let selection_state = if self.selection_state == JoinInputState::Repartitioned
+            || self.inputs_already_partitioned(config)
+        {
+            JoinInputState::Repartitioned
+        } else {
+            JoinInputState::Unknown
+        };
+
+        let action = match (&selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
@@ -484,6 +496,27 @@ impl DynamicJoinSelectionExec {
 
         estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
             .is_some_and(|estimated| estimated < threshold_byte_size)
+    }
+
+    /// Whether both inputs already satisfy the distribution this join needs.
+    ///
+    /// An equi-join leaves its output partitioned on both sides of every join
+    /// key, so a downstream join on the other key is already co-partitioned.
+    /// `satisfaction` consults equivalence classes and sees that.
+    fn inputs_already_partitioned(&self, config: &ConfigOptions) -> bool {
+        let partitions = config.execution.target_partitions;
+        self._required_input_distribution()
+            .iter()
+            .zip([&self.left, &self.right])
+            .all(|(required, input)| {
+                let current = input.output_partitioning();
+                current.partition_count() == partitions
+                    && current.satisfaction(
+                        required,
+                        input.equivalence_properties(),
+                        false,
+                    ) == datafusion::physical_expr::PartitioningSatisfaction::Exact
+            })
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {

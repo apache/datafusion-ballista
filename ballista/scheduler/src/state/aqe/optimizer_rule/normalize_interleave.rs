@@ -70,7 +70,14 @@ mod tests {
     use datafusion::physical_expr::expressions::col;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
+    use datafusion::physical_plan::{
+        ChildrenPropertiesMode, ExecutionPlanProperties, Partitioning,
+        ReplaceChildrenOptions,
+    };
+
+    fn recompute() -> ReplaceChildrenOptions {
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute)
+    }
 
     fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]))
@@ -119,7 +126,10 @@ mod tests {
             Arc::new(EmptyExec::new(Arc::clone(&schema)).with_partitions(4));
         assert!(
             Arc::clone(&interleave)
-                .with_new_children(vec![hash_branch(&schema), Arc::clone(&divergent)])
+                .replace_children(
+                    vec![hash_branch(&schema), Arc::clone(&divergent)],
+                    recompute()
+                )
                 .is_err()
         );
 
@@ -128,7 +138,7 @@ mod tests {
             .unwrap();
         assert!(
             union
-                .with_new_children(vec![hash_branch(&schema), divergent])
+                .replace_children(vec![hash_branch(&schema), divergent], recompute())
                 .is_ok()
         );
     }
