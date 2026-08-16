@@ -22,7 +22,7 @@
 Ballista uses a **blocking shuffle**: a query stage runs to completion and
 materializes its output to local storage before any downstream stage starts. This
 is the same model Apache Spark uses, and it is deliberately different from the
-**pipelined shuffle** used by engines such as Apache Flink,
+**pipelined shuffle** used by engines such as [Apache Flink],
 [DataFusion Distributed], and [Sail], where a downstream stage streams data from
 an upstream stage that is still running.
 
@@ -31,6 +31,7 @@ think about the trade-off when proposing changes to the exchange layer. For the
 mechanics of the shuffle writer and its tuning knobs, see the
 [Shuffle Implementation section of the tuning guide](../user-guide/tuning-guide.md#shuffle-implementation).
 
+[apache flink]: https://flink.apache.org/
 [datafusion distributed]: https://datafusion-contrib.github.io/datafusion-distributed/
 [sail]: https://github.com/lakehq/sail
 
@@ -167,10 +168,16 @@ before the stage ends.
 Exact per-partition counts are also what makes skew mitigation tractable. The
 AQE `CoalescePartitionsRule` already uses them to merge undersized shuffle
 partitions before the next stage is scheduled, and the same information is what
-a future rule would need to go the other way and split an oversized partition,
-or to choose range boundaries that spread a hot key across several downstream
-tasks. Skew is listed below as a cost of the barrier, but the barrier is also
-where the statistics to fix it come from.
+a future rule would need to go the other way and split an oversized partition.
+Skew is listed below as a cost of the barrier, but the barrier is also where the
+statistics to fix it come from.
+
+The two sources of statistics are not exclusive, either. Ballista's range
+repartition operators already sample in flight: `RuntimeStatsExec` maintains a
+T-Digest over the routing expression, and the repartition operator snapshots it
+on the first batch to pick its quantile cuts, so range boundaries adapt to the
+data without waiting for a stage to finish. The same mechanism is what would let
+a hot key be spread across several downstream tasks.
 
 ### Executors can come and go between stages
 
@@ -237,7 +244,8 @@ stages" while targeting interactive analytics itself.
 
 The barrier is not all-or-nothing, and several ideas would recover part of the
 latency without giving up recovery or the ability to run wider than the cluster.
-These are open directions rather than commitments:
+These are open directions rather than commitments, and where one changes
+behavior it would be config-gated, leaving today's model as the default:
 
 - **Partial-input early start.** Nothing about the design requires a consumer to
   wait for the _whole_ producer stage; that is just what `resolvable()` does
@@ -247,29 +255,44 @@ These are open directions rather than commitments:
   stall, and it keeps files, retries, and slot accounting exactly as they are.
   The general form of this — deciding how much of the DAG is in flight at once
   rather than always running exactly one stage — is sometimes called bubble
-  execution.
+  execution ([#2320], [#408]).
 - **Hybrid exchange.** Stream to a consumer when one is already running and fall
   back to writing files otherwise, in the spirit of Flink's hybrid shuffle. This
   gets the latency win where capacity allows and degrades to today's behavior
-  where it does not.
+  where it does not ([#1151], [#2003]).
 - **In-memory shuffle.** Small intermediates are written and read back through
-  the filesystem regardless of size. Keeping them in memory, with a spill path
-  to files when they grow, would remove most of the write amplification for
-  short queries while leaving the durable path in place for the ones that need
-  it.
+  the filesystem regardless of size. Keeping them in a bounded in-memory buffer,
+  spilling to files only once the buffer is exceeded, would remove most of the
+  write amplification for short queries while leaving the durable path in place
+  for the ones that need it. This looks like the largest single win available:
+  simply pointing `work_dir` at a RAM disk large enough to hold the whole
+  shuffle already recovers a large share of the TPC-H gap against a pipelined
+  engine, which says the cost being paid there is the filesystem round trip
+  rather than the barrier itself ([#2318]).
 - **A cheaper shuffle format.** The write side currently produces a file per
   output partition per task and a metadata round-trip per partition, which is a
   lot of small files and small reads at high partition counts. Writing one
   indexed file per task, coalescing batches across partitions, and trimming the
   per-partition metadata would cut the fixed cost of a stage boundary without
-  changing where the data lives.
+  changing where the data lives ([#660]).
 - **Shuffle affinity.** Schedule a consumer task on the executor that already
-  holds most of its input, turning Flight fetches into local reads.
+  holds most of its input, turning Flight fetches into local reads. This one can
+  be prototyped without touching the core: task distribution is already
+  pluggable, so a `TaskDistributionPolicy::Custom` implementation can bind tasks
+  to the executors holding their `PartitionLocation`s and be measured against
+  the built-in bias and round-robin policies ([#2319]).
 - **Remote shuffle service.** Offload shuffle storage to a service such as
-  Apache Celeborn or Apache Uniffle
-  ([#1539](https://github.com/apache/datafusion-ballista/issues/1539)), which
-  decouples shuffle durability from executor lifetime and makes aggressive
-  autoscaling safer.
+  Apache Celeborn or Apache Uniffle ([#1539]), which decouples shuffle
+  durability from executor lifetime and makes aggressive autoscaling safer.
 
 Anyone proposing a change here should be explicit about which of the five
 properties above it preserves and which it trades away.
+
+[#408]: https://github.com/apache/datafusion-ballista/issues/408
+[#660]: https://github.com/apache/datafusion-ballista/issues/660
+[#1151]: https://github.com/apache/datafusion-ballista/issues/1151
+[#1539]: https://github.com/apache/datafusion-ballista/issues/1539
+[#2003]: https://github.com/apache/datafusion-ballista/issues/2003
+[#2318]: https://github.com/apache/datafusion-ballista/issues/2318
+[#2319]: https://github.com/apache/datafusion-ballista/issues/2319
+[#2320]: https://github.com/apache/datafusion-ballista/issues/2320
