@@ -403,6 +403,28 @@ in this section pertains to features and changes that have already been merged
 to the main branch and are awaiting release in this version.</p>
 <section id="planner-and-execution-behavior-changes">
 <h3>Planner and execution behavior changes<a class="headerlink" href="#planner-and-execution-behavior-changes" title="Link to this heading">#</a></h3>
+<section id="ballista-scheduler-max-partitions-per-task-now-defaults-to-0-unbounded">
+<h4><code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> now defaults to <code class="docutils literal notranslate"><span class="pre">0</span></code> (unbounded)<a class="headerlink" href="#ballista-scheduler-max-partitions-per-task-now-defaults-to-0-unbounded" title="Link to this heading">#</a></h4>
+<p>The default was <code class="docutils literal notranslate"><span class="pre">1</span></code>, which dispatched one task per input partition. It is now
+<code class="docutils literal notranslate"><span class="pre">0</span></code>, so the scheduler fills each task up to the assigned executor’s free vcore
+count: a 16-partition stage runs as one task on an idle 16-vcore executor, or as
+four 4-partition tasks across four 4-vcore executors.</p>
+<p>Expect fewer, larger tasks and higher per-task memory use, since each task now
+holds several partitions at once — if you size the executor memory pool manually
+(<code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code>), review it. Stages that collapse all input into a single
+partition are unaffected.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span> <span class="pre">=</span> <span class="pre">1</span></code> to restore the previous
+behavior.</p>
+</section>
+<section id="ballista-optimizer-broadcast-join-threshold-bytes-now-defaults-to-128-mb">
+<h4><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> now defaults to 128 MB<a class="headerlink" href="#ballista-optimizer-broadcast-join-threshold-bytes-now-defaults-to-128-mb" title="Link to this heading">#</a></h4>
+<p>The default was 10 MB. More joins are now promoted to a broadcast
+(<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) join, which removes a shuffle. The build side is replicated into
+every concurrent probe task, so peak memory per executor is roughly this value
+times the number of tasks it runs at once.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span> <span class="pre">=</span> <span class="pre">10485760</span></code> to restore
+the previous behavior, or <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable broadcast promotion entirely.</p>
+</section>
 <section id="sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join">
 <h4><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join<a class="headerlink" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join" title="Link to this heading">#</a></h4>
 <p><code class="docutils literal notranslate"><span class="pre">54.0.0</span></code> added a static-planner rewrite that converted a <code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code>
@@ -413,7 +435,7 @@ config key are removed in <code class="docutils literal notranslate"><span class
 <p>A <code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> now always executes as a sort-merge join over
 repartitioned inputs. Broadcast promotion still applies to a <code class="docutils literal notranslate"><span class="pre">HashJoinExec</span></code>
 whose smaller side fits under <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code>
-(default <code class="docutils literal notranslate"><span class="pre">10</span> <span class="pre">MB</span></code>), which is unchanged.</p>
+(now <code class="docutils literal notranslate"><span class="pre">128</span> <span class="pre">MB</span></code>, see above).</p>
 <p><strong>This affects the default configuration.</strong> Ballista sets
 <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span> <span class="pre">=</span> <span class="pre">false</span></code> by default (see
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1648">#1648</a>), so joins are
@@ -535,6 +557,8 @@ struct.</p>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-55-0-0">Ballista 55.0.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#planner-and-execution-behavior-changes">Planner and execution behavior changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-scheduler-max-partitions-per-task-now-defaults-to-0-unbounded"><code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> now defaults to <code class="docutils literal notranslate"><span class="pre">0</span></code> (unbounded)</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-optimizer-broadcast-join-threshold-bytes-now-defaults-to-128-mb"><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> now defaults to 128 MB</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join"><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join</a></li>
 </ul>
 </li>

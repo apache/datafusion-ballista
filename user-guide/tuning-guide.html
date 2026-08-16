@@ -441,12 +441,11 @@ reduce the number of partitions a large table is read with.</p>
 partitions and, each time an executor is assigned work, hands out a slice of those partitions to run as a single
 task. The size of that slice is bounded by both the executor’s free vcores and
 <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code>.</p>
-<p>That setting still defaults to <code class="docutils literal notranslate"><span class="pre">1</span></code>, so out of the box a 16-partition scan stage runs as 16 single-partition tasks.
-Raising it lets the scheduler pack several partitions into one task, which reduces task count and scheduling
-overhead and allows operators such as sort and hash join to work across partitions within a task. Setting it to <code class="docutils literal notranslate"><span class="pre">0</span></code>
-removes the cap entirely, so each task is filled up to the assigned executor’s free vcore count: a 16-partition
-stage then runs as one task on an idle 16-vcore executor, or as four 4-partition tasks across four 4-vcore
-executors.</p>
+<p>That setting defaults to <code class="docutils literal notranslate"><span class="pre">0</span></code>, meaning the cap is removed and each task is filled up to the assigned executor’s free
+vcore count: a 16-partition stage runs as one task on an idle 16-vcore executor, or as four 4-partition tasks
+across four 4-vcore executors. This reduces task count and scheduling overhead and allows operators such as sort
+and hash join to work across partitions within a task.</p>
+<p>Set it to <code class="docutils literal notranslate"><span class="pre">1</span></code> to get one task per partition, or to any positive value to cap the slice size.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>key</p></th>
@@ -458,8 +457,8 @@ executors.</p>
 <tbody>
 <tr class="row-even"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
 <td><p>UInt64</p></td>
-<td><p>1</p></td>
-<td><p>Upper bound on the number of input partitions packed into a single task. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per partition. <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded, filling each task up to the executor’s free vcores.</p></td>
+<td><p>0</p></td>
+<td><p>Upper bound on the number of input partitions packed into a single task. <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded, filling each task up to the executor’s free vcores. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per partition.</p></td>
 </tr>
 </tbody>
 </table>
@@ -614,15 +613,10 @@ to <code class="docutils literal notranslate"><span class="pre">0</span></code> 
 scheduler re-runs the DataFusion physical optimizer between query stages. This
 lets the planner make decisions using statistics collected from completed
 stages rather than relying solely on pre-execution estimates.</p>
-<p>AQE is disabled by default. To enable it, set
-<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> on your <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>:</p>
+<p>AQE is enabled by default. To fall back to the static distributed planner, set
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> on your <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">&quot;ballista.planner.adaptive.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">);</span>
-</pre></div>
-</div>
-<p>When AQE is enabled, the scheduler logs a warning at job submission so it is
-clear that AQE was used:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!
+<span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">&quot;ballista.planner.adaptive.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
 </pre></div>
 </div>
 <section id="configuration">
@@ -638,12 +632,12 @@ clear that AQE was used:</p>
 <tbody>
 <tr class="row-even"><td><p>ballista.planner.adaptive.enabled</p></td>
 <td><p>Boolean</p></td>
-<td><p>false</p></td>
-<td><p>Enables the adaptive planner. Experimental.</p></td>
+<td><p>true</p></td>
+<td><p>Enables the adaptive planner. Set to <code class="docutils literal notranslate"><span class="pre">false</span></code> to use the static distributed planner.</p></td>
 </tr>
 <tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
 <td><p>UInt64</p></td>
-<td><p>10485760</p></td>
+<td><p>134217728</p></td>
 <td><p>Byte-size threshold below which a hash join’s smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins.</p></td>
 </tr>
 <tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>

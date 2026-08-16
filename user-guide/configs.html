@@ -541,7 +541,7 @@ standard DataFusion settings.</p>
 </tr>
 <tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
 <td><p>UInt64</p></td>
-<td><p>10485760</p></td>
+<td><p>134217728</p></td>
 <td><p>Byte-size threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern. Governs broadcast selection under both the static distributed planner and adaptive query planning (AQE). It also caps null-aware anti joins with a known build size because they require single-task CollectLeft execution. Set to 0 to disable promotion and reject null-aware anti joins.</p></td>
 </tr>
 <tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
@@ -561,8 +561,8 @@ standard DataFusion settings.</p>
 </tr>
 <tr class="row-odd"><td><p>ballista.planner.adaptive.enabled</p></td>
 <td><p>Boolean</p></td>
-<td><p>false</p></td>
-<td><p>Enables Adaptive Query Planning (EXPERIMENTAL)</p></td>
+<td><p>true</p></td>
+<td><p>Enables Adaptive Query Planning: joins and partition counts are chosen from measured runtime statistics instead of planning-time estimates. Set to false to use the static distributed planner.</p></td>
 </tr>
 <tr class="row-even"><td><p>ballista.planner.adaptive_join.enabled</p></td>
 <td><p>Boolean</p></td>
@@ -601,8 +601,8 @@ standard DataFusion settings.</p>
 </tr>
 <tr class="row-odd"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
 <td><p>UInt64</p></td>
-<td><p>1</p></td>
-<td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">1</span></code> (default) means one task per input partition. Raise to enable multi-partition tasks (fewer tasks, parallel-sort / parallel-join wins); <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded — the scheduler fills each task up to the executor’s free vcore count. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
+<td><p>0</p></td>
+<td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) means unbounded — the scheduler fills each task up to the executor’s free vcore count. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
 </tr>
 <tr class="row-even"><td><p>ballista.standalone.parallelism</p></td>
 <td><p>UInt16</p></td>
