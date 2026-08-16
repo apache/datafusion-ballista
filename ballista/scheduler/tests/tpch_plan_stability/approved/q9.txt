@@ -70,13 +70,13 @@ SortShuffleWriterExec: partitioning=Hash([nation@0, o_year@1], 16)
           UnresolvedShuffleExec: stage=10, partitioning: Hash([n_nationkey@0], 16)
 
 === Stage 12 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([nation@0, o_year@1], 16)
   ProjectionExec: expr=[nation@0 as nation, o_year@1 as o_year, sum(profit.amount)@2 as sum_profit]
     SortExec: expr=[nation@0 ASC NULLS LAST, o_year@1 DESC], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[nation@0 as nation, o_year@1 as o_year], aggr=[sum(profit.amount)]
         UnresolvedShuffleExec: stage=11, partitioning: Hash([nation@0, o_year@1], 16)
 
 === Stage 13 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [nation@0 ASC NULLS LAST, o_year@1 DESC]
     UnresolvedShuffleExec: stage=12, partitioning: Hash([nation@0, o_year@1], 16)

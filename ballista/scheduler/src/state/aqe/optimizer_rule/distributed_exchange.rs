@@ -319,8 +319,8 @@ fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_plan;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+    use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
     };

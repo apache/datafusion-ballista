@@ -41,7 +41,7 @@ arrow = { version = "59.2.0", features = ["ipc_compression"] }
 arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
-# DataFusion crates are pinned to the 55.0.0-rc2 tag via `[patch.crates-io]`
+# DataFusion crates are pinned to the 55.0.0-rc3 tag via `[patch.crates-io]`
 # below. Workspace deps reference the crates.io version so the patch table is
 # the single place to bump when advancing to a newer DataFusion release.
 datafusion = { version = "55" }
@@ -57,7 +57,7 @@ insta = "1.47"
 itertools = "0.15"
 mimalloc = { version = "0.1" }
 object_store = "0.13.2"
-ordered-float = "4"
+ordered-float = "5"
 prost = "0.14"
 prost-types = "0.14"
 rstest = { version = "0.26" }
@@ -137,10 +137,10 @@ incremental = false
 # Redirect the crates.io datafusion release to the pinned git tag. Bump the
 # tag here to advance DataFusion; the workspace-dep versions above stay put.
 [patch.crates-io]
-datafusion = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
-datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc2" }
+datafusion = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion-cli = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }

@@ -35,12 +35,19 @@ fn env_parsed<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
     env_logger::init();
 
     let config = SchedulerConfig {
-        bind_host: "127.0.0.1".to_string(),
+        // In the process harness these default to loopback; under Kubernetes the
+        // scheduler must bind all interfaces and advertise its Service name.
+        bind_host: env_or("CHAOS_BIND_HOST", "127.0.0.1"),
+        external_host: env_or("CHAOS_EXTERNAL_HOST", "localhost"),
         bind_port: std::env::var("CHAOS_SCHEDULER_PORT")
             .expect("CHAOS_SCHEDULER_PORT must be set")
             .parse()
@@ -60,6 +67,12 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
+        // Under Kubernetes the client is outside the cluster and cannot reach
+        // executor pod IPs to fetch results. Setting this (to an empty string in
+        // the k8s manifest) starts an embedded flight proxy on the scheduler and
+        // makes clients fetch results through the scheduler instead of directly
+        // from executors. Unset in the process harness -> None -> unchanged.
+        advertise_flight_sql_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_PROXY").ok(),
         override_session_builder: Some(Arc::new(chaos_session_state)),
         ..Default::default()
     };

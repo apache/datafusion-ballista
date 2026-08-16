@@ -1,0 +1,116 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Kubernetes (kind) chaos scenarios. Gated: runs only when the chaos harness,
+# the engine, or the docker artifacts change, plus a nightly cron schedule and
+# on demand — it is deliberately off the per-PR critical path, since the
+# process-based chaos harness already covers HA on every PR.
+name: k8s-chaos
+
+on:
+  pull_request:
+    paths:
+      - "chaos-testing/**"
+      - "ballista/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "dev/docker/chaos.Dockerfile"
+      - "dev/build-chaos-docker.sh"
+      - ".github/workflows/k8s-chaos.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  schedule:
+    # Nightly cron (not the Rust nightly toolchain — this job builds with stable).
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+# Minimal token: this job only reads the repository.
+permissions:
+  contents: read
+
+env:
+  # Pinned tool versions, installed via curl to avoid marketplace actions that
+  # must be on the ASF allowlist.
+  KIND_VERSION: v0.30.0
+  KUBECTL_VERSION: v1.31.4
+  CLUSTER_NAME: ballista-chaos
+  CHAOS_FIXTURE_DIR: /tmp/ballista-chaos-fixtures
+
+jobs:
+  k8s-chaos:
+    name: kind chaos scenarios
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Rust toolchain
+        run: |
+          rustup update stable
+          rustup toolchain install stable
+          rustup default stable
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSLo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo ./kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x ./kind ./kubectl
+          sudo mv ./kind ./kubectl /usr/local/bin/
+
+      - name: Create kind cluster
+        run: |
+          mkdir -p "${CHAOS_FIXTURE_DIR}"
+          kind create cluster --name "${CLUSTER_NAME}" --config chaos-testing/k8s/kind-config.yaml
+
+      - name: Build the chaos image
+        run: ./dev/build-chaos-docker.sh
+
+      - name: Load the chaos image into kind
+        run: kind load docker-image ballista-chaos:test --name "${CLUSTER_NAME}"
+
+      - name: Run the kind chaos scenarios
+        env:
+          CHAOS_BACKEND: kind
+          # Keep namespaces on failure so the diagnostics step below can collect
+          # logs — teardown would otherwise delete them. The runner is ephemeral.
+          CHAOS_KEEP_NS: "1"
+        run: |
+          cargo test -p ballista-chaos --features k8s --test k8s -- --test-threads=1 --nocapture
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          for ns in $(kubectl get ns -o name | grep chaos- || true); do
+            kubectl logs -n "${ns#namespace/}" -l app=ballista-scheduler --tail=-1 || true
+            kubectl logs -n "${ns#namespace/}" -l app=ballista-executor --all-containers --tail=-1 || true
+          done

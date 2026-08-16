@@ -365,7 +365,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::assert_plan;
+    use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
     use datafusion::{
         arrow::{
