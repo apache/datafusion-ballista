@@ -236,26 +236,19 @@ scheduler re-runs the DataFusion physical optimizer between query stages. This
 lets the planner make decisions using statistics collected from completed
 stages rather than relying solely on pre-execution estimates.
 
-AQE is disabled by default. To enable it, set
-`ballista.planner.adaptive.enabled` to `true` on your `SessionConfig`:
+AQE is enabled by default. To fall back to the static distributed planner, set
+`ballista.planner.adaptive.enabled` to `false` on your `SessionConfig`:
 
 ```rust
 let session_config = SessionConfig::new_with_ballista()
-    .set_bool("ballista.planner.adaptive.enabled", true);
-```
-
-When AQE is enabled, the scheduler logs a warning at job submission so it is
-clear that AQE was used:
-
-```
-Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!
+    .set_bool("ballista.planner.adaptive.enabled", false);
 ```
 
 ### Configuration
 
 | key                                               | type    | default   | description                                                                                                                                                                                                                                    |
 | ------------------------------------------------- | ------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.planner.adaptive.enabled                 | Boolean | false     | Enables the adaptive planner. Experimental.                                                                                                                                                                                                    |
+| ballista.planner.adaptive.enabled                 | Boolean | true      | Enables the adaptive planner. Set to `false` to use the static distributed planner.                                                                                                                                                            |
 | ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 134217728 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins. |
 | ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000   | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                                                                                             |
 
