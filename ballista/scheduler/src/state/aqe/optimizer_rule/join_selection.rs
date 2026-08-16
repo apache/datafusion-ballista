@@ -733,8 +733,9 @@ mod tests {
             ))
         }
 
+        // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
         let join = HashJoinExec::try_new(
-            stats_exec("big_key", 20 * 1024 * 1024),
+            stats_exec("big_key", 256 * 1024 * 1024),
             stats_exec("small_key", 1024),
             vec![(
                 Arc::new(Column::new("big_key", 0)) as _,

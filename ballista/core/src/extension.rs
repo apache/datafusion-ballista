@@ -1127,7 +1127,7 @@ mod test {
     #[test]
     fn should_preserve_user_overrides_on_upgrade() {
         // Ballista defaults these to prefer_hash_join=false and the threshold to
-        // 10 MB. The overrides below differ from those defaults so the assertions
+        // 128 MB. The overrides below differ from those defaults so the assertions
         // prove the user's values survived `upgrade_for_ballista`.
         let mut config = SessionConfig::new_with_ballista();
         config

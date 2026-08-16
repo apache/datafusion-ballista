@@ -1418,10 +1418,11 @@ order by
 
         let schema =
             Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
         let left = Arc::new(StatisticsExec::new(
             Statistics {
-                num_rows: Precision::Exact(5_000_000),
-                total_byte_size: Precision::Exact(20 * 1024 * 1024),
+                num_rows: Precision::Exact(67_108_864),
+                total_byte_size: Precision::Exact(256 * 1024 * 1024),
                 column_statistics: vec![ColumnStatistics::new_unknown()],
             },
             schema.as_ref().clone(),
@@ -1683,8 +1684,9 @@ order by
         )
         .map_err(|e| BallistaError::General(e.to_string()))?;
 
-        // Match the PR's production session config: DF and Ballista thresholds
-        // both at 10 MB so DF's `JoinSelection` can promote on its own.
+        // Pin the DF and Ballista thresholds at 10 MB each, so DF's
+        // `JoinSelection` can promote on its own and the case under test does
+        // not move when the shipped defaults change.
         let session_config = SessionConfig::new()
             .with_target_partitions(2)
             .set_bool("datafusion.optimizer.prefer_hash_join", true)

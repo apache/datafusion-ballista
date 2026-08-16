@@ -541,12 +541,12 @@ mod supported {
             .await?;
 
         let expected = [
-            "+----------------------------------------------------------------+----------+",
-            "| name                                                           | value    |",
-            "+----------------------------------------------------------------+----------+",
-            "| datafusion.optimizer.hash_join_single_partition_threshold      | 10485760 |",
-            "| datafusion.optimizer.hash_join_single_partition_threshold_rows | 1000000  |",
-            "+----------------------------------------------------------------+----------+",
+            "+----------------------------------------------------------------+-----------+",
+            "| name                                                           | value     |",
+            "+----------------------------------------------------------------+-----------+",
+            "| datafusion.optimizer.hash_join_single_partition_threshold      | 134217728 |",
+            "| datafusion.optimizer.hash_join_single_partition_threshold_rows | 1000000   |",
+            "+----------------------------------------------------------------+-----------+",
         ];
 
         assert_batches_eq!(expected, &result);
