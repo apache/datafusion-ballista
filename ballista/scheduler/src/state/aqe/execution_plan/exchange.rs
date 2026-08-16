@@ -191,7 +191,13 @@ impl ExchangeExec {
             (None, false) => input.output_partitioning().clone(),
             (_, true) => Partitioning::UnknownPartitioning(1),
         };
-        let eq_properties = input.properties().eq_properties.clone();
+        // An exchange redistributes rows, so a constant that only holds within
+        // each input partition does not hold afterwards. Keeping it lets
+        // `EnforceSorting` drop sort keys that are no longer constant — a
+        // `UNION ALL` branch projecting a literal, reshuffled by hash on that
+        // same column. `RepartitionExec` clears them for the same reason.
+        let mut eq_properties = input.properties().eq_properties.clone();
+        eq_properties.clear_per_partition_constants();
         let properties = Arc::new(PlanProperties::new(
             eq_properties,
             plan_partitioning,

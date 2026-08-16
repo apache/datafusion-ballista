@@ -30,8 +30,8 @@ use datafusion::{
     physical_expr::PhysicalExpr,
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
-        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
-        apply_expression_roots,
+        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan,
+        ExecutionPlanProperties, PlanProperties, apply_expression_roots,
         joins::{
             HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
             utils::JoinFilter,
@@ -349,35 +349,42 @@ impl DynamicJoinSelectionExec {
             PartitionMode::Partitioned
         };
 
-        let action = match (&self.selection_state, partition_mode) {
+        // Repartitioning exists to give the resolver measured statistics. When
+        // the inputs are already co-partitioned there is nothing to wait for,
+        // so resolve now instead of inserting an exchange that reshuffles data
+        // already in the right place (TPC-H q18 moved 60M rows twice).
+        let selection_state = if self.selection_state == JoinInputState::Repartitioned
+            || self.inputs_already_partitioned(config)
+        {
+            JoinInputState::Repartitioned
+        } else {
+            JoinInputState::Unknown
+        };
+
+        let action = match (&selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
+            // Null-aware anti joins require single-task `CollectLeft` even
+            // though both sides are already shuffled.
+            (JoinInputState::Repartitioned, PartitionMode::CollectLeft)
+                if self.null_aware =>
             {
-                self.to_hash_join(PartitionMode::Partitioned)
-                    .map(JoinSelectionAction::Hash)
+                self.to_hash_join(PartitionMode::CollectLeft)
+                    .map(JoinSelectionAction::LateCollectLeft)
             }
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned) => {
-                self.to_sort_merge_join().map(JoinSelectionAction::Sort)
-            }
-            // TODO: not sure about this point
-            // at this point, both inputs has been repartitioned
-            // making it collect left may not make sense, perhaps only
-            // valid strategy at this point is to check if both sides
-            // are small enough to make it single partitioned join.
-            // if single partition join is possibility should we leave it
-            // to coalesce shuffle to make this decision? (if thats the
-            // case we should remove LateCollectLeft )
-            //
-            // would it be better if we try to shuffle build side first
-            // and then if build side is small enough make decision if
-            // this is CollectLeft or Partitioned join. The issue is
-            // we have flip coin chances to pick side which to run first
-            (JoinInputState::Repartitioned, PartitionMode::CollectLeft) => self
-                .to_hash_join(PartitionMode::CollectLeft)
-                .map(JoinSelectionAction::LateCollectLeft),
+            // Both inputs are already shuffled, so broadcasting would pay for
+            // the shuffle and the broadcast. Decide hash-vs-sort on build fit.
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) if hash_build_fits(max_build_bytes, build_max_partition_bytes) => self
+                .to_hash_join(PartitionMode::Partitioned)
+                .map(JoinSelectionAction::Hash),
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) => self.to_sort_merge_join().map(JoinSelectionAction::Sort),
             (JoinInputState::Unknown, PartitionMode::Partitioned) => Ok(
                 JoinSelectionAction::Repartition(Arc::new(self.to_partitioned())),
             ),
@@ -489,6 +496,27 @@ impl DynamicJoinSelectionExec {
 
         estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
             .is_some_and(|estimated| estimated < threshold_byte_size)
+    }
+
+    /// Whether both inputs already satisfy the distribution this join needs.
+    ///
+    /// An equi-join leaves its output partitioned on both sides of every join
+    /// key, so a downstream join on the other key is already co-partitioned.
+    /// `satisfaction` consults equivalence classes and sees that.
+    fn inputs_already_partitioned(&self, config: &ConfigOptions) -> bool {
+        let partitions = config.execution.target_partitions;
+        self._required_input_distribution()
+            .iter()
+            .zip([&self.left, &self.right])
+            .all(|(required, input)| {
+                let current = input.output_partitioning();
+                current.partition_count() == partitions
+                    && current.satisfaction(
+                        required,
+                        input.equivalence_properties(),
+                        false,
+                    ) == datafusion::physical_expr::PartitioningSatisfaction::Exact
+            })
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {

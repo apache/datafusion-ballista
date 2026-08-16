@@ -366,6 +366,14 @@ impl AdaptiveExecutionGraph {
             .update_exchange_locations(stage_id, locations)?;
 
         if is_completed {
+            // A replan can drop a stage that still has tasks in flight. Its
+            // output is no longer part of the plan, and erroring here fails the
+            // whole task-status update, which the caller only logs — hanging
+            // the job.
+            if !self.planner.is_stage_active(stage_id) {
+                debug!("ignoring completion for superseded stage {stage_id}");
+                return Ok(HashSet::new());
+            }
             let partitions = self.planner.take_stage_output_partitions(stage_id)?;
 
             // Range-repartition stages need overlap-based remap of their partitions

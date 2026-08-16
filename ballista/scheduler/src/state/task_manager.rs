@@ -269,9 +269,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             SubmitPlan::Logical(logical_plan) => {
                 if session_config.ballista_adaptive_query_planner_enabled() {
                     debug!("Using adaptive query planner (AQE) for job planning");
-                    warn!(
-                        "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
-                    );
                     Box::new(
                         AdaptiveExecutionGraph::try_new(
                             &self.scheduler_id,
@@ -307,11 +304,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             SubmitPlan::Physical(physical_plan) => {
-                if session_config.ballista_adaptive_query_planner_enabled() {
-                    return Err(BallistaError::NotImplemented(
-                        "Adaptive query planning (AQE) does not support jobs submitted as an already-built physical plan; disable AQE for this session or submit a logical plan instead.".to_string(),
-                    ));
-                }
+                // AQE plans from the logical plan, so an already-built
+                // physical plan always uses the static planner, including when
+                // AQE is on (the default).
                 debug!("Using static query planner for physical-plan job submission");
                 let session_config = Arc::new(ctx.copied_config());
 
