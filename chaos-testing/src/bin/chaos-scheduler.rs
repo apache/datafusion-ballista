@@ -68,11 +68,11 @@ async fn main() -> ballista_core::error::Result<()> {
             1,
         ),
         // Under Kubernetes the client is outside the cluster and cannot reach
-        // executor pod IPs to fetch results. Setting this (to an empty string in
-        // the k8s manifest) starts an embedded flight proxy on the scheduler and
-        // makes clients fetch results through the scheduler instead of directly
-        // from executors. Unset in the process harness -> None -> unchanged.
-        advertise_flight_sql_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_PROXY").ok(),
+        // executor pod IPs to fetch results. Setting this (to "true" in the k8s
+        // manifest) starts an embedded flight proxy on the scheduler and makes
+        // clients fetch results through the scheduler instead of directly from
+        // executors. Unset in the process harness -> false -> no proxy.
+        enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
         override_session_builder: Some(Arc::new(chaos_session_state)),
         ..Default::default()
     };
