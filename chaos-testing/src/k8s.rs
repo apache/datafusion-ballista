@@ -36,7 +36,7 @@
 //! The harness process runs outside the cluster, so it reaches the scheduler's
 //! gRPC + REST (both on one port) through a `kubectl port-forward`. Results are
 //! fetched through the scheduler's embedded flight proxy
-//! (`advertise_flight_sql_endpoint`), so the client never contacts executor pod
+//! (`enable_embedded_flight_proxy`), so the client never contacts executor pod
 //! IPs directly.
 //!
 //! This backend shells out to `kubectl`; it assumes a `kind` cluster already
@@ -507,8 +507,8 @@ spec:
               value: "0.0.0.0"
             - name: CHAOS_EXTERNAL_HOST
               value: "ballista-scheduler"
-            - name: CHAOS_ADVERTISE_FLIGHT_PROXY
-              value: ""
+            - name: CHAOS_EMBEDDED_FLIGHT_PROXY
+              value: "true"
             - name: CHAOS_EXECUTOR_TIMEOUT_SECONDS
               value: "5"
             - name: CHAOS_EXPIRE_INTERVAL_SECONDS
