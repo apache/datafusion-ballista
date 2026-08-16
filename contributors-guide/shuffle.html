@@ -1,0 +1,790 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Shuffle Design &#8212; Apache DataFusion Ballista  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributors-guide/shuffle';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Ballista Code Organization" href="code-organization.html" />
+    <link rel="prev" title="Ballista Architecture" href="architecture.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/ballista_black.svg" class="logo__image only-light" alt="Apache DataFusion Ballista  documentation - Home"/>
+    <img src="../_static/ballista_white.svg" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Ballista  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/introduction.html">Introduction</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cluster Deployment</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/deployment/index.html">Deployment</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/quick-start.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/cargo-install.html">Cargo Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker.html">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker-compose.html">Docker Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/kubernetes.html">Kubernetes</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/scheduler.html">Scheduler</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Clients</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/python/index.html">Python</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/quickstart.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/cloud-storage.html">Querying S3 Data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/jupyter.html">Jupyter Notebooks</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/rust.html">Rust</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/cli.html">SQL CLI</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/configs.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/tuning-guide.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/metrics.html">Ballista Scheduler Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/faq.html">Frequently Asked Questions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extending-components.html">Extending Ballista Scheduler And Executors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/spark-compatible-functions.html">Spark-Compatible Functions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extensions-example.html">Extensions Example</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Changelog</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../changelog/index.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/54.1.0.html">Apache DataFusion Ballista 54.1.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/54.0.0.html">Apache DataFusion Ballista 54.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/53.0.0.html">Apache DataFusion Ballista 53.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/52.0.0.html">Apache DataFusion Ballista 52.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/51.0.0.html">Apache DataFusion Ballista 51.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/50.0.0.html">Apache DataFusion Ballista 50.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/49.0.0.html">Apache DataFusion Ballista 49.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/48.0.0.html">Apache DataFusion Ballista 48.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/47.0.0.html">Apache DataFusion Ballista 47.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/46.0.0.html">Apache DataFusion Ballista 46.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/45.0.0.html">Apache DataFusion Ballista 45.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/44.0.0.html">Apache DataFusion Ballista 44.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/43.0.0.html">Apache DataFusion Ballista 43.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.12.0.html">Apache DataFusion Ballista 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.11.0.html">Apache DataFusion Ballista 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.10.0.html">Apache DataFusion Ballista 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.9.0.html">Apache DataFusion Ballista 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.8.0.html">Apache DataFusion Ballista 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.7.0.html">Apache DataFusion Ballista 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.6.0.html">Apache DataFusion Ballista 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.5.0.html">Apache DataFusion Ballista 0.5.0 Changelog</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Shuffle Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="user-personas.html">User Personas</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Ballista Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmarking.html">Benchmarking</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Shuffle Design</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="shuffle-design">
+<h1>Shuffle Design<a class="headerlink" href="#shuffle-design" title="Link to this heading">#</a></h1>
+<p>Ballista uses a <strong>blocking shuffle</strong>: a query stage runs to completion and
+materializes its output to local storage before any downstream stage starts. This
+is the same model Apache Spark uses, and it is deliberately different from the
+<strong>pipelined shuffle</strong> used by engines such as <a class="reference external" href="https://flink.apache.org/">Apache Flink</a>,
+<a class="reference external" href="https://datafusion-contrib.github.io/datafusion-distributed/">DataFusion Distributed</a>, and <a class="reference external" href="https://github.com/lakehq/sail">Sail</a>, where a downstream stage streams data from
+an upstream stage that is still running.</p>
+<p>This page explains why Ballista made that choice, what it costs, and how to
+think about the trade-off when proposing changes to the exchange layer. For the
+mechanics of the shuffle writer and its tuning knobs, see the
+<a class="reference internal" href="../user-guide/tuning-guide.html#shuffle-implementation"><span class="std std-ref">Shuffle Implementation section of the tuning guide</span></a>.</p>
+<section id="the-barrier-concretely">
+<h2>The barrier, concretely<a class="headerlink" href="#the-barrier-concretely" title="Link to this heading">#</a></h2>
+<p>Three pieces of the system implement the barrier:</p>
+<ol class="arabic">
+<li><p><strong>The write side.</strong> <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> (and <code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code>) drain
+their input partitions concurrently, streaming each to an Arrow IPC file
+under <code class="docutils literal notranslate"><span class="pre">{work_dir}/{job_id}/{stage_id}/{partition_id}/</span></code>. A partition’s
+<code class="docutils literal notranslate"><span class="pre">ShuffleWritePartition</span></code> summary — the row, batch, and byte counts that the
+scheduler records — does not exist until that file is closed.</p></li>
+<li><p><strong>The scheduler.</strong> An <code class="docutils literal notranslate"><span class="pre">UnresolvedStage</span></code> becomes resolvable only when every
+input stage is marked complete:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// ballista/scheduler/src/state/execution_stage.rs</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">resolvable</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="bp">self</span><span class="p">.</span><span class="n">inputs</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">all</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">input</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">input</span><span class="p">.</span><span class="n">is_complete</span><span class="p">())</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Resolution then rewrites <code class="docutils literal notranslate"><span class="pre">UnresolvedShuffleExec</span></code> nodes into
+<code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code> nodes carrying concrete <code class="docutils literal notranslate"><span class="pre">PartitionLocation</span></code>s, and runs
+Ballista’s <code class="docutils literal notranslate"><span class="pre">JoinSelection</span></code> optimizer over the result.</p>
+</li>
+<li><p><strong>The read side.</strong> <code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code> fetches those locations, either
+directly from the local filesystem or from the producing executor’s Arrow
+Flight service (<code class="docutils literal notranslate"><span class="pre">do_get</span></code>, or the raw-block <code class="docutils literal notranslate"><span class="pre">IO_BLOCK_TRANSPORT</span></code> action).</p></li>
+</ol>
+<p>A stage’s output is therefore a durable, addressable, re-readable artifact that
+outlives the task that produced it. Almost every property below follows from
+that one fact.</p>
+</section>
+<section id="why-the-barrier-is-there">
+<h2>Why the barrier is there<a class="headerlink" href="#why-the-barrier-is-there" title="Link to this heading">#</a></h2>
+<section id="producers-and-consumers-never-compete-for-slots">
+<h3>Producers and consumers never compete for slots<a class="headerlink" href="#producers-and-consumers-never-compete-for-slots" title="Link to this heading">#</a></h3>
+<p>Each executor advertises a fixed number of task slots. Under a blocking
+shuffle, a stage’s tasks hold slots only while that stage runs, so a stage with
+1000 tasks executes perfectly well on a cluster with 32 slots — the scheduler
+simply feeds tasks in as slots free up.</p>
+<p>Pipelined shuffle removes that freedom. If a consumer task streams from a
+producer task, both must be resident at the same time, which turns stage
+scheduling into a co-scheduling (gang scheduling) problem. Get it wrong and the
+cluster deadlocks: every slot is held by a consumer waiting on a producer that
+cannot be scheduled. Engines that pipeline either require enough capacity for
+the whole pipeline region, provision workers on demand, or fall back to
+materialization under pressure.</p>
+<p>Ballista’s ability to run a query far wider than the cluster is a direct
+consequence of blocking.</p>
+</section>
+<section id="failures-cost-a-task-not-a-query">
+<h3>Failures cost a task, not a query<a class="headerlink" href="#failures-cost-a-task-not-a-query" title="Link to this heading">#</a></h3>
+<p>Because shuffle output survives the task that wrote it, Ballista can recover
+from a lost executor by re-running only what was actually lost. When a fetch
+fails, the scheduler receives a <code class="docutils literal notranslate"><span class="pre">FetchPartitionError</span></code> and does three things: it
+drops every input partition the downstream stage was sourcing from the failed
+executor, rolls back that downstream stage, and resubmits only the map tasks
+needed to regenerate the dropped partitions. Map output that lives on surviving
+executors is not recomputed, and unrelated stages are not touched. The same
+machinery handles executors disappearing outright
+(<code class="docutils literal notranslate"><span class="pre">reset_stages_on_lost_executor</span></code>, <code class="docutils literal notranslate"><span class="pre">rollback_running_stage</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rerun_successful_stage</span></code> in <code class="docutils literal notranslate"><span class="pre">ballista/scheduler/src/state/execution_graph.rs</span></code>).
+Repeated failures are capped: once a stage exceeds its retry budget the job
+fails rather than looping.</p>
+<p>A pipelined engine has to work harder for the same guarantee. Without a durable
+copy of the producer’s output, recovery means either re-running the producer or
+restoring from a checkpoint, and checkpointing a distributed dataflow is a hard
+problem in its own right — Flink got there with
+<a class="reference external" href="https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/stateful-stream-processing/">asynchronous barrier snapshotting</a>, but it took years of work, and it recovers
+by rewinding a whole pipeline region to the last snapshot rather than by
+re-running the handful of tasks that were actually lost. Engines that have not
+taken that on restart the query. DataFusion Distributed is explicit about this
+in its own documentation:</p>
+<blockquote>
+<div><p>If any node fails mid-query, the whole query fails; there are no retries.
+There’s no persistence of intermediate results, so queries can’t checkpoint or
+resume from where they stopped.</p>
+</div></blockquote>
+<p>For a query that runs for seconds, restarting is cheap and this hardly matters.
+For an ETL job that runs for an hour on a cluster where a spot instance
+disappears every few minutes, it is the difference between a job that finishes
+and one that never does.</p>
+</section>
+<section id="the-filesystem-absorbs-producer-consumer-skew">
+<h3>The filesystem absorbs producer/consumer skew<a class="headerlink" href="#the-filesystem-absorbs-producer-consumer-skew" title="Link to this heading">#</a></h3>
+<p>In a blocking shuffle, the buffer between stages is the disk. A producer never
+waits for a consumer: it writes its output, reports, and releases its slot. That
+decoupling is what lets the sort-based writer bound its own memory by spilling
+and still guarantee forward progress.</p>
+<p>In a pipelined shuffle, the buffer is memory plus network, and backpressure is
+end-to-end. A slow consumer stalls its producer, which holds a slot and its
+working set while stalled. Shuffles far larger than cluster memory — the case
+Ballista is built for — need either a spill path or a remote shuffle service to
+stay safe, which is most of the blocking machinery reintroduced.</p>
+<p>Note that Ballista does apply backpressure on the <em>read</em> side: the shuffle
+governor (<code class="docutils literal notranslate"><span class="pre">ballista.shuffle.reader.max_bytes_in_flight</span></code> and
+<code class="docutils literal notranslate"><span class="pre">max_blocks_in_flight_per_address</span></code>) bounds concurrent fetches. The point is that
+this only shapes reader memory. It cannot stall a producer that has already
+finished.</p>
+</section>
+<section id="completed-stages-yield-exact-statistics">
+<h3>Completed stages yield exact statistics<a class="headerlink" href="#completed-stages-yield-exact-statistics" title="Link to this heading">#</a></h3>
+<p>Stage resolution is where Ballista re-plans. <code class="docutils literal notranslate"><span class="pre">to_resolved()</span></code> runs
+<code class="docutils literal notranslate"><span class="pre">JoinSelection</span></code> against the resolved plan, and with
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> the <code class="docutils literal notranslate"><span class="pre">AdaptiveExecutionGraph</span></code> re-runs a set
+of physical optimizer rules after each stage completes, using the exact row and
+byte counts that stage produced. See
+<a class="reference internal" href="architecture.html#adaptive-query-execution-aqe"><span class="std std-ref">Adaptive Query Execution</span></a>.</p>
+<p>It is worth being precise about what the barrier buys here, because pipelining
+does not rule out adaptivity. DataFusion Distributed performs AQE without a
+barrier by injecting a <code class="docutils literal notranslate"><span class="pre">SamplerExec</span></code> below the producer’s exchange: it buffers
+early batches, reports sampled row, byte, distinct, and null counts to the
+coordinator, the coordinator sizes the next stage from that sample, and the
+buffered batches then flow on into the consumer.</p>
+<p>So the real distinction is <strong>exact versus sampled</strong>. Sampling is enough to size
+a stage or pick a join side. It is not enough for decisions that depend on a
+final answer — Ballista’s empty-stage elimination rule, which replaces a
+downstream exchange with an empty node and propagates emptiness up the plan,
+requires knowing a stage produced zero rows, and no sample can establish that
+before the stage ends.</p>
+<p>Exact per-partition counts are also what makes skew mitigation tractable. The
+AQE <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsRule</span></code> already uses them to merge undersized shuffle
+partitions before the next stage is scheduled, and the same information is what
+a future rule would need to go the other way and split an oversized partition.
+Skew is listed below as a cost of the barrier, but the barrier is also where the
+statistics to fix it come from.</p>
+<p>The two sources of statistics are not exclusive, either. Ballista’s range
+repartition operators already sample in flight: <code class="docutils literal notranslate"><span class="pre">RuntimeStatsExec</span></code> maintains a
+T-Digest over the routing expression, and the repartition operator snapshots it
+on the first batch to pick its quantile cuts, so range boundaries adapt to the
+data without waiting for a stage to finish. The same mechanism is what would let
+a hot key be spread across several downstream tasks.</p>
+</section>
+<section id="executors-can-come-and-go-between-stages">
+<h3>Executors can come and go between stages<a class="headerlink" href="#executors-can-come-and-go-between-stages" title="Link to this heading">#</a></h3>
+<p>Because a stage’s inputs are files rather than live connections, cluster
+membership only has to be stable for the duration of a single stage. Executors
+can register between stages and pick up work immediately, which is what makes
+autoscaling (including the KEDA scaler) straightforward. Shuffle files are
+cleaned up after the job finishes, on the interval set by
+<code class="docutils literal notranslate"><span class="pre">finished-job-data-clean-up-interval-seconds</span></code>.</p>
+<p>For deployments that scale continuously with demand and run on spot capacity,
+this and partial re-execution above are the same property seen twice: a fleet
+whose size changes under the query only works if a departing executor costs a
+few re-run tasks and an arriving one can be handed work with no setup. Both
+follow from stage output being a file rather than a connection.</p>
+</section>
+</section>
+<section id="what-the-barrier-costs">
+<h2>What the barrier costs<a class="headerlink" href="#what-the-barrier-costs" title="Link to this heading">#</a></h2>
+<p>The trade-off is real, and it is worth stating plainly.</p>
+<ul class="simple">
+<li><p><strong>Straggler stall.</strong> A stage finishes when its slowest task finishes. Until
+then no downstream work can start, even if 99% of the input is ready. On a
+skewed join key or a slow node, most of the cluster sits idle waiting. This is
+the single largest source of avoidable latency in Ballista today — and the
+word to note is <em>avoidable</em>: waiting on the whole stage is how the scheduler
+works now, not something materialization forces (see
+<a class="reference internal" href="#directions-that-do-not-require-abandoning-the-model"><span class="xref myst">partial-input early start</span></a>).</p></li>
+<li><p><strong>Write amplification.</strong> Every intermediate byte is written, then read, then
+often served over the network — even when the intermediate result is a few
+kilobytes. For small queries this dominates the runtime.</p></li>
+<li><p><strong>Higher interactive latency.</strong> The cost above is roughly fixed per stage
+boundary, so a query with many small stages pays it repeatedly. Pipelined
+engines report substantially better latency on interactive benchmarks, and the
+gap is structural, not an implementation detail. This is a gap relative to a
+pipelined engine, not an absolute verdict: Ballista is in production on
+workloads where queries return in around a second.</p></li>
+<li><p><strong>Local storage is required.</strong> Executors need writable local storage sized for
+the largest shuffle they will handle, plus cleanup. It does not have to be a
+physical disk — deployments on memory-rich instances point <code class="docutils literal notranslate"><span class="pre">work_dir</span></code> at a
+RAM-backed filesystem and never touch one — but the space has to exist
+somewhere, and today that somewhere is attached to the executor rather than
+to a shuffle service.</p></li>
+<li><p><strong>No path to streaming.</strong> A blocking barrier cannot express an unbounded
+input. Any future support for continuous queries would need a different
+exchange model.</p></li>
+</ul>
+</section>
+<section id="choosing-a-model">
+<h2>Choosing a model<a class="headerlink" href="#choosing-a-model" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Workload</p></th>
+<th class="head"><p>Blocking (Ballista)</p></th>
+<th class="head"><p>Pipelined</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Interactive queries, seconds, small intermediates</p></td>
+<td><p>Slower</p></td>
+<td><p>Faster</p></td>
+</tr>
+<tr class="row-odd"><td><p>Large batch and ETL, intermediates exceeding RAM</p></td>
+<td><p>Designed for it</p></td>
+<td><p>Needs spill or a shuffle service</p></td>
+</tr>
+<tr class="row-even"><td><p>Cluster smaller than the query is wide</p></td>
+<td><p>Works</p></td>
+<td><p>Risks deadlock without co-scheduling</p></td>
+</tr>
+<tr class="row-odd"><td><p>Unreliable or preemptible nodes</p></td>
+<td><p>Partial re-execution</p></td>
+<td><p>Query restart</p></td>
+</tr>
+<tr class="row-even"><td><p>Elastic or scale-to-zero clusters</p></td>
+<td><p>Natural fit</p></td>
+<td><p>Requires resident workers</p></td>
+</tr>
+<tr class="row-odd"><td><p>Unbounded or streaming input</p></td>
+<td><p>Not supported</p></td>
+<td><p>Natural fit</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Neither model is simply better. DataFusion Distributed reaches the same
+conclusion from the other side, recommending Ballista for “large, long-running
+batch or ETL that benefits from materializing intermediate results between
+stages” while targeting interactive analytics itself.</p>
+</section>
+<section id="directions-that-do-not-require-abandoning-the-model">
+<h2>Directions that do not require abandoning the model<a class="headerlink" href="#directions-that-do-not-require-abandoning-the-model" title="Link to this heading">#</a></h2>
+<p>The barrier is not all-or-nothing, and several ideas would recover part of the
+latency without giving up recovery or the ability to run wider than the cluster.
+These are open directions rather than commitments, and where one changes
+behavior it would be config-gated, leaving today’s model as the default:</p>
+<ul class="simple">
+<li><p><strong>Partial-input early start.</strong> Nothing about the design requires a consumer to
+wait for the <em>whole</em> producer stage; that is just what <code class="docutils literal notranslate"><span class="pre">resolvable()</span></code> does
+today. A consumer task could begin once some producer tasks have finished,
+learning about additional <code class="docutils literal notranslate"><span class="pre">PartitionLocation</span></code>s incrementally. Where the
+cluster has spare capacity this overlaps stages and shortens the straggler
+stall, and it keeps files, retries, and slot accounting exactly as they are.
+The general form of this — deciding how much of the DAG is in flight at once
+rather than always running exactly one stage — is sometimes called bubble
+execution (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2320">#2320</a>, <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/408">#408</a>).</p></li>
+<li><p><strong>Hybrid exchange.</strong> Stream to a consumer when one is already running and fall
+back to writing files otherwise, in the spirit of Flink’s hybrid shuffle. This
+gets the latency win where capacity allows and degrades to today’s behavior
+where it does not (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1151">#1151</a>, <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2003">#2003</a>).</p></li>
+<li><p><strong>In-memory shuffle.</strong> Small intermediates are written and read back through
+the filesystem regardless of size. Keeping them in a bounded in-memory buffer,
+spilling to files only once the buffer is exceeded, would remove most of the
+write amplification for short queries while leaving the durable path in place
+for the ones that need it. This looks like the largest single win available:
+simply pointing <code class="docutils literal notranslate"><span class="pre">work_dir</span></code> at a RAM disk large enough to hold the whole
+shuffle already recovers a large share of the TPC-H gap against a pipelined
+engine, which says the cost being paid there is the filesystem round trip
+rather than the barrier itself (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2318">#2318</a>).</p></li>
+<li><p><strong>A cheaper shuffle format.</strong> The write side currently produces a file per
+output partition per task and a metadata round-trip per partition, which is a
+lot of small files and small reads at high partition counts. Writing one
+indexed file per task, coalescing batches across partitions, and trimming the
+per-partition metadata would cut the fixed cost of a stage boundary without
+changing where the data lives (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/660">#660</a>).</p></li>
+<li><p><strong>Shuffle affinity.</strong> Schedule a consumer task on the executor that already
+holds most of its input, turning Flight fetches into local reads. This one can
+be prototyped without touching the core: task distribution is already
+pluggable, so a <code class="docutils literal notranslate"><span class="pre">TaskDistributionPolicy::Custom</span></code> implementation can bind tasks
+to the executors holding their <code class="docutils literal notranslate"><span class="pre">PartitionLocation</span></code>s and be measured against
+the built-in bias and round-robin policies (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2319">#2319</a>).</p></li>
+<li><p><strong>Remote shuffle service.</strong> Offload shuffle storage to a service such as
+Apache Celeborn or Apache Uniffle (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1539">#1539</a>), which decouples shuffle
+durability from executor lifetime and makes aggressive autoscaling safer.</p></li>
+</ul>
+<p>Anyone proposing a change here should be explicit about which of the five
+properties above it preserves and which it trades away.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="architecture.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Ballista Architecture</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="code-organization.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Ballista Code Organization</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-barrier-concretely">The barrier, concretely</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-the-barrier-is-there">Why the barrier is there</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#producers-and-consumers-never-compete-for-slots">Producers and consumers never compete for slots</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#failures-cost-a-task-not-a-query">Failures cost a task, not a query</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-filesystem-absorbs-producer-consumer-skew">The filesystem absorbs producer/consumer skew</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#completed-stages-yield-exact-statistics">Completed stages yield exact statistics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#executors-can-come-and-go-between-stages">Executors can come and go between stages</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-barrier-costs">What the barrier costs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-a-model">Choosing a model</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#directions-that-do-not-require-abandoning-the-model">Directions that do not require abandoning the model</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/contributors-guide/shuffle.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/contributors-guide/shuffle.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

@@ -302,6 +302,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../contributors-guide/architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/shuffle.html">Shuffle Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../contributors-guide/code-organization.html">Ballista Code Organization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../contributors-guide/user-personas.html">User Personas</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../contributors-guide/development.html">Ballista Development</a></li>
@@ -399,6 +400,25 @@ model and computational kernels. It is designed to run within a single process, 
 for parallel query execution.</p>
 <p>Ballista is a distributed compute platform for DataFusion workloads.</p>
 </section>
+<section id="why-does-ballista-write-shuffle-data-to-disk-instead-of-streaming-it-between-stages">
+<h2>Why does Ballista write shuffle data to disk instead of streaming it between stages?<a class="headerlink" href="#why-does-ballista-write-shuffle-data-to-disk-instead-of-streaming-it-between-stages" title="Link to this heading">#</a></h2>
+<p>Ballista uses a blocking shuffle, like Apache Spark: each query stage runs to completion and
+writes its output to local storage (a disk, or a RAM-backed filesystem if you have the memory
+for it) before any downstream stage starts. Other DataFusion-based
+distributed engines, such as <a class="reference external" href="https://datafusion-contrib.github.io/datafusion-distributed/">DataFusion Distributed</a>
+and <a class="reference external" href="https://github.com/lakehq/sail">Sail</a>, stream data between stages instead.</p>
+<p>The blocking model costs latency — a stage cannot start until the slowest task of its input
+stage finishes, and every intermediate byte is written and read back. In exchange it lets a
+query run wider than the cluster has slots for, lets a lost executor cost a few re-run tasks
+rather than the whole query, keeps shuffles larger than cluster memory safe, and gives the
+adaptive planner exact statistics from completed stages.</p>
+<p>If your queries are interactive, run for seconds, and produce small intermediate results, a
+pipelined engine will likely be faster. If they are large, long-running batch or ETL jobs,
+especially on preemptible nodes, the blocking model is the reason Ballista finishes them.</p>
+<p>For the full reasoning, see <a class="reference internal" href="../contributors-guide/shuffle.html"><span class="std std-doc">Shuffle Design</span></a>. For the
+mechanics and tuning knobs, see the
+<a class="reference internal" href="tuning-guide.html#shuffle-implementation"><span class="std std-ref">Shuffle Implementation section of the tuning guide</span></a>.</p>
+</section>
 </section>
 
 
@@ -449,6 +469,7 @@ for parallel query execution.</p>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-the-relationship-between-datafusion-and-ballista">What is the relationship between DataFusion and Ballista?</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-does-ballista-write-shuffle-data-to-disk-instead-of-streaming-it-between-stages">Why does Ballista write shuffle data to disk instead of streaming it between stages?</a></li>
 </ul>
   </nav></div>
 

@@ -46,7 +46,7 @@
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Ballista Code Organization" href="code-organization.html" />
+    <link rel="next" title="Shuffle Design" href="shuffle.html" />
     <link rel="prev" title="Upgrade Guides" href="../upgrading/54.0.0.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -302,6 +302,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="shuffle.html">Shuffle Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="code-organization.html">Ballista Code Organization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="user-personas.html">User Personas</a></li>
 <li class="toctree-l1"><a class="reference internal" href="development.html">Ballista Development</a></li>
@@ -549,6 +550,12 @@ can be performed.</p>
 <p>Each executor will re-partition the output of the stage it is running so that it can be consumed by the next
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs">ShuffleWriterExec</a>
 and <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs">ShuffleReaderExec</a> operators.</p>
+<p>The shuffle is <em>blocking</em>: a stage materializes its output to local storage, and today a downstream stage waits
+for the whole upstream stage to complete before it starts. Waiting on the whole stage is a property of the current
+scheduler rather than of the design — the output of a finished task is readable as soon as its files are closed,
+so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See
+<a class="reference internal" href="shuffle.html"><span class="std std-doc">Shuffle Design</span></a> for why Ballista materializes shuffle output at all, what that costs, and how it
+compares to the pipelined shuffle used by engines such as DataFusion Distributed and Sail.</p>
 </section>
 </section>
 <section id="adaptive-query-execution-aqe">
@@ -628,11 +635,11 @@ skipped entirely.</p></li>
       </div>
     </a>
     <a class="right-next"
-       href="code-organization.html"
+       href="shuffle.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Ballista Code Organization</p>
+        <p class="prev-next-title">Shuffle Design</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
