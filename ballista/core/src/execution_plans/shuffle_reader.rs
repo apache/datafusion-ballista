@@ -19,7 +19,8 @@ use crate::client::BallistaClient;
 use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
 use crate::execution_plans::sort_shuffle::{
-    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+    ShuffleKey, get_index_path, is_sort_shuffle_output, memory_store,
+    stream_in_memory_partition, stream_sort_shuffle_partition,
 };
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
@@ -1121,9 +1122,34 @@ pub(crate) fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-    let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
+
+    // Output small enough to skip the filesystem never reached it, so the
+    // store is authoritative when it has an entry and the disk path is the
+    // fallback rather than the other way round.
+    if let Some(file_id) = location.file_id
+        && location.is_sort_shuffle
+    {
+        let key = ShuffleKey {
+            job_id: partition_id.job_id.clone(),
+            stage_id: partition_id.stage_id,
+            file_id,
+        };
+        if let Some(shuffle) = memory_store::global().get(&key) {
+            return stream_in_memory_partition(&shuffle, partition_id.partition_id)
+                .map_err(|e| {
+                    BallistaError::FetchFailed(
+                        metadata.id.clone(),
+                        partition_id.stage_id,
+                        partition_id.partition_id,
+                        e.to_string(),
+                    )
+                });
+        }
+    }
+
+    let path = &location.path(work_dir)?;
     let data_path = std::path::Path::new(path);
 
     // TODO: we check if file is there then we open it alter

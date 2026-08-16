@@ -37,6 +37,7 @@ use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
+use super::memory_store::{self, InMemoryShuffle, ShuffleKey};
 use super::spill::SpillManager;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
@@ -771,6 +772,60 @@ fn spill_all_partitions(
     Ok((batches_written, bytes_written))
 }
 
+/// Encode the schema-header IPC stream — a schema message and end-of-stream
+/// marker, no batches — that leads a sort-shuffle data file. Returns `None`
+/// if the options or encoding fail, which sends the caller down the on-disk
+/// path rather than storing an entry a reader could not interpret.
+fn encode_schema_header(
+    schema: &SchemaRef,
+    compression_type: Option<CompressionType>,
+) -> Option<Vec<u8>> {
+    let opts = create_write_options(compression_type).ok()?;
+    let mut buf = Vec::new();
+    let mut writer = StreamWriter::try_new_with_options(&mut buf, schema, opts).ok()?;
+    writer.finish().ok()?;
+    Some(buf)
+}
+
+/// Per-output-partition `(id, batches, rows, bytes)` for a task whose rows are
+/// all still in memory. Only valid when nothing spilled, which is the only
+/// case the in-memory store admits.
+fn in_memory_partition_stats(
+    outputs: &[InputPartitionOutput],
+) -> Vec<(usize, u64, u64, u64)> {
+    let num_partitions = outputs.first().map(|o| o.encoded.len()).unwrap_or(0);
+    (0..num_partitions)
+        .map(|partition_id| {
+            let (mut batches, mut rows, mut bytes) = (0u64, 0u64, 0u64);
+            for out in outputs {
+                let (b, r, by) = out.in_memory_stats[partition_id];
+                batches += b;
+                rows += r;
+                bytes += by;
+            }
+            (partition_id, batches, rows, bytes)
+        })
+        .collect()
+}
+
+/// Concatenate every input's encoded buckets into one buffer per output
+/// partition, in the same partition-major order the on-disk file uses. Takes
+/// the buffers rather than copying them, so this is a move, not a duplication.
+fn concat_encoded_partitions(outputs: &mut [InputPartitionOutput]) -> Vec<Vec<u8>> {
+    let num_partitions = outputs.first().map(|o| o.encoded.len()).unwrap_or(0);
+    let mut partitions = vec![Vec::new(); num_partitions];
+    for out in outputs.iter_mut() {
+        for (partition_id, buf) in out.encoded.iter_mut().enumerate() {
+            if partitions[partition_id].is_empty() {
+                partitions[partition_id] = std::mem::take(buf);
+            } else {
+                partitions[partition_id].append(buf);
+            }
+        }
+    }
+    partitions
+}
+
 /// Write the task's entire shuffle output as one data file plus one index.
 ///
 /// The file is laid out **partition-major**: a leading schema-header stream,
@@ -1139,17 +1194,86 @@ async fn run_coordinator(
 
         let write_metrics = SortShuffleWriteMetrics::new(0, &writer.metrics);
         let timer = write_metrics.write_time.timer();
-        let result = compression.and_then(|compression_type| {
-            write_task_consolidated(
-                &writer.work_dir,
-                &writer.job_id,
-                writer.stage_id,
-                file_id as usize,
-                &mut outputs,
-                &schema,
-                compression_type,
-            )
-        });
+
+        // Prefer keeping the output in memory. Writing shuffle bytes to the
+        // work directory and reading them back is the dominant cost of a
+        // distributed query, so skip it when the executor's budget has room.
+        //
+        // Only when nothing spilled: a spilled input already has bytes on
+        // disk that would have to be read back and folded in, which is the
+        // cost the store exists to avoid.
+        let memory_limit = ctx
+            .session_config()
+            .ballista_config()
+            .shuffle_memory_store_limit_bytes();
+        let spilled = outputs
+            .iter()
+            .any(|o| o.spill_manager.total_spilled_batches() > 0);
+
+        let result = if memory_limit > 0 && !spilled {
+            let stats = in_memory_partition_stats(&outputs);
+            let header = compression
+                .as_ref()
+                .ok()
+                .and_then(|compression_type| {
+                    encode_schema_header(&schema, *compression_type)
+                });
+            let size_bytes: usize = header.as_ref().map(|h| h.len()).unwrap_or(0)
+                + outputs
+                    .iter()
+                    .flat_map(|o| o.encoded.iter())
+                    .map(|b| b.len())
+                    .sum::<usize>();
+            let key = ShuffleKey {
+                job_id: writer.job_id.clone(),
+                stage_id: writer.stage_id,
+                file_id,
+            };
+            let stored = match header {
+                Some(header) => memory_store::global().try_insert_with(
+                    key,
+                    memory_limit,
+                    size_bytes,
+                    || InMemoryShuffle {
+                        schema: schema.clone(),
+                        header,
+                        partitions: concat_encoded_partitions(&mut outputs),
+                    },
+                ),
+                None => false,
+            };
+            if stored {
+                debug!(
+                    "Sort shuffle for task {} kept in memory ({size_bytes} bytes)",
+                    writer.task_id
+                );
+                Ok((PathBuf::new(), PathBuf::new(), stats))
+            } else {
+                compression.and_then(|compression_type| {
+                    write_task_consolidated(
+                        &writer.work_dir,
+                        &writer.job_id,
+                        writer.stage_id,
+                        file_id as usize,
+                        &mut outputs,
+                        &schema,
+                        compression_type,
+                    )
+                })
+            }
+        } else {
+            compression.and_then(|compression_type| {
+                write_task_consolidated(
+                    &writer.work_dir,
+                    &writer.job_id,
+                    writer.stage_id,
+                    file_id as usize,
+                    &mut outputs,
+                    &schema,
+                    compression_type,
+                )
+            })
+        };
         timer.done();
 
         match result {
@@ -1420,7 +1544,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_shuffle_writer() -> Result<()> {
-        let session_ctx = SessionContext::new();
+        let session_ctx = SessionContext::new_with_config(disk_only_config());
         let task_ctx = session_ctx.task_ctx();
 
         let input_plan = Arc::new(CoalescePartitionsExec::new(create_test_input()?));
@@ -1549,10 +1673,7 @@ mod tests {
                 .with_memory_pool(Arc::new(FairSpillPool::new(pool_bytes)))
                 .build()?,
         );
-        let session_ctx = SessionContext::new_with_config_rt(
-            datafusion::execution::config::SessionConfig::new(),
-            runtime_env,
-        );
+        let session_ctx = SessionContext::new_with_config_rt(disk_only_config(), runtime_env);
         let task_ctx = session_ctx.task_ctx();
 
         let work_dir = TempDir::new()?;
@@ -1666,6 +1787,128 @@ mod tests {
         .await
     }
 
+    /// A session config with the in-memory shuffle store switched off, for
+    /// tests that assert on the on-disk file layout. Without this they would
+    /// take the memory path and find nothing under the work directory.
+    fn disk_only_config() -> datafusion::execution::config::SessionConfig {
+        use crate::config::BallistaConfig;
+        use datafusion::config::ExtensionOptions;
+        let mut bc = BallistaConfig::default();
+        bc.set("shuffle.memory_store_limit_bytes", "0").unwrap();
+        let mut config = datafusion::execution::config::SessionConfig::new();
+        config.options_mut().extensions.insert(bc);
+        config
+    }
+
+    /// With the in-memory store enabled and room in the budget, a task must
+    /// skip the filesystem entirely and still serve every row — the store is
+    /// only correct if the read path finds what the write path withheld.
+    #[tokio::test]
+    async fn small_shuffle_is_kept_in_memory_and_readable() -> Result<()> {
+        use super::super::memory_store::{self, ShuffleKey};
+        use super::super::reader::stream_in_memory_partition;
+        use datafusion::arrow::array::Int64Array;
+        use std::collections::HashSet;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let rows = 400i64;
+        let keys: Vec<i64> = (0..rows).collect();
+        let values: Vec<i64> = keys.iter().map(|k| k * 3).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(keys)),
+                Arc::new(Int64Array::from(values)),
+            ],
+        )?;
+        let partitions = vec![vec![batch.clone()], vec![batch]];
+        let source =
+            Arc::new(MemorySourceConfig::try_new(&partitions, schema.clone(), None)?);
+        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
+
+        let work_dir = TempDir::new()?;
+        let num_partitions = 3;
+        let writer = SortShuffleWriterExec::try_new(
+            "mem_store_job".into(),
+            4,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
+            SortShuffleConfig::default(),
+        )?
+        .with_task_id(11);
+
+        // 1 GiB budget, matching the shipped default.
+        let config = datafusion::execution::config::SessionConfig::new_with_ballista();
+        let ctx = SessionContext::new_with_config(config);
+        for output_partition in 0..num_partitions {
+            let mut stream = writer.execute(output_partition, ctx.task_ctx())?;
+            while stream.next().await.is_some() {}
+        }
+
+        // Nothing under the job's directory: the write was skipped, not moved.
+        let job_dir = work_dir.path().join("mem_store_job");
+        let on_disk: Vec<_> = walk_files(&job_dir);
+        assert!(
+            on_disk.is_empty(),
+            "expected no shuffle files on disk, found {on_disk:?}"
+        );
+
+        let key = ShuffleKey {
+            job_id: "mem_store_job".into(),
+            stage_id: 4,
+            file_id: 11,
+        };
+        let stored = memory_store::global()
+            .get(&key)
+            .expect("task output must be in the store");
+
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut total = 0usize;
+        for partition_id in 0..num_partitions {
+            let mut s = stream_in_memory_partition(&stored, partition_id)
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            while let Some(b) = s.next().await {
+                let b = b?;
+                total += b.num_rows();
+                let arr = b
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for v in arr.values() {
+                    seen.insert(*v);
+                }
+            }
+        }
+        // Both input partitions carried the same keys, so every key appears twice.
+        assert_eq!(total, (rows as usize) * 2);
+        assert_eq!(seen.len(), rows as usize);
+
+        memory_store::global().remove_job(&"mem_store_job".into(), &[]);
+        assert!(memory_store::global().get(&key).is_none());
+        Ok(())
+    }
+
+    fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk_files(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out
+    }
+
     /// A task owning several input partitions must emit exactly ONE data file
     /// holding every bucket, not one file per input. The rows still have to
     /// round-trip: each output partition's byte range now concatenates that
@@ -1730,7 +1973,7 @@ mod tests {
         )?
         .with_task_id(7);
 
-        let ctx = SessionContext::new();
+        let ctx = SessionContext::new_with_config(disk_only_config());
         // Drain every output partition so the coordinator runs to completion.
         for output_partition in 0..num_partitions {
             let mut stream = writer.execute(output_partition, ctx.task_ctx())?;
@@ -1886,7 +2129,7 @@ mod tests {
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(DataSourceExec::new(memory_data_source));
 
-        let session_ctx = SessionContext::new();
+        let session_ctx = SessionContext::new_with_config(disk_only_config());
         let task_ctx = session_ctx.task_ctx();
         let work_dir = TempDir::new()?;
 

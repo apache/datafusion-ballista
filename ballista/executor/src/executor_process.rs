@@ -24,6 +24,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use ballista_core::execution_plans::sort_shuffle::memory_store;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf::ExecutorOperatingSystemSpecification;
 use datafusion::DATAFUSION_VERSION;
@@ -975,6 +976,10 @@ pub(crate) async fn remove_job_data(
     job_id: &JobId,
     remove_stage_ids: &[u32],
 ) -> ballista_core::error::Result<()> {
+    // Output held in memory has no files to remove, so release it here too —
+    // this is the only point that knows a job's data is no longer needed.
+    memory_store::global().remove_job(job_id, remove_stage_ids);
+
     let work_path = PathBuf::from(&work_dir);
     let job_path = work_path.join(job_id.as_str());
 

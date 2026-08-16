@@ -18,11 +18,12 @@
 //! Sort-based shuffle implementation for Ballista.
 //!
 //! This module provides an alternative to the hash-based shuffle. It writes
-//! a single consolidated file per input partition (sorted by output partition ID)
-//! along with an index file mapping partition IDs to byte ranges.
+//! a single consolidated file per task (sorted by output partition ID) along
+//! with an index file mapping partition IDs to byte ranges.
 //!
 //! This approach reduces file count from `N × M` (N input partitions × M output partitions)
-//! to `2 × N` files (one data + one index per input partition).
+//! to two files per task. Output small enough to hold is kept in
+//! [`memory_store`] instead, skipping the filesystem entirely.
 //!
 //! The algorithm follows the approach used by Apache Spark: internally, results from
 //! individual map tasks are kept in memory until they can't fit. Then, these are
@@ -32,6 +33,7 @@
 mod buffer;
 mod config;
 mod index;
+pub mod memory_store;
 mod multi_stream_reader;
 mod partitioned_batch_iterator;
 mod reader;
@@ -41,6 +43,10 @@ mod writer;
 pub use buffer::BufferedBatches;
 pub use config::SortShuffleConfig;
 pub use index::ShuffleIndex;
-pub use reader::{get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition};
+pub use memory_store::{InMemoryShuffle, ShuffleKey, ShuffleMemoryStore};
+pub use reader::{
+    get_index_path, is_sort_shuffle_output, stream_in_memory_partition,
+    stream_sort_shuffle_partition,
+};
 pub use spill::SpillManager;
 pub use writer::SortShuffleWriterExec;

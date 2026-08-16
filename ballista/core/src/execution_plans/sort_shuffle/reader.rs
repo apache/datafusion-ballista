@@ -30,7 +30,12 @@ use std::fs::File;
 use std::path::Path;
 
 use super::index::ShuffleIndex;
+use super::memory_store::InMemoryShuffle;
 use super::multi_stream_reader::MultiStreamPartitionStream;
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::physical_plan::memory::MemoryStream;
+use std::io::Cursor;
+use std::sync::Arc;
 
 /// Checks if a shuffle output uses the sort-based format by looking for
 /// the index file.
@@ -81,6 +86,57 @@ pub fn stream_sort_shuffle_partition(
     );
 
     Ok(Box::pin(stream))
+}
+
+/// Returns a stream of record batches for `partition_id` from shuffle output
+/// held in [`super::memory_store`] rather than written to disk.
+///
+/// The stored bytes are the same concatenated Arrow IPC streams the on-disk
+/// reader would have addressed through the index, so this decodes exactly
+/// what `stream_sort_shuffle_partition` would have produced for the same
+/// partition — it just reads them from memory.
+///
+/// Batches are decoded eagerly. A partition's bytes are already resident, so
+/// there is nothing to stream in from elsewhere, and decoding up front keeps
+/// the reader free of the sub-stream cursor bookkeeping the file path needs.
+pub fn stream_in_memory_partition(
+    shuffle: &InMemoryShuffle,
+    partition_id: usize,
+) -> Result<SendableRecordBatchStream> {
+    let bytes = shuffle.partitions.get(partition_id).ok_or_else(|| {
+        BallistaError::General(format!(
+            "Partition {partition_id} not found in in-memory shuffle (has {})",
+            shuffle.partitions.len()
+        ))
+    })?;
+
+    let schema = shuffle.schema.clone();
+    let mut batches: Vec<RecordBatch> = Vec::new();
+    let mut pos: u64 = 0;
+    let len = bytes.len() as u64;
+
+    // Walk the concatenated IPC streams: each `StreamReader` stops at its own
+    // end-of-stream marker, so pick up where it left off until the bytes run out.
+    while pos < len {
+        let mut cursor = Cursor::new(bytes.as_slice());
+        cursor.set_position(pos);
+        let reader = StreamReader::try_new(cursor, None)?;
+        let mut consumed_any = false;
+        let mut reader = reader;
+        for batch in reader.by_ref() {
+            batches.push(batch?);
+            consumed_any = true;
+        }
+        let next = reader.get_mut().position();
+        if next <= pos && !consumed_any {
+            // A stream that yielded nothing and did not advance would loop
+            // forever; treat it as the end of meaningful data.
+            break;
+        }
+        pos = next;
+    }
+
+    Ok(Box::pin(MemoryStream::try_new(batches, schema, None)?))
 }
 
 #[cfg(test)]

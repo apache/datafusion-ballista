@@ -90,6 +90,9 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
 /// Configuration key for shuffle writer bounded-channel capacity.
 pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
     "ballista.shuffle.writer_channel_capacity";
+/// Configuration key for the executor-wide in-memory shuffle store budget.
+pub const BALLISTA_SHUFFLE_MEMORY_STORE_LIMIT_BYTES: &str =
+    "ballista.shuffle.memory_store_limit_bytes";
 /// Configuration key for the per-task buffered-bytes budget at which the
 /// sort shuffle writer spills its in-memory batches to disk. Set to 0 to
 /// disable the per-task budget and spill only under memory-pool pressure.
@@ -269,6 +272,15 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          may run out of memory.".to_string(),
                          DataType::UInt64,
                          Some((256 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_MEMORY_STORE_LIMIT_BYTES.to_string(),
+                         "Executor-wide budget for holding sort-shuffle output in memory \
+                         instead of writing it to the work directory. A task whose output \
+                         does not fit in the remaining budget writes to disk as usual, so \
+                         the store degrades into the on-disk path rather than failing. \
+                         Entries are freed when the job's data is cleaned up. Set to 0 to \
+                         always write shuffle output to disk.".to_string(),
+                         DataType::UInt64,
+                         Some((1024 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
                          "Byte-size threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern. \
@@ -675,6 +687,12 @@ impl BallistaConfig {
     /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
     pub fn shuffle_writer_channel_capacity(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY)
+    }
+
+    /// Executor-wide budget for holding sort-shuffle output in memory instead
+    /// of writing it to the work directory. `0` disables the store.
+    pub fn shuffle_memory_store_limit_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_MEMORY_STORE_LIMIT_BYTES)
     }
 
     /// Returns the per-task buffered-bytes budget at which the sort shuffle

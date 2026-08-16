@@ -28,7 +28,8 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::sort_shuffle::{
-    ShuffleIndex, get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+    InMemoryShuffle, ShuffleIndex, ShuffleKey, get_index_path, is_sort_shuffle_output,
+    memory_store, stream_in_memory_partition, stream_sort_shuffle_partition,
 };
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
@@ -103,6 +104,38 @@ impl FlightService for BallistaFlightService {
                 is_sort_shuffle,
                 ..
             } => {
+                // Output kept in memory never reached the filesystem, so the
+                // store has to be consulted before any path is built.
+                if let (Some(fid), true) = (*file_id, *is_sort_shuffle) {
+                    let key = ShuffleKey {
+                        job_id: job_id.clone(),
+                        stage_id: *stage_id,
+                        file_id: fid,
+                    };
+                    if let Some(shuffle) = memory_store::global().get(&key) {
+                        debug!(
+                            "FetchPartition serving partition {partition_id} from the in-memory store"
+                        );
+                        let stream =
+                            stream_in_memory_partition(&shuffle, *partition_id)
+                                .map_err(|e| from_ballista_err(&e))?;
+                        let schema = stream.schema();
+                        let stream =
+                            stream.map_err(|e| FlightError::from(ArrowError::from(e)));
+                        let write_options: IpcWriteOptions = IpcWriteOptions::default()
+                            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                            .map_err(|e| from_arrow_err(&e))?;
+                        let flight_data_stream = FlightDataEncoderBuilder::new()
+                            .with_schema(schema)
+                            .with_options(write_options)
+                            .build(stream)
+                            .map_err(|err| Status::from_error(Box::new(err)));
+                        return Ok(Response::new(
+                            Box::pin(flight_data_stream) as Self::DoGetStream
+                        ));
+                    }
+                }
+
                 let path = create_shuffle_path(
                     &self.work_dir,
                     job_id,
@@ -267,6 +300,24 @@ impl FlightService for BallistaFlightService {
                         is_sort_shuffle,
                         ..
                     } => {
+                        // Same precedence as the Flight path: output kept in
+                        // memory has no file to open.
+                        if let (Some(fid), true) = (*file_id, *is_sort_shuffle) {
+                            let key = ShuffleKey {
+                                job_id: job_id.clone(),
+                                stage_id: *stage_id,
+                                file_id: fid,
+                            };
+                            if let Some(shuffle) = memory_store::global().get(&key) {
+                                debug!(
+                                    "FetchPartition serving block for partition {partition_id} from the in-memory store"
+                                );
+                                return Ok(Response::new(
+                                    stream_in_memory_block(&shuffle, *partition_id)?,
+                                ));
+                            }
+                        }
+
                         let path = create_shuffle_path(
                             &self.work_dir,
                             job_id,
@@ -351,6 +402,39 @@ async fn stream_whole_file(
             .map(|bytes| arrow_flight::Result { body: bytes })
             .map_err(|e| Status::internal(format!("I/O error: {e}")))
     })))
+}
+
+/// Block-transport equivalent of [`stream_sort_shuffle_block`] for output the
+/// writer kept in memory.
+///
+/// Emits the same bytes the on-disk path would: the schema-header IPC stream
+/// followed by the partition's own bytes, so `BlockDataStream` on the
+/// receiving side cannot tell the two apart.
+fn stream_in_memory_block(
+    shuffle: &InMemoryShuffle,
+    partition_id: usize,
+) -> Result<<BallistaFlightService as FlightService>::DoActionStream, Status> {
+    let partition = shuffle.partitions.get(partition_id).ok_or_else(|| {
+        Status::out_of_range(format!(
+            "partition_id {partition_id} not found in in-memory shuffle (max: {})",
+            shuffle.partitions.len()
+        ))
+    })?;
+
+    let mut body = Vec::with_capacity(shuffle.header.len() + partition.len());
+    body.extend_from_slice(&shuffle.header);
+    body.extend_from_slice(partition);
+
+    let chunks: Vec<Result<arrow_flight::Result, Status>> = body
+        .chunks(BLOCK_BUFFER_CAPACITY)
+        .map(|chunk| {
+            Ok(arrow_flight::Result {
+                body: chunk.to_vec().into(),
+            })
+        })
+        .collect();
+
+    Ok(Box::pin(futures::stream::iter(chunks)))
 }
 
 async fn stream_sort_shuffle_block(
