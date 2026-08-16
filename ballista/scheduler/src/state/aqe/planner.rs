@@ -21,8 +21,9 @@ use crate::state::aqe::execution_plan::{
 };
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
-    CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
-    ParallelWindowRule, PropagateEmptyExecRule, SelectJoinRule,
+    CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
+    DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
+    PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -197,6 +198,13 @@ impl AdaptivePlanner {
         // TODO consider marking cancelled stage
         let _ = self.runnable_stage_cache.remove(&stage_id);
         Ok(())
+    }
+
+    /// Whether `stage_id` is still part of the current plan. A replan can drop
+    /// a stage that already has tasks in flight; their completions arrive after
+    /// the stage has left the cache.
+    pub fn is_stage_active(&self, stage_id: usize) -> bool {
+        self.runnable_stage_cache.contains_key(&stage_id)
     }
 
     /// Attaches range-repartition-recovered range boundaries to the
@@ -536,6 +544,11 @@ impl AdaptivePlanner {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
 
+        // Must run first: the rules below rewrite union branches independently,
+        // which an InterleaveExec cannot survive. EnforceDistribution re-forms
+        // the interleave later in this same chain when it is still valid.
+        physical_optimizers.push(Arc::new(NormalizeInterleaveRule::default()));
+
         // changing plan before other built in optimizers kick in
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
 
@@ -577,9 +590,18 @@ impl AdaptivePlanner {
         datafusion::physical_optimizer::optimizer::PhysicalOptimizer::new()
             .rules
             .into_iter()
-            .map(|r| match r.name() {
-                "FilterPushdown" => Arc::new(FilterPushdown::new()),
-                _ => r,
+            .flat_map(|r| match r.name() {
+                "FilterPushdown" => vec![Arc::new(FilterPushdown::new())
+                    as Arc<dyn PhysicalOptimizerRule + Send + Sync>],
+                // `join_selection` promotes a small build side to `CollectLeft`
+                // without restricting by join type -- safe in one process, but
+                // Ballista runs one task per probe partition. Demote the unsafe
+                // ones straight after, while `EnsureRequirements` can still add
+                // the repartitions a `Partitioned` join needs.
+                "join_selection" => {
+                    vec![r, Arc::new(DemoteUnsafeBroadcastJoinRule::default())]
+                }
+                _ => vec![r],
             })
             .collect()
     }

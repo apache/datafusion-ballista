@@ -353,31 +353,26 @@ impl DynamicJoinSelectionExec {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
+            // Null-aware anti joins require single-task `CollectLeft` even
+            // though both sides are already shuffled.
+            (JoinInputState::Repartitioned, PartitionMode::CollectLeft)
+                if self.null_aware =>
             {
-                self.to_hash_join(PartitionMode::Partitioned)
-                    .map(JoinSelectionAction::Hash)
+                self.to_hash_join(PartitionMode::CollectLeft)
+                    .map(JoinSelectionAction::LateCollectLeft)
             }
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned) => {
-                self.to_sort_merge_join().map(JoinSelectionAction::Sort)
-            }
-            // TODO: not sure about this point
-            // at this point, both inputs has been repartitioned
-            // making it collect left may not make sense, perhaps only
-            // valid strategy at this point is to check if both sides
-            // are small enough to make it single partitioned join.
-            // if single partition join is possibility should we leave it
-            // to coalesce shuffle to make this decision? (if thats the
-            // case we should remove LateCollectLeft )
-            //
-            // would it be better if we try to shuffle build side first
-            // and then if build side is small enough make decision if
-            // this is CollectLeft or Partitioned join. The issue is
-            // we have flip coin chances to pick side which to run first
-            (JoinInputState::Repartitioned, PartitionMode::CollectLeft) => self
-                .to_hash_join(PartitionMode::CollectLeft)
-                .map(JoinSelectionAction::LateCollectLeft),
+            // Both inputs are already shuffled, so broadcasting would pay for
+            // the shuffle and the broadcast. Decide hash-vs-sort on build fit.
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) if hash_build_fits(max_build_bytes, build_max_partition_bytes) => self
+                .to_hash_join(PartitionMode::Partitioned)
+                .map(JoinSelectionAction::Hash),
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) => self.to_sort_merge_join().map(JoinSelectionAction::Sort),
             (JoinInputState::Unknown, PartitionMode::Partitioned) => Ok(
                 JoinSelectionAction::Repartition(Arc::new(self.to_partitioned())),
             ),
