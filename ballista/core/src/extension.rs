@@ -872,6 +872,35 @@ impl SessionConfigHelperExt for SessionConfig {
             //
             // See https://github.com/apache/datafusion-ballista/issues/1375
             .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
+            //
+            // A `Partial` aggregate probes its first
+            // `skip_partial_aggregation_probe_rows_threshold` rows (100k) and,
+            // if distinct-groups/rows exceeds this ratio, stops aggregating and
+            // passes its input straight through. The decision is latched for the
+            // rest of the stream, so a ratio that is unrepresentative of the
+            // whole input is never revisited.
+            //
+            // A mispredicted skip costs more here than it does in-process. In
+            // DataFusion the unreduced rows are merely handed to the next
+            // operator; in Ballista the `Partial` sits directly beneath a
+            // shuffle boundary, so those rows are additionally hash-partitioned,
+            // serialized, written to shuffle files and read back by the
+            // `FinalPartitioned` stage. That asymmetry argues for skipping only
+            // when the probe is confident, which is what raising the ratio does.
+            //
+            // DataFusion's 0.8 default mispredicts on ClickBench q13 and q30,
+            // whose leading rows look near-unique but which reduce to 57-82%
+            // over the full input; at 0.8 they skip 16.5M rows that a real
+            // aggregation would have collapsed. 0.95 drops both mispredictions
+            // while keeping every genuine skip measured on TPC-H SF10
+            // (q2/q11/q17/q20) and ClickBench (q31/q32, both ~100% unique).
+            // 0.9 and 0.95 make identical decisions on both suites; 0.99 also
+            // fixes the mispredictions but loses the TPC-H q2/q11/q17 skips,
+            // q17's alone covering 59M rows.
+            .set_str(
+                "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
+                "0.95",
+            )
     }
 }
 
@@ -1138,6 +1167,39 @@ mod test {
                 .optimizer
                 .hash_join_single_partition_threshold,
             5242880
+        );
+    }
+
+    // The partial-aggregation skip probe is deliberately more conservative than
+    // DataFusion's 0.8, because a mispredicted skip has to cross a shuffle here.
+    // A user asking for DataFusion's value back must still get it.
+    #[test]
+    fn should_default_skip_partial_aggregation_ratio_and_allow_override() {
+        let config = SessionConfig::new_with_ballista();
+        assert_eq!(
+            config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold,
+            0.95
+        );
+
+        let mut overridden = SessionConfig::new_with_ballista();
+        overridden
+            .options_mut()
+            .set(
+                "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
+                "0.8",
+            )
+            .unwrap();
+
+        assert_eq!(
+            overridden
+                .upgrade_for_ballista()
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold,
+            0.8
         );
     }
 
