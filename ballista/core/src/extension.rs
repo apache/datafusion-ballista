@@ -16,10 +16,11 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS,
-    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
-    BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
-    BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
+    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
+    BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
@@ -243,6 +244,9 @@ pub trait SessionConfigExt {
 
     /// Is adaptive query planner enabled
     fn ballista_adaptive_query_planner_enabled(&self) -> bool;
+
+    /// Enables or disables adaptive query planning (enabled by default).
+    fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
 
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
@@ -607,6 +611,15 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
+        }
+    }
+
+    fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, enabled)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, enabled)
         }
     }
 

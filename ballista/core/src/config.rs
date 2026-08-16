@@ -246,9 +246,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt64,
                          Some((300).to_string())),
         ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
-                         "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
+                         "Enables Adaptive Query Planning: joins and partition counts are \
+                         chosen from measured runtime statistics instead of planning-time \
+                         estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
