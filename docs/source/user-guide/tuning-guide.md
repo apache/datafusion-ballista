@@ -74,16 +74,16 @@ partitions and, each time an executor is assigned work, hands out a slice of tho
 task. The size of that slice is bounded by both the executor's free vcores and
 `ballista.scheduler.max_partitions_per_task`.
 
-That setting still defaults to `1`, so out of the box a 16-partition scan stage runs as 16 single-partition tasks.
-Raising it lets the scheduler pack several partitions into one task, which reduces task count and scheduling
-overhead and allows operators such as sort and hash join to work across partitions within a task. Setting it to `0`
-removes the cap entirely, so each task is filled up to the assigned executor's free vcore count: a 16-partition
-stage then runs as one task on an idle 16-vcore executor, or as four 4-partition tasks across four 4-vcore
-executors.
+That setting defaults to `0`, meaning the cap is removed and each task is filled up to the assigned executor's free
+vcore count: a 16-partition stage runs as one task on an idle 16-vcore executor, or as four 4-partition tasks
+across four 4-vcore executors. This reduces task count and scheduling overhead and allows operators such as sort
+and hash join to work across partitions within a task.
+
+Set it to `1` to get one task per partition, or to any positive value to cap the slice size.
 
 | key                                        | type   | default | description                                                                                                                                                                         |
 | ------------------------------------------ | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.scheduler.max_partitions_per_task | UInt64 | 1       | Upper bound on the number of input partitions packed into a single task. `1` means one task per partition. `0` means unbounded, filling each task up to the executor's free vcores. |
+| ballista.scheduler.max_partitions_per_task | UInt64 | 0       | Upper bound on the number of input partitions packed into a single task. `0` means unbounded, filling each task up to the executor's free vcores. `1` means one task per partition. |
 
 Stages whose plan collapses all input into a single partition (for example under a `CoalescePartitionsExec` or
 `SortPreservingMergeExec`) ignore this cap and always pack their full pending queue into one task, since splitting
@@ -256,7 +256,7 @@ Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes onl
 | key                                               | type    | default  | description                                                                                                                                                                                                                                    |
 | ------------------------------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ballista.planner.adaptive.enabled                 | Boolean | false    | Enables the adaptive planner. Experimental.                                                                                                                                                                                                    |
-| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 10485760 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins. |
+| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 134217728 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins. |
 | ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000  | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                                                                                             |
 
 ### What AQE does today

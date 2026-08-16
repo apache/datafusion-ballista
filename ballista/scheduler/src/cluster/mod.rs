@@ -842,10 +842,9 @@ mod test {
     ) -> Result<StaticExecutionGraph> {
         // These tests validate the *multi-partition* binding path: expected
         // task distributions include slice sizes up to 7. That requires an
-        // unbounded `max_partitions_per_task`. Since `bc7a4eda` flipped the
-        // default to 1 (single-partition-per-task, matching master's
-        // pre-branch behaviour), we override it back here so the mock
-        // exercises the branch feature these tests are *for*.
+        // unbounded `max_partitions_per_task`, which is also the default —
+        // set explicitly here so the mock keeps exercising that path even if
+        // the default changes again.
         let session_config = Arc::new(
             SessionConfig::new_with_ballista()
                 .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "0"),

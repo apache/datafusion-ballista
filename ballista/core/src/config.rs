@@ -278,7 +278,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           single-task CollectLeft execution. Set to 0 to disable promotion \
                           and reject null-aware anti joins.".to_string(),
                          DataType::UInt64,
-                         Some((10 * 1024 * 1024).to_string())),
+                         Some((128 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
                          "Row-count threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern, \
@@ -417,15 +417,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
-             task's `partition_slice`. `1` (default) means one task per input \
-             partition. Raise to enable multi-partition tasks (fewer tasks, \
-             parallel-sort / parallel-join wins); `0` means unbounded — the \
+             task's `partition_slice`. `0` (default) means unbounded — the \
              scheduler fills each task up to the executor's free vcore count. \
-             Does not apply to collapse stages, which must pack their full \
-             pending queue into a single task for correctness."
+             `1` means one task per input partition. Does not apply to collapse \
+             stages, which must pack their full pending queue into a single \
+             task for correctness."
                 .to_string(),
             DataType::UInt64,
-            Some(1.to_string()),
+            Some(0.to_string()),
         ),
     ];
     entries

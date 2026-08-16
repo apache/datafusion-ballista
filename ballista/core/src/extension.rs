@@ -1166,7 +1166,7 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            10 * 1024 * 1024
+            128 * 1024 * 1024
         );
         assert_eq!(
             config
