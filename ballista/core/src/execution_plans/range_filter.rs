@@ -63,7 +63,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use datafusion::arrow::array::{Array, ArrayRef, RecordBatch};
+use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
 use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::cast::as_boolean_array;
@@ -123,6 +123,10 @@ pub struct RangeFilterExec {
     /// values bound the entire batch, so most batches never touch
     /// `filter_record_batch`.
     sorted_on_key: bool,
+    /// Whether the input declares NULLs at the low end of the order. With
+    /// [`Self::sorted_on_key`] it decides which single partition claims the
+    /// whole NULL run — see `takes_nulls` in `execute`.
+    nulls_first: bool,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -193,13 +197,28 @@ impl RangeFilterExec {
             input.pipeline_behavior(),
             input.boundedness(),
         ));
-        let sorted_on_key = input
+        let leading_sort = input
             .output_ordering()
-            .map(|ord| {
-                let first = ord.first();
-                first.expr.as_ref() == routing_expr.as_ref() && !first.options.descending
-            })
-            .unwrap_or(false);
+            .map(|ord| ord.first().clone())
+            .filter(|first| first.expr.as_ref() == routing_expr.as_ref());
+        let sorted_on_key = leading_sort
+            .as_ref()
+            .is_some_and(|first| !first.options.descending);
+        let nulls_first = match &leading_sort {
+            Some(first) => first.options.nulls_first,
+            // Where the run sits is a fact about the declared order, and there
+            // isn't one — either no ordering at all, or an ordering on some
+            // other expression. Defaulting would hand the run to whichever end
+            // the default names, by accident rather than by decision.
+            None if routing_expr.nullable(&schema)? => {
+                return internal_err!(
+                    "RangeFilterExec: routing_expr is nullable but the input declares no \
+                     ordering on it, so which partition holds the NULL run is unknown"
+                );
+            }
+            // Non-nullable: no run to place, so the value is never consulted.
+            None => false,
+        };
         Ok(Self {
             input,
             routing_expr,
@@ -207,6 +226,7 @@ impl RangeFilterExec {
             halo_hi,
             bounds: Arc::new(Mutex::new(bounds_state)),
             sorted_on_key,
+            nulls_first,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
         })
@@ -386,6 +406,15 @@ impl ExecutionPlan for RangeFilterExec {
             })?
         };
         let (lo, hi) = widened;
+        // The NULL run belongs to whichever partition is unbounded at the end
+        // the run occupies. An unbounded end only ever belongs to a global end
+        // partition and survives the scheduler slicing bounds down to a task,
+        // so this needs no global partition identity.
+        let takes_nulls = if self.nulls_first {
+            lo.is_none()
+        } else {
+            hi.is_none()
+        };
         let predicate = build_predicate_from_bounds(
             self.routing_expr.clone(),
             lo.clone(),
@@ -413,6 +442,7 @@ impl ExecutionPlan for RangeFilterExec {
         let stream = RangeFilterStream {
             schema: schema.clone(),
             predicate,
+            takes_nulls,
             input,
             fast_path,
             baseline,
@@ -560,6 +590,8 @@ struct PathMetrics {
 struct RangeFilterStream {
     schema: SchemaRef,
     predicate: Arc<dyn PhysicalExpr>,
+    /// Whether this partition claims the NULL run. See `execute`.
+    takes_nulls: bool,
     input: SendableRecordBatchStream,
     fast_path: Option<FastPathState>,
     baseline: BaselineMetrics,
@@ -569,6 +601,11 @@ struct RangeFilterStream {
 impl RangeFilterStream {
     /// Apply the general predicate to `batch` — used both by the non-sorted
     /// fallback and by the sorted path when the routing column has nulls.
+    ///
+    /// A NULL key is absent from the comparison rather than failing it: the
+    /// kernels leave its mask entry NULL and `filter_record_batch` reads that as
+    /// exclude. Its place comes from the ordering instead, which is what
+    /// `takes_nulls` carries.
     fn slow_filter(&self, batch: &RecordBatch) -> Result<RecordBatch> {
         self.path_metrics.slow.add(1);
         let mask = self
@@ -576,7 +613,14 @@ impl RangeFilterStream {
             .evaluate(batch)
             .and_then(|v| v.into_array(batch.num_rows()))?;
         let mask = as_boolean_array(&mask)?;
-        Ok(filter_record_batch(batch, mask)?)
+        let positioned: BooleanArray = if mask.null_count() == 0 {
+            mask.clone()
+        } else {
+            mask.iter()
+                .map(|inside| Some(inside.unwrap_or(self.takes_nulls)))
+                .collect()
+        };
+        Ok(filter_record_batch(batch, &positioned)?)
     }
 
     /// Try the sorted-input shortcuts. Returns `None` iff the batch is
@@ -596,6 +640,13 @@ impl RangeFilterStream {
         // the shortcuts below cannot place it. The bail is load-bearing, not an
         // optimization: everything past it reads values by index and assumes
         // every index holds one.
+        //
+        // TODO: sorted input puts the run at one end, so the values occupy
+        // `[null_count, n)` or `[0, n - null_count)`, and searching that span
+        // leaves the run contiguous with the selection — the slice would stay
+        // zero-copy where this copies. It makes plan-declared null placement
+        // load-bearing for slicing, which this bail does not, so it wants the
+        // counters above as its evidence.
         if arr.null_count() > 0 {
             let filtered = self.slow_filter(&batch)?;
             return Ok((filtered.num_rows() > 0).then_some(filtered));
@@ -913,6 +964,137 @@ mod tests {
                 selected,
                 (5..12).collect::<Vec<i64>>(),
                 "sorted={declare_sorted}"
+            );
+        }
+    }
+
+    /// A nullable key whose input declares no ordering on it has no answer for
+    /// where the run belongs, so construction refuses rather than defaulting to
+    /// an end and quietly handing the run to whichever partition that names.
+    #[test]
+    fn a_nullable_key_without_a_declared_order_is_refused() {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
+        let column: Arc<dyn PhysicalExpr> =
+            Arc::new(Column::new_with_schema("v", schema.as_ref()).unwrap());
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float64Array::from(vec![Some(1.0), None]))],
+        )
+        .unwrap();
+        let source =
+            MemorySourceConfig::try_new(&[vec![batch]], schema.clone(), None).unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(source)));
+
+        let err = RangeFilterExec::try_new_resolved(
+            input,
+            column,
+            sv(0.0),
+            sv(0.0),
+            vec![(None, None)],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("NULL run"), "got: {err}");
+    }
+
+    /// The NULL run belongs to exactly one partition: the one unbounded at the
+    /// end the run occupies. Every other partition drops it, and no partition
+    /// ever compares a value against a NULL bound.
+    ///
+    /// Both placements, over K=3 partitions with cuts at 10 and 20, so the run's
+    /// partition is index 0 under `nulls_first` and index 2 under `nulls_last`.
+    #[tokio::test]
+    async fn the_null_run_lands_in_exactly_one_partition() {
+        for nulls_first in [true, false] {
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
+            let column: Arc<dyn PhysicalExpr> =
+                Arc::new(Column::new_with_schema("v", schema.as_ref()).unwrap());
+            // Three NULLs beside one value per partition-to-be.
+            let mut values: Vec<Option<f64>> = vec![Some(5.0), Some(15.0), Some(25.0)];
+            let nulls = vec![None; 3];
+            if nulls_first {
+                values.splice(0..0, nulls);
+            } else {
+                values.extend(nulls);
+            }
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Float64Array::from(values))],
+            )
+            .unwrap();
+
+            let bounds = vec![
+                (None, Some(sv(10.0))),
+                (Some(sv(10.0)), Some(sv(20.0))),
+                (Some(sv(20.0)), None),
+            ];
+            // Declared sorted so `nulls_first` is readable; the routing column
+            // has NULLs, so every batch takes the mask path regardless.
+            let sorted = PhysicalSortExpr::new(
+                column.clone(),
+                SortOptions {
+                    descending: false,
+                    nulls_first,
+                },
+            );
+            let source = MemorySourceConfig::try_new(
+                &[vec![batch.clone()], vec![batch.clone()], vec![batch]],
+                schema.clone(),
+                None,
+            )
+            .unwrap()
+            .try_with_sort_information(vec![[sorted].into()])
+            .unwrap();
+            let input: Arc<dyn ExecutionPlan> =
+                Arc::new(DataSourceExec::new(Arc::new(source)));
+            let rf = Arc::new(
+                RangeFilterExec::try_new_resolved(
+                    input,
+                    column.clone(),
+                    sv(0.0),
+                    sv(0.0),
+                    bounds,
+                )
+                .unwrap(),
+            );
+            assert_eq!(rf.nulls_first, nulls_first);
+
+            let mut null_rows_per_partition = Vec::new();
+            let mut value_rows_per_partition = Vec::new();
+            for partition in 0..3 {
+                let ctx = SessionContext::new().task_ctx();
+                let mut stream = rf.execute(partition, ctx).unwrap();
+                let (mut nulls, mut vals) = (0usize, Vec::new());
+                while let Some(res) = stream.next().await {
+                    let b = res.unwrap();
+                    let col =
+                        b.column(0).as_any().downcast_ref::<Float64Array>().unwrap();
+                    for row in 0..col.len() {
+                        if col.is_null(row) {
+                            nulls += 1;
+                        } else {
+                            vals.push(col.value(row));
+                        }
+                    }
+                }
+                null_rows_per_partition.push(nulls);
+                value_rows_per_partition.push(vals);
+            }
+
+            let claimant = if nulls_first { 0 } else { 2 };
+            let expected: Vec<usize> =
+                (0..3).map(|p| if p == claimant { 3 } else { 0 }).collect();
+            assert_eq!(
+                null_rows_per_partition, expected,
+                "nulls_first={nulls_first}: the run belongs to one partition"
+            );
+            // And the values are unaffected by the run riding along.
+            assert_eq!(
+                value_rows_per_partition,
+                vec![vec![5.0], vec![15.0], vec![25.0]],
+                "nulls_first={nulls_first}"
             );
         }
     }
