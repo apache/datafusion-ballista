@@ -413,4 +413,37 @@ mod tests {
         );
         assert!(out.downcast_ref::<RangeShuffleReaderExec>().is_none());
     }
+
+    /// The consuming merge's row limit must reach the reader. The merge is
+    /// rebuilt around the new reader, so a dropped limit is silent.
+    #[test]
+    fn pushes_consumer_limit_into_range_reader() {
+        let schema = f64_schema();
+        let empty: Vec<Vec<RecordBatch>> = vec![vec![]];
+        let source =
+            MemorySourceConfig::try_new_exec(&empty, schema.clone(), None).unwrap();
+        let sort_lex = LexOrdering::new(vec![asc(&schema, "v")]).unwrap();
+        let sorted = Arc::new(
+            SortExec::new(sort_lex.clone(), source).with_preserve_partitioning(true),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let exchange = ExchangeExec::new(sorted, None, 0);
+        exchange.set_stage_id(1);
+        exchange.resolve_shuffle_partitions(vec![vec![]]);
+        let merge = Arc::new(
+            SortPreservingMergeExec::new(sort_lex, Arc::new(exchange))
+                .with_fetch(Some(7)),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let mut adapter = BallistaAdapter::default();
+        let out = adapter.transform_children(merge).unwrap().data;
+
+        let children = out.children();
+        let reader = children[0]
+            .downcast_ref::<RangeShuffleReaderExec>()
+            .unwrap_or_else(|| {
+                panic!("expected a range reader, got {}", children[0].name())
+            });
+        assert_eq!(reader.fetch(), Some(7));
+    }
 }
