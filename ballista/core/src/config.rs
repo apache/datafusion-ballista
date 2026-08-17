@@ -420,13 +420,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             Some("lz4".to_string()),
         ),
         ConfigEntry::new(BALLISTA_SHUFFLE_MERGE_ORDERED_PASSTHROUGH.to_string(),
-                         "When a passthrough shuffle stage's input is sorted, merge the \
-                          task's partitions into one sorted output partition instead of \
-                          writing one file per partition. The consumer plants an ordering \
-                          preserving reader that merges anyway, so this moves that merge \
-                          into the producing task and cuts the consumer's fan-in from the \
-                          stage's partition count to its task count. Set to false to write \
-                          one file per partition.".to_string(),
+                         "Merge each task's sorted partitions into one output partition \
+                          instead of writing one file per partition, where the consumer \
+                          reads the stage back with an ordering-preserving merge. Cuts that \
+                          consumer's fan-in from the stage's partition count to its task \
+                          count, which bounds the merge's working set, at the cost of the \
+                          parallel single-source reads it replaces. Applies to adaptive \
+                          query planning only.".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
         ConfigEntry::new(
