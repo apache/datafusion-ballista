@@ -172,27 +172,33 @@ fn fmt_bound(bound: &WindowFrameBound) -> String {
     }
 }
 
-/// Extract the halo width in `f64` from a bound. `CurrentRow` → `Some(0.0)`.
-/// Non-numeric scalars (e.g. Interval bounds) return `None` — a shape gate,
-/// widened alongside KLL.
-fn halo_from_bound(bound: &WindowFrameBound) -> Option<f64> {
+/// The halo the frame declares, if the key can be widened by it. The bound
+/// *is* the halo; this converts its units and checks the widening typechecks.
+/// `None` declines the rewrite, leaving the query on the non-parallel path.
+fn halo_from_bound(bound: &WindowFrameBound, key_type: &DataType) -> Option<ScalarValue> {
+    // key_type          Timestamp(ns)     |  Float64
     let scalar = match bound {
-        WindowFrameBound::CurrentRow => return Some(0.0),
+        // Zero widens by nothing and `RangeFilterExec` short-circuits before
+        // the arithmetic, so its type need not pair with the key's.
+        WindowFrameBound::CurrentRow => return Some(ScalarValue::Float64(Some(0.0))),
         WindowFrameBound::Preceding(s) | WindowFrameBound::Following(s) => s,
     };
-    match scalar {
-        ScalarValue::Int8(Some(v)) => Some(*v as f64),
-        ScalarValue::Int16(Some(v)) => Some(*v as f64),
-        ScalarValue::Int32(Some(v)) => Some(*v as f64),
-        ScalarValue::Int64(Some(v)) => Some(*v as f64),
-        ScalarValue::UInt8(Some(v)) => Some(*v as f64),
-        ScalarValue::UInt16(Some(v)) => Some(*v as f64),
-        ScalarValue::UInt32(Some(v)) => Some(*v as f64),
-        ScalarValue::UInt64(Some(v)) => Some(*v as f64),
-        ScalarValue::Float32(Some(v)) => Some(*v as f64),
-        ScalarValue::Float64(Some(v)) => Some(*v),
-        _ => None,
+    // scalar            Interval(1 day)   |  Int64(3)
+    if scalar.is_null() {
+        return None;
     }
+    // Into the key's units where that means something. An interval must not
+    // become a timestamp: it is already the delta type a halo is.
+    let halo = scalar.cast_to(key_type).unwrap_or_else(|_| scalar.clone());
+    // halo              Interval(1 day)   |  Float64(3.0)
+    if ScalarValue::new_zero(&halo.data_type()).is_ok_and(|zero| halo == zero) {
+        return Some(halo);
+    }
+    // Not computing the halo — checking the filter will be able to apply it.
+    let probe = ScalarValue::new_zero(key_type).ok()?;
+    probe.sub(&halo).ok()?; // Timestamp - Interval -> Timestamp | Float64
+    probe.add(&halo).ok()?;
+    Some(halo)
 }
 
 /// Match the parallel-window shape rooted at `node` and, if it fits, splice
@@ -254,13 +260,6 @@ fn maybe_rewrite_bwag(
     if subtree_contains_our_rewrite(window.children().as_slice()) {
         return Ok(None);
     }
-    let (Some(halo_lo), Some(halo_hi)) = (
-        halo_from_bound(&frame.start_bound),
-        halo_from_bound(&frame.end_bound),
-    ) else {
-        return Ok(None);
-    };
-
     let node_children = node.children();
     let [immediate] = node_children.as_slice() else {
         return datafusion::common::internal_err!(
@@ -285,6 +284,15 @@ fn maybe_rewrite_bwag(
     // Route on the ORDER BY column. ORRE requires Float64 today (T-Digest
     // restriction; lifts when the sketch swaps to KLL).
     let routing_type = order.expr.data_type(&source_schema)?;
+    // Needs the key's type, so it waits until the source is known. Declining
+    // here leaves the query on the non-parallel path rather than failing it.
+    let (Some(halo_lo), Some(halo_hi)) = (
+        halo_from_bound(&frame.start_bound, &routing_type),
+        halo_from_bound(&frame.end_bound, &routing_type),
+    ) else {
+        return Ok(None);
+    };
+
     if !matches!(routing_type, DataType::Float64) {
         return Ok(None);
     }
@@ -318,8 +326,8 @@ fn maybe_rewrite_bwag(
     let wide_filter: Arc<dyn ExecutionPlan> = Arc::new(RangeFilterExec::try_new_pending(
         rse2,
         sort_expr.expr.clone(),
-        ScalarValue::Float64(Some(halo_lo)),
-        ScalarValue::Float64(Some(halo_hi)),
+        halo_lo,
+        halo_hi,
     )?);
 
     // Wrap BWAG in PartitionedBoundedWindowAggExec instead of collapsing
@@ -371,6 +379,7 @@ fn normalize_sort_expr(expr: &PhysicalSortExpr) -> PhysicalSortExpr {
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{Field, Schema};
+    use datafusion::arrow::datatypes::{IntervalMonthDayNano, TimeUnit};
     use datafusion::config::ExtensionOptions;
     use datafusion::datasource::empty::EmptyTable;
     use datafusion::physical_plan::displayable;
@@ -544,24 +553,56 @@ mod tests {
         Ok(())
     }
 
+    /// A halo comes back in a type the key can be widened by: the key's own
+    /// units for a numeric offset, the delta type for a temporal one.
     #[test]
-    fn halo_from_bound_reads_all_numeric_variants() {
-        assert_eq!(halo_from_bound(&WindowFrameBound::CurrentRow), Some(0.0));
+    fn halo_from_bound_lands_in_a_type_the_key_can_widen_by() {
+        let float = DataType::Float64;
+        let int = DataType::Int64;
+
         assert_eq!(
-            halo_from_bound(&WindowFrameBound::Preceding(ScalarValue::Int64(Some(3)))),
-            Some(3.0)
+            halo_from_bound(&WindowFrameBound::CurrentRow, &float),
+            Some(ScalarValue::Float64(Some(0.0)))
         );
+        // An integer offset casts into a Float64 key's units...
         assert_eq!(
-            halo_from_bound(&WindowFrameBound::Following(ScalarValue::Float64(Some(
-                2.5
-            )))),
-            Some(2.5)
+            halo_from_bound(
+                &WindowFrameBound::Preceding(ScalarValue::Int64(Some(3))),
+                &float
+            ),
+            Some(ScalarValue::Float64(Some(3.0)))
         );
+        // ...and stays an integer on an Int64 key, where the old `as f64`
+        // rounded every bound through a float.
         assert_eq!(
-            halo_from_bound(&WindowFrameBound::Preceding(ScalarValue::Utf8(Some(
-                "x".into()
-            )))),
+            halo_from_bound(
+                &WindowFrameBound::Preceding(ScalarValue::Int64(Some(3))),
+                &int
+            ),
+            Some(ScalarValue::Int64(Some(3)))
+        );
+        // A bound that cannot widen the key declines the rewrite rather than
+        // handing the filter a halo it would refuse at runtime.
+        assert_eq!(
+            halo_from_bound(
+                &WindowFrameBound::Preceding(ScalarValue::Utf8(Some("x".into()))),
+                &float
+            ),
             None
+        );
+    }
+
+    /// The pairing that motivated typing this: an interval offset on a
+    /// timestamp key, which is not the key's type and must not be cast to it.
+    #[test]
+    fn halo_from_bound_keeps_an_interval_against_a_timestamp_key() {
+        let key = DataType::Timestamp(TimeUnit::Nanosecond, None);
+        let day =
+            ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 1, 0)));
+        assert_eq!(
+            halo_from_bound(&WindowFrameBound::Preceding(day.clone()), &key),
+            Some(day),
+            "kept as the delta type, not cast to the key's"
         );
     }
 }
