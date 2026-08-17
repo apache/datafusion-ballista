@@ -25,7 +25,9 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
-use crate::state::task_builder::restrict_plan_to_partitions;
+use crate::state::task_builder::{
+    merge_task_partitions_before_write, restrict_plan_to_partitions,
+};
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
@@ -777,6 +779,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 task.plan.clone(),
                 &task.global_input_partition_ids,
             )?;
+            let restricted = if task
+                .session_config
+                .ballista_config()
+                .shuffle_merge_ordered_passthrough()
+            {
+                merge_task_partitions_before_write(restricted)?
+            } else {
+                restricted
+            };
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(
                 restricted,
@@ -883,6 +894,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 task.plan.clone(),
                 &task.global_input_partition_ids,
             )?;
+            let restricted = if task
+                .session_config
+                .ballista_config()
+                .shuffle_merge_ordered_passthrough()
+            {
+                merge_task_partitions_before_write(restricted)?
+            } else {
+                restricted
+            };
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
             plan_proto.try_encode(&mut plan_buf)?;

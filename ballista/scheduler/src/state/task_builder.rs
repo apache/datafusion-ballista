@@ -37,7 +37,7 @@
 //! subtrees never share state and there's no traversal-order dependency.
 
 use ballista_core::execution_plans::{
-    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec,
+    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriterExec,
 };
 use datafusion::common::internal_err;
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -53,7 +53,7 @@ use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
 use datafusion::physical_plan::replace_children_if_necessary;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
 use log::warn;
 use std::any::Any;
 use std::sync::Arc;
@@ -68,6 +68,41 @@ pub fn restrict_plan_to_partitions(
     partitions: &[usize],
 ) -> Result<Arc<dyn ExecutionPlan>> {
     restrict(plan, partitions, /* under_collect */ false)
+}
+
+/// Merge a task's sorted partitions into one before its writer.
+///
+/// A sorted passthrough stage is read back by an ordering-preserving reader
+/// that merges on the same key, so merging here only moves that work into the
+/// producing task: the task writes one file instead of one per partition, and
+/// the consumer opens one source per task instead of one per partition. Every
+/// task reports output partition 0 — `file_id` already distinguishes producers,
+/// which is how `GlobalPartitionMap::Collapsed` behaves for the
+/// `SortPreservingMergeExec` that the final stage of a top-N query already has.
+///
+/// No `fetch` is set: a limit here would have to come from the consumer's
+/// merge, and a consumer without one wants every row this stage produces.
+pub fn merge_task_partitions_before_write(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let children = plan.children();
+    let [input] = children.as_slice() else {
+        return Ok(plan);
+    };
+    if !plan.is::<ShuffleWriterExec>()
+        || input.output_partitioning().partition_count() < 2
+    {
+        return Ok(plan);
+    }
+    let Some(ordering) = input.output_ordering() else {
+        return Ok(plan);
+    };
+
+    let merge = Arc::new(SortPreservingMergeExec::new(
+        ordering.clone(),
+        Arc::clone(input),
+    ));
+    replace_children_if_necessary(plan, vec![merge])
 }
 
 /// Recursive worker. `under_collect` is the scope inherited from ancestors:
