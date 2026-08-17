@@ -18,6 +18,7 @@
 use crate::client::BallistaClient;
 use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
+use crate::execution_plans::broadcast_cache;
 use crate::execution_plans::sort_shuffle::{
     get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
 };
@@ -361,74 +362,29 @@ impl ExecutionPlan for ShuffleReaderExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
-        debug!("ShuffleReaderExec::execute({task_id})");
-        // Broadcast readers have a single logical output partition; always
-        // serve from partition[0] regardless of which physical partition the
-        // caller asked for.
-        let partition = if self.broadcast { 0 } else { partition };
-
-        let config = context.session_config();
-        let batch_size = config.batch_size();
-
-        if config.ballista_shuffle_reader_force_remote_read() {
-            debug!(
-                "All shuffle partitions will be read as remote partitions! To disable this behavior set: `{}=false`",
-                crate::config::BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
-            );
+        // Every task of the consuming stage reads the whole broadcast side, so
+        // let the tasks on this executor share one read of it.
+        if self.broadcast
+            && let Some(slot) = self.broadcast_cache_slot(&context)
+        {
+            let reader = self.clone();
+            let cached = async move {
+                let batches = slot
+                    .get_or_try_init(|| async {
+                        let stream = reader.fetch_partitions(0, context)?;
+                        stream.try_collect::<Vec<_>>().await.map(Arc::new)
+                    })
+                    .await?;
+                Ok::<_, DataFusionError>(futures::stream::iter(
+                    batches.as_ref().clone().into_iter().map(Ok),
+                ))
+            };
+            return Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema.clone(),
+                futures::stream::once(cached).try_flatten(),
+            )));
         }
-
-        log::debug!(
-            "ShuffleReaderExec::execute({task_id}) max_request_num: {}, max_message_size: {}",
-            config.ballista_shuffle_reader_maximum_concurrent_requests(),
-            config.ballista_grpc_client_max_message_size()
-        );
-        let mut partition_locations = HashMap::new();
-        for p in &self.partition[partition] {
-            partition_locations
-                .entry(p.executor_meta.id.clone())
-                .or_insert_with(Vec::new)
-                .push(p.clone());
-        }
-        // Sort partitions for evenly send fetching partition requests to avoid hot executors within one task
-        let mut partition_locations: Vec<PartitionLocation> = partition_locations
-            .into_values()
-            .flat_map(|ps| ps.into_iter().enumerate())
-            .sorted_by(|(p1_idx, _), (p2_idx, _)| Ord::cmp(p1_idx, p2_idx))
-            .map(|(_, p)| p)
-            .collect();
-        // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
-        partition_locations.shuffle(&mut rng());
-
-        let work_dir = self
-            .work_dir
-            .as_ref()
-            .ok_or(DataFusionError::Configuration(
-                "ShuffleReader work dir should have been set by executor".to_owned(),
-            ))?;
-
-        let read_metrics = ShuffleReadMetrics::new(partition, &self.metrics);
-
-        let response_receiver = send_fetch_partitions(
-            work_dir,
-            partition_locations,
-            config,
-            self.client_pool.clone(),
-            read_metrics,
-        );
-
-        let input_stream = Box::pin(RecordBatchStreamAdapter::new(
-            self.schema.clone(),
-            response_receiver.try_flatten(),
-        ));
-
-        Ok(Box::pin(CoalescedShuffleReaderStream::new(
-            input_stream,
-            batch_size,
-            None,
-            &self.metrics,
-            partition,
-        )))
+        self.fetch_partitions(partition, context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -1278,6 +1234,113 @@ impl Stream for CoalescedShuffleReaderStream {
 impl RecordBatchStream for CoalescedShuffleReaderStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+/// Reads that are not shared through the broadcast cache.
+impl ShuffleReaderExec {
+    /// The slot every task on this executor shares for this broadcast side, or
+    /// `None` when the read should not be shared: the upstream byte size is
+    /// unknown, or above the budget that made the side broadcastable.
+    fn broadcast_cache_slot(
+        &self,
+        context: &Arc<TaskContext>,
+    ) -> Option<broadcast_cache::Slot> {
+        let max_bytes = context
+            .session_config()
+            .ballista_config()
+            .broadcast_join_threshold_bytes();
+        if max_bytes == 0 {
+            return None;
+        }
+        let locations = self.partition.first()?;
+        let job_id = &locations.first()?.partition_id.job_id;
+        let mut bytes = 0u64;
+        for location in locations {
+            bytes = bytes.checked_add(location.partition_stats.num_bytes?)?;
+        }
+        if bytes > max_bytes as u64 {
+            return None;
+        }
+        Some(broadcast_cache::slot(
+            job_id,
+            self.stage_id,
+            broadcast_cache::fingerprint(locations),
+        ))
+    }
+
+    /// Fetches one output partition's upstream locations. Broadcast readers have
+    /// a single logical output partition and always serve from `partition[0]`.
+    fn fetch_partitions(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
+        debug!("ShuffleReaderExec::execute({task_id})");
+        let partition = if self.broadcast { 0 } else { partition };
+
+        let config = context.session_config();
+        let batch_size = config.batch_size();
+
+        if config.ballista_shuffle_reader_force_remote_read() {
+            debug!(
+                "All shuffle partitions will be read as remote partitions! To disable this behavior set: `{}=false`",
+                crate::config::BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
+            );
+        }
+
+        log::debug!(
+            "ShuffleReaderExec::execute({task_id}) max_request_num: {}, max_message_size: {}",
+            config.ballista_shuffle_reader_maximum_concurrent_requests(),
+            config.ballista_grpc_client_max_message_size()
+        );
+        let mut partition_locations = HashMap::new();
+        for p in &self.partition[partition] {
+            partition_locations
+                .entry(p.executor_meta.id.clone())
+                .or_insert_with(Vec::new)
+                .push(p.clone());
+        }
+        // Sort partitions for evenly send fetching partition requests to avoid hot executors within one task
+        let mut partition_locations: Vec<PartitionLocation> = partition_locations
+            .into_values()
+            .flat_map(|ps| ps.into_iter().enumerate())
+            .sorted_by(|(p1_idx, _), (p2_idx, _)| Ord::cmp(p1_idx, p2_idx))
+            .map(|(_, p)| p)
+            .collect();
+        // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
+        partition_locations.shuffle(&mut rng());
+
+        let work_dir = self
+            .work_dir
+            .as_ref()
+            .ok_or(DataFusionError::Configuration(
+                "ShuffleReader work dir should have been set by executor".to_owned(),
+            ))?;
+
+        let read_metrics = ShuffleReadMetrics::new(partition, &self.metrics);
+
+        let response_receiver = send_fetch_partitions(
+            work_dir,
+            partition_locations,
+            config,
+            self.client_pool.clone(),
+            read_metrics,
+        );
+
+        let input_stream = Box::pin(RecordBatchStreamAdapter::new(
+            self.schema.clone(),
+            response_receiver.try_flatten(),
+        ));
+
+        Ok(Box::pin(CoalescedShuffleReaderStream::new(
+            input_stream,
+            batch_size,
+            None,
+            &self.metrics,
+            partition,
+        )))
     }
 }
 

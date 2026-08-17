@@ -975,6 +975,9 @@ pub(crate) async fn remove_job_data(
     job_id: &JobId,
     remove_stage_ids: &[u32],
 ) -> ballista_core::error::Result<()> {
+    // Cached broadcast reads live as long as the shuffle files they came from.
+    ballista_core::execution_plans::evict_broadcast_cache(job_id, remove_stage_ids);
+
     let work_path = PathBuf::from(&work_dir);
     let job_path = work_path.join(job_id.as_str());
 
