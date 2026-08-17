@@ -796,11 +796,15 @@ fn stats_to_report(
             partition_id: partition_id as u32,
             row_count,
             sketch,
+            key_min: Vec::new(),
+            key_max: Vec::new(),
+            null_count: 0,
         });
     }
     Ok(RuntimeStatsReport {
         order_by,
         partitions,
+        sketch: None,
     })
 }
 
@@ -1685,12 +1689,14 @@ mod merge_tests {
                     partition_id: slot_id as u32,
                     row_count,
                     sketch,
+                    ..Default::default()
                 }
             })
             .collect();
         RuntimeStatsReport {
             order_by,
             partitions,
+            ..Default::default()
         }
     }
 
@@ -1768,13 +1774,16 @@ mod merge_tests {
                     partition_id: 0,
                     row_count: row_counts[0],
                     sketch: None,
+                    ..Default::default()
                 },
                 RuntimeStatsPartitionEntry {
                     partition_id: 1,
                     row_count: row_counts[1],
                     sketch: None,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         };
         let group = only_group(&[make_report([100, 200]), make_report([300, 400])]);
         assert_eq!(group.partition_count, 2);
@@ -1824,7 +1833,9 @@ mod merge_tests {
                 partition_id: 0,
                 row_count: 1,
                 sketch: Some(corrupt_sketch),
+                ..Default::default()
             }],
+            ..Default::default()
         };
         let err = merge_reports(&[report])
             .expect_err("corrupt sketch must surface as an error");
@@ -2027,6 +2038,7 @@ mod overlap_remap_tests {
                     partition_id: sub_part_id as u32,
                     row_count: samples.len() as u64,
                     sketch,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -2035,6 +2047,7 @@ mod overlap_remap_tests {
             report: RuntimeStatsReport {
                 order_by: vec![],
                 partitions,
+                ..Default::default()
             },
         }
     }

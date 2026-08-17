@@ -1753,8 +1753,10 @@ mod tests {
                     partition_id: marker_partition_id,
                     row_count: 0,
                     sketch: None,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         }
     }
 

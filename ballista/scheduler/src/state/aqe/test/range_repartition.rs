@@ -145,7 +145,9 @@ async fn routing_parks_when_range_repartition_is_plan_root()
                     &datafusion_functions_aggregate_common::tdigest::TDigest::new(100)
                         .merge_unsorted_f64(vec![5.0, 15.0, 25.0]),
                 )?),
+                ..Default::default()
             }],
+            ..Default::default()
         },
     }];
     let cuts = vec![15.0];

@@ -122,7 +122,13 @@
 //! order, and variable-width types have no fixed encoding — leaving those
 //! to the arrow-row path.
 
-use datafusion::arrow::array::{Array, ArrowPrimitiveType, AsArray, PrimitiveArray};
+use std::sync::Arc;
+
+use datafusion::arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, ListArray, PrimitiveArray, RecordBatch,
+    StructArray, new_empty_array,
+};
+use datafusion::arrow::buffer::OffsetBuffer;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{
     DataType, Date32Type, Date64Type, DurationMicrosecondType, DurationMillisecondType,
@@ -132,9 +138,25 @@ use datafusion::arrow::datatypes::{
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type,
     UInt16Type, UInt32Type, UInt64Type,
 };
-use datafusion::common::{Result, ScalarValue, internal_datafusion_err};
+use datafusion::arrow::datatypes::{Field, Fields, Schema};
+use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::common::{Result, ScalarValue, internal_datafusion_err, internal_err};
 
 use crate::kll::KllSketch;
+use crate::serde::protobuf::SortKeySketchState;
+
+/// Field name for the one list-of-levels column in a serialized sketch.
+const LEVELS_FIELD_NAME: &str = "levels";
+/// Field name of the single key column inside each item struct.
+///
+/// The item is a struct so a multi-column key is siblings alongside it rather
+/// than a second payload shape. What holds that back is this module's key,
+/// not the format: a [`SortKeyCodec`] encodes one column to one `u64`. Adding
+/// columns means teaching the encode side to emit them *and* relaxing
+/// [`SortKeySketch::try_from_proto`], which refuses anything but one field so
+/// a half-widened producer fails loudly instead of silently dropping a key.
+const KEY_FIELD_NAME: &str = "expr_0";
 
 /// Bijection between a primitive's native value and a `u64` whose ascending
 /// order matches the native ascending order.
@@ -719,6 +741,212 @@ impl SortKeySketch {
                 }
             })
             .collect()
+    }
+
+    /// Serialize to [`SortKeySketchState`]. See that message for the layout
+    /// and for what was priced against it.
+    ///
+    /// The key's direction and NULL placement are deliberately absent: they
+    /// live once per report, in the `order_by` tag every consumer already
+    /// reads to know which expression a sketch describes.
+    pub fn to_proto(&self) -> Result<SortKeySketchState> {
+        let mut offsets: Vec<i32> = Vec::with_capacity(self.sketch.levels().len() + 1);
+        offsets.push(0);
+        let mut keys: Vec<u64> = Vec::new();
+        for level in self.sketch.levels() {
+            let mut ascending = level.clone();
+            ascending.sort_unstable();
+            keys.extend_from_slice(&ascending);
+            offsets.push(i32::try_from(keys.len()).map_err(|_| {
+                internal_datafusion_err!(
+                    "SortKeySketch: {} retained items overflow an arrow list offset",
+                    keys.len()
+                )
+            })?);
+        }
+
+        let item = Arc::new(Field::new(
+            KEY_FIELD_NAME,
+            self.codec.data_type().clone(),
+            false,
+        ));
+        let items = StructArray::try_new(
+            Fields::from(vec![item]),
+            vec![self.decode_all(&keys)?],
+            None,
+        )?;
+        let levels = ListArray::try_new(
+            Arc::new(Field::new("item", items.data_type().clone(), false)),
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(items),
+            None,
+        )?;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            LEVELS_FIELD_NAME,
+            levels.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(levels)])?;
+
+        let mut ipc = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut ipc, &schema)?;
+        writer.write(&batch)?;
+        writer.finish()?;
+        drop(writer);
+
+        Ok(SortKeySketchState {
+            k: u32::try_from(self.sketch.k()).map_err(|_| {
+                internal_datafusion_err!(
+                    "SortKeySketch: k={} exceeds u32",
+                    self.sketch.k()
+                )
+            })?,
+            null_count: self.null_count,
+            key_min: self.extreme_proto(self.sketch.min())?,
+            key_max: self.extreme_proto(self.sketch.max())?,
+            levels: ipc,
+        })
+    }
+
+    /// Rebuild what [`Self::to_proto`] wrote. `options` comes from the
+    /// report's `order_by` tag; the key's type comes from the payload's own
+    /// arrow schema, so the two together reconstruct the codec.
+    ///
+    /// Errors on a payload this sketch could not have produced — a schema
+    /// that isn't one list of structs, or a compactor stack over capacity —
+    /// rather than returning a sketch whose answers would be quietly wrong.
+    pub fn try_from_proto(
+        proto: &SortKeySketchState,
+        options: SortOptions,
+    ) -> Result<Self> {
+        let mut reader =
+            StreamReader::try_new(std::io::Cursor::new(&proto.levels), None)?;
+        let batch = reader.next().transpose()?.ok_or_else(|| {
+            internal_datafusion_err!("SortKeySketchState: levels payload holds no batch")
+        })?;
+        let levels = batch
+            .column_by_name(LEVELS_FIELD_NAME)
+            .and_then(|column| column.as_list_opt::<i32>())
+            .ok_or_else(|| {
+                internal_datafusion_err!(
+                    "SortKeySketchState: expected a `{LEVELS_FIELD_NAME}` list column, got {:?}",
+                    batch.schema()
+                )
+            })?;
+
+        let key_type = match levels.value_type() {
+            DataType::Struct(fields) => match fields.as_ref() {
+                [only] => only.data_type().clone(),
+                other => {
+                    return internal_err!(
+                        "SortKeySketchState: expected one key field per item, got {}",
+                        other.len()
+                    );
+                }
+            },
+            other => {
+                return internal_err!(
+                    "SortKeySketchState: expected items to be structs, got {other:?}"
+                );
+            }
+        };
+        let codec = SortKeyCodec::try_new(&key_type, options).ok_or_else(|| {
+            internal_datafusion_err!(
+                "SortKeySketchState: {key_type:?} is not an encodable key"
+            )
+        })?;
+
+        let mut stack: Vec<Vec<u64>> = Vec::with_capacity(levels.len());
+        for level in 0..levels.len() {
+            let items = levels.value(level);
+            let keys = items
+                .as_struct_opt()
+                .map(|items| codec.encode(items.column(0).as_ref()))
+                .transpose()?
+                .ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "SortKeySketchState: level {level} is not a struct array"
+                    )
+                })?;
+            stack.push(keys);
+        }
+
+        let sketch = KllSketch::from_parts(
+            proto.k as usize,
+            stack,
+            Self::extreme_key(&codec, &proto.key_min)?,
+            Self::extreme_key(&codec, &proto.key_max)?,
+        )
+        .ok_or_else(|| {
+            internal_datafusion_err!(
+                "SortKeySketchState: k={} and the level widths describe a stack KLL \
+                 could not have produced",
+                proto.k
+            )
+        })?;
+        Ok(Self {
+            codec,
+            sketch,
+            null_count: proto.null_count,
+        })
+    }
+
+    /// Every key decoded into one array of the codec's type, in the order
+    /// given. Its own function because `iter_to_array` refuses an empty
+    /// iterator, and a sketch that observed nothing still serializes.
+    fn decode_all(&self, keys: &[u64]) -> Result<ArrayRef> {
+        if keys.is_empty() {
+            return Ok(new_empty_array(self.codec.data_type()));
+        }
+        ScalarValue::iter_to_array(
+            keys.iter()
+                .map(|key| self.codec.decode(*key))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    }
+
+    /// One extreme as the wire's `repeated ScalarValue`: a tuple with one
+    /// element per key column, empty when nothing was observed.
+    fn extreme_proto(
+        &self,
+        key: Option<&u64>,
+    ) -> Result<Vec<datafusion_proto_common::ScalarValue>> {
+        key.map(|key| {
+            let value = self.codec.decode(*key)?;
+            datafusion_proto_common::ScalarValue::try_from(&value).map_err(|e| {
+                internal_datafusion_err!(
+                    "SortKeySketch: failed to encode {value:?}: {e:?}"
+                )
+            })
+        })
+        .transpose()
+        .map(|encoded| encoded.into_iter().collect())
+    }
+
+    /// Reverses [`Self::extreme_proto`].
+    fn extreme_key(
+        codec: &SortKeyCodec,
+        proto: &[datafusion_proto_common::ScalarValue],
+    ) -> Result<Option<u64>> {
+        let [value] = proto else {
+            return match proto {
+                [] => Ok(None),
+                other => internal_err!(
+                    "SortKeySketchState: expected one element per key column in an \
+                     extreme, got {}",
+                    other.len()
+                ),
+            };
+        };
+        let value = ScalarValue::try_from(value).map_err(|e| {
+            internal_datafusion_err!("SortKeySketchState: undecodable extreme: {e:?}")
+        })?;
+        match codec.encode(value.to_array()?.as_ref())?.as_slice() {
+            [key] => Ok(Some(*key)),
+            // A NULL extreme would encode to nothing. The extremes are the
+            // sketch's *value* bounds, so a NULL there is a producer bug.
+            _ => internal_err!("SortKeySketchState: extreme encoded to no key"),
+        }
     }
 }
 
@@ -1602,5 +1830,106 @@ mod tests {
             .encode(array.as_ref())
             .expect_err("type mismatch must not silently reinterpret");
         assert!(err.to_string().contains("built for"), "got: {err}");
+    }
+    /// A round trip has to preserve every answer the sketch gives, not just
+    /// its byte count: the extremes exactly, and every rank the compactor
+    /// stack encodes. Rebuilding the stack wrongly — a dropped level, a
+    /// weight off by a factor of two — leaves `count` intact while moving
+    /// the quantiles, so the quantile sweep is the assertion that matters.
+    #[test]
+    fn wire_round_trip_preserves_every_answer() {
+        let options = SortOptions {
+            descending: false,
+            nulls_first: true,
+        };
+        let codec = SortKeyCodec::try_new(&DataType::Float64, options).unwrap();
+        let mut original = SortKeySketch::new(codec);
+        // Past k so the stack has several levels with real weights, rather
+        // than one level where every item weighs 1 and a broken rebuild
+        // would still answer correctly.
+        let values: Vec<Option<f64>> = (0..5_000)
+            .map(|row| Some(1.0 + row as f64 * 99.0 / 5_000.0))
+            .chain((0..40).map(|_| None))
+            .collect();
+        original.ingest(&Float64Array::from(values)).unwrap();
+
+        let decoded =
+            SortKeySketch::try_from_proto(&original.to_proto().unwrap(), options)
+                .unwrap();
+
+        assert_eq!(decoded.count(), original.count());
+        assert_eq!(decoded.null_count(), original.null_count());
+        assert_eq!(decoded.codec(), original.codec());
+        assert_eq!(decoded.min().unwrap(), original.min().unwrap());
+        assert_eq!(decoded.max().unwrap(), original.max().unwrap());
+        for step in 0..=100 {
+            let q = step as f64 / 100.0;
+            assert_eq!(
+                decoded.quantile(q).unwrap(),
+                original.quantile(q).unwrap(),
+                "quantile({q}) diverged across the wire"
+            );
+        }
+        assert_eq!(decoded.cuts(8).unwrap(), original.cuts(8).unwrap());
+    }
+
+    /// An empty sketch still has to survive the wire: a task may hold a
+    /// partition slot it never executed, and the report emits every slot.
+    #[test]
+    fn wire_round_trip_preserves_empty_sketch() {
+        let options = SortOptions::default();
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let original = SortKeySketch::new(codec);
+
+        let decoded =
+            SortKeySketch::try_from_proto(&original.to_proto().unwrap(), options)
+                .unwrap();
+
+        assert_eq!(decoded.count(), 0);
+        assert_eq!(decoded.null_count(), 0);
+        assert_eq!(decoded.min().unwrap(), None);
+        assert_eq!(decoded.max().unwrap(), None);
+        assert!(decoded.cuts(8).unwrap().is_empty());
+    }
+
+    /// NULLs are counted beside the sketch rather than in it, so they have
+    /// their own way of not surviving serialization.
+    #[test]
+    fn wire_round_trip_preserves_a_nulls_only_sketch() {
+        let options = SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let mut original = SortKeySketch::new(codec);
+        original
+            .ingest(&Int64Array::from(vec![None, None, None]))
+            .unwrap();
+
+        let decoded =
+            SortKeySketch::try_from_proto(&original.to_proto().unwrap(), options)
+                .unwrap();
+
+        assert_eq!(decoded.count(), 3);
+        assert_eq!(decoded.null_count(), 3);
+        // NULLs sort last here, so both extremes are the typed NULL.
+        assert_eq!(decoded.min().unwrap(), original.min().unwrap());
+        assert_eq!(decoded.max().unwrap(), original.max().unwrap());
+    }
+
+    /// A truncated or foreign payload must fail rather than decode into a
+    /// sketch whose answers are quietly wrong.
+    #[test]
+    fn wire_rejects_a_payload_it_did_not_write() {
+        let proto = SortKeySketchState {
+            k: 800,
+            null_count: 0,
+            key_min: vec![],
+            key_max: vec![],
+            levels: b"not an arrow stream".to_vec(),
+        };
+        let err = SortKeySketch::try_from_proto(&proto, SortOptions::default())
+            .expect_err("a non-IPC payload must not decode");
+        assert!(!err.to_string().is_empty());
     }
 }

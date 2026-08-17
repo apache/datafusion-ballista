@@ -115,6 +115,56 @@ pub struct QuantileSketchState {
     #[prost(message, repeated, tag = "1")]
     pub state: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
 }
+/// A `SortKeySketch`: a KLL compactor stack over one ORDER BY key, plus the
+/// NULLs that have no position among its values.
+///
+/// `levels` is an Arrow IPC stream rather than a packed blob so the arrow
+/// schema states what a key is. That is what carries a multi-column key
+/// without a discriminant field, and it keeps the key's in-memory
+/// representation out of the wire format.
+///
+/// Alternatives priced and discarded: a packed blob tagged with a key-family
+/// discriminant, which needs a hand-written codec per family to say what the
+/// schema already says; and delta + varint over the sorted levels, which lands
+/// within 10% of the information-theoretic floor for a sorted sample and is
+/// therefore worth only ~24% on `Float64` keys, whose mantissas are genuinely
+/// random. Byte-plane splitting measured no better than delta. Dense `Int64`
+/// keys measured ~4x, which is the case worth revisiting for; adopting it
+/// bumps `BALLISTA_PROTOCOL_VERSION` rather than needing a field here.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SortKeySketchState {
+    /// KLL's nominal top-level compactor capacity. Lower levels shrink
+    /// geometrically from it, so this reconstructs every level's capacity.
+    #[prost(uint32, tag = "1")]
+    pub k: u32,
+    /// Rows whose key was NULL. Not in `levels`, and not recoverable from it.
+    #[prost(uint64, tag = "2")]
+    pub null_count: u64,
+    /// The exact minimum and maximum over every value observed, one element per
+    /// ORDER BY expression. Tracked outside the compactor stack so no coin flip
+    /// can move them, which is what keeps `quantile(0.0)` and `quantile(1.0)`
+    /// exact. Empty when no value was observed.
+    ///
+    /// These equal the fold of the surrounding report's per-partition
+    /// `key_min` / `key_max`, and are carried anyway so this message decodes to
+    /// a usable sketch on its own. The two are authoritative for different
+    /// questions — these for what the sketch answers, the per-partition pair
+    /// for which file overlaps a range — and a disagreement is a producer bug.
+    #[prost(message, repeated, tag = "3")]
+    pub key_min: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, repeated, tag = "4")]
+    pub key_max: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    /// The compactor stack: one row per level in level order, single column
+    /// `items: List<Struct<...>>` holding that level's retained keys ascending,
+    /// one struct field per ORDER BY expression. An item's weight is
+    /// `2^level`, so the row index carries the weight and the total count is
+    /// the weighted sum — neither ships.
+    ///
+    /// Levels are sorted before serialization, so a decoder takes ascending
+    /// order as given rather than being told per level.
+    #[prost(bytes = "vec", tag = "5")]
+    pub levels: ::prost::alloc::vec::Vec<u8>,
+}
 /// Flow-control operator with an operator-mode enum. The child plan is
 /// plumbed by the framework as `inputs\[0\]` during decode.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -981,6 +1031,21 @@ pub struct RuntimeStatsReport {
     /// scheduler groups by `order_by` tag and aggregates.
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<RuntimeStatsPartitionEntry>,
+    /// Every partition's observations folded into one sketch, merged on the
+    /// executor before the report is sent.
+    ///
+    /// Merged here because no consumer reads a per-partition *distribution*:
+    /// `merge_reports` folds them all together for global cuts anyway, and
+    /// `cut_partitions` needs only each partition's extremes and count to route
+    /// files. One sketch per report is therefore lossless for every consumer
+    /// that exists, and it is what keeps a report's size independent of the
+    /// operator's partition count. The executor is also where the merge is
+    /// cheapest, since the task already holds every partition's sketch when it
+    /// builds this message.
+    ///
+    /// Absent in row-count-only mode, and when no partition observed a value.
+    #[prost(message, optional, tag = "3")]
+    pub sketch: ::core::option::Option<SortKeySketchState>,
 }
 /// One partition's observations from a `RuntimeStatsExec`.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -991,12 +1056,25 @@ pub struct RuntimeStatsPartitionEntry {
     pub row_count: u64,
     /// Present when the `RuntimeStatsExec` was in sketch mode AND this
     /// partition observed at least one non-null routing value.
-    ///
-    /// TODO: `optional MinMaxState min_max` — for a lighter post-repartition
-    /// mode where the bin-packer just needs (min, max, count) per
-    /// sub-partition and a full T-Digest is overkill.
     #[prost(message, optional, tag = "3")]
     pub sketch: ::core::option::Option<QuantileSketchState>,
+    /// This partition's exact key range, one element per ORDER BY expression.
+    /// `cut_partitions` routes a whole shuffle file into every downstream
+    /// partition whose range overlaps `\[key_min, key_max\]`, so these are the
+    /// only per-partition facts a router needs — never the distribution, which
+    /// is why the sketch beside them is merged rather than repeated here.
+    ///
+    /// Both empty when this partition observed no value, which `null_count`
+    /// then distinguishes: some NULLs means a file of NULLs with no value range
+    /// to overlap, none means the partition saw nothing at all.
+    #[prost(message, repeated, tag = "4")]
+    pub key_min: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, repeated, tag = "5")]
+    pub key_max: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    /// Rows in this partition whose key was NULL. Folds to the report-level
+    /// `SortKeySketchState.null_count`.
+    #[prost(uint64, tag = "6")]
+    pub null_count: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}
