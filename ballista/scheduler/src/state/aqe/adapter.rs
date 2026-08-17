@@ -40,13 +40,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Mark the stage's writer when its output will be read back by an
-/// ordering-preserving reader, so the per-task plan can merge the task's
-/// partitions before writing and leave the consumer one source per task.
+/// ordering-preserving reader, so each task can merge its partitions before
+/// writing and leave the consumer one source per task.
 ///
-/// This is the only place that knows both sides of the boundary: `build_reader`
-/// plants `RangeShuffleReaderExec` for this same exchange under exactly the
-/// conditions checked here. The static planner never calls it, so a statically
-/// planned job — which always gets the arrival-order reader — is never marked.
+/// Only place that knows both sides: `build_reader` plants
+/// `RangeShuffleReaderExec` for this same exchange under the conditions checked
+/// here. The static planner never calls it, so it is never marked.
 fn mark_merge_per_task(
     writer: Arc<dyn ShuffleWriter>,
     exchange: &ExchangeExec,

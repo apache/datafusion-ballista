@@ -51,6 +51,7 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
 use datafusion::physical_plan::replace_children_if_necessary;
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
@@ -70,27 +71,17 @@ pub fn restrict_plan_to_partitions(
     restrict(plan, partitions, /* under_collect */ false)
 }
 
-/// Merge a task's sorted partitions into one before its writer, when the
-/// writer is marked for it.
+/// Merge a marked writer's sorted partitions into one before the write.
 ///
-/// The task then writes one file instead of one per partition, and the consumer
-/// opens one source per task instead of one per partition. Every task reports
-/// output partition 0 — `file_id` already distinguishes producers, which is how
-/// `GlobalPartitionMap::Collapsed` behaves for the `SortPreservingMergeExec`
-/// that the final stage of a top-N query already has.
-///
-/// The mark comes from the AQE adapter, the only place that knows the consumer
-/// will read this output with an ordering-preserving reader. Deciding here would
-/// mean guessing: a statically planned job gets the arrival-order reader, and
-/// concatenating separately sorted files is not sorted.
+/// The task writes one file instead of one per partition, and reports it as
+/// output partition 0 — `file_id` already distinguishes producers, which is what
+/// `GlobalPartitionMap::Collapsed` handles. The mark comes from the AQE adapter,
+/// the only place that knows the consumer reads this back with an
+/// ordering-preserving merge.
 ///
 /// Must run after [`restrict_plan_to_partitions`], which treats a
-/// `SortPreservingMergeExec` as a collapse and gives every leaf below one the
-/// full upstream. Merging first would make each task read the entire stage
-/// input.
-///
-/// No `fetch` is set: a limit here would have to come from the consumer's
-/// merge, and a consumer without one wants every row this stage produces.
+/// `SortPreservingMergeExec` as a collapse and gives leaves below one the full
+/// upstream — merging first would make every task read the whole stage input.
 pub fn merge_task_partitions_before_write(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -100,13 +91,34 @@ pub fn merge_task_partitions_before_write(
         && input.output_partitioning().partition_count() > 1
         && let Some(ordering) = input.output_ordering()
     {
-        let merge = Arc::new(SortPreservingMergeExec::new(
-            ordering.clone(),
-            Arc::clone(input),
-        ));
+        let merge = Arc::new(
+            SortPreservingMergeExec::new(ordering.clone(), Arc::clone(input))
+                .with_fetch(top_k_fetch(input)),
+        );
         return replace_children_if_necessary(plan, vec![merge]);
     }
     Ok(plan)
+}
+
+/// The row limit of the `SortExec` that established this ordering.
+///
+/// A per-partition `TopK(n)` only exists because a global limit of `n` sits
+/// above the merge that consumes this stage, so the task's merge can stop at `n`
+/// too: any row in the global top `n` that this task holds is in the task's own
+/// top `n`. Stops at the sort — a limit further down belongs to a different
+/// ordering.
+fn top_k_fetch(input: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    let mut node = Arc::clone(input);
+    loop {
+        if node.is::<SortExec>() {
+            return node.fetch();
+        }
+        let children = node.children();
+        let [child] = children.as_slice() else {
+            return None;
+        };
+        node = Arc::clone(child);
+    }
 }
 
 /// Recursive worker. `under_collect` is the scope inherited from ancestors:
@@ -807,11 +819,17 @@ mod tests {
 
     // --- task-local ordered merge ---
 
-    /// A passthrough writer over a 3-partition input, sorted or not — the shape
-    /// a top-N query's aggregate stage has. `marked` is what the AQE adapter
-    /// stamps when the consumer will read this output with an
-    /// ordering-preserving reader.
+    /// A passthrough writer over a 3-partition input — the shape a top-N
+    /// query's aggregate stage has. `marked` is what the AQE adapter stamps.
     fn passthrough_writer(sorted: bool, marked: bool) -> Arc<dyn ExecutionPlan> {
+        passthrough_writer_with_fetch(sorted, marked, None)
+    }
+
+    fn passthrough_writer_with_fetch(
+        sorted: bool,
+        marked: bool,
+        fetch: Option<usize>,
+    ) -> Arc<dyn ExecutionPlan> {
         use datafusion::physical_expr::expressions::Column;
         use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
         use datafusion::physical_plan::sorts::sort::SortExec;
@@ -822,7 +840,11 @@ mod tests {
                 Arc::new(Column::new("a", 0)),
             )])
             .unwrap();
-            Arc::new(SortExec::new(ordering, source).with_preserve_partitioning(true))
+            Arc::new(
+                SortExec::new(ordering, source)
+                    .with_preserve_partitioning(true)
+                    .with_fetch(fetch),
+            )
         } else {
             source
         };
@@ -863,12 +885,25 @@ mod tests {
         assert_eq!(out.output_partitioning().partition_count(), 3);
     }
 
-    /// Unmarked is the statically planned case: that consumer concatenates the
-    /// locations of a partition, so collapsing them would lose the ordering.
+    /// Unmarked is the statically planned case: that consumer concatenates a
+    /// partition's locations, so collapsing them would lose the ordering.
     #[test]
     fn task_local_merge_skips_an_unmarked_writer() {
         let out =
             merge_task_partitions_before_write(passthrough_writer(true, false)).unwrap();
         assert_eq!(out.output_partitioning().partition_count(), 3);
+    }
+
+    /// The merge must inherit the per-partition `TopK`'s limit — without it the
+    /// task emits `partitions x fetch` rows for the consumer to re-merge.
+    #[test]
+    fn task_local_merge_takes_the_top_k_fetch() {
+        let plan = passthrough_writer_with_fetch(true, true, Some(20));
+        let out = merge_task_partitions_before_write(plan).unwrap();
+        let children = out.children();
+        let merge = children[0]
+            .downcast_ref::<SortPreservingMergeExec>()
+            .expect("expected the merge under the writer");
+        assert_eq!(merge.fetch(), Some(20));
     }
 }

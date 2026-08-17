@@ -356,12 +356,10 @@ pub struct ShuffleWriterExec {
     /// → 0..K) the writer detects that at path-build time and uses `local`
     /// directly instead of `global_output_partition_ids[local]`.
     global_output_partition_ids: Vec<usize>,
-    /// Whether the scheduler should merge this task's sorted partitions into
-    /// one before the write. Scheduler-side planning metadata: it is set only
-    /// where both sides of the shuffle boundary are known, consumed by
-    /// `task_builder` to rewrite the per-task plan, and then irrelevant — the
-    /// executor runs whatever plan it is handed, so it is deliberately not
-    /// carried over the wire.
+    /// Whether the scheduler should merge this task's sorted partitions into one
+    /// before the write. Scheduler-side only: `task_builder` consumes it to
+    /// rewrite the per-task plan, after which the executor just runs the plan it
+    /// is handed, so it is deliberately not carried over the wire.
     merge_per_task: bool,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
@@ -487,10 +485,8 @@ impl ShuffleWriterExec {
         self
     }
 
-    /// Mark that each task should merge its sorted partitions into one before
-    /// writing. Only sound when the consumer merges a partition's locations on
-    /// the same key, so only the caller that plants the consumer's reader may
-    /// set this.
+    /// Only sound when the consumer merges a partition's locations on the same
+    /// key, so only the caller that plants the consumer's reader may set this.
     pub fn with_merge_per_task(mut self, merge_per_task: bool) -> Self {
         self.merge_per_task = merge_per_task;
         self
