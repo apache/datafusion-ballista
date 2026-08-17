@@ -93,6 +93,8 @@ pub struct RangeShuffleReaderExec {
     /// Sort key the merge preserves. Advertised in `PlanProperties.eq_properties`
     /// so downstream operators (BWAG, SMJ build side) see the output ordering.
     merge_ordering: LexOrdering,
+    /// Row limit pushed down by a consumer. `None` means read everything.
+    fetch: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
@@ -126,6 +128,7 @@ impl RangeShuffleReaderExec {
             schema,
             partition,
             merge_ordering,
+            fetch: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,
@@ -140,6 +143,7 @@ impl RangeShuffleReaderExec {
             schema: self.schema.clone(),
             partition: self.partition.clone(),
             merge_ordering: self.merge_ordering.clone(),
+            fetch: self.fetch,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -154,6 +158,7 @@ impl RangeShuffleReaderExec {
             schema: self.schema.clone(),
             partition: self.partition.clone(),
             merge_ordering: self.merge_ordering.clone(),
+            fetch: self.fetch,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
@@ -235,6 +240,7 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             schema: self.schema.clone(),
             partition: self.partition.clone(),
             merge_ordering: self.merge_ordering.clone(),
+            fetch: self.fetch,
             metrics: ExecutionPlanMetricsSet::new(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
@@ -330,11 +336,32 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             .with_schema(self.schema.clone())
             .with_expressions(&self.merge_ordering)
             .with_batch_size(config.batch_size())
+            .with_fetch(self.fetch)
             .with_metrics(baseline)
             .with_reservation(reservation)
             .build()?;
 
         Ok(merged)
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    /// The output is sorted on `merge_ordering`, so the first `n` rows of the
+    /// merge can only come from the first `n` rows of each input.
+    fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        Some(Arc::new(Self {
+            stage_id: self.stage_id,
+            schema: self.schema.clone(),
+            partition: self.partition.clone(),
+            merge_ordering: self.merge_ordering.clone(),
+            fetch: limit,
+            metrics: self.metrics.clone(),
+            properties: self.properties.clone(),
+            work_dir: self.work_dir.clone(),
+            client_pool: self.client_pool.clone(),
+        }))
     }
 
     fn metrics(&self) -> Option<datafusion::physical_plan::metrics::MetricsSet> {
@@ -552,6 +579,36 @@ mod tests {
 
     /// The reader must advertise its merge ordering so downstream operators
     /// see the sortedness invariant (BWAG's RANGE-frame cursor, SMJ build side).
+    /// A pushed-down limit must survive `with_new_children`, or the merge
+    /// quietly reverts to reading everything.
+    #[test]
+    fn fetch_roundtrips_through_with_fetch() {
+        use datafusion::physical_plan::ExecutionPlan;
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let merge_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            Arc::new(Column::new("v", 0)),
+        )])
+        .unwrap();
+        let reader =
+            RangeShuffleReaderExec::try_new(3, vec![vec![]; 4], schema, merge_ordering)
+                .unwrap();
+        assert_eq!(reader.fetch(), None, "reader starts unlimited");
+
+        let limited = ExecutionPlan::with_fetch(&reader, Some(20))
+            .expect("RangeShuffleReaderExec must accept a pushed-down limit");
+        assert_eq!(limited.fetch(), Some(20));
+
+        let rebuilt = Arc::clone(&limited)
+            .with_new_children(limited.children().into_iter().cloned().collect())
+            .expect("rebuild");
+        assert_eq!(
+            rebuilt.fetch(),
+            Some(20),
+            "fetch must survive with_new_children"
+        );
+    }
+
     #[test]
     fn advertises_merge_ordering() {
         let schema =
