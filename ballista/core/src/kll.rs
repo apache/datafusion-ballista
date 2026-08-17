@@ -202,6 +202,39 @@ fn level_capacity(k: usize, num_levels: usize, height: usize) -> usize {
     raw.max(MIN_LEVEL_WIDTH)
 }
 
+/// Summarizes rather than dumping the compactor stack, which holds on the
+/// order of `3k` items and would bury whatever else a caller was printing.
+impl<T: Ord + Clone> std::fmt::Debug for KllSketch<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KllSketch")
+            .field("k", &self.k)
+            .field("count", &self.count())
+            .field("levels", &self.levels.len())
+            .field("retained", &self.levels.iter().map(Vec::len).sum::<usize>())
+            .finish()
+    }
+}
+
+/// Clone copies the compactor stack and the tracked extremes, and gives
+/// the copy a fresh PRNG rather than duplicating the original's position.
+///
+/// Written by hand because `StdRng` is not `Clone`. Reseeding is the
+/// correct behaviour anyway: two sketches sharing a coin-flip sequence
+/// would correlate their compaction decisions, and every quantile the
+/// clone can answer is already determined by the state that was copied.
+impl<T: Ord + Clone> Clone for KllSketch<T> {
+    fn clone(&self) -> Self {
+        Self {
+            levels: self.levels.clone(),
+            sorted: self.sorted.clone(),
+            k: self.k,
+            rng: StdRng::seed_from_u64(rand::random::<u64>()),
+            min: self.min.clone(),
+            max: self.max.clone(),
+        }
+    }
+}
+
 impl<T: Ord + Clone> KllSketch<T> {
     /// Construct an empty sketch with top-level compactor capacity `k`,
     /// seeded from OS entropy.
@@ -211,6 +244,11 @@ impl<T: Ord + Clone> KllSketch<T> {
 
     /// Construct an empty sketch with top-level compactor capacity `k`
     /// and a fixed PRNG seed. Intended for deterministic tests.
+    ///
+    /// The seed does not survive [`Clone`], which reseeds from OS entropy
+    /// to keep two sketches from correlating their compaction decisions. A
+    /// test that needs two reproducible sketches builds both with
+    /// `with_seed` rather than cloning one.
     pub fn with_seed(k: usize, seed: u64) -> Self {
         Self {
             levels: vec![Vec::new()],
@@ -443,6 +481,35 @@ impl<T: Ord + Clone> KllSketch<T> {
         }
     }
 
+    /// The stream's true minimum, or `None` if nothing has been ingested.
+    ///
+    /// Tracked outside the compactor stack, so this is exact rather than
+    /// estimated — a coin flip can evict the smallest retained item but
+    /// cannot move this.
+    pub fn min(&self) -> Option<&T> {
+        self.min.as_ref()
+    }
+
+    /// The stream's true maximum, or `None` if nothing has been ingested.
+    /// Exact for the same reason as [`Self::min`].
+    pub fn max(&self) -> Option<&T> {
+        self.max.as_ref()
+    }
+
+    /// Number of items ingested so far.
+    ///
+    /// Exact, not estimated. Compaction halves an even buffer while
+    /// doubling the survivors' weight, and leaves the odd item behind at
+    /// its original weight, so the weighted sum over levels is invariant
+    /// under compaction and equals the ingested count.
+    pub fn count(&self) -> u64 {
+        self.levels
+            .iter()
+            .enumerate()
+            .map(|(h, level)| (1u64 << h) * level.len() as u64)
+            .sum()
+    }
+
     /// Return the estimated number of items strictly less than `x`.
     ///
     /// Sum over levels `h` of `2^h · | { y ∈ levels[h] : y < x } |`.
@@ -477,15 +544,50 @@ impl<T: Ord + Clone> KllSketch<T> {
         if q == 1.0 {
             return self.max.as_ref();
         }
-        let total_weight: u64 = self
-            .levels
-            .iter()
-            .enumerate()
-            .map(|(h, level)| (1u64 << h) * level.len() as u64)
-            .sum();
+        let total_weight = self.count();
         if total_weight == 0 {
             return None;
         }
+        self.at_rank((q * total_weight as f64) as u64)
+    }
+
+    /// Return the item at `rank`, counting cumulative weight from the
+    /// smallest item up. `None` if the sketch is empty.
+    ///
+    /// Semantics: the smallest retained item whose cumulative weight is at
+    /// least `rank`. Ranks at or beyond the ends give the tracked extremes,
+    /// which bypass the compactor so coin-flip history can't move them.
+    ///
+    /// This is the primitive [`Self::quantile`] is expressed in, and the
+    /// one to prefer whenever the caller already knows the rank it wants.
+    /// Converting a known rank into a fraction and back loses it: for 99
+    /// items, rank 59 becomes `59/99`, and multiplying that back by 99
+    /// yields `58.999…`, which truncates to 58. Callers that adjust a rank
+    /// — stepping over a run of NULLs, say — must stay in integers.
+    pub fn at_rank(&self, rank: u64) -> Option<&T> {
+        self.at_ranks(&[rank]).into_iter().next().flatten()
+    }
+
+    /// Answer several ranks against one pass over the retained items,
+    /// returning one answer per entry of `ranks`, positionally.
+    ///
+    /// Semantics per rank are [`Self::at_rank`]'s exactly. The difference is
+    /// cost: resolving a rank means materializing every retained item with
+    /// its level weight and sorting them, and that work does not depend on
+    /// the rank. Asking one at a time repeats it per rank, which makes
+    /// `cuts` over P partitions P-1 sorts of the whole retained set. Here it
+    /// happens once.
+    ///
+    /// `ranks` may be in any order; the answers come back in the order
+    /// asked. Internally they are walked smallest-first so a single
+    /// cumulative sweep serves all of them.
+    pub fn at_ranks(&self, ranks: &[u64]) -> Vec<Option<&T>> {
+        let mut answers: Vec<Option<&T>> = vec![None; ranks.len()];
+        let total_weight = self.count();
+        if total_weight == 0 {
+            return answers;
+        }
+
         let mut pairs: Vec<(&T, u64)> = self
             .levels
             .iter()
@@ -497,17 +599,38 @@ impl<T: Ord + Clone> KllSketch<T> {
             .collect();
         pairs.sort_by_key(|(item, _)| *item);
 
-        let target = (q * total_weight as f64) as u64;
+        let mut slots: Vec<usize> = (0..ranks.len()).collect();
+        slots.sort_by_key(|&slot| ranks[slot]);
+
+        // Resumed across ranks rather than restarted: `cumulative` is
+        // monotone and so are the ranks in `slots` order, so a rank already
+        // covered by the current item answers with that same item.
+        let mut consumed = 0usize;
         let mut cumulative = 0u64;
-        for (item, weight) in &pairs {
-            cumulative += weight;
-            if cumulative >= target {
-                return Some(*item);
+        let mut current: Option<&T> = None;
+        for slot in slots {
+            let rank = ranks[slot];
+            // The extremes are tracked outside the compactor, so no
+            // coin-flip history can move them.
+            if rank == 0 {
+                answers[slot] = self.min.as_ref();
+                continue;
             }
+            if rank >= total_weight {
+                answers[slot] = self.max.as_ref();
+                continue;
+            }
+            while cumulative < rank {
+                let (item, weight) = pairs[consumed];
+                cumulative += weight;
+                current = Some(item);
+                consumed += 1;
+            }
+            // `rank < total_weight`, which is the sum of every pair's
+            // weight, so the sweep above always consumed at least one item.
+            answers[slot] = current;
         }
-        // total_weight > 0 and q ≤ 1 ⇒ cumulative reaches total_weight ≥ target
-        // on the final iteration, so the loop always returns.
-        unreachable!("quantile: threshold not reached despite non-empty sketch")
+        answers
     }
 
     /// Compact until every level fits within its (dynamically shrinking)
@@ -896,6 +1019,128 @@ mod tests {
                 "quantile({q}) = {item} → rank = {observed}, expected ~{expected} ±{slack}"
             );
         }
+    }
+
+    /// `n < k` leaves every item at level 0 with weight 1, so rank `r`
+    /// names the `r`-th smallest exactly and the expected answers can be
+    /// written down rather than derived.
+    fn exact_sketch_of_1_to_10() -> KllSketch<u32> {
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        for x in 1u32..=10 {
+            sketch.insert(x);
+        }
+        sketch
+    }
+
+    /// Nothing observed is distinct from a rank that finds nothing: the
+    /// caller still gets one answer per rank it asked for, so it can zip
+    /// the answers back against its own inputs.
+    #[test]
+    fn at_ranks_on_an_empty_sketch_answers_none_for_every_rank() {
+        let sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        assert_eq!(sketch.at_ranks(&[0, 1, 99]), vec![None, None, None]);
+        assert!(sketch.at_ranks(&[]).is_empty(), "no ranks, no answers");
+    }
+
+    /// Answers are positional. The sweep visits ranks smallest-first for
+    /// its own benefit, and that reordering must not reach the caller.
+    #[test]
+    fn at_ranks_answers_in_the_order_asked_not_in_rank_order() {
+        let sketch = exact_sketch_of_1_to_10();
+        assert_eq!(
+            sketch.at_ranks(&[7, 2, 5]),
+            vec![Some(&7), Some(&2), Some(&5)]
+        );
+    }
+
+    /// A repeated rank is answered afresh each time it appears.
+    ///
+    /// This is the case the cumulative sweep can get wrong. It advances
+    /// only while `cumulative < rank`, so a rank already covered by the
+    /// current item has to consume nothing and reuse it. Advancing
+    /// unconditionally would hand the second `5` the item after the first.
+    #[test]
+    fn at_ranks_repeats_the_answer_for_a_repeated_rank() {
+        let sketch = exact_sketch_of_1_to_10();
+        assert_eq!(
+            sketch.at_ranks(&[5, 5, 5]),
+            vec![Some(&5), Some(&5), Some(&5)]
+        );
+        assert_eq!(
+            sketch.at_ranks(&[5, 3, 5]),
+            vec![Some(&5), Some(&3), Some(&5)],
+            "a lower rank between two copies must not disturb either"
+        );
+    }
+
+    /// Rank 0 and ranks at or past the total skip the sweep entirely.
+    /// Mixed into a batch with interior ranks so that skipping cannot
+    /// desynchronize the sweep's position from the answers it still owes.
+    #[test]
+    fn at_ranks_mixes_extreme_ranks_with_interior_ones() {
+        let sketch = exact_sketch_of_1_to_10();
+        let total = sketch.count();
+        assert_eq!(total, 10, "no compaction below capacity");
+        assert_eq!(
+            sketch.at_ranks(&[0, 5, total, total + 5, 3]),
+            vec![Some(&1), Some(&5), Some(&10), Some(&10), Some(&3)]
+        );
+    }
+
+    /// The extremes come from the tracked pair rather than from the sweep.
+    ///
+    /// Below capacity the two agree, so nothing there can tell them apart:
+    /// the largest retained item *is* the stream max. `k = 8` over 10K
+    /// items with this seed flips both extremes out of the levels, leaving
+    /// 1187..=9999 retained, so the sweep on its own cannot reach either
+    /// end and the assertions below discriminate.
+    #[test]
+    fn at_ranks_reads_extremes_the_compactor_no_longer_holds() {
+        let n = 10_000u32;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(8, 2);
+        for x in 1..=n {
+            sketch.insert(x);
+        }
+        let total = sketch.count();
+        let answers = sketch.at_ranks(&[0, 1, total - 1, total, total + 5]);
+
+        assert_eq!(answers[0], Some(&1), "rank 0 is the stream min");
+        assert_eq!(answers[3], Some(&n), "rank == total is the stream max");
+        assert_eq!(answers[4], Some(&n), "past the total is still the max");
+        assert!(
+            answers[1] > Some(&1),
+            "premise: compaction dropped the min, so the sweep cannot reach it"
+        );
+        assert!(
+            answers[2] < Some(&n),
+            "premise: compaction dropped the max, so the sweep cannot reach it"
+        );
+    }
+
+    /// Past capacity, items carry their level weight and one retained item
+    /// answers a whole run of ranks. Ranks ascend, so answers must too, and
+    /// some adjacent pair must repeat — with every weight 1 each rank would
+    /// name a distinct item, so a repeat is what shows the weights are
+    /// actually being accumulated.
+    #[test]
+    fn at_ranks_accumulates_level_weights_after_compaction() {
+        let n = 10_000u32;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(64, 42);
+        for x in 1..=n {
+            sketch.insert(x);
+        }
+        let total = sketch.count();
+        let ranks: Vec<u64> = (1..total).collect();
+        let answers = sketch.at_ranks(&ranks);
+
+        assert!(
+            answers.windows(2).all(|pair| pair[0] <= pair[1]),
+            "ascending ranks must give non-decreasing items"
+        );
+        assert!(
+            answers.windows(2).any(|pair| pair[0] == pair[1]),
+            "a retained item weighing more than 1 must answer several ranks"
+        );
     }
 
     #[test]
