@@ -76,7 +76,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
@@ -106,6 +106,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::execution_plans::range_repartition_common::{
     discover_cuts, guarded_scatter, split_batch_by_range,
 };
+use crate::sort_key::SortKeyCodec;
 
 /// Per-output-partition channel capacity, per input source. Matches the
 /// unordered variant's default; see the discussion there. Total buffered
@@ -116,8 +117,8 @@ const CHANNEL_CAPACITY: usize = 2;
 /// module-level docs.
 pub struct OrderedRangeRepartitionExec {
     input: Arc<dyn ExecutionPlan>,
-    /// Lexicographic ORDER BY. `try_new` guarantees the first entry evaluates
-    /// to `Float64` and matches the input's declared output ordering.
+    /// Lexicographic ORDER BY. `try_new` guarantees the first entry is
+    /// encodable and matches the input's declared output ordering.
     order_by: Vec<PhysicalSortExpr>,
     /// K — number of output partitions.
     output_partitions: usize,
@@ -150,7 +151,8 @@ struct DispatchState {
 
 impl OrderedRangeRepartitionExec {
     /// Wrap `input`. `order_by` must be non-empty, the first entry must
-    /// evaluate to `Float64`, and `input.output_ordering()` must lead with
+    /// evaluate to a type the sort-key codec encodes, and
+    /// `input.output_ordering()` must lead with
     /// the same expression (otherwise the merger produces garbled output).
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
@@ -165,22 +167,14 @@ impl OrderedRangeRepartitionExec {
         };
         let schema = input.schema();
         let routing_type = routing.expr.data_type(&schema)?;
-        if !matches!(routing_type, DataType::Float64) {
-            // TODO: support all continuous primitives
+        // What the sketch can encode is the only restriction. A nullable key
+        // is fine: the run is counted beside the values, sized into the cuts,
+        // scattered to the end `nulls_first` names, and read back from there.
+        if SortKeyCodec::try_new(&routing_type, routing.options).is_none() {
             return internal_err!(
-                "OrderedRangeRepartitionExec routing expression `{}` must be Float64, got {:?}",
+                "OrderedRangeRepartitionExec routing expression `{}` has no sort-key encoding for {:?}",
                 routing.expr,
                 routing_type
-            );
-        }
-        // The scatter places a NULL run by `nulls_first` already; what this
-        // gate waits on is the cut discovery, which reads a T-Digest that has
-        // no NULL slot and so would size the partitions from a population
-        // missing them.
-        if routing.expr.nullable(&schema)? {
-            return internal_err!(
-                "OrderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
-                routing.expr
             );
         }
         // Input MUST claim to be sorted on our routing expression — otherwise
@@ -641,6 +635,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
     use datafusion::arrow::array::{Float64Array, Int64Array};
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::execution::SessionStateBuilder;
@@ -791,22 +786,23 @@ mod tests {
         );
     }
 
+    /// A nullable routing key is routable now: the run is counted beside the
+    /// values, sized into the cuts, and scattered to the end `nulls_first`
+    /// names, which is where the read-side filter looks for it.
     #[test]
-    fn try_new_rejects_nullable_routing_key() {
+    fn try_new_accepts_a_nullable_routing_key() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v2", DataType::Float64, true), // nullable
+            Field::new("v2", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
         ]));
-        let err = OrderedRangeRepartitionExec::try_new(
-            empty_input(&schema),
-            vec![asc(&schema, "v2")],
-            3,
-        )
-        .expect_err("nullable routing key must be rejected");
-        assert!(
-            err.to_string().contains("must be non-nullable"),
-            "error should name the nullability constraint, got: {err}"
-        );
+        let sort = asc(&schema, "v2");
+        let ordering = LexOrdering::new(vec![sort.clone()]).unwrap();
+        let sorted = Arc::new(
+            SortExec::new(ordering, empty_input(&schema))
+                .with_preserve_partitioning(true),
+        ) as Arc<dyn ExecutionPlan>;
+        OrderedRangeRepartitionExec::try_new(sorted, vec![sort], 3)
+            .expect("a nullable key must be routable");
     }
 
     #[test]

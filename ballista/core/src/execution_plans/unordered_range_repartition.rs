@@ -56,10 +56,10 @@
 //!
 //! # Type generality
 //!
-//! The impl hardcodes Float64 downcast internally (that's what DataFusion's
-//! T-Digest speaks). The public API and the sibling [`RuntimeStatsExec`]
-//! stay type-agnostic; widening to other `Ord` `ScalarValue` types replaces
-//! the downcast + boundary computation, no API break.
+//! Any key [`crate::sort_key::SortKeyCodec`] encodes: every fixed-width type,
+//! nullable or not. NULLs are counted beside the values rather than sketched
+//! among them, and the whole run scatters to the partition at the end
+//! `nulls_first` names.
 //!
 //! Sibling `OrderedRangeRepartitionExec` (not yet built) handles the sorted
 //! case (N sorted → M sorted range-disjoint via k-way merge). See
@@ -71,7 +71,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
@@ -97,6 +97,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::execution_plans::range_repartition_common::{
     discover_cuts, guarded_scatter, split_batch_by_range,
 };
+use crate::sort_key::SortKeyCodec;
 
 /// Per-output-partition channel capacity. Small = tight backpressure; the
 /// classic double-buffering shape (one batch in-flight while consumer works
@@ -111,7 +112,7 @@ pub struct UnorderedRangeRepartitionExec {
     input: Arc<dyn ExecutionPlan>,
     /// Lexicographic ORDER BY carried through from the wrapping window
     /// operator. `try_new` guarantees at least one element; the first entry
-    /// (a `Float64` column, until we widen) drives routing.
+    /// drives routing.
     order_by: Vec<PhysicalSortExpr>,
     /// K — number of output partitions. K=1 collapses all P inputs to a
     /// single bucket (the same shape discovery-failure fallback produces);
@@ -142,7 +143,7 @@ struct DispatchState {
 
 impl UnorderedRangeRepartitionExec {
     /// Wrap `input`. `order_by` must be non-empty and its first entry must
-    /// evaluate to `Float64` against `input.schema()`. `output_partitions`
+    /// evaluate to a type the sort-key codec encodes. `output_partitions`
     /// is K; any value works, K=1 gives a coalesce-shaped passthrough.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
@@ -157,22 +158,14 @@ impl UnorderedRangeRepartitionExec {
         };
         let schema = input.schema();
         let routing_type = routing.expr.data_type(&schema)?;
-        if !matches!(routing_type, DataType::Float64) {
-            // TODO: support all continuous primitives
+        // What the sketch can encode is the only restriction. A nullable key
+        // is fine: the run is counted beside the values, sized into the cuts,
+        // scattered to the end `nulls_first` names, and read back from there.
+        if SortKeyCodec::try_new(&routing_type, routing.options).is_none() {
             return internal_err!(
-                "UnorderedRangeRepartitionExec routing expression `{}` must be Float64, got {:?}",
+                "UnorderedRangeRepartitionExec routing expression `{}` has no sort-key encoding for {:?}",
                 routing.expr,
                 routing_type
-            );
-        }
-        // The scatter places a NULL run by `nulls_first` already; what this
-        // gate waits on is the cut discovery, which reads a T-Digest that has
-        // no NULL slot and so would size the partitions from a population
-        // missing them.
-        if routing.expr.nullable(&schema)? {
-            return internal_err!(
-                "UnorderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
-                routing.expr
             );
         }
         let properties = Arc::new(
@@ -460,6 +453,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
     use datafusion::arrow::array::{Float64Array, Int64Array};
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::execution::SessionStateBuilder;
@@ -510,36 +504,35 @@ mod tests {
         );
     }
 
+    /// An `Int64` key and a nullable key are both routable now. The sketch
+    /// encodes any fixed-width type, and a NULL run is counted beside the
+    /// values, sized into the cuts, and scattered to one end.
     #[test]
-    fn try_new_rejects_non_float64_routing_key() {
-        let schema = schema_v2_id();
-        let err = UnorderedRangeRepartitionExec::try_new(
-            empty_input(&schema),
-            vec![asc(&schema, "id")], // Int64
-            3,
-        )
-        .expect_err("Int64 routing key must be rejected");
-        assert!(
-            err.to_string().contains("must be Float64"),
-            "error should name the type mismatch, got: {err}"
-        );
-    }
-
-    #[test]
-    fn try_new_rejects_nullable_routing_key() {
+    fn try_new_accepts_widened_routing_keys() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v2", DataType::Float64, true), // nullable
+            Field::new("v2", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
         ]));
+        for key in ["v2", "id"] {
+            UnorderedRangeRepartitionExec::try_new(
+                empty_input(&schema),
+                vec![asc(&schema, key)],
+                3,
+            )
+            .unwrap_or_else(|e| panic!("{key} must be routable: {e}"));
+        }
+
+        // A variable-width key has no fixed-width encoding, and says so.
         let err = UnorderedRangeRepartitionExec::try_new(
             empty_input(&schema),
-            vec![asc(&schema, "v2")],
+            vec![asc(&schema, "name")],
             3,
         )
-        .expect_err("nullable routing key must be rejected");
+        .expect_err("Utf8 routing key has no sort-key encoding");
         assert!(
-            err.to_string().contains("must be non-nullable"),
-            "error should name the nullability constraint, got: {err}"
+            err.to_string().contains("no sort-key encoding"),
+            "error should name what is missing, got: {err}"
         );
     }
 
