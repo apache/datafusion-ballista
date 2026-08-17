@@ -725,34 +725,30 @@ impl SortKeySketch {
 
     /// The `partitions - 1` boundaries splitting everything observed into
     /// `partitions` runs of equal size, in sort order. Never NULL: ranks are
-    /// taken among the values, so no rank a NULL could answer exists.
+    /// taken among the values, so no rank a NULL could answer exists. A NULL
+    /// boundary drops its partition in silence — three-valued logic in the
+    /// consumers' predicates, `NULL + halo` in `cut_partitions`.
+    ///
+    /// The run is indivisible, so it takes the partition at its end whole and
+    /// only the values beside it balance.
     ///
     /// ```text
-    ///                          rank 0        n                        N
-    /// n <= N/K, no repair:  ┌──────┬──────────────────────────────────┐
-    ///                       │NULLs │ values                           │
-    ///                       └──────┴──────────────────────────────────┘
-    ///                          cut[c] at population rank, minus n
+    /// nulls_first                        nulls_last
+    /// ┌──────┬─────────────────┐         ┌─────────────────┬──────┐
+    /// │NULLs │ values          │         │ values          │NULLs │
+    /// └──────┴─────────────────┘         └─────────────────┴──────┘
+    /// 0      n                 N         0                 v      N
     ///
-    /// n >  N/K, repaired:   ┌────────────────────────┬────────────────┐
-    ///                       │ NULLs                  │ values         │
-    ///                       └────────────────────────┴────────────────┘
-    ///                        all in partition 0        split evenly
+    /// rank = max(pop − n, ...)           rank = min(pop, ...)
+    /// pulls UP from min                  pulls DOWN from max
     /// ```
     ///
-    /// | NULLs | values | K | cuts          | partition sizes   |
-    /// |------:|-------:|--:|---------------|-------------------|
-    /// |    10 | 1..=90 | 4 | `[15, 40, 65]`| 24 / 25 / 25 / 26 |
-    /// |    60 | 1..=40 | 4 | `[1, 14, 27]` | 60 / 13 / 13 / 14 |
-    /// |    90 | 1..=10 | 4 | `[1, 4, 7]`   | 90 / 3 / 3 / 4    |
-    ///
-    /// The run is indivisible — NULLs are indistinguishable, so no split of
-    /// them is reproducible read-side — which fixes partition 0's size and
-    /// leaves only the values above it to balance.
-    ///
-    /// A NULL boundary would drop its whole partition in silence:
-    /// [`RangeFilterExec`] and [`PerPartitionFilterExec`] compare against it in
-    /// SQL's three-valued logic, and `cut_partitions` computes `NULL + halo`.
+    /// | nulls_first | NULLs | values | K | cuts           | partition sizes   |
+    /// |-------------|------:|-------:|--:|----------------|-------------------|
+    /// | true        |    10 | 1..=90 | 4 | `[15, 40, 65]` | 24 / 25 / 25 / 26 |
+    /// | true        |    60 | 1..=40 | 4 | `[1, 14, 27]`  | 60 / 13 / 13 / 14 |
+    /// | false       |    60 | 1..=40 | 4 | `[14, 27, 40]` | 13 / 13 / 13 / 61 |
+    /// | false       |    90 | 1..=10 | 4 | `[4, 7, 10]`   | 3 / 3 / 3 / 91    |
     ///
     /// Empty when `partitions < 2` or no value was observed.
     ///
@@ -762,32 +758,43 @@ impl SortKeySketch {
         if partitions < 2 || self.sketch.count() == 0 {
             return Ok(Vec::new());
         }
-        if !self.codec.options().nulls_first && self.null_count > 0 {
-            return internal_err!(
-                "SortKeySketch::cuts: {} NULLs under nulls_last needs the mirrored \
-                 clamp, pulling down from the maximum",
-                self.null_count
-            );
-        }
         let population = self.count();
         let values = self.sketch.count();
+        // Partitions sharing the values: all but the one the run takes.
+        let sharing = partitions as u128 - 1;
+        // A shorter run shares its partition with values and the population
+        // ranks already balance. Ungated, the even split over-spaces the top
+        // boundaries even with no NULLs at all.
+        let run_takes_a_partition =
+            self.null_count as u128 * partitions as u128 > population as u128;
         let value_ranks: Vec<u64> = (0..partitions - 1)
             .map(|cut| {
-                // Integers throughout: a round trip through a fraction loses
-                // ranks, per `KllSketch::at_rank`.
+                // Integers: a fraction round trip loses ranks (`at_rank`).
                 let population_rank =
                     ((cut as u128 + 1) * population as u128 / partitions as u128) as u64;
-                // Even split of the values, or the top partition keeps
-                // everything the run displaced: `[60, 1, 13, 26]` not
-                // `[60, 13, 13, 14]`.
-                let even_rank =
-                    (cut as u128 * values as u128 / (partitions as u128 - 1)) as u64 + 1;
-                // `cut + 1`: rank `r` names the `r`-th value, so 0 and 1 both
-                // name the first.
-                population_rank
-                    .saturating_sub(self.null_count)
-                    .max(even_rank)
-                    .max(cut as u64 + 1)
+                if self.codec.options().nulls_first {
+                    let mut rank = population_rank.saturating_sub(self.null_count);
+                    if run_takes_a_partition {
+                        // Else the top partition keeps what the run displaced:
+                        // `[60, 1, 13, 26]` not `[60, 13, 13, 14]`.
+                        rank =
+                            rank.max((cut as u128 * values as u128 / sharing) as u64 + 1);
+                    }
+                    // Rank `r` names the `r`-th value, so 0 and 1 both name the
+                    // first.
+                    rank.max(cut as u64 + 1)
+                } else {
+                    let mut rank = population_rank;
+                    if run_takes_a_partition {
+                        rank = rank
+                            .min(((cut as u128 + 1) * values as u128).div_ceil(sharing)
+                                as u64);
+                    }
+                    let distinct = values
+                        .saturating_sub(partitions as u64 - 2 - cut as u64)
+                        .max(1);
+                    rank.min(distinct).max(1)
+                }
             })
             .collect();
 
@@ -1530,7 +1537,7 @@ mod tests {
                 "{context}: boundaries must be non-decreasing, got {cuts:?}"
             );
 
-            let sizes = partition_sizes(nulls, &values, &cuts);
+            let sizes = partition_sizes(nulls, &values, &cuts, true);
             assert_eq!(
                 sizes.iter().sum::<usize>(),
                 nulls + value_count as usize,
@@ -1552,7 +1559,12 @@ mod tests {
     /// convention every consumer uses: partition 0 takes the NULLs and every
     /// value below `cuts[0]`, partition `i` takes `[cuts[i - 1], cuts[i])`, and
     /// the last takes everything from the final cut up.
-    fn partition_sizes(nulls: usize, values: &[i64], cuts: &[ScalarValue]) -> Vec<usize> {
+    fn partition_sizes(
+        nulls: usize,
+        values: &[i64],
+        cuts: &[ScalarValue],
+        nulls_first: bool,
+    ) -> Vec<usize> {
         let bound = |cut: &ScalarValue| match cut {
             ScalarValue::Int64(Some(value)) => *value,
             other => panic!("expected a non-NULL Int64 boundary, got {other:?}"),
@@ -1562,12 +1574,14 @@ mod tests {
         };
         let first = bound(&cuts[0]);
         let last = bound(cuts.last().expect("at least one cut"));
-        let mut sizes = vec![nulls + count(&|value| value < first)];
+        // The run rides the partition at its own end of the sort order.
+        let (low_nulls, high_nulls) = if nulls_first { (nulls, 0) } else { (0, nulls) };
+        let mut sizes = vec![low_nulls + count(&|value| value < first)];
         for pair in cuts.windows(2) {
             let (lo, hi) = (bound(&pair[0]), bound(&pair[1]));
             sizes.push(count(&|value| lo <= value && value < hi));
         }
-        sizes.push(count(&|value| value >= last));
+        sizes.push(high_nulls + count(&|value| value >= last));
         sizes
     }
 
@@ -1594,20 +1608,69 @@ mod tests {
         // NULL run cost one row of balance against a perfect 25 apiece.
     }
 
-    /// The mirrored clamp for `nulls_last` is not written yet. It has to fail
-    /// rather than reuse the `nulls_first` arithmetic, which would pull
-    /// boundaries toward the minimum when the run sits above the values and
-    /// hand back cuts that route rows to the wrong partitions.
+    /// The `nulls_last` mirror. The run sits above the values, so every
+    /// adjustment reverses: boundaries pull down toward the maximum and the run
+    /// takes the *top* partition. Same properties as its `nulls_first` twin,
+    /// and the shared no-NULL cases must agree between the two.
     #[test]
-    fn cuts_refuse_nulls_last_with_nulls() {
-        let mut values: Vec<Option<i64>> = vec![None; 30];
-        values.extend((1..=70).map(Some));
-        let sketch = int_sketch(values, sort_options(false, false));
+    fn cuts_mirror_the_repair_when_nulls_sort_last() {
+        for (nulls, value_count, partitions) in [
+            (60usize, 40i64, 4usize),
+            (90, 10, 4),
+            (60, 40, 8),
+            (10, 90, 4),
+            (95, 5, 4),
+        ] {
+            let values: Vec<i64> = (1..=value_count).collect();
+            let mut column: Vec<Option<i64>> = values.iter().copied().map(Some).collect();
+            column.extend(std::iter::repeat_n(None, nulls));
+            let sketch = int_sketch(column, sort_options(false, false));
 
-        let err = sketch
-            .cuts(4)
-            .expect_err("nulls_last with NULLs must not silently mis-cut");
-        assert!(err.to_string().contains("nulls_last"), "got: {err}");
+            let cuts = sketch.cuts(partitions).unwrap();
+            let context =
+                format!("{nulls} NULLs last, {value_count} values, K={partitions}");
+            assert_eq!(cuts.len(), partitions - 1, "{context}");
+            assert!(
+                cuts.iter().all(|cut| !cut.is_null()),
+                "{context}: got {cuts:?}"
+            );
+            assert!(
+                cuts.windows(2).all(|pair| pair[0] <= pair[1]),
+                "{context}: boundaries must be non-decreasing, got {cuts:?}"
+            );
+
+            let sizes = partition_sizes(nulls, &values, &cuts, false);
+            assert_eq!(
+                sizes.iter().sum::<usize>(),
+                nulls + value_count as usize,
+                "{context}: every row lands somewhere, got {sizes:?}"
+            );
+            // The run takes the last partition, so only the others can balance.
+            let below_the_run = &sizes[..sizes.len() - 1];
+            let spread =
+                below_the_run.iter().max().unwrap() - below_the_run.iter().min().unwrap();
+            assert!(
+                spread <= 1,
+                "{context}: partitions below the run should differ by at most \
+                 one row, got {sizes:?}"
+            );
+        }
+    }
+
+    /// With no NULLs there is no run at either end, so the two layouts have
+    /// nothing to mirror and must produce identical boundaries.
+    #[test]
+    fn cuts_agree_across_null_placement_when_nothing_is_null() {
+        let column: Vec<Option<i64>> = (1..=100).map(Some).collect();
+        let first = int_sketch(column.clone(), sort_options(false, true));
+        let last = int_sketch(column, sort_options(false, false));
+        for partitions in [2usize, 4, 8, 16] {
+            assert_eq!(
+                first.cuts(partitions).unwrap(),
+                last.cuts(partitions).unwrap(),
+                "K={partitions}"
+            );
+        }
     }
 
     /// With no NULLs there is no run to sit above or below the values, so
