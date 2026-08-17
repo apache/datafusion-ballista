@@ -55,7 +55,7 @@ use crate::execution_plans::RuntimeStatsExec;
 use crate::execution_plans::plan_algebra::preserves_distribution;
 
 /// Walk `child`'s subtree for a [`RuntimeStatsExec`] that sketches on our
-/// routing expression, snapshot its merged T-Digest, and compute `K - 1`
+/// routing expression, snapshot its merged sketch, and compute `K - 1`
 /// quantile cuts. Any failure to find a matching sketch returns an empty
 /// `Vec` — the caller's `split_batch_by_range(&[])` produces a single
 /// bucket and every row lands in output partition 0. Never crashes.
@@ -75,7 +75,7 @@ pub(super) fn discover_cuts(
     // routing expression → RuntimeStatsExec's construction contract
     // guarantees sketch is present. Belt-and-braces arms in case that
     // invariant ever drifts, plus mutex-poisoning is theoretically possible.
-    let sketch = match stats.merged_quantile_sketch() {
+    let sketch = match stats.merged_sort_key_sketch() {
         Ok(Some(sketch)) => sketch,
         Ok(None) => {
             warn!(
@@ -91,23 +91,27 @@ pub(super) fn discover_cuts(
             return Vec::new();
         }
     };
-    // `count()` is the sum of centroid weights — total observed row count
-    // that fed the digest. Zero means no samples arrived before the
-    // snapshot; degenerate cuts would follow.
-    if sketch.count() == 0.0 {
+    // Zero means no samples arrived before the snapshot; degenerate cuts
+    // would follow.
+    if sketch.count() == 0 {
         warn!(
             "range-repartition: matching sketch has no samples yet — single-bucket fallback"
         );
         return Vec::new();
     }
-    // K-1 cuts at 1/K, 2/K, ..., (K-1)/K. `estimate_quantile` is monotone by
-    // construction, so cuts are non-decreasing (ties possible on hot-value
-    // distributions — `split_batch_by_range` handles those correctly, it
-    // just skews the resulting distribution).
-    let k = output_partitions as f64;
-    (1..output_partitions)
-        .map(|i| ScalarValue::Float64(Some(sketch.estimate_quantile(i as f64 / k))))
-        .collect()
+    // `cuts` sizes by the whole population, keeps every boundary a real value
+    // so no consumer compares against a NULL, and puts the NULL run wholly in
+    // the partition at the end `nulls_first` names — which is where
+    // `split_batch_by_range` sends it and where `RangeFilterExec` looks for it.
+    match sketch.cuts(output_partitions) {
+        Ok(cuts) => cuts,
+        Err(e) => {
+            warn!(
+                "range-repartition: cut computation failed ({e}) — single-bucket fallback"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Walks `plan`'s subtree through single-child chains only, returning the

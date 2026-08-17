@@ -51,6 +51,9 @@ use std::sync::{Arc, atomic::AtomicI64};
 #[derive(Clone, Debug)]
 pub struct RangeRepartitionRouting {
     pub cuts: Vec<ScalarValue>,
+    /// Which end of the order holds the NULL run, carried with the cuts so
+    /// the file router and the read-side filter cannot disagree about it.
+    pub nulls_first: bool,
     pub routing_expr: Arc<dyn PhysicalExpr>,
 }
 
@@ -547,6 +550,7 @@ mod range_repartition_routing_tests {
     fn sample_routing() -> RangeRepartitionRouting {
         RangeRepartitionRouting {
             cuts: cuts_f64([10.0, 20.0, 30.0]),
+            nulls_first: true,
             routing_expr: v_routing_expr(),
         }
     }
@@ -574,6 +578,7 @@ mod range_repartition_routing_tests {
         exchange.resolve_range_repartition_routing(sample_routing());
         exchange.resolve_range_repartition_routing(RangeRepartitionRouting {
             cuts: cuts_f64([100.0]),
+            nulls_first: true,
             routing_expr: v_routing_expr(),
         });
         let recovered = exchange.range_repartition_routing().unwrap();

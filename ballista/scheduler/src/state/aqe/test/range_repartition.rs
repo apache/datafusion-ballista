@@ -134,7 +134,7 @@ async fn routing_parks_when_range_repartition_is_plan_root()
         .map(|e| e.plan.stage_id())
         .expect("a runnable stage must exist");
 
-    // Producer task 7, sub-part 0, sketched [5, 15, 25], straddles the cut at 15.
+    // Producer task 7, sub-part 0, covering [5, 25], straddles the cut at 15.
     let reports = vec![ballista_core::execution_plans::TaskRuntimeStats {
         producer_task_id: 7,
         report: RuntimeStatsReport {
@@ -142,10 +142,12 @@ async fn routing_parks_when_range_repartition_is_plan_root()
             partitions: vec![RuntimeStatsPartitionEntry {
                 partition_id: 0,
                 row_count: 3,
-                sketch: Some(ballista_core::execution_plans::sketch_to_proto(
-                    &datafusion_functions_aggregate_common::tdigest::TDigest::new(100)
-                        .merge_unsorted_f64(vec![5.0, 15.0, 25.0]),
-                )?),
+                key_min: vec![datafusion_proto::protobuf::ScalarValue::try_from(
+                    &ScalarValue::Float64(Some(5.0)),
+                )?],
+                key_max: vec![datafusion_proto::protobuf::ScalarValue::try_from(
+                    &ScalarValue::Float64(Some(25.0)),
+                )?],
                 ..Default::default()
             }],
             ..Default::default()
@@ -158,6 +160,7 @@ async fn routing_parks_when_range_repartition_is_plan_root()
         &cuts,
         &ScalarValue::Float64(Some(0.0)),
         &ScalarValue::Float64(Some(0.0)),
+        true,
     )?;
 
     // `cut_partitions` must duplicate the straddler into both partitions —
@@ -167,6 +170,7 @@ async fn routing_parks_when_range_repartition_is_plan_root()
 
     let routing = RangeRepartitionRouting {
         cuts: cuts.clone(),
+        nulls_first: true,
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
     };
     planner.set_repartition_routing(stage_id, routing)?;
@@ -211,6 +215,7 @@ async fn set_repartition_routing_errs_when_stage_has_no_exchange()
 
     let routing = RangeRepartitionRouting {
         cuts: vec![ScalarValue::Float64(Some(0.0))],
+        nulls_first: true,
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
     };
     let result = planner.set_repartition_routing(stage_id, routing);
@@ -246,6 +251,7 @@ async fn routing_parks_when_range_repartition_has_a_parent()
 
     let routing = RangeRepartitionRouting {
         cuts: vec![ScalarValue::Float64(Some(15.0))],
+        nulls_first: true,
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
     };
     planner.set_repartition_routing(stage_id, routing)?;

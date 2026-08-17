@@ -351,6 +351,7 @@ impl AdaptiveExecutionGraph {
         }
         Ok(Some(RangeRepartitionRouting {
             cuts: entry.cuts.clone(),
+            nulls_first: entry.nulls_first,
             routing_expr,
         }))
     }
@@ -402,6 +403,7 @@ impl AdaptiveExecutionGraph {
                     &routing.cuts,
                     &halo_lo,
                     &halo_hi,
+                    routing.nulls_first,
                 )
                 .map_err(|err| {
                     BallistaError::General(format!(

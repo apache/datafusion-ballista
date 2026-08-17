@@ -245,6 +245,7 @@ async fn should_skip_coalesce_when_leaf_has_range_repartition_routing()
                 .into_iter()
                 .map(|v| ScalarValue::Float64(Some(v)))
                 .collect(),
+            nulls_first: true,
             routing_expr: Arc::new(Column::new("c", 0)),
         },
     )?;
