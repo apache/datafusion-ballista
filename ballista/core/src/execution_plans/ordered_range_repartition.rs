@@ -171,8 +171,10 @@ impl OrderedRangeRepartitionExec {
                 routing_type
             );
         }
-        // TODO: fixed by KLL — a NULL-aware sketch lifts this restriction and
-        // lets `split_batch_by_range` honor SortOptions::nulls_first properly.
+        // The scatter places a NULL run by `nulls_first` already; what this
+        // gate waits on is the cut discovery, which reads a T-Digest that has
+        // no NULL slot and so would size the partitions from a population
+        // missing them.
         if routing.expr.nullable(&schema)? {
             return internal_err!(
                 "OrderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
@@ -433,12 +435,12 @@ impl OrderedRangeRepartitionExec {
         // Populated once, on the first batch, by whichever scatter task
         // wins the `OnceLock::get_or_init` race.
         let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
-        let routing_expr = self.order_by[0].expr.clone();
+        let routing_sort = self.order_by[0].clone();
         let mut drop_helper = Vec::with_capacity(input_partitions);
         for (input_partition, senders) in senders_per_input.into_iter().enumerate() {
             let child = self.input.clone();
             let cuts_cell = cuts_cell.clone();
-            let routing_expr = routing_expr.clone();
+            let routing_sort = routing_sort.clone();
             let ctx = ctx.clone();
             let output_partitions = self.output_partitions;
             // Move senders into an `Arc<[_]>` so scatter and guard can share
@@ -472,7 +474,7 @@ impl OrderedRangeRepartitionExec {
                     child,
                     input_partition,
                     ctx,
-                    routing_expr,
+                    routing_sort,
                     scatter_senders,
                     cuts_cell,
                     output_partitions,
@@ -570,7 +572,7 @@ async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,
     ctx: Arc<TaskContext>,
-    routing_expr: Arc<dyn PhysicalExpr>,
+    routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
     cuts_cell: Arc<OnceLock<Vec<f64>>>,
     output_partitions: usize,
@@ -589,7 +591,8 @@ async fn scatter_input_partition(
         metrics.input_rows.add(batch.num_rows());
         let cuts = cuts_cell.get_or_init(|| {
             let discover_timer = metrics.discover_cuts_time.timer();
-            let cuts = discover_cuts(&child, routing_expr.as_ref(), output_partitions);
+            let cuts =
+                discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions);
             discover_timer.done();
             cuts
         });
@@ -601,7 +604,12 @@ async fn scatter_input_partition(
         //      `take_arrays`-materialised sub-batches. Arc bumps replace
         //      allocations under skew.
         let split_timer = metrics.split_time.timer();
-        let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        let splits = split_batch_by_range(
+            &batch,
+            &routing_sort.expr,
+            cuts,
+            routing_sort.options.nulls_first,
+        )?;
         split_timer.done();
         // Stop the compute timer around the send.await so backpressure
         // waits get billed to `send_time` alone, not double-counted.

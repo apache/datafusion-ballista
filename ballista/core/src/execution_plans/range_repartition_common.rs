@@ -159,8 +159,12 @@ pub(super) fn find_runtime_stats<'a>(
 /// buckets produce empty `RecordBatch`es rather than being omitted, so
 /// callers can index by partition id.
 ///
-/// NULL routing keys land in partition 0 today; a follow-up will honor
-/// `sort_options.nulls_first`/`nulls_last` to match SQL semantics.
+/// NULL keys go to the partition at the end of the order they occupy —
+/// partition 0 under `nulls_first`, `K - 1` otherwise — all of them together.
+/// A NULL has no position among the values, only a side, and NULLs are
+/// indistinguishable from each other, so no split of the run could be
+/// reproduced on the read side. `RangeFilterExec` claims the run from the same
+/// bit, by asking which of its bounds is unbounded.
 ///
 /// Boundaries are pre-extracted `f64`s; widening to other routing key
 /// types generalizes this function and the discovery path together.
@@ -168,6 +172,7 @@ pub(super) fn split_batch_by_range(
     batch: &RecordBatch,
     routing_expr: &Arc<dyn PhysicalExpr>,
     boundaries: &[f64],
+    nulls_first: bool,
 ) -> Result<Vec<RecordBatch>> {
     let output_partitions = boundaries.len() + 1;
     let schema = batch.schema();
@@ -190,9 +195,14 @@ pub(super) fn split_batch_by_range(
 
     // TODO: vectorized arrow computation
     let mut buckets: Vec<Vec<u32>> = (0..output_partitions).map(|_| Vec::new()).collect();
+    let null_target = if nulls_first {
+        0
+    } else {
+        output_partitions - 1
+    };
     for row in 0..batch.num_rows() {
         let target = if keys.is_null(row) {
-            0
+            null_target
         } else {
             // partition_point returns the count of elements matching the
             // predicate — here `<= key` — which is the target partition
@@ -456,7 +466,7 @@ mod tests {
             vec![0, 1, 2, 3, 4, 5, 6],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0]).unwrap();
+        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0], true).unwrap();
         assert_eq!(splits.len(), 3, "K = boundaries.len() + 1");
         let total: usize = splits.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, batch.num_rows(), "no row lost or duplicated");
@@ -472,14 +482,14 @@ mod tests {
             vec![0, 1, 2, 3],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0]).unwrap();
+        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0], true).unwrap();
         assert_eq!(splits[0].num_rows(), 1);
         assert_eq!(splits[1].num_rows(), 2);
         assert_eq!(splits[2].num_rows(), 1);
     }
 
     #[test]
-    fn split_routes_nulls_to_partition_zero() {
+    fn split_routes_the_whole_null_run_to_the_end_it_occupies() {
         let schema = schema_v2_id();
         let batch = batch(
             &schema,
@@ -487,9 +497,14 @@ mod tests {
             vec![0, 1, 2, 3],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[10.0]).unwrap();
-        assert_eq!(splits[0].num_rows(), 3);
-        assert_eq!(splits[1].num_rows(), 1);
+        // Two NULLs, 5.0 below the cut, 50.0 above it.
+        let first = split_batch_by_range(&batch, &routing, &[10.0], true).unwrap();
+        assert_eq!(first[0].num_rows(), 3, "NULLs + 5.0");
+        assert_eq!(first[1].num_rows(), 1, "50.0");
+
+        let last = split_batch_by_range(&batch, &routing, &[10.0], false).unwrap();
+        assert_eq!(last[0].num_rows(), 1, "5.0");
+        assert_eq!(last[1].num_rows(), 3, "50.0 + NULLs");
     }
 
     #[test]
@@ -497,7 +512,7 @@ mod tests {
         let schema = schema_v2_id();
         let batch = batch(&schema, vec![], vec![]);
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0]).unwrap();
+        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0], true).unwrap();
         assert_eq!(splits.len(), 3);
         assert!(splits.iter().all(|b| b.num_rows() == 0));
     }

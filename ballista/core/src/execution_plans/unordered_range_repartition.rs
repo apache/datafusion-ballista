@@ -163,8 +163,10 @@ impl UnorderedRangeRepartitionExec {
                 routing_type
             );
         }
-        // TODO: fixed by KLL — a NULL-aware sketch lifts this restriction and
-        // lets `split_batch_by_range` honor SortOptions::nulls_first properly.
+        // The scatter places a NULL run by `nulls_first` already; what this
+        // gate waits on is the cut discovery, which reads a T-Digest that has
+        // no NULL slot and so would size the partitions from a population
+        // missing them.
         if routing.expr.nullable(&schema)? {
             return internal_err!(
                 "UnorderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
@@ -337,14 +339,14 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             let senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> = senders.into();
             let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
             let input_partitions = self.input.output_partitioning().partition_count();
-            let routing_expr = self.order_by[0].expr.clone(); // TODO: KLL for multi-column?
+            let routing_sort = self.order_by[0].clone();
             let mut drop_helper = Vec::with_capacity(input_partitions);
             for input_partition in 0..input_partitions {
                 let child = self.input.clone();
                 let scatter_senders = senders.clone();
                 let guard_senders = senders.clone();
                 let cuts_cell = cuts_cell.clone();
-                let routing_expr = routing_expr.clone();
+                let routing_sort = routing_sort.clone();
                 let ctx = ctx.clone();
                 let output_partitions = self.output_partitions;
                 // `guarded_scatter` wraps the body in `catch_unwind`: a
@@ -356,7 +358,7 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
                         child,
                         input_partition,
                         ctx,
-                        routing_expr,
+                        routing_sort,
                         scatter_senders,
                         cuts_cell,
                         output_partitions,
@@ -404,7 +406,7 @@ async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,
     ctx: Arc<TaskContext>,
-    routing_expr: Arc<dyn PhysicalExpr>,
+    routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
     cuts_cell: Arc<OnceLock<Vec<f64>>>,
     output_partitions: usize,
@@ -420,7 +422,7 @@ async fn scatter_input_partition(
         }
         let batch = batch_result?;
         let cuts = cuts_cell.get_or_init(|| {
-            discover_cuts(&child, routing_expr.as_ref(), output_partitions)
+            discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions)
         });
         // TODO(perf): `split_batch_by_range` materialises K sub-batches per
         // input batch via `take_arrays` — one copy per row into a fresh
@@ -429,7 +431,12 @@ async fn scatter_input_partition(
         // `Arc<RecordBatch>` broadcast + receiver-side filter would skip
         // the scatter-side allocations at the cost of duplicating the
         // filter work K times. Worth measuring under skew.
-        let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        let splits = split_batch_by_range(
+            &batch,
+            &routing_sort.expr,
+            cuts,
+            routing_sort.options.nulls_first,
+        )?;
         for (output, sub) in splits.into_iter().enumerate() {
             if sub.num_rows() == 0 {
                 continue;
