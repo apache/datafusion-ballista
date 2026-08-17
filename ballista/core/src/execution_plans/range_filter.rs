@@ -50,20 +50,23 @@
 //!
 //! # Type generality
 //!
-//! `ScalarValue` at the API + serde surface. The internal fast path is
-//! Float64-only today (matches URRE/ORRE T-Digest); widening to other
-//! numeric primitives is a KLL-migration follow-up that
-//! will land without breaking callers.
+//! `ScalarValue` throughout, including the fast path: bounds compare with
+//! `PartialOrd` and the binary search addresses the array by index, so any
+//! ordered type a `ScalarValue` holds works. Halo widening is typed
+//! arithmetic, so a halo of a type the key cannot be widened by is refused
+//! rather than coerced — a `Float64` halo against a `Timestamp` key is a
+//! planner bug, not something to round into a grid. A zero halo widens by
+//! nothing and so needs no arithmetic at all.
 
 use std::fmt::{self, Debug, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use datafusion::arrow::array::{Array, RecordBatch};
+use datafusion::arrow::array::{Array, ArrayRef, RecordBatch};
 use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::cast::{as_boolean_array, as_float64_array};
+use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
@@ -89,9 +92,9 @@ use parking_lot::Mutex;
 /// means unbounded (virtual ±∞).
 pub type RangeBound = (Option<ScalarValue>, Option<ScalarValue>);
 
-/// Bounds after halo widening. Float64-only internally today — see the
-/// "Type generality" section in the module doc.
-pub type WidenedBound = (Option<f64>, Option<f64>);
+/// Bounds after halo widening. Same shape as [`RangeBound`]; the halo has
+/// been folded in.
+pub type WidenedBound = (Option<ScalarValue>, Option<ScalarValue>);
 
 /// Both raw and widened bounds. `raw` is preserved for serialization; the
 /// executor consumes `widened`.
@@ -174,25 +177,15 @@ impl RangeFilterExec {
     ) -> Result<Self> {
         let schema = input.schema();
         let expr_type = routing_expr.data_type(&schema)?;
-        if !expr_type.is_numeric() {
+        if !expr_type.is_numeric() && !expr_type.is_temporal() {
             return internal_err!(
-                "RangeFilterExec: routing_expr must be numeric, got {expr_type}"
+                "RangeFilterExec: routing_expr must be numeric or temporal, got {expr_type}"
             );
         }
-        let halo_lo_f64 = as_f64(&halo_lo)?;
-        let halo_hi_f64 = as_f64(&halo_hi)?;
-        if !halo_lo_f64.is_finite() || halo_lo_f64 < 0.0 {
-            return internal_err!(
-                "RangeFilterExec: halo_lo must be finite and non-negative, got {halo_lo_f64}"
-            );
-        }
-        if !halo_hi_f64.is_finite() || halo_hi_f64 < 0.0 {
-            return internal_err!(
-                "RangeFilterExec: halo_hi must be finite and non-negative, got {halo_hi_f64}"
-            );
-        }
+        validate_halo("halo_lo", &halo_lo)?;
+        validate_halo("halo_hi", &halo_hi)?;
         let bounds_state = raw_bounds
-            .map(|raw| build_bounds_state(&input, raw, halo_lo_f64, halo_hi_f64))
+            .map(|raw| build_bounds_state(&input, raw, &halo_lo, &halo_hi))
             .transpose()?;
         let properties = Arc::new(PlanProperties::new(
             input.equivalence_properties().clone(),
@@ -223,9 +216,8 @@ impl RangeFilterExec {
     /// merge into cuts and the adapter has projected those cuts onto per-input
     /// partition half-open ranges. Widens by RFE's halos before caching.
     pub fn resolve_bounds(&self, raw_bounds: Vec<RangeBound>) -> Result<()> {
-        let halo_lo = as_f64(&self.halo_lo)?;
-        let halo_hi = as_f64(&self.halo_hi)?;
-        let state = build_bounds_state(&self.input, raw_bounds, halo_lo, halo_hi)?;
+        let state =
+            build_bounds_state(&self.input, raw_bounds, &self.halo_lo, &self.halo_hi)?;
         self.bounds.lock().replace(state);
         Ok(())
     }
@@ -386,7 +378,7 @@ impl ExecutionPlan for RangeFilterExec {
                     "RangeFilterExec: execute() called before resolve_bounds()".into(),
                 )
             })?;
-            state.widened.get(partition).copied().ok_or_else(|| {
+            state.widened.get(partition).cloned().ok_or_else(|| {
                 datafusion::common::DataFusionError::Internal(format!(
                     "RangeFilterExec: partition {partition} out of bounds ({} bounds)",
                     state.widened.len()
@@ -394,7 +386,11 @@ impl ExecutionPlan for RangeFilterExec {
             })?
         };
         let (lo, hi) = widened;
-        let predicate = build_predicate_from_bounds(self.routing_expr.clone(), lo, hi);
+        let predicate = build_predicate_from_bounds(
+            self.routing_expr.clone(),
+            lo.clone(),
+            hi.clone(),
+        );
         let schema = self.schema();
         let input = self.input.execute(partition, ctx)?;
         let fast_path = self.sorted_on_key.then(|| FastPathState {
@@ -426,20 +422,35 @@ impl ExecutionPlan for RangeFilterExec {
     }
 }
 
-/// Extract an `f64` from a `ScalarValue`. Restricted to `Float64` today
-/// because the surrounding operators (URRE/ORRE, T-Digest) only understand
-/// Float64. TODO widen with the KLL migration to accept any
-/// `arrow::datatypes::ArrowPrimitiveType`.
-fn as_f64(sv: &ScalarValue) -> Result<f64> {
-    match sv {
-        ScalarValue::Float64(Some(v)) => Ok(*v),
-        ScalarValue::Float64(None) => {
-            internal_err!("RangeFilterExec: null ScalarValue is not permitted")
-        }
-        other => internal_err!(
-            "RangeFilterExec: only Float64 ScalarValue supported today, got {other:?}"
-        ),
+/// A halo must be a non-negative, non-NULL width. Float halos are also checked
+/// for finiteness: an infinite one widens every bound to cover everything and a
+/// NaN one compares false against all of it.
+fn validate_halo(name: &str, halo: &ScalarValue) -> Result<()> {
+    if halo.is_null() {
+        return internal_err!("RangeFilterExec: {name} must not be NULL");
     }
+    // Only the float families have values that are neither a width nor
+    // comparable: an infinity widens every bound to cover everything, a NaN
+    // compares false against all of it.
+    let finite = match halo {
+        ScalarValue::Float64(Some(v)) => v.is_finite(),
+        ScalarValue::Float32(Some(v)) => v.is_finite(),
+        _ => true,
+    };
+    if !finite {
+        return internal_err!("RangeFilterExec: {name} must be finite, got {halo}");
+    }
+    if halo < &ScalarValue::new_zero(&halo.data_type())? {
+        return internal_err!("RangeFilterExec: {name} must be non-negative, got {halo}");
+    }
+    Ok(())
+}
+
+/// Whether widening by `halo` is a no-op. Worth asking before the arithmetic,
+/// because a zero halo of one type must not refuse a key of another: the
+/// scheduler passes `Float64(0.0)` for every consumer with no halo at all.
+fn is_zero_halo(halo: &ScalarValue) -> Result<bool> {
+    Ok(halo == &ScalarValue::new_zero(&halo.data_type())?)
 }
 
 /// Validate + widen raw bounds. Emits a `BoundsState` with the raw preserved
@@ -447,8 +458,8 @@ fn as_f64(sv: &ScalarValue) -> Result<f64> {
 fn build_bounds_state(
     input: &Arc<dyn ExecutionPlan>,
     raw: Vec<RangeBound>,
-    halo_lo: f64,
-    halo_hi: f64,
+    halo_lo: &ScalarValue,
+    halo_hi: &ScalarValue,
 ) -> Result<BoundsState> {
     let partition_count = input.output_partitioning().partition_count();
     if raw.len() != partition_count {
@@ -457,19 +468,26 @@ fn build_bounds_state(
             raw.len()
         );
     }
+    let (widen_lo, widen_hi) = (!is_zero_halo(halo_lo)?, !is_zero_halo(halo_hi)?);
     let widened = raw
         .iter()
         .map(|(lo, hi)| {
-            let lo_f = lo.as_ref().map(as_f64).transpose()?.map(|v| v - halo_lo);
-            let hi_f = hi.as_ref().map(as_f64).transpose()?.map(|v| v + halo_hi);
-            if let (Some(l), Some(h)) = (lo_f, hi_f)
+            let lo_w = match lo {
+                Some(lo) if widen_lo => Some(lo.sub(halo_lo)?),
+                other => other.clone(),
+            };
+            let hi_w = match hi {
+                Some(hi) if widen_hi => Some(hi.add(halo_hi)?),
+                other => other.clone(),
+            };
+            if let (Some(l), Some(h)) = (&lo_w, &hi_w)
                 && l > h
             {
                 return internal_err!(
                     "RangeFilterExec: widened bound produced inverted [{l}, {h}) — check cuts + halo"
                 );
             }
-            Ok((lo_f, hi_f))
+            Ok((lo_w, hi_w))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(BoundsState { raw, widened })
@@ -480,21 +498,22 @@ fn build_bounds_state(
 /// the generated expression tree.
 fn build_predicate_from_bounds(
     routing_expr: Arc<dyn PhysicalExpr>,
-    lo: Option<f64>,
-    hi: Option<f64>,
+    lo: Option<ScalarValue>,
+    hi: Option<ScalarValue>,
 ) -> Arc<dyn PhysicalExpr> {
-    let lit = |v: f64| -> Arc<dyn PhysicalExpr> {
-        Arc::new(Literal::new(ScalarValue::Float64(Some(v))))
-    };
-    let ge = |lo: f64| -> Arc<dyn PhysicalExpr> {
+    let ge = |lo: ScalarValue| -> Arc<dyn PhysicalExpr> {
         Arc::new(BinaryExpr::new(
             routing_expr.clone(),
             Operator::GtEq,
-            lit(lo),
+            Arc::new(Literal::new(lo)),
         ))
     };
-    let lt = |hi: f64| -> Arc<dyn PhysicalExpr> {
-        Arc::new(BinaryExpr::new(routing_expr.clone(), Operator::Lt, lit(hi)))
+    let lt = |hi: ScalarValue| -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            routing_expr.clone(),
+            Operator::Lt,
+            Arc::new(Literal::new(hi)),
+        ))
     };
     match (lo, hi) {
         (None, None) => Arc::new(Literal::new(ScalarValue::Boolean(Some(true)))),
@@ -521,8 +540,8 @@ fn build_predicate_from_bounds(
 /// slots as garbage values).
 struct FastPathState {
     routing_expr: Arc<dyn PhysicalExpr>,
-    lo: Option<f64>,
-    hi: Option<f64>,
+    lo: Option<ScalarValue>,
+    hi: Option<ScalarValue>,
 }
 
 /// Per-execute counters that split "which fast-path branch fired" so we can
@@ -573,32 +592,39 @@ impl RangeFilterStream {
             .routing_expr
             .evaluate(&batch)
             .and_then(|v| v.into_array(n))?;
-        let col = as_float64_array(&arr)?;
-        // Nulls in routing column: `values()` returns garbage for null slots,
-        // and NULL vs bound comparisons must be false. Slow path handles both.
-        if col.null_count() > 0 {
+        // A NULL has a position in the ordering, not a comparison result, so
+        // the shortcuts below cannot place it. The bail is load-bearing, not an
+        // optimization: everything past it reads values by index and assumes
+        // every index holds one.
+        if arr.null_count() > 0 {
             let filtered = self.slow_filter(&batch)?;
             return Ok((filtered.num_rows() > 0).then_some(filtered));
         }
-        let first = col.value(0);
-        let last = col.value(n - 1);
+        let first = ScalarValue::try_from_array(&arr, 0)?;
+        let last = ScalarValue::try_from_array(&arr, n - 1)?;
         // Skip: entire batch is outside the window.
-        if state.hi.is_some_and(|hi| first >= hi) || state.lo.is_some_and(|lo| last < lo)
+        if state.hi.as_ref().is_some_and(|hi| &first >= hi)
+            || state.lo.as_ref().is_some_and(|lo| &last < lo)
         {
             self.path_metrics.fast_skip.add(1);
             return Ok(None);
         }
         // Pass-through: entire batch is inside the window.
-        let above_lo = state.lo.is_none_or(|lo| first >= lo);
-        let below_hi = state.hi.is_none_or(|hi| last < hi);
+        let above_lo = state.lo.as_ref().is_none_or(|lo| &first >= lo);
+        let below_hi = state.hi.as_ref().is_none_or(|hi| &last < hi);
         if above_lo && below_hi {
             self.path_metrics.fast_pass.add(1);
             return Ok(Some(batch));
         }
         // Mixed: partition the sorted column and slice.
-        let values = col.values();
-        let start = state.lo.map_or(0, |lo| values.partition_point(|v| *v < lo));
-        let end = state.hi.map_or(n, |hi| values.partition_point(|v| *v < hi));
+        let start = match &state.lo {
+            None => 0,
+            Some(lo) => partition_point(&arr, n, lo)?,
+        };
+        let end = match &state.hi {
+            None => n,
+            Some(hi) => partition_point(&arr, n, hi)?,
+        };
         if start >= end {
             self.path_metrics.fast_skip.add(1);
             return Ok(None);
@@ -606,6 +632,27 @@ impl RangeFilterStream {
         self.path_metrics.fast_slice.add(1);
         Ok(Some(batch.slice(start, end - start)))
     }
+}
+
+/// Index of the first row of `arr` at or above `bound`, over an ascending
+/// non-null column of `len` rows.
+///
+/// `slice::partition_point` over the array by index rather than over a typed
+/// values buffer, so the shortcut works for any ordered type a `ScalarValue`
+/// holds. Costs one `ScalarValue` per probe — 13 for an 8192-row batch, against
+/// a linear pass over the whole thing.
+fn partition_point(arr: &ArrayRef, len: usize, bound: &ScalarValue) -> Result<usize> {
+    let mut below = 0;
+    let mut above = len;
+    while below < above {
+        let probe = below + (above - below) / 2;
+        if &ScalarValue::try_from_array(arr, probe)? < bound {
+            below = probe + 1;
+        } else {
+            above = probe;
+        }
+    }
+    Ok(below)
 }
 
 impl Stream for RangeFilterStream {
@@ -751,15 +798,13 @@ mod tests {
     ) -> Arc<dyn PhysicalExpr> {
         let ranges = ranges_from_cuts(cuts);
         let (lo, hi) = &ranges[partition];
-        let lo_f = lo.as_ref().map(|s| match s {
-            ScalarValue::Float64(Some(v)) => *v - halo_lo,
-            _ => panic!("float64 only in tests"),
-        });
-        let hi_f = hi.as_ref().map(|s| match s {
-            ScalarValue::Float64(Some(v)) => *v + halo_hi,
-            _ => panic!("float64 only in tests"),
-        });
-        build_predicate_from_bounds(v_col(), lo_f, hi_f)
+        let widen = |bound: &Option<ScalarValue>, halo: f64| {
+            bound.as_ref().map(|s| match s {
+                ScalarValue::Float64(Some(v)) => ScalarValue::Float64(Some(*v + halo)),
+                other => panic!("float64 only in these shape tests, got {other:?}"),
+            })
+        };
+        build_predicate_from_bounds(v_col(), widen(lo, -halo_lo), widen(hi, halo_hi))
     }
 
     #[test]
@@ -800,17 +845,76 @@ mod tests {
         assert!(err.to_string().contains("halo_hi"));
     }
 
-    #[test]
-    fn non_float64_bounds_are_rejected() {
-        let src = v_source(2);
-        let bounds = vec![
-            (None, Some(ScalarValue::Int64(Some(5)))),
-            (Some(ScalarValue::Int64(Some(5))), None),
-        ];
-        let err =
-            RangeFilterExec::try_new_resolved(src, v_col(), sv(0.0), sv(0.0), bounds)
-                .unwrap_err();
-        assert!(err.to_string().contains("only Float64"), "got: {err}");
+    /// Bounds of any ordered type now resolve, and both paths select on them.
+    /// A zero halo widens by nothing, so a `Float64(0.0)` halo does not refuse
+    /// an `Int64` key — the scheduler passes that pair for every consumer with
+    /// no halo at all.
+    #[tokio::test]
+    async fn non_float64_bounds_filter_on_both_paths() {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let column: Arc<dyn PhysicalExpr> =
+            Arc::new(Column::new_with_schema("v", schema.as_ref()).unwrap());
+        let rows: Vec<i64> = (0..20).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(datafusion::arrow::array::Int64Array::from(rows))],
+        )
+        .unwrap();
+        let sorted = PhysicalSortExpr::new(
+            column.clone(),
+            SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        );
+
+        for declare_sorted in [false, true] {
+            let source =
+                MemorySourceConfig::try_new(&[vec![batch.clone()]], schema.clone(), None)
+                    .unwrap();
+            let source = if declare_sorted {
+                source
+                    .try_with_sort_information(vec![[sorted.clone()].into()])
+                    .unwrap()
+            } else {
+                source
+            };
+            let input: Arc<dyn ExecutionPlan> =
+                Arc::new(DataSourceExec::new(Arc::new(source)));
+            let rf = Arc::new(
+                RangeFilterExec::try_new_resolved(
+                    input,
+                    column.clone(),
+                    sv(0.0),
+                    sv(0.0),
+                    vec![(
+                        Some(ScalarValue::Int64(Some(5))),
+                        Some(ScalarValue::Int64(Some(12))),
+                    )],
+                )
+                .unwrap(),
+            );
+            // Sorted input takes the binary-search slice, unsorted the mask.
+            assert_eq!(rf.sorted_on_key, declare_sorted);
+
+            let ctx = SessionContext::new().task_ctx();
+            let mut stream = rf.execute(0, ctx).unwrap();
+            let mut selected: Vec<i64> = Vec::new();
+            while let Some(res) = stream.next().await {
+                let b = res.unwrap();
+                let col = b
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                    .unwrap();
+                selected.extend(col.values());
+            }
+            assert_eq!(
+                selected,
+                (5..12).collect::<Vec<i64>>(),
+                "sorted={declare_sorted}"
+            );
+        }
     }
 
     #[test]
