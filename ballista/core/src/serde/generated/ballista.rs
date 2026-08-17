@@ -300,6 +300,9 @@ pub struct RangeShuffleReaderExecNode {
     pub merge_ordering: ::prost::alloc::vec::Vec<
         ::datafusion_proto::protobuf::PhysicalSortExprNode,
     >,
+    /// Row limit pushed down by a consuming merge. Absent means read everything.
+    #[prost(uint64, optional, tag = "5")]
+    pub fetch: ::core::option::Option<u64>,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).

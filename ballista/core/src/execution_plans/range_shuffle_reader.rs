@@ -82,7 +82,7 @@ use log::debug;
 use std::sync::Arc;
 
 /// Ordering-preserving shuffle reader. See module docs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RangeShuffleReaderExec {
     /// Upstream stage that produced these files.
     pub stage_id: usize,
@@ -93,6 +93,8 @@ pub struct RangeShuffleReaderExec {
     /// Sort key the merge preserves. Advertised in `PlanProperties.eq_properties`
     /// so downstream operators (BWAG, SMJ build side) see the output ordering.
     merge_ordering: LexOrdering,
+    /// Row limit pushed down by a consumer. `None` means read everything.
+    fetch: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
@@ -126,6 +128,7 @@ impl RangeShuffleReaderExec {
             schema,
             partition,
             merge_ordering,
+            fetch: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,
@@ -133,31 +136,25 @@ impl RangeShuffleReaderExec {
         })
     }
 
+    /// Set the row limit at construction, without cloning the reader.
+    pub fn with_fetch_limit(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
+    }
+
     /// Late-bound by the executor.
     pub fn with_work_dir(&self, work_dir: String) -> Self {
         Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
             work_dir: Some(work_dir),
-            client_pool: self.client_pool.clone(),
+            ..self.clone()
         }
     }
 
     /// Late-bound by the executor.
     pub fn with_client_pool(&self, client_pool: Arc<dyn BallistaClientPool>) -> Self {
         Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
             client_pool: Some(client_pool),
+            ..self.clone()
         }
     }
 
@@ -181,12 +178,20 @@ impl DisplayAs for RangeShuffleReaderExec {
                     self.stage_id,
                     self.partition.len(),
                     self.merge_ordering,
-                )
+                )?;
+                if let Some(fetch) = self.fetch {
+                    write!(f, ", fetch: {fetch}")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => {
                 writeln!(f, "upstream_stage={}", self.stage_id)?;
                 writeln!(f, "output_partitions={}", self.partition.len())?;
-                writeln!(f, "ordering={}", self.merge_ordering)
+                writeln!(f, "ordering={}", self.merge_ordering)?;
+                if let Some(fetch) = self.fetch {
+                    writeln!(f, "fetch={fetch}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -231,14 +236,8 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             ));
         }
         Ok(Arc::new(Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
             metrics: ExecutionPlanMetricsSet::new(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
-            client_pool: self.client_pool.clone(),
+            ..self.as_ref().clone()
         }))
     }
 
@@ -330,11 +329,25 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             .with_schema(self.schema.clone())
             .with_expressions(&self.merge_ordering)
             .with_batch_size(config.batch_size())
+            .with_fetch(self.fetch)
             .with_metrics(baseline)
             .with_reservation(reservation)
             .build()?;
 
         Ok(merged)
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    /// Output is sorted on `merge_ordering`, so the first `n` rows can only
+    /// come from the first `n` of each input.
+    fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        Some(Arc::new(Self {
+            fetch: limit,
+            ..self.clone()
+        }))
     }
 
     fn metrics(&self) -> Option<datafusion::physical_plan::metrics::MetricsSet> {
@@ -371,6 +384,7 @@ mod tests {
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionContext;
     use std::fs::{File, create_dir_all};
     use tempfile::tempdir;
@@ -548,6 +562,35 @@ mod tests {
         let stream = reader.execute(0, ctx.task_ctx()).unwrap();
         let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
         assert!(batches.is_empty());
+    }
+
+    /// A limit must survive a rebuild, or the merge quietly goes back to
+    /// reading everything.
+    #[test]
+    fn fetch_roundtrips_through_with_fetch() {
+        use datafusion::physical_plan::ExecutionPlan;
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let merge_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            Arc::new(Column::new("v", 0)),
+        )])
+        .unwrap();
+        let reader =
+            RangeShuffleReaderExec::try_new(3, vec![vec![]; 4], schema, merge_ordering)
+                .unwrap();
+        assert_eq!(reader.fetch(), None, "reader starts unlimited");
+
+        let limited = ExecutionPlan::with_fetch(&reader, Some(20))
+            .expect("RangeShuffleReaderExec must accept a pushed-down limit");
+        assert_eq!(limited.fetch(), Some(20));
+
+        let rebuilt = Arc::clone(&limited)
+            .replace_children(
+                vec![],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .expect("rebuild");
+        assert_eq!(rebuilt.fetch(), Some(20), "fetch must survive a rebuild");
     }
 
     /// The reader must advertise its merge ordering so downstream operators
