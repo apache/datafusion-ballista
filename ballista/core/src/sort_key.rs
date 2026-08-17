@@ -612,6 +612,28 @@ impl SortKeySketch {
         self.extreme(!self.codec.options().nulls_first, self.sketch.max())
     }
 
+    /// The least value observed, or `None` when no value was.
+    ///
+    /// Distinct from [`Self::min`], which answers about the least *row* and so
+    /// reports a typed NULL when NULLs sort first. A router comparing a key
+    /// against a range wants this one: a NULL bound makes its comparison NULL
+    /// and drops every row it was meant to select.
+    pub fn value_min(&self) -> Result<Option<ScalarValue>> {
+        self.sketch
+            .min()
+            .map(|key| self.codec.decode(*key))
+            .transpose()
+    }
+
+    /// The greatest value observed, or `None` when no value was. Counterpart
+    /// to [`Self::value_min`].
+    pub fn value_max(&self) -> Result<Option<ScalarValue>> {
+        self.sketch
+            .max()
+            .map(|key| self.codec.decode(*key))
+            .transpose()
+    }
+
     /// Shared body of [`Self::min`] and [`Self::max`]: the extreme is a
     /// NULL when the NULL run is on `nulls_are_on_this_end` and non-empty,
     /// otherwise it is `value_extreme` decoded.

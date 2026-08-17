@@ -792,20 +792,49 @@ fn stats_to_report(
             Some(sk) if sk.count() > 0.0 => Some(sketch_to_proto(&sk)?),
             _ => None,
         };
+        // The router needs each partition's value range, never its
+        // distribution — hence extremes here and one merged sketch below.
+        let (key_min, key_max, null_count) = match stats.sort_key_sketch(partition_id)? {
+            Some(sk) => (
+                extreme_to_proto(sk.value_min()?)?,
+                extreme_to_proto(sk.value_max()?)?,
+                sk.null_count(),
+            ),
+            None => (Vec::new(), Vec::new(), 0),
+        };
         partitions.push(RuntimeStatsPartitionEntry {
             partition_id: partition_id as u32,
             row_count,
             sketch,
-            key_min: Vec::new(),
-            key_max: Vec::new(),
-            null_count: 0,
+            key_min,
+            key_max,
+            null_count,
         });
     }
+    let sort_key_sketch = match stats.merged_sort_key_sketch()? {
+        Some(sk) if sk.count() > 0 => Some(sk.to_proto()?),
+        _ => None,
+    };
     Ok(RuntimeStatsReport {
         order_by,
         partitions,
-        sketch: None,
+        sketch: sort_key_sketch,
     })
+}
+
+/// One extreme as the wire's `repeated ScalarValue`: a tuple with one element
+/// per key column, empty when no value was observed.
+fn extreme_to_proto(
+    extreme: Option<datafusion::common::ScalarValue>,
+) -> Result<Vec<datafusion_proto_common::ScalarValue>> {
+    extreme
+        .map(|value| {
+            datafusion_proto_common::ScalarValue::try_from(&value).map_err(|e| {
+                internal_datafusion_err!("failed to encode key extreme {value:?}: {e:?}")
+            })
+        })
+        .transpose()
+        .map(|encoded| encoded.into_iter().collect())
 }
 
 /// Serialize a T-Digest to the on-wire
