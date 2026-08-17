@@ -348,8 +348,8 @@ impl ExecutionPlan for RangeShuffleReaderExec {
         self.fetch
     }
 
-    /// The output is sorted on `merge_ordering`, so the first `n` rows of the
-    /// merge can only come from the first `n` rows of each input.
+    /// Output is sorted on `merge_ordering`, so the first `n` rows can only
+    /// come from the first `n` of each input.
     fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
         Some(Arc::new(Self {
             stage_id: self.stage_id,
@@ -579,8 +579,8 @@ mod tests {
 
     /// The reader must advertise its merge ordering so downstream operators
     /// see the sortedness invariant (BWAG's RANGE-frame cursor, SMJ build side).
-    /// A pushed-down limit must survive `with_new_children`, or the merge
-    /// quietly reverts to reading everything.
+    /// A limit must survive `with_new_children`, or the merge quietly goes
+    /// back to reading everything.
     #[test]
     fn fetch_roundtrips_through_with_fetch() {
         use datafusion::physical_plan::ExecutionPlan;
