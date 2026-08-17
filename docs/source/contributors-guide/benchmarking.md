@@ -24,10 +24,10 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 ## Versions under test
 
-| Engine   | Version                                                                                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`696ca29b`](https://github.com/apache/datafusion-ballista/commit/696ca29b3c1fe3013238822b7f5d8cdb918fdaa3) (`main`, 2026-07-23), Cargo pkg `54.0.0`, DataFusion `54.1.0` |
-| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                     |
+| Engine   | Version                                                                                                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ballista | [`f21c958f`](https://github.com/apache/datafusion-ballista/commit/f21c9580fe7466c559a99eb3870ebb114cb2a3cf) (`main`, 2026-08-16), Cargo pkg `54.0.0`, DataFusion `55.0.0-rc3`, Arrow `59.2.0` |
+| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                      |
 
 ## Environment
 
@@ -83,7 +83,8 @@ Spark on the same cluster has always used this pattern via
 | `datafusion.execution.collect_statistics`                     | `true`                                                                  |
 | `datafusion.execution.listing_table_factory_infer_partitions` | `false`                                                                 |
 | `datafusion.catalog.information_schema`                       | `true`                                                                  |
-| `ballista.planner.adaptive.enabled`                           | `true` (AQE)                                                            |
+| `ballista.planner.adaptive.enabled`                           | `true` (AQE — compiled-in default since [#2315](https://github.com/apache/datafusion-ballista/pull/2315)) |
+| `ballista.scheduler.max_partitions_per_task`                  | `0` (unbounded — default since [#2315](https://github.com/apache/datafusion-ballista/pull/2315); pre-#2315 default was `1`) |
 | `ballista.shuffle.sort_based.memory_limit_per_task_bytes`     | `0`                                                                     |
 
 `datafusion.optimizer.prefer_hash_join` is left at its default; under AQE the
@@ -136,39 +137,46 @@ did not complete on this Ballista configuration.
 
 |                              Query | Ballista (s) | Spark 3.4 (s) |
 | ---------------------------------: | -----------: | ------------: |
-|                                  1 |        21.71 |         67.58 |
-|                                  2 |        26.73 |         29.80 |
-|                                  3 |        34.77 |         25.13 |
-|                                  4 |        20.73 |         21.19 |
-|                                  5 |        42.26 |         54.12 |
-|                                  6 |        13.78 |          1.23 |
-|                                  7 |        47.17 |         19.57 |
-|                                  8 |        45.74 |         48.60 |
-|                                  9 |        67.27 |         69.38 |
-|                                 10 |        52.99 |         35.92 |
-|                                 11 |     **FAIL** |         30.88 |
-|                                 12 |        25.97 |         10.78 |
-|                                 13 |        15.30 |         20.45 |
-|                                 14 |        21.13 |          7.00 |
-|                                 15 |        27.30 |         23.75 |
-|                                 16 |        17.38 |         23.41 |
-|                                 17 |        47.29 |         82.30 |
-|                                 18 |        78.32 |        129.40 |
-|                                 19 |        18.71 |         11.26 |
-|                                 20 |        97.13 |         19.22 |
+|                                  1 |        14.53 |         67.58 |
+|                                  2 |        35.83 |         29.80 |
+|                                  3 |        33.25 |         25.13 |
+|                                  4 |        19.79 |         21.19 |
+|                                  5 |        46.49 |         54.12 |
+|                                  6 |         9.48 |          1.23 |
+|                                  7 |        47.96 |         19.57 |
+|                                  8 |        54.19 |         48.60 |
+|                                  9 |        79.34 |         69.38 |
+|                                 10 |     **FAIL** |         35.92 |
+|                                 11 |        15.15 |         30.88 |
+|                                 12 |        15.86 |         10.78 |
+|                                 13 |        13.85 |         20.45 |
+|                                 14 |        12.83 |          7.00 |
+|                                 15 |        23.71 |         23.75 |
+|                                 16 |        12.42 |         23.41 |
+|                                 17 |        33.00 |         82.30 |
+|                                 18 |        51.80 |        129.40 |
+|                                 19 |        15.20 |         11.26 |
+|                                 20 |        97.98 |         19.22 |
 |                                 21 |     **FAIL** |        101.53 |
 |                                 22 |     **FAIL** |         12.71 |
-| **Total (comparable subset, 19Q)** |   **721.68** |    **700.09** |
+| **Total (comparable subset, 18Q)** |   **617.51** |    **664.17** |
 
-The total row sums Q1–Q10, Q12–Q20 — the queries that completed on both
-engines. Q11, Q21, Q22 currently fail on Ballista with an `OutOfRange`
-error (`decoded message length too large`); their physical plans encode
-above the client's default 16 MiB gRPC ceiling. Bumping the ceiling to
-128 MiB via `ballista.client.grpc_max_message_size` on the client side is
-still under investigation — the scheduler and executor sides accept the
-raised limit (see [Ballista configuration](#ballista-configuration)) but
-the client-submission channel is separate and continues to enforce 16 MiB
-in the current release.
+The total row sums Q1–Q9, Q11–Q20 — the queries that completed on both
+engines in this run. Q10, Q21, Q22 currently fail on Ballista:
+
+- **Q10** regressed after [#2315](https://github.com/apache/datafusion-ballista/pull/2315)
+  (AQE default-on): a `SortPreservingMergeExec` exhausts its per-task fair
+  memory pool (~5.6 GB) mid-stage. On the pre-#2315 build it completed at
+  ~53s. Tracked in [#2321][q10].
+- **Q11** previously failed on this cluster with the client-side gRPC
+  `OutOfRange` limit at 16 MiB; #2315's AQE plan rewrites produce a smaller
+  plan that stays under the raised 128 MiB ceiling, and Q11 now completes.
+- **Q21, Q22** still fail. In this run they surfaced as connection-level
+  errors (h2 body read / TCP connect refused) near end of suite, consistent
+  with the scheduler becoming unresponsive after the memory-heavy Q20;
+  their physical plans also historically encode above the 16 MiB gRPC
+  default (mitigated by the raised ceiling — see
+  [Ballista configuration](#ballista-configuration)).
 
 Row counts agree across engines for every query Ballista returned.
 
@@ -237,8 +245,9 @@ spark-submit \
 - Report `FAIL` for a query that ran but did not produce an answer, and
   `OOM` when the failure is a known memory exhaustion. See the tracker for
   open issues found by benchmarking: [#1359][aqe],
-  [#2025][q18], [#2063][aqe-hang].
+  [#2025][q18], [#2063][aqe-hang], [#2321][q10].
 
 [aqe]: https://github.com/apache/datafusion-ballista/issues/1359
 [q18]: https://github.com/apache/datafusion-ballista/issues/2025
 [aqe-hang]: https://github.com/apache/datafusion-ballista/issues/2063
+[q10]: https://github.com/apache/datafusion-ballista/issues/2321
