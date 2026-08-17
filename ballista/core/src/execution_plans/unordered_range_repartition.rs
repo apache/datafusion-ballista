@@ -74,7 +74,9 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, OrderingRequirements, Partitioning,
@@ -337,7 +339,7 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             state.receivers = receivers;
             state.initialized = true;
             let senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> = senders.into();
-            let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
+            let cuts_cell: Arc<OnceLock<Vec<ScalarValue>>> = Arc::new(OnceLock::new());
             let input_partitions = self.input.output_partitioning().partition_count();
             let routing_sort = self.order_by[0].clone();
             let mut drop_helper = Vec::with_capacity(input_partitions);
@@ -408,7 +410,7 @@ async fn scatter_input_partition(
     ctx: Arc<TaskContext>,
     routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-    cuts_cell: Arc<OnceLock<Vec<f64>>>,
+    cuts_cell: Arc<OnceLock<Vec<ScalarValue>>>,
     output_partitions: usize,
 ) -> Result<()> {
     let mut stream = child.execute(input_partition, ctx)?;

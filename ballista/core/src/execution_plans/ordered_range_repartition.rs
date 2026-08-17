@@ -79,7 +79,9 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, LexOrdering, OrderingRequirements, Partitioning,
@@ -434,7 +436,7 @@ impl OrderedRangeRepartitionExec {
         // Empty `Vec<f64>` = discovery failed = single-bucket fallback.
         // Populated once, on the first batch, by whichever scatter task
         // wins the `OnceLock::get_or_init` race.
-        let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
+        let cuts_cell: Arc<OnceLock<Vec<ScalarValue>>> = Arc::new(OnceLock::new());
         let routing_sort = self.order_by[0].clone();
         let mut drop_helper = Vec::with_capacity(input_partitions);
         for (input_partition, senders) in senders_per_input.into_iter().enumerate() {
@@ -574,7 +576,7 @@ async fn scatter_input_partition(
     ctx: Arc<TaskContext>,
     routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-    cuts_cell: Arc<OnceLock<Vec<f64>>>,
+    cuts_cell: Arc<OnceLock<Vec<ScalarValue>>>,
     output_partitions: usize,
     metrics: ScatterMetrics,
 ) -> Result<()> {

@@ -41,9 +41,10 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Array, Float64Array, RecordBatch, UInt32Array};
+use datafusion::arrow::array::{Array, RecordBatch, Scalar, UInt32Array};
+use datafusion::arrow::compute::kernels::cmp::gt_eq;
 use datafusion::arrow::compute::take_arrays;
-use datafusion::common::{Result, internal_datafusion_err};
+use datafusion::common::{Result, ScalarValue, internal_datafusion_err};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::FutureExt;
@@ -62,7 +63,7 @@ pub(super) fn discover_cuts(
     child: &Arc<dyn ExecutionPlan>,
     routing_expr: &dyn PhysicalExpr,
     output_partitions: usize,
-) -> Vec<f64> {
+) -> Vec<ScalarValue> {
     let Some(stats) = find_runtime_stats(child, routing_expr) else {
         warn!(
             "range-repartition: no matching RuntimeStatsExec found in child subtree — \
@@ -105,7 +106,7 @@ pub(super) fn discover_cuts(
     // just skews the resulting distribution).
     let k = output_partitions as f64;
     (1..output_partitions)
-        .map(|i| sketch.estimate_quantile(i as f64 / k))
+        .map(|i| ScalarValue::Float64(Some(sketch.estimate_quantile(i as f64 / k))))
         .collect()
 }
 
@@ -166,12 +167,11 @@ pub(super) fn find_runtime_stats<'a>(
 /// reproduced on the read side. `RangeFilterExec` claims the run from the same
 /// bit, by asking which of its bounds is unbounded.
 ///
-/// Boundaries are pre-extracted `f64`s; widening to other routing key
-/// types generalizes this function and the discovery path together.
+/// Boundaries must be ascending, which is what [`discover_cuts`] produces.
 pub(super) fn split_batch_by_range(
     batch: &RecordBatch,
     routing_expr: &Arc<dyn PhysicalExpr>,
-    boundaries: &[f64],
+    boundaries: &[ScalarValue],
     nulls_first: bool,
 ) -> Result<Vec<RecordBatch>> {
     let output_partitions = boundaries.len() + 1;
@@ -182,34 +182,55 @@ pub(super) fn split_batch_by_range(
             .collect());
     }
     let evaluated = routing_expr.evaluate(batch)?;
-    let array = evaluated.into_array(batch.num_rows())?;
-    let keys = array
-        .as_any()
-        .downcast_ref::<Float64Array>()
-        .ok_or_else(|| {
-            internal_datafusion_err!(
-                "range-repartition: routing expr produced {:?}, expected Float64",
-                array.data_type()
-            )
-        })?;
+    let keys = evaluated.into_array(batch.num_rows())?;
 
-    // TODO: vectorized arrow computation
+    // A row's partition is the number of boundaries its key is at or above:
+    // the half-open convention counted rather than searched. One vectorized
+    // comparison per boundary is what makes this type-generic — `gt_eq`
+    // compares whatever the key is, where reading a `Float64Array` compared one
+    // thing.
+    //
+    // # Cost
+    //
+    // This is O(n·K) where the `f64` version it replaced was O(n·log K), and it
+    // measured slower on h2o Q8 at K=8 — `scatter_split_time` 45ms against
+    // 24-36ms. Paid for the type generality; ~20ms of a ~2.5s query.
+    //
+    // Two ways back, if a workload ever makes it matter:
+    //
+    // - Accumulate with arrow kernels rather than this loop. Measured *worse*,
+    //   87-123ms: `cast` and `add` each allocate a full array per boundary, so
+    //   24 allocations per batch at K=8 replace an in-place increment.
+    // - Restore the binary search over `SortKeyCodec`-encoded `u64` keys, which
+    //   keeps O(n·log K) and compares integers. Needs an encode that keeps NULL
+    //   row positions — today's drops them, since a sketch has no place for a
+    //   NULL — and then a placeholder key at those rows that the router must
+    //   remember not to read.
+    let mut target = vec![0usize; batch.num_rows()];
+    for boundary in boundaries {
+        let at_or_above = gt_eq(&keys, &Scalar::new(boundary.to_array()?))?;
+        for (row, above) in at_or_above.iter().enumerate() {
+            if above == Some(true) {
+                target[row] += 1;
+            }
+        }
+    }
+
     let mut buckets: Vec<Vec<u32>> = (0..output_partitions).map(|_| Vec::new()).collect();
     let null_target = if nulls_first {
         0
     } else {
         output_partitions - 1
     };
-    for row in 0..batch.num_rows() {
-        let target = if keys.is_null(row) {
+    for (row, counted) in target.iter().enumerate() {
+        // A NULL is absent from every comparison above, so its count says
+        // nothing about where it belongs — the ordering does.
+        let bucket = if keys.is_null(row) {
             null_target
         } else {
-            // partition_point returns the count of elements matching the
-            // predicate — here `<= key` — which is the target partition
-            // index under the half-open convention.
-            boundaries.partition_point(|&cut| cut <= keys.value(row))
+            *counted
         };
-        buckets[target].push(row as u32);
+        buckets[bucket].push(row as u32);
     }
 
     let mut result = Vec::with_capacity(output_partitions);
@@ -427,6 +448,14 @@ mod tests {
     use datafusion::physical_expr::expressions::col;
     use std::sync::Arc;
 
+    /// Boundaries as `Float64` scalars, which is what discovery produces.
+    fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+        values
+            .into_iter()
+            .map(|v| ScalarValue::Float64(Some(v)))
+            .collect()
+    }
+
     fn f64_col(schema: &Schema, name: &str) -> Arc<dyn PhysicalExpr> {
         col(name, schema).unwrap()
     }
@@ -466,7 +495,8 @@ mod tests {
             vec![0, 1, 2, 3, 4, 5, 6],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0], true).unwrap();
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([0.0, 10.0]), true).unwrap();
         assert_eq!(splits.len(), 3, "K = boundaries.len() + 1");
         let total: usize = splits.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, batch.num_rows(), "no row lost or duplicated");
@@ -482,7 +512,8 @@ mod tests {
             vec![0, 1, 2, 3],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0], true).unwrap();
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([0.0, 10.0]), true).unwrap();
         assert_eq!(splits[0].num_rows(), 1);
         assert_eq!(splits[1].num_rows(), 2);
         assert_eq!(splits[2].num_rows(), 1);
@@ -498,11 +529,11 @@ mod tests {
         );
         let routing = f64_col(&schema, "v2");
         // Two NULLs, 5.0 below the cut, 50.0 above it.
-        let first = split_batch_by_range(&batch, &routing, &[10.0], true).unwrap();
+        let first = split_batch_by_range(&batch, &routing, &cuts([10.0]), true).unwrap();
         assert_eq!(first[0].num_rows(), 3, "NULLs + 5.0");
         assert_eq!(first[1].num_rows(), 1, "50.0");
 
-        let last = split_batch_by_range(&batch, &routing, &[10.0], false).unwrap();
+        let last = split_batch_by_range(&batch, &routing, &cuts([10.0]), false).unwrap();
         assert_eq!(last[0].num_rows(), 1, "5.0");
         assert_eq!(last[1].num_rows(), 3, "50.0 + NULLs");
     }
@@ -512,7 +543,8 @@ mod tests {
         let schema = schema_v2_id();
         let batch = batch(&schema, vec![], vec![]);
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0], true).unwrap();
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([0.0, 10.0]), true).unwrap();
         assert_eq!(splits.len(), 3);
         assert!(splits.iter().all(|b| b.num_rows() == 0));
     }
