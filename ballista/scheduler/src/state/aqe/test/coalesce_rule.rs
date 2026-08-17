@@ -32,6 +32,7 @@ use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
 };
+use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -240,7 +241,10 @@ async fn should_skip_coalesce_when_leaf_has_range_repartition_routing()
     planner.set_repartition_routing(
         0,
         RangeRepartitionRouting {
-            cuts: vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
+            cuts: [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]
+                .into_iter()
+                .map(|v| ScalarValue::Float64(Some(v)))
+                .collect(),
             routing_expr: Arc::new(Column::new("c", 0)),
         },
     )?;

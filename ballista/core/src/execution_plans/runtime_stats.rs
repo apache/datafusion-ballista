@@ -61,7 +61,9 @@ use std::sync::{Arc, Mutex};
 use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, OrderingRequirements, PhysicalExpr, PhysicalSortExpr,
@@ -80,6 +82,7 @@ use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
 use log::debug;
 
+use crate::execution_plans::range_filter::{widen_above, widen_below};
 use crate::serde::protobuf::{
     QuantileSketchState, RuntimeStatsPartitionEntry, RuntimeStatsReport,
 };
@@ -898,15 +901,15 @@ pub struct MergedRuntimeStats {
     /// Sum of `row_count` across every partition entry in the group.
     pub total_rows: u64,
     /// `partition_count - 1` cut points at quantiles `i/partition_count`
-    /// on the merged T-Digest. Empty when `partition_count < 2` or no
+    /// on the merged sketch. Empty when `partition_count < 2` or no
     /// non-empty sketches were merged.
-    pub cuts: Vec<f64>,
-    /// Merged T-Digest's `min()` if at least one non-empty sketch
-    /// contributed; `None` in row-count-only mode.
-    pub min: Option<f64>,
-    /// Merged T-Digest's `max()` if at least one non-empty sketch
-    /// contributed; `None` in row-count-only mode.
-    pub max: Option<f64>,
+    pub cuts: Vec<ScalarValue>,
+    /// Merged sketch's minimum if at least one non-empty sketch contributed;
+    /// `None` in row-count-only mode.
+    pub min: Option<ScalarValue>,
+    /// Merged sketch's maximum if at least one non-empty sketch contributed;
+    /// `None` in row-count-only mode.
+    pub max: Option<ScalarValue>,
 }
 
 /// Group `RuntimeStatsReport`s by `order_by` wire tag, merge the T-Digests
@@ -995,10 +998,13 @@ fn merge_group(group: &[&RuntimeStatsReport]) -> Result<MergedRuntimeStats> {
     }
 
     let merged_sketch = TDigest::merge_digests(sketches.iter());
-    let cuts: Vec<f64> = if partition_count > 1 {
+    let cuts: Vec<ScalarValue> = if partition_count > 1 {
         (1..partition_count)
             .map(|cut_index| {
-                merged_sketch.estimate_quantile(cut_index as f64 / partition_count as f64)
+                ScalarValue::Float64(Some(
+                    merged_sketch
+                        .estimate_quantile(cut_index as f64 / partition_count as f64),
+                ))
             })
             .collect()
     } else {
@@ -1010,8 +1016,8 @@ fn merge_group(group: &[&RuntimeStatsReport]) -> Result<MergedRuntimeStats> {
         task_count,
         total_rows,
         cuts,
-        min: Some(merged_sketch.min()),
-        max: Some(merged_sketch.max()),
+        min: Some(ScalarValue::Float64(Some(merged_sketch.min()))),
+        max: Some(ScalarValue::Float64(Some(merged_sketch.max()))),
     })
 }
 
@@ -1120,9 +1126,9 @@ pub fn repartition_routing_expr(
 pub fn cut_partitions(
     original_partitions: Vec<Vec<PartitionLocation>>,
     reports: &[TaskRuntimeStats],
-    global_cuts: &[f64],
-    halo_lo: f64,
-    halo_hi: f64,
+    global_cuts: &[ScalarValue],
+    halo_lo: &ScalarValue,
+    halo_hi: &ScalarValue,
 ) -> Result<Vec<Vec<PartitionLocation>>> {
     use std::collections::HashMap;
 
@@ -1178,9 +1184,14 @@ pub fn cut_partitions(
             // Monotone cuts → the set of matching buckets is a contiguous
             // range [b_lo, b_hi], found by two partition_points over
             // `global_cuts` with the sketch shifted by the halos.
-            let (sketch_min, sketch_max) = (sketch.min(), sketch.max());
-            let b_lo = global_cuts.partition_point(|&c| c <= sketch_min - halo_hi);
-            let b_hi = global_cuts.partition_point(|&c| c <= sketch_max + halo_lo);
+            let sketch_min = ScalarValue::Float64(Some(sketch.min()));
+            let sketch_max = ScalarValue::Float64(Some(sketch.max()));
+            // Typed widening with the same zero shortcut `RangeFilterExec`
+            // uses, so a zero halo of one type cannot refuse a key of another.
+            let reach_lo = widen_below(&sketch_min, halo_hi)?;
+            let reach_hi = widen_above(&sketch_max, halo_lo)?;
+            let b_lo = global_cuts.partition_point(|cut| cut <= &reach_lo);
+            let b_hi = global_cuts.partition_point(|cut| cut <= &reach_hi);
             for bucket in &mut remapped[b_lo..=b_hi] {
                 bucket.push(file.clone());
             }
@@ -1737,6 +1748,14 @@ mod merge_tests {
         }
     }
 
+    /// A cut as the number the band assertions are written in terms of.
+    fn as_f64(cut: &ScalarValue) -> f64 {
+        match cut {
+            ScalarValue::Float64(Some(v)) => *v,
+            other => panic!("expected a Float64 cut, got {other:?}"),
+        }
+    }
+
     /// Two reports over disjoint value ranges — merged sketch spans the
     /// union, total_rows sums, and the partition_count=2 midpoint cut
     /// falls between the two ranges.
@@ -1752,15 +1771,15 @@ mod merge_tests {
         assert_eq!(group.task_count, 2);
         assert_eq!(group.total_rows, 6);
         let midpoint = match group.cuts.as_slice() {
-            [midpoint] => *midpoint,
+            [midpoint] => as_f64(midpoint),
             other => panic!("expected exactly one cut, got {other:?}"),
         };
         assert!(
             (3.0..=10.0).contains(&midpoint),
             "midpoint cut should land between ranges (got {midpoint})"
         );
-        assert_eq!(group.min, Some(1.0));
-        assert_eq!(group.max, Some(12.0));
+        assert_eq!(group.min.as_ref().map(as_f64), Some(1.0));
+        assert_eq!(group.max.as_ref().map(as_f64), Some(12.0));
     }
 
     /// partition_count=4 cuts on a uniform [0, 100) sample land roughly
@@ -1782,7 +1801,7 @@ mod merge_tests {
         let group = only_group(&[report]);
         assert_eq!(group.partition_count, 4);
         let (p25, p50, p75) = match group.cuts.as_slice() {
-            [p25, p50, p75] => (*p25, *p50, *p75),
+            [p25, p50, p75] => (as_f64(p25), as_f64(p50), as_f64(p75)),
             other => panic!("expected 3 cuts, got {other:?}"),
         };
         // Loose bounds — T-Digest quantile estimates aren't exact, but
@@ -2047,6 +2066,18 @@ mod overlap_remap_tests {
         }
     }
 
+    /// A zero halo of the routing key's type, which is what the scheduler
+    /// passes for a consumer with no halo at all.
+    const ZERO_HALO: ScalarValue = ScalarValue::Float64(Some(0.0));
+
+    /// Cuts as `Float64` scalars, which is what merging produces.
+    fn cuts_f64<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+        values
+            .into_iter()
+            .map(|v| ScalarValue::Float64(Some(v)))
+            .collect()
+    }
+
     /// Build a report whose sub-parts each carry a T-Digest sketch over
     /// `values`. Slot `sub_part_id` gets a sketch of `values[sub_part_id]`.
     fn sketch_report(
@@ -2091,12 +2122,13 @@ mod overlap_remap_tests {
             sketch_report(200, vec![vec![20.0, 25.0, 29.0]]),
         ];
         // Cut at 15 → partition 0 = (-∞, 15), partition 1 = [15, +∞).
-        let cuts = vec![15.0];
+        let cuts = cuts_f64([15.0]);
         // Passthrough map: both producers wrote to sub_part_id=0.
         let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
 
         let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .unwrap();
         assert_eq!(remapped.len(), 2, "K = cuts.len() + 1");
         // Partition 0: only producer 100.
         assert_eq!(remapped[0].len(), 1);
@@ -2113,11 +2145,12 @@ mod overlap_remap_tests {
     fn overlap_remap_straddling_producer_appears_in_both_partitions() {
         // Producer 300 covers [5, 25) — straddles the cut at 15.
         let reports = vec![sketch_report(300, vec![vec![5.0, 15.0, 25.0]])];
-        let cuts = vec![15.0];
+        let cuts = cuts_f64([15.0]);
         let original_partitions = vec![vec![location(0, 300)]];
 
         let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .unwrap();
         assert_eq!(remapped.len(), 2);
         assert_eq!(remapped[0].len(), 1, "straddler in partition 0");
         assert_eq!(remapped[0][0].file_id, Some(300));
@@ -2131,14 +2164,15 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_missing_file_id_errors() {
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         // Loc has file_id=None — invalid for URRE/ORRE stages.
         let mut bad = location(0, 100);
         bad.file_id = None;
         let original_partitions = vec![vec![bad]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
-            .expect_err("missing file_id must surface as an error");
+        let err =
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .expect_err("missing file_id must surface as an error");
         assert!(
             err.to_string().contains("missing file_id"),
             "unexpected error: {err}"
@@ -2156,11 +2190,12 @@ mod overlap_remap_tests {
         // Report from producer 100, but original_partitions only has
         // producer 200 — no file to route.
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         let original_partitions = vec![vec![location(0, 200)]];
 
         let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -2171,11 +2206,12 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_empty_sketches_produce_empty_partitions() {
         let reports = vec![sketch_report(100, vec![vec![]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         let original_partitions = vec![vec![location(0, 100)]];
 
         let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -2186,14 +2222,15 @@ mod overlap_remap_tests {
     #[test]
     fn missing_sketch_with_rows_errors() {
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         // File 200 has 5 rows but no report entry exists for it.
         let mut orphan = location(0, 200);
         orphan.partition_stats = PartitionStats::new(Some(5), None, None);
         let original_partitions = vec![vec![orphan]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
-            .expect_err("file with rows but no sketch must error");
+        let err =
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .expect_err("file with rows but no sketch must error");
         let msg = err.to_string();
         assert!(
             msg.contains("num_rows=Some(5)") && msg.contains("no usable sketch"),
@@ -2222,7 +2259,7 @@ mod overlap_remap_tests {
             // F: spans the whole range → every bucket
             sketch_report(6, vec![vec![0.0, 20.0, 100.0]]),
         ];
-        let cuts = vec![10.0, 20.0, 30.0];
+        let cuts = cuts_f64([10.0, 20.0, 30.0]);
         let original_partitions = vec![vec![
             location(0, 1),
             location(0, 2),
@@ -2233,7 +2270,8 @@ mod overlap_remap_tests {
         ]];
 
         let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .unwrap();
         assert_eq!(remapped.len(), 4);
         let ids = |b: &[PartitionLocation]| {
             let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
@@ -2252,13 +2290,14 @@ mod overlap_remap_tests {
     #[test]
     fn missing_sketch_with_unknown_rows_errors() {
         let reports: Vec<TaskRuntimeStats> = vec![];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         let mut orphan = location(0, 100);
         orphan.partition_stats = PartitionStats::default(); // num_rows = None
         let original_partitions = vec![vec![orphan]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
-            .expect_err("file with unknown rows but no sketch must error");
+        let err =
+            cut_partitions(original_partitions, &reports, &cuts, &ZERO_HALO, &ZERO_HALO)
+                .expect_err("file with unknown rows but no sketch must error");
         let msg = err.to_string();
         assert!(
             msg.contains("num_rows=None") && msg.contains("no usable sketch"),
@@ -2279,9 +2318,9 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_halo_band_widens_both_sides_without_bleeding_to_far_partitions() {
         // K=5, asymmetric halos so we can tell halo_lo and halo_hi apart.
-        let cuts = vec![10.0, 20.0, 30.0, 40.0];
-        let halo_lo = 1.0;
-        let halo_hi = 2.0;
+        let cuts = cuts_f64([10.0, 20.0, 30.0, 40.0]);
+        let halo_lo = ScalarValue::Float64(Some(1.0));
+        let halo_hi = ScalarValue::Float64(Some(2.0));
         // Effective partition ranges:
         //   P0: (-∞, 12)   P1: [9, 22)   P2: [19, 32)   P3: [29, 42)   P4: [39, +∞)
         let reports = vec![
@@ -2309,7 +2348,7 @@ mod overlap_remap_tests {
         ]];
 
         let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, halo_lo, halo_hi)
+            cut_partitions(original_partitions, &reports, &cuts, &halo_lo, &halo_hi)
                 .unwrap();
         let ids = |b: &[PartitionLocation]| {
             let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();

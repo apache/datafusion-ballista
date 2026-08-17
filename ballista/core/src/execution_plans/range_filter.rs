@@ -479,8 +479,32 @@ fn validate_halo(name: &str, halo: &ScalarValue) -> Result<()> {
 /// Whether widening by `halo` is a no-op. Worth asking before the arithmetic,
 /// because a zero halo of one type must not refuse a key of another: the
 /// scheduler passes `Float64(0.0)` for every consumer with no halo at all.
-fn is_zero_halo(halo: &ScalarValue) -> Result<bool> {
+pub(crate) fn is_zero_halo(halo: &ScalarValue) -> Result<bool> {
     Ok(halo == &ScalarValue::new_zero(&halo.data_type())?)
+}
+
+/// `value` moved down by `halo`, or unchanged when the halo is zero. The
+/// scheduler widens the same way when it routes whole files, so both live here
+/// with the operator that defines what a halo means.
+pub(crate) fn widen_below(
+    value: &ScalarValue,
+    halo: &ScalarValue,
+) -> Result<ScalarValue> {
+    if is_zero_halo(halo)? {
+        return Ok(value.clone());
+    }
+    value.sub(halo)
+}
+
+/// `value` moved up by `halo`. Counterpart to [`widen_below`].
+pub(crate) fn widen_above(
+    value: &ScalarValue,
+    halo: &ScalarValue,
+) -> Result<ScalarValue> {
+    if is_zero_halo(halo)? {
+        return Ok(value.clone());
+    }
+    value.add(halo)
 }
 
 /// Validate + widen raw bounds. Emits a `BoundsState` with the raw preserved
@@ -498,18 +522,17 @@ fn build_bounds_state(
             raw.len()
         );
     }
-    let (widen_lo, widen_hi) = (!is_zero_halo(halo_lo)?, !is_zero_halo(halo_hi)?);
     let widened = raw
         .iter()
         .map(|(lo, hi)| {
-            let lo_w = match lo {
-                Some(lo) if widen_lo => Some(lo.sub(halo_lo)?),
-                other => other.clone(),
-            };
-            let hi_w = match hi {
-                Some(hi) if widen_hi => Some(hi.add(halo_hi)?),
-                other => other.clone(),
-            };
+            let lo_w = lo
+                .as_ref()
+                .map(|lo| widen_below(lo, halo_lo))
+                .transpose()?;
+            let hi_w = hi
+                .as_ref()
+                .map(|hi| widen_above(hi, halo_hi))
+                .transpose()?;
             if let (Some(l), Some(h)) = (&lo_w, &hi_w)
                 && l > h
             {

@@ -400,8 +400,8 @@ impl AdaptiveExecutionGraph {
                     partitions,
                     reports,
                     &routing.cuts,
-                    halo_lo,
-                    halo_hi,
+                    &halo_lo,
+                    &halo_hi,
                 )
                 .map_err(|err| {
                     BallistaError::General(format!(
@@ -1486,8 +1486,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 fn downstream_halos(
     full_plan: &Arc<dyn ExecutionPlan>,
     producer_stage_id: usize,
-) -> datafusion::common::Result<(f64, f64)> {
-    let mut result: Option<(f64, f64)> = None;
+) -> datafusion::common::Result<(ScalarValue, ScalarValue)> {
+    let mut result: Option<(ScalarValue, ScalarValue)> = None;
     full_plan.apply(|node| {
         let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
             return Ok(TreeNodeRecursion::Continue);
@@ -1508,7 +1508,7 @@ fn downstream_halos(
         if exchange.stage_id() != Some(producer_stage_id) {
             return Ok(TreeNodeRecursion::Continue);
         }
-        result = Some((scalar_to_f64(rf.halo_lo())?, scalar_to_f64(rf.halo_hi())?));
+        result = Some((rf.halo_lo().clone(), rf.halo_hi().clone()));
         Ok(TreeNodeRecursion::Stop)
     })?;
     result.ok_or_else(|| {
@@ -1518,17 +1518,4 @@ fn downstream_halos(
              downstream partial aggregates. Check the rule that planted this ORRE."
         ))
     })
-}
-
-/// Halos travel through the RFE public API as `ScalarValue` for future
-/// type widening (Interval, timestamps under KLL). Today the internal
-/// routing math is `f64`; any other variant is a shape violation upstream
-/// and we fail loud rather than silently zero-widen.
-fn scalar_to_f64(sv: &ScalarValue) -> datafusion::common::Result<f64> {
-    match sv {
-        ScalarValue::Float64(Some(v)) => Ok(*v),
-        other => datafusion::common::internal_err!(
-            "only f64 halos are implemented, got: {other:?}"
-        ),
-    }
 }

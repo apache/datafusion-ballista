@@ -34,6 +34,7 @@ use ballista_core::serde::scheduler::{
 };
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::PhysicalSortExpr;
@@ -150,9 +151,14 @@ async fn routing_parks_when_range_repartition_is_plan_root()
             ..Default::default()
         },
     }];
-    let cuts = vec![15.0];
-    let remapped =
-        cut_partitions(vec![vec![location(0, 7, 3)]], &reports, &cuts, 0.0, 0.0)?;
+    let cuts = vec![ScalarValue::Float64(Some(15.0))];
+    let remapped = cut_partitions(
+        vec![vec![location(0, 7, 3)]],
+        &reports,
+        &cuts,
+        &ScalarValue::Float64(Some(0.0)),
+        &ScalarValue::Float64(Some(0.0)),
+    )?;
 
     // `cut_partitions` must duplicate the straddler into both partitions —
     // the read-side filter is expected to trim on read.
@@ -204,7 +210,7 @@ async fn set_repartition_routing_errs_when_stage_has_no_exchange()
         .expect("a runnable stage must exist");
 
     let routing = RangeRepartitionRouting {
-        cuts: vec![0.0],
+        cuts: vec![ScalarValue::Float64(Some(0.0))],
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
     };
     let result = planner.set_repartition_routing(stage_id, routing);
@@ -239,7 +245,7 @@ async fn routing_parks_when_range_repartition_has_a_parent()
         .expect("a runnable stage must exist");
 
     let routing = RangeRepartitionRouting {
-        cuts: vec![15.0],
+        cuts: vec![ScalarValue::Float64(Some(15.0))],
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
     };
     planner.set_repartition_routing(stage_id, routing)?;
