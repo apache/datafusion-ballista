@@ -2017,14 +2017,14 @@ mod test {
         // EmptyExec exposes one partition, so partition-0 is the only slot.
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert_eq!(original.total_row_count(), 0);
-        assert_eq!(original.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
+        assert_eq!(original.sort_key_sketch(0).unwrap().unwrap().count(), 0);
         assert_eq!(
-            original.merged_quantile_sketch().unwrap().unwrap().count(),
-            0.0
+            original.merged_sort_key_sketch().unwrap().unwrap().count(),
+            0
         );
         // Out-of-range partition surfaces as an internal error, not a panic.
         assert!(original.row_count(1).is_err());
-        assert!(original.quantile_sketch(1).is_err());
+        assert!(original.sort_key_sketch(1).is_err());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -2051,10 +2051,10 @@ mod test {
         assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
         assert!(!order_by[0].options.descending);
         assert_eq!(decoded.row_count(0).unwrap(), 0);
-        assert_eq!(decoded.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
+        assert_eq!(decoded.sort_key_sketch(0).unwrap().unwrap().count(), 0);
         assert_eq!(
-            decoded.merged_quantile_sketch().unwrap().unwrap().count(),
-            0.0
+            decoded.merged_sort_key_sketch().unwrap().unwrap().count(),
+            0
         );
     }
 
@@ -2075,10 +2075,10 @@ mod test {
         assert!(original.order_by().is_none());
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert!(
-            original.quantile_sketch(0).unwrap().is_none(),
+            original.sort_key_sketch(0).unwrap().is_none(),
             "no sketch was requested at construction"
         );
-        assert!(original.merged_quantile_sketch().unwrap().is_none());
+        assert!(original.merged_sort_key_sketch().unwrap().is_none());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -2098,8 +2098,8 @@ mod test {
             .downcast_ref::<RuntimeStatsExec>()
             .expect("Expected RuntimeStatsExec");
         assert!(decoded.order_by().is_none());
-        assert!(decoded.quantile_sketch(0).unwrap().is_none());
-        assert!(decoded.merged_quantile_sketch().unwrap().is_none());
+        assert!(decoded.sort_key_sketch(0).unwrap().is_none());
+        assert!(decoded.merged_sort_key_sketch().unwrap().is_none());
     }
 
     /// `try_new` refuses an empty ORDER BY — no routing key means the
@@ -2124,10 +2124,12 @@ mod test {
     }
 
     /// `try_new` refuses a routing expression whose evaluated type is
-    /// not `Float64` — TDigest can't ingest anything else, so failing
-    /// at construction beats a downcast error mid-stream.
+    /// not encodable — the sketch needs a fixed-width key, so failing
+    /// An `Int64` key and a nullable key are both sketchable now: the codec
+    /// covers every fixed-width type and NULLs are counted beside the values
+    /// rather than having nowhere to go.
     #[test]
-    fn test_runtime_stats_exec_rejects_non_float64_routing_expr() {
+    fn test_runtime_stats_exec_accepts_widened_routing_exprs() {
         use crate::execution_plans::RuntimeStatsExec;
         use datafusion::arrow::compute::SortOptions;
         use datafusion::physical_expr::PhysicalSortExpr;
@@ -2135,53 +2137,29 @@ mod test {
         use datafusion::physical_plan::expressions::col;
 
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v", DataType::Float64, true),
+            Field::new("nullable_float", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
+            Field::new("when", DataType::Utf8, false),
         ]));
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let sort_expr = PhysicalSortExpr {
-            expr: col("id", schema.as_ref()).unwrap(),
+        let sort_on = |name: &str| PhysicalSortExpr {
+            expr: col(name, schema.as_ref()).unwrap(),
             options: SortOptions {
                 descending: false,
                 nulls_first: true,
             },
         };
-        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
-            .expect_err("non-Float64 routing expr must be rejected");
-        assert!(
-            err.to_string()
-                .contains("routing expression must be Float64"),
-            "got: {err}"
-        );
-    }
 
-    /// `try_new` refuses a nullable routing expression — TDigest has no
-    /// NULL slot, so allowing nulls would silently exclude them from
-    /// the sketch while `row_count` still saw them. The KLL swap lifts
-    /// this by positioning nulls per `SortOptions::nulls_first`.
-    #[test]
-    fn test_runtime_stats_exec_rejects_nullable_routing_expr() {
-        use crate::execution_plans::RuntimeStatsExec;
-        use datafusion::arrow::compute::SortOptions;
-        use datafusion::physical_expr::PhysicalSortExpr;
-        use datafusion::physical_plan::empty::EmptyExec;
-        use datafusion::physical_plan::expressions::col;
+        for name in ["nullable_float", "id"] {
+            RuntimeStatsExec::try_new(input.clone(), Some(vec![sort_on(name)]))
+                .unwrap_or_else(|e| panic!("{name} must be sketchable: {e}"));
+        }
 
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
-        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let sort_expr = PhysicalSortExpr {
-            expr: col("v", schema.as_ref()).unwrap(),
-            options: SortOptions {
-                descending: false,
-                nulls_first: true,
-            },
-        };
-        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
-            .expect_err("nullable routing expr must be rejected");
+        // What the codec does not cover is still refused, and says so.
+        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_on("when")]))
+            .expect_err("a variable-width key has no fixed-width encoding");
         assert!(
-            err.to_string()
-                .contains("routing expression must be non-nullable"),
+            err.to_string().contains("no sort-key encoding"),
             "got: {err}"
         );
     }

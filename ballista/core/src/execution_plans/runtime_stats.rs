@@ -36,18 +36,8 @@
 //! downstream `SortExec` / `BoundedWindowAggExec` even though only the
 //! first key drives the sketch today).
 //!
-//! Two sketches observe that stream side by side while the operator
-//! migrates off `TDigest`: the incumbent, and a [`SortKeySketch`] over the
-//! same routing values. Both see every batch, so either can be checked
-//! against the other on any workload, and the `sketch_time` /
-//! `sort_key_sketch_time` metrics price them against each other in situ.
-//!
-//! `TDigest` goes once the cut consumers read the [`SortKeySketch`] instead
-//! — the routers, the wire format, and the scheduler-side merge. That is
-//! also what lifts the construction gate below. `SortKeySketch` sketches any
-//! fixed-width key and gives NULLs a position per each sort key's
-//! `SortOptions::nulls_first`, where `TDigest` is `Float64`-only with no NULL
-//! slot, so the gate exists for the incumbent's sake alone.
+//! The sketch is a [`SortKeySketch`], which covers any fixed-width key and
+//! gives NULLs a position per each sort key's `SortOptions::nulls_first`.
 //!
 //! This PR lands the tap in isolation: nothing wires it into a plan yet,
 //! and the executor doesn't yet ship the accumulated state back to the
@@ -58,9 +48,8 @@ use std::fmt::{self, Debug, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
     Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
@@ -79,21 +68,13 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, StatisticsArgs, apply_expression_roots,
     statistics::ChildStats,
 };
-use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
 use log::debug;
 
 use crate::execution_plans::range_filter::{widen_above, widen_below};
-use crate::serde::protobuf::{
-    QuantileSketchState, RuntimeStatsPartitionEntry, RuntimeStatsReport,
-};
+use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
 use crate::serde::scheduler::PartitionLocation;
 use crate::sort_key::{SortKeyCodec, SortKeySketch};
-
-/// T-Digest centroid budget. 100 is DataFusion's default and gives ~1%
-/// quantile error, plenty of margin over the sub-partition counts we
-/// expect at bin-pack time.
-const TDIGEST_MAX_SIZE: usize = 100;
 
 /// Streaming runtime-stats operator. See module-level docs.
 pub struct RuntimeStatsExec {
@@ -106,26 +87,19 @@ pub struct RuntimeStatsExec {
     /// `AtomicUsize::fetch_add` on the hot path — no cross-partition
     /// contention, no lock overhead.
     row_counts: Arc<[AtomicUsize]>,
-    /// Only allocated when `order_by` is `Some`. Sketches over the first
-    /// ORDER BY expression's `Float64` values. `Mutex`-per-partition to
-    /// keep writes off any shared lock.
-    sketches: Option<Arc<[Mutex<TDigest>]>>,
-    /// The same observations as `sketches`, in the sketch that replaces it.
-    /// Allocated together with it and fed from the same evaluated array.
+    /// Only allocated when `order_by` is `Some`. Sketches the first ORDER BY
+    /// expression. `Mutex`-per-partition to keep writes off any shared lock.
     sort_key_sketches: Option<Arc<[Mutex<SortKeySketch>]>>,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl RuntimeStatsExec {
-    /// Wrap `input`. If `order_by` is provided, its first entry drives
-    /// the per-partition T-Digest; the full slice is preserved for serde
-    /// and for downstream operators (`SortExec`, `BoundedWindowAggExec`)
-    /// that need it. When `Some`, at least one expression is required —
-    /// nothing to sketch on with an empty slice — and the first
-    /// expression must evaluate to a non-nullable `Float64` (T-Digest is
-    /// `Float64`-only and has no NULL slot; the KLL swap will lift both
-    /// restrictions).
+    /// Wrap `input`. If `order_by` is provided, its first entry drives the
+    /// per-partition sketch; the full slice is preserved for serde and for
+    /// downstream operators (`SortExec`, `BoundedWindowAggExec`) that need it.
+    /// When `Some`, at least one expression is required — nothing to sketch on
+    /// with an empty slice — and its type must be one [`SortKeyCodec`] encodes.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         order_by: Option<Vec<PhysicalSortExpr>>,
@@ -139,20 +113,8 @@ impl RuntimeStatsExec {
                 };
                 let schema = input.schema();
                 let routing_type = first.expr.data_type(&schema)?;
-                if routing_type != DataType::Float64 {
-                    return internal_err!(
-                        "RuntimeStatsExec: routing expression must be Float64, got {routing_type:?}"
-                    );
-                }
-                if first.expr.nullable(&schema)? {
-                    return internal_err!(
-                        "RuntimeStatsExec: routing expression must be non-nullable; \
-                         T-Digest has no NULL slot (lifts with the KLL swap)"
-                    );
-                }
-                // Unreachable while the gate above holds the type at
-                // Float64, which `SortKeyCodec` encodes. Becomes the live
-                // rejection for unsupported types when the gate lifts.
+                // What the codec covers is the only restriction: any
+                // fixed-width type, nullable or not, in either direction.
                 let Some(codec) = SortKeyCodec::try_new(&routing_type, first.options)
                 else {
                     return internal_err!(
@@ -168,12 +130,6 @@ impl RuntimeStatsExec {
             .map(|_| AtomicUsize::new(0))
             .collect::<Vec<_>>()
             .into();
-        let sketches: Option<Arc<[Mutex<TDigest>]>> = order_by.as_ref().map(|_| {
-            (0..partition_count)
-                .map(|_| Mutex::new(TDigest::new(TDIGEST_MAX_SIZE)))
-                .collect::<Vec<_>>()
-                .into()
-        });
         let sort_key_sketches: Option<Arc<[Mutex<SortKeySketch>]>> = codec.map(|codec| {
             (0..partition_count)
                 .map(|_| Mutex::new(SortKeySketch::new(codec.clone())))
@@ -190,7 +146,6 @@ impl RuntimeStatsExec {
             input,
             order_by,
             row_counts,
-            sketches,
             sort_key_sketches,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -235,58 +190,8 @@ impl RuntimeStatsExec {
             .sum()
     }
 
-    /// Snapshot of one partition's running quantile sketch. Returns
-    /// `None` when the operator was built in row-count-only mode (no
-    /// `order_by`). Cheap clone (a `Vec<Centroid>` of size
-    /// ≤ `TDIGEST_MAX_SIZE`).
-    ///
-    /// Errors if `partition` ≥ input's partition count — callers pass a
-    /// partition id they've already used with `execute`.
-    pub fn quantile_sketch(&self, partition: usize) -> Result<Option<TDigest>> {
-        let Some(sketches) = &self.sketches else {
-            return Ok(None);
-        };
-        let slot = sketches.get(partition).ok_or_else(|| {
-            internal_datafusion_err!(
-                "RuntimeStatsExec: partition {} out of range (have {})",
-                partition,
-                sketches.len()
-            )
-        })?;
-        let guard = slot.lock().map_err(|e| {
-            internal_datafusion_err!(
-                "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
-                partition
-            )
-        })?;
-        Ok(Some(guard.clone()))
-    }
-
-    /// All partitions merged into one sketch. `Ok(None)` in
+    /// Snapshot of one partition's running [`SortKeySketch`]. `None` in
     /// row-count-only mode.
-    pub fn merged_quantile_sketch(&self) -> Result<Option<TDigest>> {
-        let Some(sketches) = self.sketches.as_ref() else {
-            return Ok(None);
-        };
-        let snapshots: Vec<TDigest> = sketches
-            .iter()
-            .enumerate()
-            .map(|(partition, m)| {
-                let guard = m.lock().map_err(|e| {
-                    internal_datafusion_err!(
-                        "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
-                        partition
-                    )
-                })?;
-                Ok(guard.clone())
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Some(TDigest::merge_digests(snapshots.iter())))
-    }
-
-    /// Snapshot of one partition's running [`SortKeySketch`] — the same
-    /// observations [`Self::quantile_sketch`] reports, in the sketch that
-    /// replaces it. `None` in row-count-only mode.
     ///
     /// Errors if `partition` ≥ input's partition count — callers pass a
     /// partition id they've already used with `execute`.
@@ -483,7 +388,6 @@ impl ExecutionPlan for RuntimeStatsExec {
         // state share the counters/sketches. First ORDER BY expression,
         // if any, drives sketching.
         let row_counts = self.row_counts.clone();
-        let sketches = self.sketches.clone();
         let sort_key_sketches = self.sort_key_sketches.clone();
         let routing_expr = self
             .order_by
@@ -493,28 +397,20 @@ impl ExecutionPlan for RuntimeStatsExec {
 
         let baseline = BaselineMetrics::new(&self.metrics, partition);
         // Separates sketch cost from the rest so we can tell whether the
-        // hot path in sketching mode is the T-Digest merge_unsorted_f64
-        // or something else (evaluate/downcast/flatten).
+        // hot path in sketching mode is the sketch or the evaluate above it.
         let sketch_time =
             MetricBuilder::new(&self.metrics).subset_time("sketch_time", partition);
-        // Counterpart to `sketch_time` over the same batches, so any workload
-        // that runs this operator prices the replacement against the
-        // incumbent without a separate benchmark.
-        let sort_key_sketch_time = MetricBuilder::new(&self.metrics)
-            .subset_time("sort_key_sketch_time", partition);
         let sketch_batches =
             MetricBuilder::new(&self.metrics).counter("sketch_batches", partition);
 
         let state = StreamState {
             input: input_stream,
             row_counts,
-            sketches,
             sort_key_sketches,
             routing_expr,
             partition,
             baseline,
             sketch_time,
-            sort_key_sketch_time,
             sketch_batches,
         };
         let out = futures::stream::unfold(state, |mut state| async move {
@@ -542,13 +438,11 @@ impl ExecutionPlan for RuntimeStatsExec {
 struct StreamState {
     input: SendableRecordBatchStream,
     row_counts: Arc<[AtomicUsize]>,
-    sketches: Option<Arc<[Mutex<TDigest>]>>,
     sort_key_sketches: Option<Arc<[Mutex<SortKeySketch>]>>,
     routing_expr: Option<Arc<dyn datafusion::physical_plan::PhysicalExpr>>,
     partition: usize,
     baseline: BaselineMetrics,
     sketch_time: Time,
-    sort_key_sketch_time: Time,
     sketch_batches: Count,
 }
 
@@ -579,50 +473,11 @@ impl StreamState {
             let evaluated = routing_expr.evaluate(batch)?;
             let array = evaluated.into_array(batch.num_rows())?;
 
-            // Counted here rather than inside either sketch: it describes
-            // the ingest path, so it neither belongs to one of the two nor
-            // disappears when the other is deleted.
+            // Counted on the ingest path rather than inside the sketch, so
+            // it describes what the operator observed rather than what one
+            // consumer of it did.
             if !array.is_empty() {
                 self.sketch_batches.add(1);
-            }
-
-            if let Some(sketches) = &self.sketches {
-                // With Float64 validated at construction, the downcast is
-                // belt-and-braces — evaluate() itself can still fail for
-                // expr-internal reasons.
-                let f64_arr = array.as_any().downcast_ref::<Float64Array>().ok_or_else(
-                    || {
-                        internal_datafusion_err!(
-                            "RuntimeStatsExec partition {}: routing expr produced {:?}, \
-                         expected Float64",
-                            self.partition,
-                            array.data_type()
-                        )
-                    },
-                )?;
-                // Construction rejects nullable routing exprs, so nulls
-                // shouldn't reach us; keep the flatten as cheap defense
-                // against a Field/data mismatch. NULLs are still forwarded
-                // downstream and counted — T-Digest has nowhere to put
-                // them.
-                let values: Vec<f64> = f64_arr.iter().flatten().collect();
-                if !values.is_empty() {
-                    let slot = sketches.get(self.partition).ok_or_else(|| {
-                        internal_datafusion_err!(
-                            "RuntimeStatsExec: partition {} out of range on sketch slot",
-                            self.partition
-                        )
-                    })?;
-                    let mut sketch = slot.lock().map_err(|e| {
-                        internal_datafusion_err!(
-                            "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
-                            self.partition
-                        )
-                    })?;
-                    let sketch_timer = self.sketch_time.timer();
-                    *sketch = sketch.merge_unsorted_f64(values);
-                    sketch_timer.done();
-                }
             }
 
             if let Some(sketches) = &self.sort_key_sketches {
@@ -638,7 +493,7 @@ impl StreamState {
                         self.partition
                     )
                 })?;
-                let sketch_timer = self.sort_key_sketch_time.timer();
+                let sketch_timer = self.sketch_time.timer();
                 sketch.ingest(array.as_ref())?;
                 sketch_timer.done();
             }
@@ -665,33 +520,6 @@ impl Drop for StreamState {
         let rows = counter.load(Ordering::Relaxed);
         if rows == 0 {
             return;
-        }
-        match self.sketches.as_ref().and_then(|s| s.get(self.partition)) {
-            Some(slot) => match slot.lock() {
-                Ok(sketch) => {
-                    debug!(
-                        "RuntimeStatsExec partition {}: rows={} T-Digest count={} min={} max={}",
-                        self.partition,
-                        rows,
-                        sketch.count(),
-                        sketch.min(),
-                        sketch.max(),
-                    );
-                }
-                Err(e) => {
-                    log::error!(
-                        "RuntimeStatsExec partition {}: sketch mutex poisoned on Drop; \
-                         skipping end-of-stream log: {e}",
-                        self.partition,
-                    );
-                }
-            },
-            None => {
-                debug!(
-                    "RuntimeStatsExec partition {}: rows={}",
-                    self.partition, rows
-                );
-            }
         }
         if let Some(slot) = self
             .sort_key_sketches
@@ -792,10 +620,6 @@ fn stats_to_report(
     let mut partitions = Vec::with_capacity(partition_count);
     for partition_id in 0..partition_count {
         let row_count = stats.row_count(partition_id)? as u64;
-        let sketch = match stats.quantile_sketch(partition_id)? {
-            Some(sk) if sk.count() > 0.0 => Some(sketch_to_proto(&sk)?),
-            _ => None,
-        };
         // The router needs each partition's value range, never its
         // distribution — hence extremes here and one merged sketch below.
         let (key_min, key_max, null_count) = match stats.sort_key_sketch(partition_id)? {
@@ -809,7 +633,6 @@ fn stats_to_report(
         partitions.push(RuntimeStatsPartitionEntry {
             partition_id: partition_id as u32,
             row_count,
-            sketch,
             key_min,
             key_max,
             null_count,
@@ -839,51 +662,6 @@ fn extreme_to_proto(
         })
         .transpose()
         .map(|encoded| encoded.into_iter().collect())
-}
-
-/// Serialize a T-Digest to the on-wire
-/// [`QuantileSketchState`].
-///
-/// Wraps `TDigest::to_scalar_state()` — the 6-element canonical form
-/// `(max_size, sum, count, max, min, centroids_as_list)` — each element
-/// encoded via `datafusion_proto_common::ScalarValue::try_from`.
-pub fn sketch_to_proto(sketch: &TDigest) -> Result<QuantileSketchState> {
-    let state = sketch.to_scalar_state();
-    let proto_state = state
-        .iter()
-        .map(datafusion_proto_common::ScalarValue::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            internal_datafusion_err!("failed to encode TDigest to proto: {e:?}")
-        })?;
-    Ok(QuantileSketchState { state: proto_state })
-}
-
-/// Deserialize a [`QuantileSketchState`] into a
-/// T-Digest.
-///
-/// Reverses [`sketch_to_proto`]. Guards against corrupted wire input by
-/// checking the element count before calling
-/// `TDigest::from_scalar_state`, which would panic on invalid shape.
-pub fn sketch_from_proto(proto: &QuantileSketchState) -> Result<TDigest> {
-    let scalars = proto
-        .state
-        .iter()
-        .map(datafusion::common::ScalarValue::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            internal_datafusion_err!(
-                "failed to decode QuantileSketchState scalars: {e:?}"
-            )
-        })?;
-    if scalars.len() != 6 {
-        return internal_err!(
-            "QuantileSketchState: expected 6 elements per TDigest::to_scalar_state, got {} \
-             — likely wire corruption",
-            scalars.len()
-        );
-    }
-    Ok(TDigest::from_scalar_state(&scalars))
 }
 
 /// One group's merged view: sketches from every report sharing the same
@@ -1285,66 +1063,6 @@ pub fn log_merged_runtime_stats(
 }
 
 #[cfg(test)]
-mod wire_tests {
-    use super::*;
-
-    /// Round-trip a populated T-Digest through the wire. Count / min /
-    /// max should survive unchanged; quantile queries should agree to
-    /// within floating-point equality since serde is lossless.
-    #[test]
-    fn tdigest_wire_roundtrip_preserves_populated_sketch() {
-        let mut original = TDigest::new(100);
-        original = original
-            .merge_unsorted_f64(vec![1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0]);
-        let proto = sketch_to_proto(&original).unwrap();
-        let decoded = sketch_from_proto(&proto).unwrap();
-        assert_eq!(decoded.count(), original.count());
-        assert_eq!(decoded.min(), original.min());
-        assert_eq!(decoded.max(), original.max());
-        // Quantile agreement at the median.
-        assert_eq!(
-            decoded.estimate_quantile(0.5),
-            original.estimate_quantile(0.5),
-        );
-    }
-
-    /// Empty T-Digest — zero centroids, no samples — still survives
-    /// the round-trip. This is the case an executor hits when a
-    /// `RuntimeStatsExec` was present in the plan but no batches
-    /// flowed through (e.g. empty input partition).
-    #[test]
-    fn tdigest_wire_roundtrip_preserves_empty_sketch() {
-        let original = TDigest::new(100);
-        let proto = sketch_to_proto(&original).unwrap();
-        let decoded = sketch_from_proto(&proto).unwrap();
-        assert_eq!(decoded.count(), 0.0);
-        assert_eq!(decoded.max_size(), original.max_size());
-    }
-
-    /// Corrupted wire input (wrong element count) is caught before
-    /// `TDigest::from_scalar_state` gets a chance to panic.
-    #[test]
-    fn sketch_from_proto_rejects_wrong_shape() {
-        let proto = QuantileSketchState {
-            state: (0..3)
-                .map(|_| {
-                    datafusion_proto_common::ScalarValue::try_from(&ScalarValue::Float64(
-                        Some(0.0),
-                    ))
-                    .unwrap()
-                })
-                .collect(),
-        };
-        let err = sketch_from_proto(&proto)
-            .expect_err("wrong-count wire input must be rejected before decode");
-        assert!(
-            err.to_string().contains("expected 6 elements"),
-            "got: {err}"
-        );
-    }
-}
-
-#[cfg(test)]
 mod stream_tests {
     //! End-to-end: build a small in-memory input, wrap it in
     //! `RuntimeStatsExec`, drain the stream, and verify the accumulated
@@ -1421,18 +1139,7 @@ mod stream_tests {
         assert_eq!(stats.row_count(0).unwrap(), 5);
         assert_eq!(stats.total_row_count(), 5);
 
-        // Sketch observed every non-null routing value.
-        let sketch = stats.quantile_sketch(0).unwrap().unwrap();
-        assert_eq!(sketch.count(), 5.0);
-        assert_eq!(sketch.min(), 1.0);
-        assert_eq!(sketch.max(), 5.0);
-        // Merged over the (single) partition matches the per-partition view.
-        assert_eq!(
-            stats.merged_quantile_sketch().unwrap().unwrap().count(),
-            5.0
-        );
-
-        // The replacement sketch observed the same stream.
+        // Sketch observed every routing value.
         let sort_key = stats.sort_key_sketch(0).unwrap().unwrap();
         assert_eq!(sort_key.count(), 5);
         assert_eq!(sort_key.null_count(), 0);
@@ -1447,20 +1154,13 @@ mod stream_tests {
         assert_eq!(stats.merged_sort_key_sketch().unwrap().unwrap().count(), 5);
     }
 
-    /// Both sketches see every batch, so their answers have to agree. The
-    /// extremes are exact in both and must match to the bit; the interior
-    /// quantiles carry each sketch's rank error, which `KLL_K`'s doc prices
-    /// at 0.0016 against T-Digest's 0.0021 on a uniform stream.
-    ///
-    /// This is the check that survives until T-Digest is deleted: it is the
-    /// only place the two implementations are held against each other.
+    /// Volume through the operator, not just a handful of rows: past KLL's
+    /// k=800 level-0 capacity so compaction actually runs, and ascending to
+    /// match the post-`SortExec` position the operator occupies in a
+    /// range-repartition plan.
     #[tokio::test]
-    async fn sort_key_sketch_agrees_with_tdigest() {
+    async fn the_sketch_sees_every_row_through_the_operator() {
         let schema = schema_v_id();
-        // Ascending, matching the post-`SortExec` position the operator
-        // occupies in a range-repartition plan, and long enough to push
-        // past KLL's k=800 level-0 capacity so compaction actually runs
-        // rather than the sketch retaining every value verbatim.
         const ROWS: i64 = 5_000;
         let batches: Vec<RecordBatch> = (0..5)
             .map(|chunk| {
@@ -1492,35 +1192,21 @@ mod stream_tests {
         let stream = stats.execute(0, ctx).unwrap();
         common::collect(stream).await.unwrap();
 
-        let digest = stats.merged_quantile_sketch().unwrap().unwrap();
-        let sort_key = stats.merged_sort_key_sketch().unwrap().unwrap();
-
-        assert_eq!(digest.count(), ROWS as f64);
-        assert_eq!(sort_key.count(), ROWS as u64);
-        assert_eq!(sort_key.null_count(), 0);
-
-        assert_eq!(scalar_f64(sort_key.min().unwrap().unwrap()), digest.min());
-        assert_eq!(scalar_f64(sort_key.max().unwrap().unwrap()), digest.max());
-
-        // Both rank errors together are ~0.4% of the range; 1% leaves
-        // headroom for the coin flips without admitting a real divergence.
-        let tolerance = ROWS as f64 * 0.01;
-        for q in [0.1, 0.25, 0.5, 0.75, 0.9] {
-            let from_sort_key = scalar_f64(sort_key.quantile(q).unwrap().unwrap());
-            let from_digest = digest.estimate_quantile(q);
-            assert!(
-                (from_sort_key - from_digest).abs() <= tolerance,
-                "q={q}: sort-key sketch says {from_sort_key}, T-Digest says \
-                 {from_digest}, tolerance {tolerance}"
-            );
-        }
-    }
-
-    fn scalar_f64(value: ScalarValue) -> f64 {
-        match value {
-            ScalarValue::Float64(Some(inner)) => inner,
-            other => panic!("expected a Float64 scalar, got {other:?}"),
-        }
+        let sketch = stats.merged_sort_key_sketch().unwrap().unwrap();
+        assert_eq!(sketch.count(), ROWS as u64);
+        assert_eq!(sketch.null_count(), 0);
+        // The extremes are tracked outside the compactor, so compaction
+        // cannot have moved them however many times it ran.
+        assert_eq!(sketch.min().unwrap(), Some(ScalarValue::Float64(Some(0.0))));
+        assert_eq!(
+            sketch.max().unwrap(),
+            Some(ScalarValue::Float64(Some((ROWS - 1) as f64)))
+        );
+        // K-1 real, non-decreasing boundaries over what it saw.
+        let cuts = sketch.cuts(8).unwrap();
+        assert_eq!(cuts.len(), 7);
+        assert!(cuts.iter().all(|cut| !cut.is_null()));
+        assert!(cuts.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     /// Row-count-only mode (`order_by = None`): the operator still
@@ -1545,13 +1231,8 @@ mod stream_tests {
         assert_eq!(output.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
         assert_eq!(stats.row_count(0).unwrap(), 3);
         assert!(
-            stats.quantile_sketch(0).unwrap().is_none(),
-            "row-count-only mode must not allocate a sketch"
-        );
-        assert!(stats.merged_quantile_sketch().unwrap().is_none());
-        assert!(
             stats.sort_key_sketch(0).unwrap().is_none(),
-            "row-count-only mode must not allocate a sort-key sketch either"
+            "row-count-only mode must not allocate a sketch"
         );
         assert!(stats.merged_sort_key_sketch().unwrap().is_none());
     }
@@ -1641,11 +1322,28 @@ mod collect_tests {
         };
         assert_eq!(entry.partition_id, 0);
         assert_eq!(entry.row_count, 5);
-        let proto_sketch = entry.sketch.as_ref().expect("sketch present in wire");
-        let round_tripped = sketch_from_proto(proto_sketch).unwrap();
-        assert_eq!(round_tripped.count(), 5.0);
-        assert_eq!(round_tripped.min(), 1.0);
-        assert_eq!(round_tripped.max(), 5.0);
+        // The report's merged sketch is what routing reads; the entry
+        // carries only the key range a file router needs.
+        let state = report.sketch.as_ref().expect("sketch present in wire");
+        let round_tripped = SortKeySketch::try_from_proto(
+            state,
+            SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(round_tripped.count(), 5);
+        assert_eq!(
+            round_tripped.min().unwrap(),
+            Some(ScalarValue::Float64(Some(1.0)))
+        );
+        assert_eq!(
+            round_tripped.max().unwrap(),
+            Some(ScalarValue::Float64(Some(5.0)))
+        );
+        assert_eq!(entry.key_min.len(), 1, "entry carries its own range");
+        assert_eq!(entry.key_max.len(), 1);
     }
 
     /// Row-count-only mode: report emitted, but its partition entry
@@ -1667,10 +1365,8 @@ mod collect_tests {
         };
         assert!(report.order_by.is_empty());
         assert_eq!(report.partitions.len(), 1);
-        assert!(
-            report.partitions[0].sketch.is_none(),
-            "no sketch in row-count-only mode"
-        );
+        assert!(report.sketch.is_none(), "no sketch in row-count-only mode");
+        assert!(report.partitions[0].key_min.is_empty());
         assert_eq!(report.partitions[0].row_count, 5);
     }
 
@@ -1733,6 +1429,9 @@ mod merge_tests {
     //! Scheduler-side aggregation: given several `RuntimeStatsReport`s
     //! sharing an `order_by` tag, verify the merged view (total rows,
     //! cuts, min/max) reflects the union of the underlying samples.
+
+    use datafusion::arrow::array::Float64Array;
+    use datafusion::arrow::datatypes::DataType;
 
     use super::*;
     use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
@@ -1874,13 +1573,11 @@ mod merge_tests {
                 RuntimeStatsPartitionEntry {
                     partition_id: 0,
                     row_count: row_counts[0],
-                    sketch: None,
                     ..Default::default()
                 },
                 RuntimeStatsPartitionEntry {
                     partition_id: 1,
                     row_count: row_counts[1],
-                    sketch: None,
                     ..Default::default()
                 },
             ],

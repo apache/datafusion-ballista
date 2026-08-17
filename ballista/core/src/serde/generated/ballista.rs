@@ -107,14 +107,6 @@ pub struct RuntimeStatsExecNode {
         ::datafusion_proto::protobuf::PhysicalSortExprNode,
     >,
 }
-/// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
-/// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
-/// centroid_means..., centroid_weights....
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QuantileSketchState {
-    #[prost(message, repeated, tag = "1")]
-    pub state: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
-}
 /// A `SortKeySketch`: a KLL compactor stack over one ORDER BY key, plus the
 /// NULLs that have no position among its values.
 ///
@@ -1054,10 +1046,6 @@ pub struct RuntimeStatsPartitionEntry {
     pub partition_id: u32,
     #[prost(uint64, tag = "2")]
     pub row_count: u64,
-    /// Present when the `RuntimeStatsExec` was in sketch mode AND this
-    /// partition observed at least one non-null routing value.
-    #[prost(message, optional, tag = "3")]
-    pub sketch: ::core::option::Option<QuantileSketchState>,
     /// This partition's exact key range, one element per ORDER BY expression.
     /// `cut_partitions` routes a whole shuffle file into every downstream
     /// partition whose range overlaps `\[key_min, key_max\]`, so these are the

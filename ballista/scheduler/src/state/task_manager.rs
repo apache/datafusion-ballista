@@ -1007,22 +1007,17 @@ fn log_runtime_stats_arrival(
         let non_empty_partitions =
             report.partitions.iter().filter(|p| p.row_count > 0).count();
         let total_rows: u64 = report.partitions.iter().map(|p| p.row_count).sum();
-        let sketch_count = report
-            .partitions
-            .iter()
-            .filter(|p| p.sketch.is_some())
-            .count();
-        // Counted rather than assumed: an entry whose range never got filled
-        // in would route no files, and nothing else here would say so.
         let ranged_partitions = report
             .partitions
             .iter()
             .filter(|p| !p.key_min.is_empty() && !p.key_max.is_empty())
             .count();
+        // Counted rather than assumed: an entry whose range never got filled
+        // in would route no files, and nothing else here would say so.
         debug!(
             "RuntimeStats arrival: executor={} job={} stage={} task={} \
              report[{}] order_by_len={} partitions={} non_empty={} \
-             total_rows={} sketches={} key_ranges={}/{} sort_key_sketch={}",
+             total_rows={} key_ranges={}/{} sort_key_sketch={}",
             executor.id,
             status.job_id,
             status.stage_id,
@@ -1032,7 +1027,6 @@ fn log_runtime_stats_arrival(
             report.partitions.len(),
             non_empty_partitions,
             total_rows,
-            sketch_count,
             ranged_partitions,
             report.partitions.len(),
             describe_sort_key_sketch(report),

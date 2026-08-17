@@ -92,13 +92,6 @@ message RuntimeStatsExecNode {
   repeated datafusion.PhysicalSortExprNode order_by = 1;
 }
 
-// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
-// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
-// centroid_means..., centroid_weights....
-message QuantileSketchState {
-  repeated datafusion_common.ScalarValue state = 1;
-}
-
 // A `SortKeySketch`: a KLL compactor stack over one ORDER BY key, plus the
 // NULLs that have no position among its values.
 //
@@ -737,9 +730,8 @@ message RuntimeStatsReport {
 message RuntimeStatsPartitionEntry {
   uint32 partition_id = 1;
   uint64 row_count = 2;
-  // Present when the `RuntimeStatsExec` was in sketch mode AND this
-  // partition observed at least one non-null routing value.
-  optional QuantileSketchState sketch = 3;
+  reserved 3;
+  reserved "sketch";
   // This partition's exact key range, one element per ORDER BY expression.
   // `cut_partitions` routes a whole shuffle file into every downstream
   // partition whose range overlaps `[key_min, key_max]`, so these are the
