@@ -72,19 +72,29 @@ pub fn restrict_plan_to_partitions(
 
 /// Merge a task's sorted partitions into one before its writer.
 ///
-/// A sorted passthrough stage is read back by an ordering-preserving reader
-/// that merges on the same key, so merging here only moves that work into the
-/// producing task: the task writes one file instead of one per partition, and
-/// the consumer opens one source per task instead of one per partition. Every
-/// task reports output partition 0 — `file_id` already distinguishes producers,
+/// Merging here moves work the consumer would do anyway into the producing
+/// task: the task writes one file instead of one per partition, and the
+/// consumer opens one source per task instead of one per partition. Every task
+/// reports output partition 0 — `file_id` already distinguishes producers,
 /// which is how `GlobalPartitionMap::Collapsed` behaves for the
 /// `SortPreservingMergeExec` that the final stage of a top-N query already has.
+///
+/// Only valid when the consumer merges the locations of a partition on the same
+/// key. Adaptive planning plants `RangeShuffleReaderExec` for exactly the
+/// condition checked here — the writer's input declaring an ordering — but the
+/// static planner always plants the arrival-order reader, and concatenating
+/// separately sorted files is not sorted. Callers must pass `false` for
+/// statically planned jobs.
 ///
 /// No `fetch` is set: a limit here would have to come from the consumer's
 /// merge, and a consumer without one wants every row this stage produces.
 pub fn merge_task_partitions_before_write(
     plan: Arc<dyn ExecutionPlan>,
+    enabled: bool,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    if !enabled {
+        return Ok(plan);
+    }
     let children = plan.children();
     let [input] = children.as_slice() else {
         return Ok(plan);
@@ -799,5 +809,75 @@ mod tests {
         assert_eq!(reader.partition.len(), 2);
         assert_eq!(reader.partition[0][0].partition_id.partition_id, 1);
         assert_eq!(reader.partition[1][0].partition_id.partition_id, 3);
+    }
+
+    // --- task-local ordered merge ---
+
+    /// Build a passthrough writer over a sorted, multi-partition input — the
+    /// shape a top-N query's aggregate stage has.
+    fn sorted_passthrough_writer() -> Arc<dyn ExecutionPlan> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort::SortExec;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let source = MemorySourceConfig::try_new_exec(
+            &[vec![], vec![], vec![]],
+            schema.clone(),
+            None,
+        )
+        .unwrap();
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new("v", 0),
+        ))])
+        .unwrap();
+        let sorted =
+            Arc::new(SortExec::new(ordering, source).with_preserve_partitioning(true));
+        Arc::new(
+            ShuffleWriterExec::try_new(
+                "job".to_string().into(),
+                1,
+                sorted,
+                String::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The rewrite is only sound when the consumer merges each partition's
+    /// locations in order, which only adaptive planning guarantees. Callers
+    /// pass `false` otherwise, and then it must not touch the plan.
+    #[test]
+    fn task_local_merge_is_a_no_op_when_disabled() {
+        let plan = sorted_passthrough_writer();
+        let out = merge_task_partitions_before_write(Arc::clone(&plan), false).unwrap();
+        assert!(
+            out.children()[0]
+                .downcast_ref::<SortPreservingMergeExec>()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn task_local_merge_collapses_sorted_partitions() {
+        let plan = sorted_passthrough_writer();
+        assert_eq!(plan.output_partitioning().partition_count(), 3);
+
+        let out = merge_task_partitions_before_write(plan, true).unwrap();
+        let children = out.children();
+        assert!(
+            children[0]
+                .downcast_ref::<SortPreservingMergeExec>()
+                .is_some(),
+            "expected the merge under the writer, got {}",
+            children[0].name()
+        );
+        assert_eq!(
+            out.output_partitioning().partition_count(),
+            1,
+            "the writer now emits one partition per task"
+        );
     }
 }

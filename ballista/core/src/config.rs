@@ -425,9 +425,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           writing one file per partition. The consumer plants an ordering \
                           preserving reader that merges anyway, so this moves that merge \
                           into the producing task and cuts the consumer's fan-in from the \
-                          stage's partition count to its task count.".to_string(),
+                          stage's partition count to its task count. Set to false to write \
+                          one file per partition.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \

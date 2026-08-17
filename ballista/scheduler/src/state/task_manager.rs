@@ -779,15 +779,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 task.plan.clone(),
                 &task.global_input_partition_ids,
             )?;
-            let restricted = if task
-                .session_config
-                .ballista_config()
-                .shuffle_merge_ordered_passthrough()
-            {
-                merge_task_partitions_before_write(restricted)?
-            } else {
-                restricted
-            };
+            let restricted = merge_task_partitions_before_write(
+                restricted,
+                task.session_config
+                    .ballista_adaptive_query_planner_enabled()
+                    && task
+                        .session_config
+                        .ballista_config()
+                        .shuffle_merge_ordered_passthrough(),
+            )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(
                 restricted,
@@ -894,15 +894,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 task.plan.clone(),
                 &task.global_input_partition_ids,
             )?;
-            let restricted = if task
-                .session_config
-                .ballista_config()
-                .shuffle_merge_ordered_passthrough()
-            {
-                merge_task_partitions_before_write(restricted)?
-            } else {
-                restricted
-            };
+            let restricted = merge_task_partitions_before_write(
+                restricted,
+                task.session_config
+                    .ballista_adaptive_query_planner_enabled()
+                    && task
+                        .session_config
+                        .ballista_config()
+                        .shuffle_merge_ordered_passthrough(),
+            )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
             plan_proto.try_encode(&mut plan_buf)?;
