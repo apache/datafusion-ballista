@@ -82,7 +82,7 @@ use log::debug;
 use std::sync::Arc;
 
 /// Ordering-preserving shuffle reader. See module docs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RangeShuffleReaderExec {
     /// Upstream stage that produced these files.
     pub stage_id: usize,
@@ -136,33 +136,25 @@ impl RangeShuffleReaderExec {
         })
     }
 
+    /// Set the row limit at construction, without cloning the reader.
+    pub fn with_fetch_limit(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
+    }
+
     /// Late-bound by the executor.
     pub fn with_work_dir(&self, work_dir: String) -> Self {
         Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            fetch: self.fetch,
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
             work_dir: Some(work_dir),
-            client_pool: self.client_pool.clone(),
+            ..self.clone()
         }
     }
 
     /// Late-bound by the executor.
     pub fn with_client_pool(&self, client_pool: Arc<dyn BallistaClientPool>) -> Self {
         Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            fetch: self.fetch,
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
             client_pool: Some(client_pool),
+            ..self.clone()
         }
     }
 
@@ -186,12 +178,20 @@ impl DisplayAs for RangeShuffleReaderExec {
                     self.stage_id,
                     self.partition.len(),
                     self.merge_ordering,
-                )
+                )?;
+                if let Some(fetch) = self.fetch {
+                    write!(f, ", fetch: {fetch}")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => {
                 writeln!(f, "upstream_stage={}", self.stage_id)?;
                 writeln!(f, "output_partitions={}", self.partition.len())?;
-                writeln!(f, "ordering={}", self.merge_ordering)
+                writeln!(f, "ordering={}", self.merge_ordering)?;
+                if let Some(fetch) = self.fetch {
+                    writeln!(f, "fetch={fetch}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -236,15 +236,8 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             ));
         }
         Ok(Arc::new(Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            fetch: self.fetch,
             metrics: ExecutionPlanMetricsSet::new(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
-            client_pool: self.client_pool.clone(),
+            ..self.as_ref().clone()
         }))
     }
 
@@ -352,15 +345,8 @@ impl ExecutionPlan for RangeShuffleReaderExec {
     /// come from the first `n` of each input.
     fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
         Some(Arc::new(Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
             fetch: limit,
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
-            client_pool: self.client_pool.clone(),
+            ..self.clone()
         }))
     }
 
@@ -398,6 +384,7 @@ mod tests {
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionContext;
     use std::fs::{File, create_dir_all};
     use tempfile::tempdir;
@@ -577,10 +564,8 @@ mod tests {
         assert!(batches.is_empty());
     }
 
-    /// The reader must advertise its merge ordering so downstream operators
-    /// see the sortedness invariant (BWAG's RANGE-frame cursor, SMJ build side).
-    /// A limit must survive `with_new_children`, or the merge quietly goes
-    /// back to reading everything.
+    /// A limit must survive a rebuild, or the merge quietly goes back to
+    /// reading everything.
     #[test]
     fn fetch_roundtrips_through_with_fetch() {
         use datafusion::physical_plan::ExecutionPlan;
@@ -600,15 +585,16 @@ mod tests {
         assert_eq!(limited.fetch(), Some(20));
 
         let rebuilt = Arc::clone(&limited)
-            .with_new_children(limited.children().into_iter().cloned().collect())
+            .replace_children(
+                vec![],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
             .expect("rebuild");
-        assert_eq!(
-            rebuilt.fetch(),
-            Some(20),
-            "fetch must survive with_new_children"
-        );
+        assert_eq!(rebuilt.fetch(), Some(20), "fetch must survive a rebuild");
     }
 
+    /// The reader must advertise its merge ordering so downstream operators
+    /// see the sortedness invariant (BWAG's RANGE-frame cursor, SMJ build side).
     #[test]
     fn advertises_merge_ordering() {
         let schema =
