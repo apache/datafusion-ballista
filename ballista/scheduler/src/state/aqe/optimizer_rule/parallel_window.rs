@@ -35,8 +35,8 @@
 //!   computed exprs — separate rewrites)
 //! - `RANGE` frame with finite `PRECEDING` / `FOLLOWING` / `CurrentRow`
 //!   bounds (UNBOUNDED frames go down a different path)
-//! - ORDER BY column is `Float64` today (T-Digest restriction; lifts when
-//!   the sketch swaps to KLL)
+//! - ORDER BY column is a type the sort-key sketch encodes (any fixed-width
+//!   type, nullable or not)
 //!
 //! # Rewrite
 //!
@@ -78,6 +78,7 @@ use ballista_core::execution_plans::{
     OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec, RangeFilterExec,
     RuntimeStatsExec,
 };
+use ballista_core::sort_key::SortKeyCodec;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::config::ConfigOptions;
@@ -281,21 +282,20 @@ fn maybe_rewrite_bwag(
     }
     let source_schema = base_source.schema();
 
-    // Route on the ORDER BY column. ORRE requires Float64 today (T-Digest
-    // restriction; lifts when the sketch swaps to KLL).
+    // Route on the ORDER BY column. Any key the sketch encodes will do; a
+    // variable-width one declines the rewrite rather than failing the query.
     let routing_type = order.expr.data_type(&source_schema)?;
+    if SortKeyCodec::try_new(&routing_type, order.options).is_none() {
+        return Ok(None);
+    }
     // Needs the key's type, so it waits until the source is known. Declining
-    // here leaves the query on the non-parallel path rather than failing it.
+    // here also leaves the query on the non-parallel path.
     let (Some(halo_lo), Some(halo_hi)) = (
         halo_from_bound(&frame.start_bound, &routing_type),
         halo_from_bound(&frame.end_bound, &routing_type),
     ) else {
         return Ok(None);
     };
-
-    if !matches!(routing_type, DataType::Float64) {
-        return Ok(None);
-    }
 
     let sort_expr = normalize_sort_expr(order);
     let rse1: Arc<dyn ExecutionPlan> = Arc::new(RuntimeStatsExec::try_new(
@@ -391,6 +391,7 @@ mod tests {
             Field::new("id2", DataType::Int64, false),
             Field::new("id3", DataType::Int64, false),
             Field::new("v2", DataType::Float64, false),
+            Field::new("name", DataType::Utf8, false),
         ]));
         let ctx = SessionContext::new();
         ctx.register_table("large", Arc::new(EmptyTable::new(schema)))?;
@@ -535,9 +536,11 @@ mod tests {
         Ok(())
     }
 
+    /// An `Int64` ORDER BY is routable now: the sketch encodes it, the cuts
+    /// come back as `Int64`, and `RANGE 3 PRECEDING` keeps an `Int64` halo
+    /// rather than rounding through `f64`.
     #[tokio::test]
-    async fn no_rewrite_on_non_float64_order_key() -> datafusion::common::Result<()> {
-        // id3 is Int64; ORRE requires Float64 today (T-Digest restriction).
+    async fn rewrites_an_int64_order_key() -> datafusion::common::Result<()> {
         let plan = plan(
             "SELECT sum(v2) OVER (ORDER BY id3 \
                 RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) \
@@ -547,8 +550,27 @@ mod tests {
         let rewritten = optimize(plan)?;
         let rendered = format!("{}", displayable(rewritten.as_ref()).indent(true));
         assert!(
+            rendered.contains("OrderedRangeRepartitionExec"),
+            "an Int64 order key should now be rewritten:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A key the sketch cannot encode declines the rewrite rather than
+    /// failing: the query still runs, just not in parallel.
+    #[tokio::test]
+    async fn no_rewrite_on_a_key_without_an_encoding() -> datafusion::common::Result<()> {
+        let plan = plan(
+            "SELECT sum(v2) OVER (ORDER BY name \
+                RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) \
+             FROM large",
+        )
+        .await?;
+        let rewritten = optimize(plan)?;
+        let rendered = format!("{}", displayable(rewritten.as_ref()).indent(true));
+        assert!(
             !rendered.contains("OrderedRangeRepartitionExec"),
-            "non-Float64 order key should not be rewritten:\n{rendered}"
+            "a Utf8 order key has no sort-key encoding:\n{rendered}"
         );
         Ok(())
     }
