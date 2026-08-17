@@ -530,7 +530,13 @@ impl SortKeySketch {
     /// execution.
     pub fn ingest(&mut self, array: &dyn Array) -> Result<()> {
         let keys = self.codec.encode(array)?;
-        self.sketch.absorb_slice(&keys);
+        // Sketching a sort key usually means sitting above the `SortExec`
+        // that produced it, so the sorted path is the common case rather
+        // than a special one. It verifies sortedness in O(n) comparisons and
+        // falls through when the input isn't sorted, so it is correct to
+        // call unconditionally — a `DESC` key, whose encoding inverts every
+        // bit and so arrives descending, takes that fallback.
+        self.sketch.absorb_sorted_slice(&keys);
         self.null_count += array.null_count() as u64;
         Ok(())
     }
