@@ -16,65 +16,16 @@
 // under the License.
 
 use ratatui::widgets::{ScrollbarState, TableState};
-use serde::Deserialize;
 use std::fmt::Display;
 
-#[derive(Deserialize, Clone, Debug)]
-pub struct JobStagesResponse {
-    pub stages: Vec<JobStageResponse>,
-}
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct JobStageResponse {
-    #[serde(rename = "stage_id")]
-    pub id: String,
-    #[serde(rename = "stage_status")]
-    pub status: String,
-    #[serde(rename = "stage_plan", default)]
-    pub plan: String,
-    pub input_rows: usize,
-    pub output_rows: usize,
-    pub elapsed_compute: Option<String>,
-    #[serde(default)]
-    pub task_duration_percentiles: Option<TaskPercentiles>,
-    #[serde(default)]
-    pub task_input_percentiles: Option<TaskPercentiles>,
-    #[serde(default)]
-    pub tasks: Vec<Option<StageTaskResponse>>,
-}
-
-// TaskStatus
-#[derive(Deserialize, Clone, Debug)]
-pub enum StageTaskStatus {
-    Running,
-    Successful,
-    Failed { reason: String },
-}
-
-// TaskSummary
-#[derive(Deserialize, Clone, Debug)]
-pub struct StageTaskResponse {
-    pub id: usize,
-    pub status: StageTaskStatus,
-    pub partition_id: u32,
-    pub input_rows: usize,
-    pub output_rows: usize,
-    pub scheduled_time: u64,
-    pub launch_time: u64,
-    pub start_exec_time: u64,
-    pub end_exec_time: u64,
-    pub finish_time: u64,
-}
-
-// Percentiles
-#[derive(Deserialize, Clone, Debug)]
-pub struct TaskPercentiles {
-    pub min: u64,
-    pub max: u64,
-    pub median: u64,
-    pub p25: u64,
-    pub p75: u64,
-}
+// The `/api/*` response shapes are defined once in `ballista-api-types` and
+// shared with the scheduler that serves them. Re-exported here under the names
+// the TUI already used, so a scheduler-side field change is a compile error
+// rather than a deserialization failure at runtime (#2257).
+pub use ballista_api_types::dto::{
+    QueryStageSummary as JobStageResponse, QueryStagesResponse as JobStagesResponse,
+    TaskStatus as StageTaskStatus, TaskSummary as StageTaskResponse,
+};
 
 #[derive(Debug, Default)]
 pub struct PlanCache {
@@ -372,11 +323,12 @@ impl StagesGraph {
 mod tests {
     use super::{
         JobStageResponse, JobStagesPopup, JobStagesResponse, StageTaskResponse,
-        StageTaskStatus, StagesGraph, TaskPercentiles,
+        StageTaskStatus, StagesGraph,
     };
+    use ballista_api_types::dto::Percentiles;
 
-    fn make_percentiles() -> TaskPercentiles {
-        TaskPercentiles {
+    fn make_percentiles() -> Percentiles {
+        Percentiles {
             min: 0,
             max: 100,
             median: 50,
@@ -387,9 +339,9 @@ mod tests {
 
     fn make_stage(id: &str) -> JobStageResponse {
         JobStageResponse {
-            id: id.to_string(),
-            status: "Completed".to_string(),
-            plan: String::new(),
+            stage_id: id.to_string(),
+            stage_status: "Completed".to_string(),
+            stage_plan: None,
             input_rows: 0,
             output_rows: 0,
             elapsed_compute: Some("1ns".to_string()),
@@ -568,7 +520,7 @@ mod tests {
         let mut popup = make_popup(3);
         popup.table_state.select(Some(1));
         let stage = popup.selected_stage().unwrap();
-        assert_eq!(stage.id, "1");
+        assert_eq!(stage.stage_id, "1");
     }
 
     #[test]
@@ -611,19 +563,69 @@ mod tests {
         assert_eq!(graph.scroll_position, 0);
     }
 
+    /// Regression test for #2257. The scheduler serves `partition_id` as an
+    /// array of the global partitions a task owns, and the TUI used to declare
+    /// it as a scalar `u32`, so the whole stages response failed to parse. This
+    /// pins the shape against a payload shaped like the real one.
+    #[test]
+    fn deserializes_multi_partition_task_payload() {
+        let payload = r#"{
+            "stages": [{
+                "stage_id": "1",
+                "stage_status": "Successful",
+                "input_rows": 10,
+                "output_rows": 10,
+                "elapsed_compute": "1ms",
+                "tasks": [{
+                    "id": 0,
+                    "status": "Successful",
+                    "partition_id": [0, 1, 2],
+                    "scheduled_time": 0,
+                    "launch_time": 0,
+                    "start_exec_time": 0,
+                    "end_exec_time": 5,
+                    "exec_duration": 5,
+                    "finish_time": 5,
+                    "input_rows": 10,
+                    "output_rows": 10
+                }]
+            }]
+        }"#;
+
+        let parsed: JobStagesResponse = serde_json::from_str(payload).unwrap();
+        let task = parsed.stages[0].tasks[0].as_ref().unwrap();
+        assert_eq!(task.partition_id, vec![0, 1, 2]);
+    }
+
+    /// The scheduler's failed-task status carries an `error` alongside
+    /// `reason`; the TUI's old copy only had `reason`.
+    #[test]
+    fn deserializes_failed_task_status_with_error() {
+        let payload = r#"{"Failed": {"reason": "ExecutionError", "error": "boom"}}"#;
+        let status: StageTaskStatus = serde_json::from_str(payload).unwrap();
+        match status {
+            StageTaskStatus::Failed { reason, error } => {
+                assert_eq!(reason, "ExecutionError");
+                assert_eq!(error, "boom");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
     // --- Helpers for task-bearing stages ---
 
     fn make_task(id: usize) -> StageTaskResponse {
         StageTaskResponse {
             id,
             status: StageTaskStatus::Successful,
-            partition_id: id as u32,
+            partition_id: vec![id as u32],
             input_rows: 0,
             output_rows: 0,
             scheduled_time: 0,
             launch_time: 0,
             start_exec_time: 0,
             end_exec_time: 0,
+            exec_duration: 0,
             finish_time: 0,
         }
     }
