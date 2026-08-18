@@ -748,46 +748,41 @@ impl SortKeySketch {
     /// Should only error if:
     /// 1. invalid sketch: min/max is empty but levels are not - guarded against in proto decode
     /// 2. codec.decode() failure - guarded against in try_new
-    pub fn cuts(&self, partitions: usize) -> Result<Vec<ScalarValue>> {
-        if partitions < 2 || self.sketch.count() == 0 {
+    pub fn cuts(&self, partition_cnt: usize) -> Result<Vec<ScalarValue>> {
+        if partition_cnt < 2 || self.sketch.count() == 0 {
             return Ok(Vec::new());
         }
-        let population = self.count();
-        let values = self.sketch.count();
-        // Partitions sharing the values: all but the one the run takes.
-        let sharing = partitions as u128 - 1;
-        // A shorter run shares its partition with values and the population
-        // ranks already balance. Ungated, the even split over-spaces the top
-        // boundaries even with no NULLs at all.
-        let run_takes_a_partition =
-            self.null_count as u128 * partitions as u128 > population as u128;
-        let value_ranks: Vec<u64> = (0..partitions - 1)
-            .map(|cut| {
-                // Integers: a fraction round trip loses ranks (`at_rank`).
-                let population_rank =
-                    ((cut as u128 + 1) * population as u128 / partitions as u128) as u64;
+        let total_cnt = self.count();
+        let sketch_cnt = self.sketch.count();
+        // Partitions sharing the not-NULLs: all but the one partition consumed by NULLs
+        let sharing = partition_cnt as u128 - 1;
+        // null_count > total_cnt / partition_cnt (but without error inducing division)
+        let nulls_outgrow_a_partition =
+            self.null_count as u128 * partition_cnt as u128 > total_cnt as u128;
+        let sketch_ranks: Vec<u64> = (0..partition_cnt - 1)
+            .map(|cut_idx| {
+                let total_rank =
+                    ((cut_idx as u128 + 1) * total_cnt as u128 / partition_cnt as u128) as u64;
                 if self.codec.options().nulls_first {
-                    let mut rank = population_rank.saturating_sub(self.null_count);
-                    if run_takes_a_partition {
-                        // Else the top partition keeps what the run displaced:
-                        // `[60, 1, 13, 26]` not `[60, 13, 13, 14]`.
-                        rank =
-                            rank.max((cut as u128 * values as u128 / sharing) as u64 + 1);
-                    }
-                    // Rank `r` names the `r`-th value, so 0 and 1 both name the
-                    // first.
-                    rank.max(cut as u64 + 1)
+                    let sketch_rank = if !nulls_outgrow_a_partition {
+                        // no cut ever lands on a NULL value anyway
+                        total_rank.saturating_sub(self.null_count)
+                    } else {
+                        // save a whole partition for the NULLs, divide evenly amongst the rest
+                        (cut_idx as u128 * sketch_cnt as u128 / sharing) as u64 + 1
+                    };
+                    sketch_rank.max(cut_idx as u64 + 1)
                 } else {
-                    let mut rank = population_rank;
-                    if run_takes_a_partition {
-                        rank = rank
-                            .min(((cut as u128 + 1) * values as u128).div_ceil(sharing)
-                                as u64);
-                    }
-                    let distinct = values
-                        .saturating_sub(partitions as u64 - 2 - cut as u64)
+                    // mirror of above
+                    let sketch_rank = if !nulls_outgrow_a_partition {
+                        total_rank
+                    } else {
+                        ((cut_idx as u128 + 1) * sketch_cnt as u128).div_ceil(sharing) as u64
+                    };
+                    let distinct = sketch_cnt
+                        .saturating_sub(partition_cnt as u64 - 2 - cut_idx as u64)
                         .max(1);
-                    rank.min(distinct).max(1)
+                    sketch_rank.min(distinct).max(1)
                 }
             })
             .collect();
@@ -795,9 +790,9 @@ impl SortKeySketch {
         // One sorted pass for every boundary. Per-cut `quantile` re-sorts the
         // retained set each time: 279 us against 7.56 us at K=64.
         self.sketch
-            .at_ranks(&value_ranks)
+            .at_ranks(&sketch_ranks)
             .into_iter()
-            .zip(&value_ranks)
+            .zip(&sketch_ranks)
             .map(|(key, rank)| {
                 let key = key.ok_or_else(|| {
                     internal_datafusion_err!(
@@ -1760,6 +1755,23 @@ mod tests {
                  one row, got {sizes:?}"
             );
         }
+    }
+
+    /// The population rank sits *below* the even split once the run owns the
+    /// top partition, so honouring it strands the partitions beneath: cuts
+    /// `[1, 3]` give sizes `[0, 2, 3]`, an empty partition beside a double one.
+    /// The even split is what the run leaves room for, and nothing above it can
+    /// be improved by consulting a rank the run already displaced.
+    #[test]
+    fn cuts_fill_the_low_partitions_when_the_run_owns_the_top_one() {
+        let values = vec![1, 2, 3];
+        let column = vec![Some(1), Some(2), Some(3), None, None];
+        let sketch = int_sketch(column, sort_options(false, false));
+
+        let cuts = sketch.cuts(3).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[2, 3]));
+        assert_eq!(partition_sizes(2, &values, &cuts, false), vec![1, 1, 3]);
     }
 
     /// With no NULLs there is no run at either end, so the two layouts have
