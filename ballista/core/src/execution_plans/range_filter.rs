@@ -20,7 +20,7 @@
 //! `execute(k)` applies the predicate
 //!
 //! ```text
-//!   raw_bounds[k].0 - halo_lo <= routing_expr < raw_bounds[k].1 + halo_hi
+//!   raw_bounds[k].0 - halo_lo <= filter_expr < raw_bounds[k].1 + halo_hi
 //! ```
 //!
 //! `None` on either bound means unbounded on that side (virtual ±∞). Zero halo
@@ -54,6 +54,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::array::{Array, ArrayRef, RecordBatch};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::cast::as_boolean_array;
@@ -62,7 +63,9 @@ use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{BinaryExpr, IsNullExpr, Literal};
-use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
+use datafusion::physical_expr::{
+    Distribution, LexOrdering, OrderingRequirements, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -92,13 +95,38 @@ struct BoundsState {
     widened: Vec<WidenedBound>,
 }
 
+/// The order in which rows will arrive
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputOrder {
+    /// Rows arrive in no particular order and the NULL run is at this end.
+    /// Advertises no input ordering requirement, so an unordered
+    /// range-repartition upstream stays legal.
+    Unordered {
+        /// Which end of the order the NULL run occupies.
+        nulls_first: bool,
+    },
+    /// Rows arrive in this order. Required of the input, so nothing planted
+    /// between can reorder them, and the run's end is `nulls_first`.
+    Ordered(SortOptions),
+}
+
+impl InputOrder {
+    /// Which end the NULL run occupies.
+    fn nulls_first(&self) -> bool {
+        match self {
+            Self::Unordered { nulls_first } => *nulls_first,
+            Self::Ordered(options) => options.nulls_first,
+        }
+    }
+}
+
 /// Filter over an ordered input with a per-input-partition half-open range
 /// predicate, widened by the operator's halo. Range logic (cuts → per-partition
 /// half-open ranges → task-slice) lives scheduler-side; RFE is the runtime
 /// filter that applies the resolved bounds.
 pub struct RangeFilterExec {
     input: Arc<dyn ExecutionPlan>,
-    routing_expr: Arc<dyn PhysicalExpr>,
+    filter_expr: Arc<dyn PhysicalExpr>,
     /// Lower halo — subtracted from each partition's `lo` at widen time.
     halo_lo: ScalarValue,
     /// Upper halo — added from each partition's `hi` at widen time.
@@ -106,13 +134,11 @@ pub struct RangeFilterExec {
     /// Late-bound: `None` until [`RangeFilterExec::resolve_bounds`]; `execute` and serde
     /// refuse while unresolved.
     bounds: Arc<Mutex<Option<BoundsState>>>,
-    /// True when `input.output_ordering()` leads with `routing_expr` in
-    /// ascending order. Enables the min/max fast path + binary-search slice
-    /// in [`RangeFilterStream`] — with a sorted input, per-batch first/last
-    /// values bound the entire batch, so most batches never touch
-    /// `filter_record_batch`.
+    /// The order in which rows will arrive
+    input_order: Option<InputOrder>,
+    /// True when `input.output_ordering()` leads with `filter_expr` in ascending order.
+    /// Enables the min/max fast path with a sorted input
     sorted_on_key: bool,
-    nulls_first: bool,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -126,16 +152,18 @@ impl RangeFilterExec {
     ///
     /// * `input` - upstream operator; its partition count fixes the eventual
     ///   `raw_bounds.len()`.
-    /// * `routing_expr` - numeric physical expression each row is bucketed by.
+    /// * `filter_expr` - numeric physical expression each row is compared by.
     /// * `halo_lo`, `halo_hi` - non-negative widening amounts applied by
     ///   [`RangeFilterExec::resolve_bounds`]. Both must be finite Float64 today.
+    /// * `input_order` - the order in which rows will arrive
     pub fn try_new_pending(
         input: Arc<dyn ExecutionPlan>,
-        routing_expr: Arc<dyn PhysicalExpr>,
+        filter_expr: Arc<dyn PhysicalExpr>,
         halo_lo: ScalarValue,
         halo_hi: ScalarValue,
+        input_order: Option<InputOrder>,
     ) -> Result<Self> {
-        Self::try_new_inner(input, routing_expr, halo_lo, halo_hi, None)
+        Self::try_new_inner(input, filter_expr, halo_lo, halo_hi, input_order, None)
     }
 
     /// Construct with bounds already known. Used by wire decode and by
@@ -144,33 +172,43 @@ impl RangeFilterExec {
     ///
     /// # Arguments
     ///
-    /// * `input`, `routing_expr`, `halo_lo`, `halo_hi` - same as
+    /// * `input`, `filter_expr`, `halo_lo`, `halo_hi`, `input_order` - same as
     ///   [`Self::try_new_pending`].
     /// * `raw_bounds` - one half-open cut range per input partition. Widening
     ///   by halos happens internally; caller passes unwidened.
     pub fn try_new_resolved(
         input: Arc<dyn ExecutionPlan>,
-        routing_expr: Arc<dyn PhysicalExpr>,
+        filter_expr: Arc<dyn PhysicalExpr>,
         halo_lo: ScalarValue,
         halo_hi: ScalarValue,
+        input_order: Option<InputOrder>,
         raw_bounds: Vec<RangeBound>,
     ) -> Result<Self> {
-        Self::try_new_inner(input, routing_expr, halo_lo, halo_hi, Some(raw_bounds))
+        Self::try_new_inner(
+            input,
+            filter_expr,
+            halo_lo,
+            halo_hi,
+            input_order,
+            Some(raw_bounds),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_new_inner(
         input: Arc<dyn ExecutionPlan>,
-        routing_expr: Arc<dyn PhysicalExpr>,
+        filter_expr: Arc<dyn PhysicalExpr>,
         halo_lo: ScalarValue,
         halo_hi: ScalarValue,
+        input_order: Option<InputOrder>,
         raw_bounds: Option<Vec<RangeBound>>,
     ) -> Result<Self> {
         let schema = input.schema();
-        let expr_type = routing_expr.data_type(&schema)?;
+        let expr_type = filter_expr.data_type(&schema)?;
         // TODO: as long as halos are 0, we should be able to support things like strings
         if !expr_type.is_numeric() && !expr_type.is_temporal() {
             return internal_err!(
-                "RangeFilterExec: routing_expr must be numeric or temporal, got {expr_type}"
+                "RangeFilterExec: filter_expr must be numeric or temporal, got {expr_type}"
             );
         }
         validate_halo("halo_lo", &halo_lo)?;
@@ -184,32 +222,26 @@ impl RangeFilterExec {
             input.pipeline_behavior(),
             input.boundedness(),
         ));
-        let leading_sort = input
+        if input_order.is_none() && filter_expr.nullable(&schema)? {
+            return internal_err!(
+                "RangeFilterExec: filter_expr is nullable but no input order was given, \
+                 so which partition holds the NULL run is unknown"
+            );
+        }
+        let sorted_on_key = input
             .output_ordering()
             .map(|ord| ord.first().clone())
-            .filter(|first| first.expr.as_ref() == routing_expr.as_ref());
-        let sorted_on_key = leading_sort
-            .as_ref()
-            .is_some_and(|first| !first.options.descending);
-        let nulls_first = match &leading_sort {
-            Some(first) => first.options.nulls_first,
-            None if routing_expr.nullable(&schema)? => {
-                return internal_err!(
-                    "RangeFilterExec: routing_expr is nullable but the input declares no \
-                     ordering on it, so which partition holds the NULL run is unknown"
-                );
-            }
-            // Non-nullable: no run to place, so the value is never consulted.
-            None => false,
-        };
+            .is_some_and(|first| {
+                first.expr.as_ref() == filter_expr.as_ref() && !first.options.descending
+            });
         Ok(Self {
             input,
-            routing_expr,
+            filter_expr,
             halo_lo,
             halo_hi,
             bounds: Arc::new(Mutex::new(bounds_state)),
+            input_order,
             sorted_on_key,
-            nulls_first,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
         })
@@ -241,8 +273,13 @@ impl RangeFilterExec {
     }
 
     /// The physical expression whose value each row is bucketed by.
-    pub fn routing_expr(&self) -> &Arc<dyn PhysicalExpr> {
-        &self.routing_expr
+    pub fn filter_expr(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.filter_expr
+    }
+
+    /// What the cuts' producer said about the rows arriving.
+    pub fn input_order(&self) -> Option<InputOrder> {
+        self.input_order
     }
 
     /// Halo-widening amount applied to each partition's lower bound.
@@ -259,7 +296,7 @@ impl RangeFilterExec {
 impl Debug for RangeFilterExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RangeFilterExec")
-            .field("routing_expr", &self.routing_expr.to_string())
+            .field("filter_expr", &self.filter_expr.to_string())
             .field("halo_lo", &self.halo_lo)
             .field("halo_hi", &self.halo_hi)
             .field(
@@ -282,7 +319,7 @@ impl DisplayAs for RangeFilterExec {
                 write!(
                     f,
                     "RangeFilterExec: routing={}, halo=[{}, {}], bounds={}",
-                    self.routing_expr, self.halo_lo, self.halo_hi, bounds_str
+                    self.filter_expr, self.halo_lo, self.halo_hi, bounds_str
                 )
             }
             DisplayFormatType::TreeRender => write!(f, "RangeFilterExec"),
@@ -314,7 +351,7 @@ impl ExecutionPlan for RangeFilterExec {
         &self,
         f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        apply_expression_roots([&self.routing_expr], f)
+        apply_expression_roots([&self.filter_expr], f)
     }
 
     fn with_new_children(
@@ -334,9 +371,10 @@ impl ExecutionPlan for RangeFilterExec {
         let raw_bounds = self.bounds.lock().as_ref().map(|s| s.raw.clone());
         Ok(Arc::new(Self::try_new_inner(
             input.clone(),
-            self.routing_expr.clone(),
+            self.filter_expr.clone(),
             self.halo_lo.clone(),
             self.halo_hi.clone(),
+            self.input_order,
             raw_bounds,
         )?))
     }
@@ -345,8 +383,23 @@ impl ExecutionPlan for RangeFilterExec {
         vec![Distribution::UnspecifiedDistribution]
     }
 
+    /// Only an [`InputOrder::Ordered`] producer demands one. Requiring it is
+    /// what stops `EnsureRequirements` sinking an unrelated sort beneath this
+    /// operator, which would replace the ordering the NULL run's placement and
+    /// the fast path both read. An unordered producer keeps `None` so no
+    /// `SortExec` is planted over rows that were never meant to be sorted.
     fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
-        vec![None]
+        let requirement = match self.input_order {
+            Some(InputOrder::Ordered(options)) => {
+                LexOrdering::new(vec![PhysicalSortExpr {
+                    expr: self.filter_expr.clone(),
+                    options,
+                }])
+                .map(|lex| OrderingRequirements::new(lex.into()))
+            }
+            Some(InputOrder::Unordered { .. }) | None => None,
+        };
+        vec![requirement]
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
@@ -390,27 +443,25 @@ impl ExecutionPlan for RangeFilterExec {
         };
         let (lo, hi) = widened;
         // if the lower or upper side of the range is unbounded, it should include the NULLs
-        let takes_nulls = if self.nulls_first {
+        let nulls_first = self.input_order.is_some_and(|order| order.nulls_first());
+        let takes_nulls = if nulls_first {
             lo.is_none()
         } else {
             hi.is_none()
         };
-        let mut predicate = build_predicate_from_bounds(
-            self.routing_expr.clone(),
-            lo.clone(),
-            hi.clone(),
-        );
+        let mut predicate =
+            build_predicate_from_bounds(self.filter_expr.clone(), lo.clone(), hi.clone());
         if takes_nulls {
             predicate = Arc::new(BinaryExpr::new(
                 predicate,
                 Operator::Or,
-                Arc::new(IsNullExpr::new(self.routing_expr.clone())),
+                Arc::new(IsNullExpr::new(self.filter_expr.clone())),
             ));
         }
         let schema = self.schema();
         let input = self.input.execute(partition, ctx)?;
         let fast_path = self.sorted_on_key.then(|| FastPathState {
-            routing_expr: self.routing_expr.clone(),
+            filter_expr: self.filter_expr.clone(),
             lo,
             hi,
         });
@@ -524,20 +575,20 @@ fn build_bounds_state(
 /// Used both by [`RangeFilterStream`]'s slow path and by the tests that inspect
 /// the generated expression tree.
 fn build_predicate_from_bounds(
-    routing_expr: Arc<dyn PhysicalExpr>,
+    filter_expr: Arc<dyn PhysicalExpr>,
     lo: Option<ScalarValue>,
     hi: Option<ScalarValue>,
 ) -> Arc<dyn PhysicalExpr> {
     let ge = |lo: ScalarValue| -> Arc<dyn PhysicalExpr> {
         Arc::new(BinaryExpr::new(
-            routing_expr.clone(),
+            filter_expr.clone(),
             Operator::GtEq,
             Arc::new(Literal::new(lo)),
         ))
     };
     let lt = |hi: ScalarValue| -> Arc<dyn PhysicalExpr> {
         Arc::new(BinaryExpr::new(
-            routing_expr.clone(),
+            filter_expr.clone(),
             Operator::Lt,
             Arc::new(Literal::new(hi)),
         ))
@@ -551,7 +602,7 @@ fn build_predicate_from_bounds(
 }
 
 /// Fast-path state. Present only when the input is sorted ascending on
-/// `routing_expr` — then a batch's first and last routing values bound the
+/// `filter_expr` — then a batch's first and last values bound the
 /// whole batch's value range, unlocking three shortcuts:
 ///
 /// - `last < lo` or `first >= hi` — batch is entirely outside the partition's
@@ -566,7 +617,7 @@ fn build_predicate_from_bounds(
 /// routing column contains nulls (Float64Array binary search would treat null
 /// slots as garbage values).
 struct FastPathState {
-    routing_expr: Arc<dyn PhysicalExpr>,
+    filter_expr: Arc<dyn PhysicalExpr>,
     lo: Option<ScalarValue>,
     hi: Option<ScalarValue>,
 }
@@ -615,7 +666,7 @@ impl RangeFilterStream {
     ) -> Result<Option<RecordBatch>> {
         let n = batch.num_rows();
         let arr = state
-            .routing_expr
+            .filter_expr
             .evaluate(&batch)
             .and_then(|v| v.into_array(n))?;
         // TODO: include NULLs in the fast path
@@ -828,9 +879,15 @@ mod tests {
     fn raw_bounds_len_must_match_input_partitions() {
         let src = v_source(3);
         let bounds = ranges_from_cuts(&[10.0]); // 2 partitions
-        let err =
-            RangeFilterExec::try_new_resolved(src, v_col(), sv(0.0), sv(0.0), bounds)
-                .unwrap_err();
+        let err = RangeFilterExec::try_new_resolved(
+            src,
+            v_col(),
+            sv(0.0),
+            sv(0.0),
+            None,
+            bounds,
+        )
+        .unwrap_err();
         assert!(
             err.to_string()
                 .contains("does not match input partition count"),
@@ -847,6 +904,7 @@ mod tests {
             v_col(),
             sv(-1.0),
             sv(0.0),
+            None,
             bounds.clone(),
         )
         .unwrap_err();
@@ -856,6 +914,7 @@ mod tests {
             v_col(),
             sv(0.0),
             sv(f64::NAN),
+            None,
             bounds,
         )
         .unwrap_err();
@@ -904,6 +963,7 @@ mod tests {
                     column.clone(),
                     sv(0.0),
                     sv(0.0),
+                    None,
                     vec![(
                         Some(ScalarValue::Int64(Some(5))),
                         Some(ScalarValue::Int64(Some(12))),
@@ -958,6 +1018,7 @@ mod tests {
             column,
             sv(0.0),
             sv(0.0),
+            None,
             vec![(None, None)],
         )
         .unwrap_err();
@@ -996,15 +1057,13 @@ mod tests {
                 (Some(sv(10.0)), Some(sv(20.0))),
                 (Some(sv(20.0)), None),
             ];
-            // Declared sorted so `nulls_first` is readable; the routing column
-            // has NULLs, so every batch takes the mask path regardless.
-            let sorted = PhysicalSortExpr::new(
-                column.clone(),
-                SortOptions {
-                    descending: false,
-                    nulls_first,
-                },
-            );
+            // The filter column has NULLs, so every batch takes the mask path;
+            // the declared sort only decides which partition claims the run.
+            let options = SortOptions {
+                descending: false,
+                nulls_first,
+            };
+            let sorted = PhysicalSortExpr::new(column.clone(), options);
             let source = MemorySourceConfig::try_new(
                 &[vec![batch.clone()], vec![batch.clone()], vec![batch]],
                 schema.clone(),
@@ -1021,11 +1080,12 @@ mod tests {
                     column.clone(),
                     sv(0.0),
                     sv(0.0),
+                    Some(InputOrder::Ordered(options)),
                     bounds,
                 )
                 .unwrap(),
             );
-            assert_eq!(rf.nulls_first, nulls_first);
+            assert_eq!(rf.input_order, Some(InputOrder::Ordered(options)));
 
             let mut null_rows_per_partition = Vec::new();
             let mut value_rows_per_partition = Vec::new();
@@ -1068,16 +1128,16 @@ mod tests {
     #[test]
     fn pending_construction_defers_check() {
         let src = v_source(3);
-        let rf =
-            RangeFilterExec::try_new_pending(src, v_col(), sv(0.0), sv(0.0)).unwrap();
+        let rf = RangeFilterExec::try_new_pending(src, v_col(), sv(0.0), sv(0.0), None)
+            .unwrap();
         assert!(rf.raw_bounds().is_none());
     }
 
     #[tokio::test]
     async fn execute_before_resolve_errors() {
         let src = v_source(2);
-        let rf =
-            RangeFilterExec::try_new_pending(src, v_col(), sv(0.0), sv(0.0)).unwrap();
+        let rf = RangeFilterExec::try_new_pending(src, v_col(), sv(0.0), sv(0.0), None)
+            .unwrap();
         let ctx = SessionContext::new().task_ctx();
         let Err(err) = rf.execute(0, ctx) else {
             panic!("execute() should error before resolve_bounds")
@@ -1088,8 +1148,8 @@ mod tests {
     #[test]
     fn resolve_bounds_validates() {
         let src = v_source(3);
-        let rf =
-            RangeFilterExec::try_new_pending(src, v_col(), sv(0.0), sv(0.0)).unwrap();
+        let rf = RangeFilterExec::try_new_pending(src, v_col(), sv(0.0), sv(0.0), None)
+            .unwrap();
         // 2 bounds don't fit 3-partition input.
         let bounds_too_short = ranges_from_cuts(&[1.0]);
         let err = rf.resolve_bounds(bounds_too_short).unwrap_err();
@@ -1135,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn sorted_on_key_detected_when_input_ascending_on_routing_expr() {
+    fn sorted_on_key_detected_when_input_ascending_on_filter_expr() {
         // sorted_v_source is a single-partition DataSourceExec — one raw bound.
         let src = sorted_v_source(vec![batch(&[1.0, 2.0, 3.0])], asc());
         let rf = RangeFilterExec::try_new_resolved(
@@ -1143,6 +1203,7 @@ mod tests {
             v_col(),
             sv(0.0),
             sv(0.0),
+            None,
             vec![(None, None)],
         )
         .unwrap();
@@ -1150,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn sorted_on_key_false_when_input_descending_on_routing_expr() {
+    fn sorted_on_key_false_when_input_descending_on_filter_expr() {
         let desc = SortOptions {
             descending: true,
             nulls_first: false,
@@ -1161,6 +1222,7 @@ mod tests {
             v_col(),
             sv(0.0),
             sv(0.0),
+            None,
             vec![(None, None)],
         )
         .unwrap();
@@ -1173,9 +1235,15 @@ mod tests {
         // RepartitionExec on a single partition drops ordering information.
         let src = v_source(2);
         let bounds = ranges_from_cuts(&[2.0]);
-        let rf =
-            RangeFilterExec::try_new_resolved(src, v_col(), sv(0.0), sv(0.0), bounds)
-                .unwrap();
+        let rf = RangeFilterExec::try_new_resolved(
+            src,
+            v_col(),
+            sv(0.0),
+            sv(0.0),
+            None,
+            bounds,
+        )
+        .unwrap();
         assert!(!rf.sorted_on_key);
     }
 
@@ -1206,8 +1274,15 @@ mod tests {
         let ranges = ranges_from_cuts(cuts);
         let bounds = vec![ranges[global_k].clone()];
         Arc::new(
-            RangeFilterExec::try_new_resolved(input, v_col(), sv(0.0), sv(0.0), bounds)
-                .unwrap(),
+            RangeFilterExec::try_new_resolved(
+                input,
+                v_col(),
+                sv(0.0),
+                sv(0.0),
+                None,
+                bounds,
+            )
+            .unwrap(),
         )
     }
 
@@ -1282,6 +1357,7 @@ mod tests {
                 v_expr,
                 sv(0.0),
                 sv(0.0),
+                Some(InputOrder::Ordered(asc())),
                 vec![ranges[1].clone()],
             )
             .unwrap(),
@@ -1338,6 +1414,7 @@ mod tests {
                 v_col(),
                 sv(0.0),
                 sv(0.0),
+                None,
                 ranges_from_cuts(&[10.0, 20.0]),
             )
             .unwrap(),

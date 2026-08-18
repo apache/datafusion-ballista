@@ -75,8 +75,8 @@ use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
-    OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec, RangeFilterExec,
-    RuntimeStatsExec,
+    InputOrder, OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec,
+    RangeFilterExec, RuntimeStatsExec,
 };
 use ballista_core::sort_key::SortKeyCodec;
 use datafusion::arrow::compute::SortOptions;
@@ -328,6 +328,7 @@ fn maybe_rewrite_bwag(
         sort_expr.expr.clone(),
         halo_lo,
         halo_hi,
+        Some(InputOrder::Ordered(sort_expr.options)),
     )?);
 
     // Wrap BWAG in PartitionedBoundedWindowAggExec instead of collapsing
@@ -350,6 +351,7 @@ fn maybe_rewrite_bwag(
             sort_expr.expr.clone(),
             ScalarValue::Float64(Some(0.0)),
             ScalarValue::Float64(Some(0.0)),
+            Some(InputOrder::Ordered(sort_expr.options)),
         )?);
 
     debug!(

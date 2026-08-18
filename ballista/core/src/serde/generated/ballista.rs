@@ -202,7 +202,7 @@ pub struct PerPartitionFilterExecNode {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RangeFilterExecNode {
     #[prost(message, optional, tag = "1")]
-    pub routing_expr: ::core::option::Option<
+    pub filter_expr: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalExprNode,
     >,
     #[prost(message, optional, tag = "2")]
@@ -211,6 +211,44 @@ pub struct RangeFilterExecNode {
     pub halo_hi: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
     #[prost(message, repeated, tag = "4")]
     pub raw_bounds: ::prost::alloc::vec::Vec<RangeBound>,
+    /// What the operator that produced the cuts says about the rows arriving.
+    /// Unset claims nothing, which a nullable `filter_expr` has no answer for:
+    /// a NULL has a side in the order, not a position among the values.
+    ///
+    /// `ordered` is also required of the input, so nothing planted between can
+    /// reorder the rows the placement was stated against. `unordered_nulls_first`
+    /// states the side without demanding an order, which is what leaves an
+    /// unordered range-repartition upstream legal.
+    #[prost(oneof = "range_filter_exec_node::InputOrder", tags = "5, 6")]
+    pub input_order: ::core::option::Option<range_filter_exec_node::InputOrder>,
+}
+/// Nested message and enum types in `RangeFilterExecNode`.
+pub mod range_filter_exec_node {
+    /// What the operator that produced the cuts says about the rows arriving.
+    /// Unset claims nothing, which a nullable `filter_expr` has no answer for:
+    /// a NULL has a side in the order, not a position among the values.
+    ///
+    /// `ordered` is also required of the input, so nothing planted between can
+    /// reorder the rows the placement was stated against. `unordered_nulls_first`
+    /// states the side without demanding an order, which is what leaves an
+    /// unordered range-repartition upstream legal.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum InputOrder {
+        #[prost(bool, tag = "5")]
+        UnorderedNullsFirst(bool),
+        #[prost(message, tag = "6")]
+        Ordered(super::SortOptions),
+    }
+}
+/// An arrow `SortOptions`, which has no proto of its own in the DataFusion
+/// descriptors — `PhysicalSortExprNode` carries the pair inline beside an
+/// expression this message's users already have.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SortOptions {
+    #[prost(bool, tag = "1")]
+    pub descending: bool,
+    #[prost(bool, tag = "2")]
+    pub nulls_first: bool,
 }
 /// Half-open `[lo, hi)` cut range for one input partition. Either side may be
 /// unset to signal ±∞.

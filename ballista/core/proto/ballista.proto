@@ -180,10 +180,30 @@ message PerPartitionFilterExecNode {
 // The child plan is plumbed by the framework as `inputs[0]` during decode.
 // Serialization requires bounds to be resolved.
 message RangeFilterExecNode {
-  datafusion.PhysicalExprNode routing_expr = 1;
+  datafusion.PhysicalExprNode filter_expr = 1;
   datafusion_common.ScalarValue halo_lo = 2;
   datafusion_common.ScalarValue halo_hi = 3;
   repeated RangeBound raw_bounds = 4;
+  // What the operator that produced the cuts says about the rows arriving.
+  // Unset claims nothing, which a nullable `filter_expr` has no answer for:
+  // a NULL has a side in the order, not a position among the values.
+  //
+  // `ordered` is also required of the input, so nothing planted between can
+  // reorder the rows the placement was stated against. `unordered_nulls_first`
+  // states the side without demanding an order, which is what leaves an
+  // unordered range-repartition upstream legal.
+  oneof input_order {
+    bool unordered_nulls_first = 5;
+    SortOptions ordered = 6;
+  }
+}
+
+// An arrow `SortOptions`, which has no proto of its own in the DataFusion
+// descriptors — `PhysicalSortExprNode` carries the pair inline beside an
+// expression this message's users already have.
+message SortOptions {
+  bool descending = 1;
+  bool nulls_first = 2;
 }
 
 // Half-open `[lo, hi)` cut range for one input partition. Either side may be

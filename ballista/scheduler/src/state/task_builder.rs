@@ -117,9 +117,10 @@ fn restrict(
             .collect::<datafusion::common::Result<_>>()?;
         return Ok(Arc::new(RangeFilterExec::try_new_resolved(
             new_child,
-            rf.routing_expr().clone(),
+            rf.filter_expr().clone(),
             rf.halo_lo().clone(),
             rf.halo_hi().clone(),
+            rf.input_order(),
             sliced_bounds,
         )?));
     }
@@ -727,7 +728,7 @@ mod tests {
         )
         .unwrap();
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         // K=4 raw bounds derived from cuts [100, 200, 300].
         let sv = |v: f64| ScalarValue::Float64(Some(v));
         let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
@@ -739,9 +740,10 @@ mod tests {
         let plan: Arc<dyn ExecutionPlan> = Arc::new(
             RangeFilterExec::try_new_resolved(
                 Arc::new(reader) as Arc<dyn ExecutionPlan>,
-                routing_expr,
+                filter_expr,
                 ScalarValue::Float64(Some(0.0)),
                 ScalarValue::Float64(Some(0.0)),
+                None,
                 raw_bounds.clone(),
             )
             .unwrap(),

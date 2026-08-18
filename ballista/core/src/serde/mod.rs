@@ -56,17 +56,18 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
-    RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, InputOrder,
+    OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
+    PerPartitionFilterExec, RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec,
+    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+    UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
     ballista_physical_plan_node::PhysicalPlanType,
 };
 use crate::serde::scheduler::PartitionLocation;
+use datafusion::arrow::compute::SortOptions;
 pub use generated::ballista as protobuf;
 
 /// Generated protobuf code from Ballista protocol definitions.
@@ -715,18 +716,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     )));
                 };
                 let schema = input.schema();
-                let routing_expr_proto = node.routing_expr.as_ref().ok_or_else(|| {
+                let filter_expr_proto = node.filter_expr.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
-                        "RangeFilterExecNode missing routing_expr".into(),
+                        "RangeFilterExecNode missing filter_expr".into(),
                     )
                 })?;
-                let routing_expr =
+                let filter_expr =
                     datafusion_proto::physical_plan::from_proto::parse_physical_expr(
-                        routing_expr_proto,
+                        filter_expr_proto,
                         ctx,
                         schema.as_ref(),
                         self,
                     )?;
+                let input_order = node.input_order.as_ref().map(|order| match order {
+                    protobuf::range_filter_exec_node::InputOrder::UnorderedNullsFirst(
+                        nulls_first,
+                    ) => InputOrder::Unordered {
+                        nulls_first: *nulls_first,
+                    },
+                    protobuf::range_filter_exec_node::InputOrder::Ordered(options) => {
+                        InputOrder::Ordered(SortOptions {
+                            descending: options.descending,
+                            nulls_first: options.nulls_first,
+                        })
+                    }
+                });
                 let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
                     datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
                         DataFusionError::Internal(format!(
@@ -757,9 +771,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 Ok(Arc::new(RangeFilterExec::try_new_resolved(
                     input.clone(),
-                    routing_expr,
+                    filter_expr,
                     halo_lo,
                     halo_hi,
+                    input_order,
                     raw_bounds,
                 )?))
             }
@@ -1096,9 +1111,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "RangeFilterExec: cannot serialize before resolve_bounds()".into(),
                 )
             })?;
-            let routing_expr =
+            let filter_expr =
                 datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
-                    exec.routing_expr(),
+                    exec.filter_expr(),
                     self.default_codec.as_ref(),
                 )?;
             let encode_sv = |sv: &datafusion::scalar::ScalarValue| {
@@ -1121,10 +1136,23 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::RangeFilter(
                     protobuf::RangeFilterExecNode {
-                        routing_expr: Some(routing_expr),
+                        filter_expr: Some(filter_expr),
                         halo_lo: Some(halo_lo),
                         halo_hi: Some(halo_hi),
                         raw_bounds: raw_bounds_proto,
+                        input_order: exec.input_order().map(|order| match order {
+                            InputOrder::Unordered { nulls_first } => {
+                                protobuf::range_filter_exec_node::InputOrder::UnorderedNullsFirst(nulls_first)
+                            }
+                            InputOrder::Ordered(options) => {
+                                protobuf::range_filter_exec_node::InputOrder::Ordered(
+                                    protobuf::SortOptions {
+                                        descending: options.descending,
+                                        nulls_first: options.nulls_first,
+                                    },
+                                )
+                            }
+                        }),
                     },
                 )),
             };
@@ -2247,7 +2275,7 @@ mod test {
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(3)).unwrap(),
         );
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         // K=3 raw bounds: (-∞, 10), [10, 20), [20, +∞)
         let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
             (None, Some(ScalarValue::Float64(Some(10.0)))),
@@ -2257,11 +2285,18 @@ mod test {
             ),
             (Some(ScalarValue::Float64(Some(20.0))), None),
         ];
+        // Round-tripped alongside the bounds: the placement of the NULL run is
+        // not recoverable from the child on the far side.
+        let original_input_order = Some(InputOrder::Ordered(SortOptions {
+            descending: false,
+            nulls_first: true,
+        }));
         let original = RangeFilterExec::try_new_resolved(
             input.clone(),
-            routing_expr.clone(),
+            filter_expr.clone(),
             ScalarValue::Float64(Some(3.0)),
             ScalarValue::Float64(Some(0.0)),
+            original_input_order,
             raw_bounds.clone(),
         )
         .unwrap();
@@ -2286,7 +2321,8 @@ mod test {
         assert_eq!(decoded.raw_bounds().unwrap(), raw_bounds);
         assert_eq!(decoded.halo_lo(), &ScalarValue::Float64(Some(3.0)));
         assert_eq!(decoded.halo_hi(), &ScalarValue::Float64(Some(0.0)));
-        assert_eq!(decoded.routing_expr().to_string(), routing_expr.to_string());
+        assert_eq!(decoded.filter_expr().to_string(), filter_expr.to_string());
+        assert_eq!(decoded.input_order(), original_input_order);
     }
 
     /// A pending RangeFilterExec (unresolved bounds) refuses to serialize —
@@ -2307,12 +2343,13 @@ mod test {
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(2)).unwrap(),
         );
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         let pending = RangeFilterExec::try_new_pending(
             input,
-            routing_expr,
+            filter_expr,
             ScalarValue::Float64(Some(0.0)),
             ScalarValue::Float64(Some(0.0)),
+            None,
         )
         .unwrap();
 

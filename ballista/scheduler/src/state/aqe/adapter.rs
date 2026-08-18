@@ -277,12 +277,12 @@ fn resolve_range_filter_cuts(
             );
         };
         let routing = descend_to_boundary_routing(child)?;
-        if !rf.routing_expr().eq(&routing.routing_expr) {
+        if !rf.filter_expr().eq(&routing.routing_expr) {
             return datafusion::common::internal_err!(
-                "RangeFilterExec routing_expr `{}` disagrees with its descendant \
+                "RangeFilterExec filter_expr `{}` disagrees with its descendant \
                  boundary ExchangeExec's routing_expr `{}` — plant-time invariant \
                  broken",
-                rf.routing_expr(),
+                rf.filter_expr(),
                 routing.routing_expr
             );
         }
