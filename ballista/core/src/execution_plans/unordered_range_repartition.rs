@@ -53,6 +53,8 @@
 //! outcome of `boundaries.len() + 1 = 1`. Runtime routing must never crash;
 //! degraded-but-alive beats the alternative, and downstream sees an empty
 //! stream on the K-1 partitions that got no data.
+//!
+//! [`RuntimeStatsExec`]: super::RuntimeStatsExec
 
 use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Mutex, OnceLock};
