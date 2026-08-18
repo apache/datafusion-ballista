@@ -752,43 +752,55 @@ impl SortKeySketch {
         if partition_cnt < 2 || self.sketch.count() == 0 {
             return Ok(Vec::new());
         }
+        /// NULLs are indivisible, so when they outgrow a partition they take one whole.
+        const PARTITION_FOR_NULLS: usize = 1;
+        /// `at_ranks` is 1-based: rank `r` names the `r`-th value, and nothing is rank 0.
+        const FIRST_RANK: u64 = 1;
+
         let total_cnt = self.count();
         let sketch_cnt = self.sketch.count();
         // Partitions sharing the not-NULLs: all but the one partition consumed by NULLs
-        let sharing = partition_cnt as u128 - 1;
+        let not_null_parts = (partition_cnt - PARTITION_FOR_NULLS) as u128;
+        let cut_cnt = partition_cnt - 1;
+        let last_cut_idx = cut_cnt - 1;
         // null_count > total_cnt / partition_cnt (but without error inducing division)
         let nulls_outgrow_a_partition =
             self.null_count as u128 * partition_cnt as u128 > total_cnt as u128;
-        let sketch_ranks: Vec<u64> = (0..partition_cnt - 1)
-            .map(|cut_idx| {
-                let total_rank =
-                    ((cut_idx as u128 + 1) * total_cnt as u128 / partition_cnt as u128) as u64;
-                if self.codec.options().nulls_first {
-                    let sketch_rank = if !nulls_outgrow_a_partition {
-                        // no cut ever lands on a NULL value anyway
-                        total_rank.saturating_sub(self.null_count)
-                    } else {
-                        // save a whole partition for the NULLs, divide evenly amongst the rest
-                        (cut_idx as u128 * sketch_cnt as u128 / sharing) as u64 + 1
-                    };
-                    sketch_rank.max(cut_idx as u64 + 1)
+        let mut sketch_ranks: Vec<u64> = Vec::with_capacity(cut_cnt);
+        for cut_idx in 0..cut_cnt {
+            let num_parts_closed = cut_idx as u128 + 1;
+            let total_rank =
+                (num_parts_closed * total_cnt as u128 / partition_cnt as u128) as u64;
+            if self.codec.options().nulls_first {
+                let sketch_rank = if !nulls_outgrow_a_partition {
+                    // no cut ever lands on a NULL value anyway
+                    total_rank.saturating_sub(self.null_count)
                 } else {
-                    // mirror of above
-                    let sketch_rank = if !nulls_outgrow_a_partition {
-                        total_rank
-                    } else {
-                        ((cut_idx as u128 + 1) * sketch_cnt as u128).div_ceil(sharing) as u64
-                    };
-                    let distinct = sketch_cnt
-                        .saturating_sub(partition_cnt as u64 - 2 - cut_idx as u64)
-                        .max(1);
-                    sketch_rank.min(distinct).max(1)
-                }
-            })
-            .collect();
+                    // save a whole partition for the NULLs, divide evenly amongst the rest
+                    (cut_idx as u128 * sketch_cnt as u128 / not_null_parts) as u64
+                        + FIRST_RANK
+                };
+                let cuts_below = cut_idx as u64;
+                let lowest_unreserved_rank = cuts_below + FIRST_RANK;
+                let rank = sketch_rank.max(lowest_unreserved_rank).min(sketch_cnt);
+                sketch_ranks.push(rank);
+            } else {
+                // mirror of above
+                let sketch_rank = if !nulls_outgrow_a_partition {
+                    total_rank
+                } else {
+                    // round up, since we're going the other way
+                    (num_parts_closed * sketch_cnt as u128).div_ceil(not_null_parts)
+                        as u64
+                };
+                let cuts_above = (last_cut_idx - cut_idx) as u64;
+                let highest_unreserved_rank = sketch_cnt.saturating_sub(cuts_above);
+                let rank = sketch_rank.min(highest_unreserved_rank).max(FIRST_RANK);
+                sketch_ranks.push(rank);
+            }
+        }
 
-        // One sorted pass for every boundary. Per-cut `quantile` re-sorts the
-        // retained set each time: 279 us against 7.56 us at K=64.
+        // Turn ranks into values
         self.sketch
             .at_ranks(&sketch_ranks)
             .into_iter()
