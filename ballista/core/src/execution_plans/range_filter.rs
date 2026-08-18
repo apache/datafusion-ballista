@@ -53,7 +53,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use datafusion::arrow::array::{Array, ArrayRef, RecordBatch};
 use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::cast::as_boolean_array;
@@ -61,7 +61,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
+use datafusion::physical_expr::expressions::{BinaryExpr, IsNullExpr, Literal};
 use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::{
@@ -395,11 +395,18 @@ impl ExecutionPlan for RangeFilterExec {
         } else {
             hi.is_none()
         };
-        let predicate = build_predicate_from_bounds(
+        let mut predicate = build_predicate_from_bounds(
             self.routing_expr.clone(),
             lo.clone(),
             hi.clone(),
         );
+        if takes_nulls {
+            predicate = Arc::new(BinaryExpr::new(
+                predicate,
+                Operator::Or,
+                Arc::new(IsNullExpr::new(self.routing_expr.clone())),
+            ));
+        }
         let schema = self.schema();
         let input = self.input.execute(partition, ctx)?;
         let fast_path = self.sorted_on_key.then(|| FastPathState {
@@ -422,7 +429,6 @@ impl ExecutionPlan for RangeFilterExec {
         let stream = RangeFilterStream {
             schema: schema.clone(),
             predicate,
-            takes_nulls,
             input,
             fast_path,
             baseline,
@@ -575,8 +581,6 @@ struct PathMetrics {
 struct RangeFilterStream {
     schema: SchemaRef,
     predicate: Arc<dyn PhysicalExpr>,
-    /// Whether this partition claims the NULL run. See `execute`.
-    takes_nulls: bool,
     input: SendableRecordBatchStream,
     fast_path: Option<FastPathState>,
     baseline: BaselineMetrics,
@@ -586,26 +590,13 @@ struct RangeFilterStream {
 impl RangeFilterStream {
     /// Apply the general predicate to `batch` — used both by the non-sorted
     /// fallback and by the sorted path when the routing column has nulls.
-    ///
-    /// A NULL key is absent from the comparison rather than failing it: the
-    /// kernels leave its mask entry NULL and `filter_record_batch` reads that as
-    /// exclude. Its place comes from the ordering instead, which is what
-    /// `takes_nulls` carries.
     fn slow_filter(&self, batch: &RecordBatch) -> Result<RecordBatch> {
         self.path_metrics.slow.add(1);
         let mask = self
             .predicate
             .evaluate(batch)
             .and_then(|v| v.into_array(batch.num_rows()))?;
-        let mask = as_boolean_array(&mask)?;
-        let positioned: BooleanArray = if mask.null_count() == 0 {
-            mask.clone()
-        } else {
-            mask.iter()
-                .map(|inside| Some(inside.unwrap_or(self.takes_nulls)))
-                .collect()
-        };
-        Ok(filter_record_batch(batch, &positioned)?)
+        Ok(filter_record_batch(batch, as_boolean_array(&mask)?)?)
     }
 
     /// Try the sorted-input shortcuts. Returns `None` iff the batch is
@@ -621,17 +612,7 @@ impl RangeFilterStream {
             .routing_expr
             .evaluate(&batch)
             .and_then(|v| v.into_array(n))?;
-        // A NULL has a position in the ordering, not a comparison result, so
-        // the shortcuts below cannot place it. The bail is load-bearing, not an
-        // optimization: everything past it reads values by index and assumes
-        // every index holds one.
-        //
-        // TODO: sorted input puts the run at one end, so the values occupy
-        // `[null_count, n)` or `[0, n - null_count)`, and searching that span
-        // leaves the run contiguous with the selection — the slice would stay
-        // zero-copy where this copies. It makes plan-declared null placement
-        // load-bearing for slicing, which this bail does not, so it wants the
-        // counters above as its evidence.
+        // TODO: include NULLs in the fast path
         if arr.null_count() > 0 {
             let filtered = self.slow_filter(&batch)?;
             return Ok((filtered.num_rows() > 0).then_some(filtered));
@@ -670,13 +651,7 @@ impl RangeFilterStream {
     }
 }
 
-/// Index of the first row of `arr` at or above `bound`, over an ascending
-/// non-null column of `len` rows.
-///
-/// `slice::partition_point` over the array by index rather than over a typed
-/// values buffer, so the shortcut works for any ordered type a `ScalarValue`
-/// holds. Costs one `ScalarValue` per probe — 13 for an 8192-row batch, against
-/// a linear pass over the whole thing.
+/// Binary search - same as the rust version, but works on arrow primitives
 fn partition_point(arr: &ArrayRef, len: usize, bound: &ScalarValue) -> Result<usize> {
     let mut below = 0;
     let mut above = len;
