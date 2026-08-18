@@ -47,16 +47,6 @@
 //! stage 0's `RuntimeStatsExec` reports have been merged. `execute` refuses
 //! while bounds are unresolved; serialization refuses too — over-the-wire
 //! plans always ship with bounds bound.
-//!
-//! # Type generality
-//!
-//! `ScalarValue` throughout, including the fast path: bounds compare with
-//! `PartialOrd` and the binary search addresses the array by index, so any
-//! ordered type a `ScalarValue` holds works. Halo widening is typed
-//! arithmetic, so a halo of a type the key cannot be widened by is refused
-//! rather than coerced — a `Float64` halo against a `Timestamp` key is a
-//! planner bug, not something to round into a grid. A zero halo widens by
-//! nothing and so needs no arithmetic at all.
 
 use std::fmt::{self, Debug, Formatter};
 use std::pin::Pin;
@@ -92,8 +82,7 @@ use parking_lot::Mutex;
 /// means unbounded (virtual ±∞).
 pub type RangeBound = (Option<ScalarValue>, Option<ScalarValue>);
 
-/// Bounds after halo widening. Same shape as [`RangeBound`]; the halo has
-/// been folded in.
+/// Bounds after halo widening
 pub type WidenedBound = (Option<ScalarValue>, Option<ScalarValue>);
 
 /// Both raw and widened bounds. `raw` is preserved for serialization; the
@@ -123,9 +112,6 @@ pub struct RangeFilterExec {
     /// values bound the entire batch, so most batches never touch
     /// `filter_record_batch`.
     sorted_on_key: bool,
-    /// Whether the input declares NULLs at the low end of the order. With
-    /// [`Self::sorted_on_key`] it decides which single partition claims the
-    /// whole NULL run — see `takes_nulls` in `execute`.
     nulls_first: bool,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
@@ -181,6 +167,7 @@ impl RangeFilterExec {
     ) -> Result<Self> {
         let schema = input.schema();
         let expr_type = routing_expr.data_type(&schema)?;
+        // TODO: as long as halos are 0, we should be able to support things like strings
         if !expr_type.is_numeric() && !expr_type.is_temporal() {
             return internal_err!(
                 "RangeFilterExec: routing_expr must be numeric or temporal, got {expr_type}"
@@ -206,10 +193,6 @@ impl RangeFilterExec {
             .is_some_and(|first| !first.options.descending);
         let nulls_first = match &leading_sort {
             Some(first) => first.options.nulls_first,
-            // Where the run sits is a fact about the declared order, and there
-            // isn't one — either no ordering at all, or an ordering on some
-            // other expression. Defaulting would hand the run to whichever end
-            // the default names, by accident rather than by decision.
             None if routing_expr.nullable(&schema)? => {
                 return internal_err!(
                     "RangeFilterExec: routing_expr is nullable but the input declares no \
@@ -406,10 +389,7 @@ impl ExecutionPlan for RangeFilterExec {
             })?
         };
         let (lo, hi) = widened;
-        // The NULL run belongs to whichever partition is unbounded at the end
-        // the run occupies. An unbounded end only ever belongs to a global end
-        // partition and survives the scheduler slicing bounds down to a task,
-        // so this needs no global partition identity.
+        // if the lower or upper side of the range is unbounded, it should include the NULLs
         let takes_nulls = if self.nulls_first {
             lo.is_none()
         } else {
@@ -459,9 +439,6 @@ fn validate_halo(name: &str, halo: &ScalarValue) -> Result<()> {
     if halo.is_null() {
         return internal_err!("RangeFilterExec: {name} must not be NULL");
     }
-    // Only the float families have values that are neither a width nor
-    // comparable: an infinity widens every bound to cover everything, a NaN
-    // compares false against all of it.
     let finite = match halo {
         ScalarValue::Float64(Some(v)) => v.is_finite(),
         ScalarValue::Float32(Some(v)) => v.is_finite(),
@@ -476,31 +453,18 @@ fn validate_halo(name: &str, halo: &ScalarValue) -> Result<()> {
     Ok(())
 }
 
-/// Whether widening by `halo` is a no-op. Worth asking before the arithmetic,
-/// because a zero halo of one type must not refuse a key of another: the
-/// scheduler passes `Float64(0.0)` for every consumer with no halo at all.
 pub(crate) fn is_zero_halo(halo: &ScalarValue) -> Result<bool> {
     Ok(halo == &ScalarValue::new_zero(&halo.data_type())?)
 }
 
-/// `value` moved down by `halo`, or unchanged when the halo is zero. The
-/// scheduler widens the same way when it routes whole files, so both live here
-/// with the operator that defines what a halo means.
-pub(crate) fn widen_below(
-    value: &ScalarValue,
-    halo: &ScalarValue,
-) -> Result<ScalarValue> {
+pub(crate) fn widen_below(value: &ScalarValue, halo: &ScalarValue) -> Result<ScalarValue> {
     if is_zero_halo(halo)? {
         return Ok(value.clone());
     }
     value.sub(halo)
 }
 
-/// `value` moved up by `halo`. Counterpart to [`widen_below`].
-pub(crate) fn widen_above(
-    value: &ScalarValue,
-    halo: &ScalarValue,
-) -> Result<ScalarValue> {
+pub(crate) fn widen_above(value: &ScalarValue, halo: &ScalarValue) -> Result<ScalarValue> {
     if is_zero_halo(halo)? {
         return Ok(value.clone());
     }
@@ -533,9 +497,7 @@ fn build_bounds_state(
                 .as_ref()
                 .map(|hi| widen_above(hi, halo_hi))
                 .transpose()?;
-            if let (Some(l), Some(h)) = (&lo_w, &hi_w)
-                && l > h
-            {
+            if let (Some(l), Some(h)) = (&lo_w, &hi_w) && l > h {
                 return internal_err!(
                     "RangeFilterExec: widened bound produced inverted [{l}, {h}) — check cuts + halo"
                 );
