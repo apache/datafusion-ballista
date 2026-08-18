@@ -1,0 +1,12 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=3, stage_resolved=true
+  ProjectionExec: expr=[100 * CAST(sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END)@0 AS Float64) / CAST(sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 AS Float64) as promo_revenue]
+    AggregateExec: mode=Single, gby=[], aggr=[sum(CASE WHEN part.p_type LIKE PROMO% THEN __common_expr_1 ELSE 0.0000 END) as sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END), sum(__common_expr_1) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+      CoalescePartitionsExec
+        ExchangeExec: partitioning=None, plan_id=4, stage_id=2, stage_resolved=true
+          ProjectionExec: expr=[l_extendedprice@0 * (1 - l_discount@1) as __common_expr_1, p_type@2 as p_type]
+            HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, l_partkey@0)], projection=[l_extendedprice@3, l_discount@4, p_type@1]
+              ExchangeExec: partitioning=Hash([p_partkey@0], 16), plan_id=2, stage_id=1, stage_resolved=true
+                StatsExec: rows=20000000
+              ExchangeExec: partitioning=Hash([l_partkey@0], 16), plan_id=1, stage_id=0, stage_resolved=true
+                FilterExec: l_shipdate@3 >= 1995-09-01 AND l_shipdate@3 < 1995-10-01, projection=[l_partkey@0, l_extendedprice@1, l_discount@2]
+                  StatsExec: rows=600037902
