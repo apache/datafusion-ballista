@@ -332,7 +332,8 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             state.receivers = receivers;
             state.initialized = true;
             let senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> = senders.into();
-            let cuts_cell: Arc<OnceLock<Vec<ScalarValue>>> = Arc::new(OnceLock::new());
+            let cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>> =
+                Arc::new(OnceLock::new());
             let input_partitions = self.input.output_partitioning().partition_count();
             let routing_sort = self.order_by[0].clone();
             let mut drop_helper = Vec::with_capacity(input_partitions);
@@ -403,7 +404,7 @@ async fn scatter_input_partition(
     ctx: Arc<TaskContext>,
     routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-    cuts_cell: Arc<OnceLock<Vec<ScalarValue>>>,
+    cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>>,
     output_partitions: usize,
 ) -> Result<()> {
     let mut stream = child.execute(input_partition, ctx)?;
@@ -416,9 +417,14 @@ async fn scatter_input_partition(
             return Ok(());
         }
         let batch = batch_result?;
-        let cuts = cuts_cell.get_or_init(|| {
-            discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions)
-        });
+        let cuts = cuts_cell
+            .get_or_init(|| {
+                discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions)
+            })
+            .as_ref()
+            .map_err(|e| {
+                internal_datafusion_err!("UnorderedRangeRepartitionExec: {e}")
+            })?;
         // TODO(perf): `split_batch_by_range` materialises K sub-batches per
         // input batch via `take_arrays` — one copy per row into a fresh
         // allocation. Unlike the ordered variant we can't slice

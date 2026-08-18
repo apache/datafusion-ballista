@@ -752,8 +752,9 @@ impl SortKeySketch {
     ///
     /// Empty when `partitions < 2` or no value was observed.
     ///
-    /// [`RangeFilterExec`]: crate::execution_plans::RangeFilterExec
-    /// [`PerPartitionFilterExec`]: crate::execution_plans::PerPartitionFilterExec
+    /// Should only error if:
+    /// 1. invalid sketch: min/max is empty but levels are not - guarded against in proto decode
+    /// 2. codec.decode() failure - guarded against in try_new
     pub fn cuts(&self, partitions: usize) -> Result<Vec<ScalarValue>> {
         if partitions < 2 || self.sketch.count() == 0 {
             return Ok(Vec::new());
@@ -944,19 +945,30 @@ impl SortKeySketch {
             stack.push(keys);
         }
 
-        let sketch = KllSketch::from_parts(
-            proto.k as usize,
-            stack,
-            Self::extreme_key(&codec, &proto.key_min)?,
-            Self::extreme_key(&codec, &proto.key_max)?,
-        )
-        .ok_or_else(|| {
-            internal_datafusion_err!(
-                "SortKeySketchState: k={} and the level widths describe a stack KLL \
+        let key_min = Self::extreme_key(&codec, &proto.key_min)?;
+        let key_max = Self::extreme_key(&codec, &proto.key_max)?;
+        // The extremes are set on the first insert and never cleared, so a
+        // stack holding keys has both and an empty one has neither. `cuts`
+        // reads a rank off an extreme and has no answer when it is missing.
+        let has_keys = stack.iter().any(|level| !level.is_empty());
+        if has_keys != key_min.is_some() || has_keys != key_max.is_some() {
+            return internal_err!(
+                "SortKeySketchState: {} retained keys against key_min={} key_max={} — \
+                 a stack holding keys carries both extremes",
+                stack.iter().map(Vec::len).sum::<usize>(),
+                proto.key_min.len(),
+                proto.key_max.len()
+            );
+        }
+
+        let sketch = KllSketch::from_parts(proto.k as usize, stack, key_min, key_max)
+            .ok_or_else(|| {
+                internal_datafusion_err!(
+                    "SortKeySketchState: k={} and the level widths describe a stack KLL \
                  could not have produced",
-                proto.k
-            )
-        })?;
+                    proto.k
+                )
+            })?;
         Ok(Self {
             codec,
             sketch,
@@ -2127,6 +2139,26 @@ mod tests {
         assert_eq!(decoded.min().unwrap(), None);
         assert_eq!(decoded.max().unwrap(), None);
         assert!(decoded.cuts(8).unwrap().is_empty());
+    }
+
+    /// A payload carrying keys but no extremes is the one shape that makes
+    /// `cuts` fallible, so it has to die at decode instead.
+    #[test]
+    fn wire_refuses_retained_keys_without_extremes() {
+        let options = SortOptions::default();
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let mut original = SortKeySketch::new(codec);
+        original.ingest(&Int64Array::from(vec![1, 2, 3])).unwrap();
+
+        let mut proto = original.to_proto().unwrap();
+        proto.key_max.clear();
+
+        let err = SortKeySketch::try_from_proto(&proto, options)
+            .expect_err("retained keys without a key_max must be refused");
+        assert!(
+            err.to_string().contains("carries both extremes"),
+            "got: {err}"
+        );
     }
 
     /// NULLs are counted beside the sketch rather than in it, so they have

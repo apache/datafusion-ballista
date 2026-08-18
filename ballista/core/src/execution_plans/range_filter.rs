@@ -463,14 +463,20 @@ pub(crate) fn is_zero_halo(halo: &ScalarValue) -> Result<bool> {
     Ok(halo == &ScalarValue::new_zero(&halo.data_type())?)
 }
 
-pub(crate) fn widen_below(value: &ScalarValue, halo: &ScalarValue) -> Result<ScalarValue> {
+pub(crate) fn widen_below(
+    value: &ScalarValue,
+    halo: &ScalarValue,
+) -> Result<ScalarValue> {
     if is_zero_halo(halo)? {
         return Ok(value.clone());
     }
     value.sub(halo)
 }
 
-pub(crate) fn widen_above(value: &ScalarValue, halo: &ScalarValue) -> Result<ScalarValue> {
+pub(crate) fn widen_above(
+    value: &ScalarValue,
+    halo: &ScalarValue,
+) -> Result<ScalarValue> {
     if is_zero_halo(halo)? {
         return Ok(value.clone());
     }

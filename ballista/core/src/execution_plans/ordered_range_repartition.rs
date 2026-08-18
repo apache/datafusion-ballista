@@ -408,10 +408,11 @@ impl OrderedRangeRepartitionExec {
             senders_per_input.push(senders);
         }
 
-        // Empty `Vec<f64>` = discovery failed = single-bucket fallback.
+        // `Ok(vec![])` = no sketch to read = single-bucket fallback.
         // Populated once, on the first batch, by whichever scatter task
         // wins the `OnceLock::get_or_init` race.
-        let cuts_cell: Arc<OnceLock<Vec<ScalarValue>>> = Arc::new(OnceLock::new());
+        let cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>> =
+            Arc::new(OnceLock::new());
         let routing_sort = self.order_by[0].clone();
         let mut drop_helper = Vec::with_capacity(input_partitions);
         for (input_partition, senders) in senders_per_input.into_iter().enumerate() {
@@ -551,7 +552,7 @@ async fn scatter_input_partition(
     ctx: Arc<TaskContext>,
     routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-    cuts_cell: Arc<OnceLock<Vec<ScalarValue>>>,
+    cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>>,
     output_partitions: usize,
     metrics: ScatterMetrics,
 ) -> Result<()> {
@@ -566,13 +567,16 @@ async fn scatter_input_partition(
         let batch = batch_result?;
         metrics.input_batches.add(1);
         metrics.input_rows.add(batch.num_rows());
-        let cuts = cuts_cell.get_or_init(|| {
-            let discover_timer = metrics.discover_cuts_time.timer();
-            let cuts =
-                discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions);
-            discover_timer.done();
-            cuts
-        });
+        let cuts = cuts_cell
+            .get_or_init(|| {
+                let discover_timer = metrics.discover_cuts_time.timer();
+                let cuts =
+                    discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions);
+                discover_timer.done();
+                cuts
+            })
+            .as_ref()
+            .map_err(|e| internal_datafusion_err!("OrderedRangeRepartitionExec: {e}"))?;
         // TODO(perf): input is sorted — this per-row `split_batch_by_range`
         // is legal but wasteful. Two follow-ups worth measuring:
         //   1. Binary-search batch head/tail against cuts to find slice
@@ -801,10 +805,7 @@ mod tests {
             4,
         )
         .expect_err("mismatched sort key must be rejected");
-        assert!(
-            err.to_string().contains("is not a prefix of"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("is not a prefix of"), "got: {err}");
     }
 
     // ---------- End-to-end -----------------------------------------------

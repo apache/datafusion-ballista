@@ -56,20 +56,23 @@ use crate::execution_plans::plan_algebra::preserves_distribution;
 
 /// Walk `child`'s subtree for a [`RuntimeStatsExec`] that sketches on our
 /// routing expression, snapshot its merged sketch, and compute `K - 1`
-/// quantile cuts. Any failure to find a matching sketch returns an empty
-/// `Vec` — the caller's `split_batch_by_range(&[])` produces a single
-/// bucket and every row lands in output partition 0. Never crashes.
+/// quantile cuts. No sketch to read returns an empty `Vec` — the caller's
+/// `split_batch_by_range(&[])` produces a single bucket and every row lands
+/// in output partition 0.
+///
+/// Errors only when a sketch was found and contradicted itself, which the
+/// single-bucket fallback would turn into a silently one-partition query.
 pub(super) fn discover_cuts(
     child: &Arc<dyn ExecutionPlan>,
     routing_expr: &dyn PhysicalExpr,
     output_partitions: usize,
-) -> Vec<ScalarValue> {
+) -> Result<Vec<ScalarValue>> {
     let Some(stats) = find_runtime_stats(child, routing_expr) else {
         warn!(
             "range-repartition: no matching RuntimeStatsExec found in child subtree — \
              single-bucket fallback"
         );
-        return Vec::new();
+        return Ok(Vec::new());
     };
     // Walker returned Some → stats.order_by()'s first entry matches our
     // routing expression → RuntimeStatsExec's construction contract
@@ -82,36 +85,27 @@ pub(super) fn discover_cuts(
                 "range-repartition: matching RuntimeStatsExec has no sketch \
                  (RuntimeStatsExec contract broken?) — single-bucket fallback"
             );
-            return Vec::new();
+            return Ok(Vec::new());
         }
         Err(e) => {
             warn!(
                 "range-repartition: sketch snapshot failed ({e}) — single-bucket fallback"
             );
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
-    // Zero means no samples arrived before the snapshot; degenerate cuts
-    // would follow.
+    // Zero means no samples arrived before the snapshot; degenerate cuts would follow.
     if sketch.count() == 0 {
         warn!(
             "range-repartition: matching sketch has no samples yet — single-bucket fallback"
         );
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // `cuts` sizes by the whole population, keeps every boundary a real value
     // so no consumer compares against a NULL, and puts the NULL run wholly in
     // the partition at the end `nulls_first` names — which is where
     // `split_batch_by_range` sends it and where `RangeFilterExec` looks for it.
-    match sketch.cuts(output_partitions) {
-        Ok(cuts) => cuts,
-        Err(e) => {
-            warn!(
-                "range-repartition: cut computation failed ({e}) — single-bucket fallback"
-            );
-            Vec::new()
-        }
-    }
+    sketch.cuts(output_partitions)
 }
 
 /// Walks `plan`'s subtree through single-child chains only, returning the
