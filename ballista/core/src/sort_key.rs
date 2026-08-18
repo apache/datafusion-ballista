@@ -1503,61 +1503,161 @@ mod tests {
         );
     }
 
-    /// `cuts` splits the population, NULL run included, so a mostly-NULL
-    /// column spends its low cuts inside that run and only crosses into
-    /// the values once the run is behind it.
+    /// Boundaries as the `Int64` scalars `cuts` returns for an `Int64` key.
+    fn i64_cuts(values: &[i64]) -> Vec<ScalarValue> {
+        values
+            .iter()
+            .map(|v| ScalarValue::Int64(Some(*v)))
+            .collect()
+    }
+
+    /// A population of 12 over K=4 gives each partition a share of 3, which is
+    /// the smallest size where the end effects of the half-open convention stay
+    /// within one row. At 10 the same cuts spread by 2 and these assertions
+    /// would be measuring integer rounding rather than the repair.
     ///
-    /// 60 NULLs then values 1..=40, NULLs first. Quartile ranks are 25, 50
-    /// and 75 of 100; the first two sit inside the 60-row NULL run, and the
-    /// third is 15 rows past it, which is value 15 of 40.
+    /// No NULLs, so nothing displaces anything and the ranks land where the
+    /// population quartiles say: 3, 6, 9.
     #[test]
-    fn cuts_balance_the_values_above_an_oversized_null_run() {
-        // A run longer than one partition's share is indivisible, so it fixes
-        // the lowest partition's size and nothing can improve that. What the
-        // boundaries above it have to do is split the remaining values evenly,
-        // rather than bunching at the lowest values and leaving the top
-        // partition holding every row the run displaced.
-        for (nulls, value_count, partitions) in [
-            (60usize, 40i64, 4usize),
-            (90, 10, 4),
-            (60, 40, 8),
-            (10, 90, 4),
-            (0, 100, 4),
-        ] {
-            let values: Vec<i64> = (1..=value_count).collect();
-            let mut column: Vec<Option<i64>> = vec![None; nulls];
-            column.extend(values.iter().copied().map(Some));
-            let sketch = int_sketch(column, sort_options(false, true));
+    fn cuts_balance_when_nothing_is_null() {
+        let values = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let column = vec![
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(9),
+            Some(10),
+            Some(11),
+            Some(12),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
 
-            let cuts = sketch.cuts(partitions).unwrap();
-            let context = format!("{nulls} NULLs, {value_count} values, K={partitions}");
-            assert_eq!(cuts.len(), partitions - 1, "{context}");
-            assert!(
-                cuts.iter().all(|cut| !cut.is_null()),
-                "{context}: a NULL boundary silently drops its partition in \
-                 every consumer, got {cuts:?}"
-            );
-            assert!(
-                cuts.windows(2).all(|pair| pair[0] <= pair[1]),
-                "{context}: boundaries must be non-decreasing, got {cuts:?}"
-            );
+        let cuts = sketch.cuts(4).unwrap();
 
-            let sizes = partition_sizes(nulls, &values, &cuts, true);
-            assert_eq!(
-                sizes.iter().sum::<usize>(),
-                nulls + value_count as usize,
-                "{context}: every row lands somewhere, got {sizes:?}"
-            );
-            // Partition 0 carries the whole run, so only the rest can balance.
-            let above_the_run = &sizes[1..];
-            let spread =
-                above_the_run.iter().max().unwrap() - above_the_run.iter().min().unwrap();
-            assert!(
-                spread <= 1,
-                "{context}: partitions above the run should differ by at most \
-                 one row, got {sizes:?}"
-            );
-        }
+        assert_eq!(cuts, i64_cuts(&[3, 6, 9]));
+        assert_eq!(partition_sizes(0, &values, &cuts, true), vec![2, 3, 3, 4]);
+    }
+
+    /// A run of 2 against a share of 3 fits inside partition 0 beside the
+    /// values below the first cut, so every boundary keeps its population rank
+    /// shifted down by the run and nothing needs repairing.
+    #[test]
+    fn cuts_balance_when_the_run_fits_inside_one_partition() {
+        let values = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let column = vec![
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(9),
+            Some(10),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 4, 7]));
+        assert_eq!(partition_sizes(2, &values, &cuts, true), vec![2, 3, 3, 4]);
+    }
+
+    /// A run of 6 against a share of 3 is indivisible, so partition 0 takes it
+    /// whole and its size cannot be improved. What the boundaries above it owe
+    /// is an even split of the six values — `[2, 2, 2]`, not the `[4, 1, 1]`
+    /// that keeping the raw population ranks would give.
+    #[test]
+    fn cuts_balance_when_the_run_outgrows_one_partition() {
+        let values = vec![1, 2, 3, 4, 5, 6];
+        let column = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 3, 5]));
+        assert_eq!(partition_sizes(6, &values, &cuts, true), vec![6, 2, 2, 2]);
+    }
+
+    /// The run leaves fewer values than partitions to spread them over, so the
+    /// best the boundaries can do is one value each. Every cut is still a real
+    /// value: a NULL boundary would silently drop its partition.
+    #[test]
+    fn cuts_balance_when_the_run_leaves_one_value_per_partition() {
+        let values = vec![1, 2, 3];
+        let column = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 2, 3]));
+        assert_eq!(partition_sizes(9, &values, &cuts, true), vec![9, 1, 1, 1]);
+    }
+
+    /// K=8 over 6 values: there are not enough distinct values to give every
+    /// partition one, so the top boundary repeats and the partition between the
+    /// repeated pair gets nothing. Repeating beats emitting a NULL or a
+    /// decreasing boundary, both of which consumers read as a dropped range.
+    #[test]
+    fn cuts_balance_when_partitions_outnumber_the_values() {
+        let values = vec![1, 2, 3, 4, 5, 6];
+        let column = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(8).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 2, 3, 4, 5, 6, 6]));
+        assert_eq!(
+            partition_sizes(6, &values, &cuts, true),
+            vec![6, 1, 1, 1, 1, 1, 0, 1]
+        );
     }
 
     /// Partition sizes a router would produce from `cuts`, under the half-open
