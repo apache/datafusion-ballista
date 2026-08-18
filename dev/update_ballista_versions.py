@@ -44,6 +44,7 @@ def update_cargo_toml(cargo_toml: str, new_version: str):
         'ballista-core',
         'ballista-executor',
         'ballista-api-types',
+        'ballista-history',
         'ballista-scheduler',
         'ballista-cli',
     )
@@ -82,6 +83,7 @@ def main():
             'ballista-cli',
             'ballista/core',
             'ballista/api-types',
+            'ballista/history',
             'ballista/scheduler',
             'ballista/executor',
             'ballista/client',

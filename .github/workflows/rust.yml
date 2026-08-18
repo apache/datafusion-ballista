@@ -72,7 +72,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: cargo check
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
@@ -92,7 +92,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
 
@@ -125,7 +125,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -145,7 +145,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -165,7 +165,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Run tests
         shell: bash
         run: |
@@ -186,7 +186,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Verify that benchmark queries return expected results
         run: |
           cargo test --package ballista-benchmarks --profile release-nonlto --features=ci --locked -- --test-threads=1
@@ -201,7 +201,7 @@ jobs:
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Run
         run: ci/scripts/rust_fmt.sh
 
@@ -218,7 +218,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
 
@@ -237,9 +237,9 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Install taplo
-        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
           tool: taplo-cli@0.10.0
 
@@ -260,7 +260,7 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Check vendored DataFusion proto matches pinned crate
         run: ci/scripts/rust_proto_check.sh
 
@@ -279,7 +279,7 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Check generated config docs match the config registry
         run: ci/scripts/rust_config_docs_check.sh
 

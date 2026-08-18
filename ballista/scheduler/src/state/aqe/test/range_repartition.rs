@@ -149,7 +149,8 @@ async fn routing_parks_when_range_repartition_is_plan_root()
         },
     }];
     let cuts = vec![15.0];
-    let remapped = cut_partitions(vec![vec![location(0, 7, 3)]], &reports, &cuts)?;
+    let remapped =
+        cut_partitions(vec![vec![location(0, 7, 3)]], &reports, &cuts, 0.0, 0.0)?;
 
     // `cut_partitions` must duplicate the straddler into both partitions —
     // the read-side filter is expected to trim on read.

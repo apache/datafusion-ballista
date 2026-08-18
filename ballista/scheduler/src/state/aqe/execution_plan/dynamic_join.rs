@@ -16,18 +16,22 @@
 // under the License.
 
 use ballista_core::config::BallistaConfig;
+use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::{
     arrow::compute::SortOptions,
     arrow::datatypes::{DataType, Schema},
     common::{
         ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err,
-        plan_err,
+        plan_err, tree_node::TreeNodeRecursion,
     },
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
+    physical_expr::PhysicalExpr,
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
-        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
+        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan,
+        ExecutionPlanProperties, PlanProperties, apply_expression_roots,
         joins::{
             HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
             utils::JoinFilter,
@@ -78,6 +82,23 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.left, &self.right]
+    }
+
+    /// Join keys and filter, same set the `HashJoinExec` / `SortMergeJoinExec`
+    /// this resolves into would report.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        let join_keys = self
+            .on
+            .iter()
+            .flat_map(|(left, right)| [Arc::clone(left), Arc::clone(right)]);
+        let filter = self
+            .filter
+            .iter()
+            .map(|filter| Arc::clone(filter.expression()));
+        apply_expression_roots(join_keys.chain(filter), f)
     }
 
     fn with_new_children(
@@ -209,8 +230,8 @@ impl DynamicJoinSelectionExec {
             .map(|(l, r)| (Arc::clone(l), Arc::clone(r)))
             .unzip();
         vec![
-            Distribution::HashPartitioned(left_expr),
-            Distribution::HashPartitioned(right_expr),
+            Distribution::KeyPartitioned(left_expr),
+            Distribution::KeyPartitioned(right_expr),
         ]
     }
 
@@ -290,8 +311,10 @@ impl DynamicJoinSelectionExec {
             self.join_type
         };
 
-        let stats_left = self.left.partition_statistics(None)?;
-        let stats_right = self.right.partition_statistics(None)?;
+        let stats_left = StatisticsContext::new()
+            .compute(self.left.as_ref(), &StatisticsArgs::new())?;
+        let stats_right = StatisticsContext::new()
+            .compute(self.right.as_ref(), &StatisticsArgs::new())?;
         let build_stats = if swap_inputs {
             &stats_right
         } else {
@@ -326,35 +349,42 @@ impl DynamicJoinSelectionExec {
             PartitionMode::Partitioned
         };
 
-        let action = match (&self.selection_state, partition_mode) {
+        // Repartitioning exists to give the resolver measured statistics. When
+        // the inputs are already co-partitioned there is nothing to wait for,
+        // so resolve now instead of inserting an exchange that reshuffles data
+        // already in the right place (TPC-H q18 moved 60M rows twice).
+        let selection_state = if self.selection_state == JoinInputState::Repartitioned
+            || self.inputs_already_partitioned(config)
+        {
+            JoinInputState::Repartitioned
+        } else {
+            JoinInputState::Unknown
+        };
+
+        let action = match (&selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
+            // Null-aware anti joins require single-task `CollectLeft` even
+            // though both sides are already shuffled.
+            (JoinInputState::Repartitioned, PartitionMode::CollectLeft)
+                if self.null_aware =>
             {
-                self.to_hash_join(PartitionMode::Partitioned)
-                    .map(JoinSelectionAction::Hash)
+                self.to_hash_join(PartitionMode::CollectLeft)
+                    .map(JoinSelectionAction::LateCollectLeft)
             }
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned) => {
-                self.to_sort_merge_join().map(JoinSelectionAction::Sort)
-            }
-            // TODO: not sure about this point
-            // at this point, both inputs has been repartitioned
-            // making it collect left may not make sense, perhaps only
-            // valid strategy at this point is to check if both sides
-            // are small enough to make it single partitioned join.
-            // if single partition join is possibility should we leave it
-            // to coalesce shuffle to make this decision? (if thats the
-            // case we should remove LateCollectLeft )
-            //
-            // would it be better if we try to shuffle build side first
-            // and then if build side is small enough make decision if
-            // this is CollectLeft or Partitioned join. The issue is
-            // we have flip coin chances to pick side which to run first
-            (JoinInputState::Repartitioned, PartitionMode::CollectLeft) => self
-                .to_hash_join(PartitionMode::CollectLeft)
-                .map(JoinSelectionAction::LateCollectLeft),
+            // Both inputs are already shuffled, so broadcasting would pay for
+            // the shuffle and the broadcast. Decide hash-vs-sort on build fit.
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) if hash_build_fits(max_build_bytes, build_max_partition_bytes) => self
+                .to_hash_join(PartitionMode::Partitioned)
+                .map(JoinSelectionAction::Hash),
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) => self.to_sort_merge_join().map(JoinSelectionAction::Sort),
             (JoinInputState::Unknown, PartitionMode::Partitioned) => Ok(
                 JoinSelectionAction::Repartition(Arc::new(self.to_partitioned())),
             ),
@@ -437,7 +467,8 @@ impl DynamicJoinSelectionExec {
     ) -> bool {
         // Currently we do not trust the 0 value from stats, due to stats collection might have bug
         // TODO check the logic in datasource::get_statistics_with_limit()
-        let Ok(stats) = plan.partition_statistics(None) else {
+        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+        else {
             return false;
         };
 
@@ -465,6 +496,27 @@ impl DynamicJoinSelectionExec {
 
         estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
             .is_some_and(|estimated| estimated < threshold_byte_size)
+    }
+
+    /// Whether both inputs already satisfy the distribution this join needs.
+    ///
+    /// An equi-join leaves its output partitioned on both sides of every join
+    /// key, so a downstream join on the other key is already co-partitioned.
+    /// `satisfaction` consults equivalence classes and sees that.
+    fn inputs_already_partitioned(&self, config: &ConfigOptions) -> bool {
+        let partitions = config.execution.target_partitions;
+        self._required_input_distribution()
+            .iter()
+            .zip([&self.left, &self.right])
+            .all(|(required, input)| {
+                let current = input.output_partitioning();
+                current.partition_count() == partitions
+                    && current.satisfaction(
+                        required,
+                        input.equivalence_properties(),
+                        false,
+                    ) == datafusion::physical_expr::PartitioningSatisfaction::Exact
+            })
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {

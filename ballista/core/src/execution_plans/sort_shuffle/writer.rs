@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use super::super::shuffle_writer::{result_schema, summaries_to_batch};
 use super::super::shuffle_writer_trait::ShuffleWriter;
@@ -42,11 +43,12 @@ use crate::serde::protobuf::ShuffleWritePartition;
 
 use crate::utils::create_write_options;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
+use datafusion::common::internal_err;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -59,7 +61,8 @@ use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, displayable,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
+    displayable, statistics::ChildStats,
 };
 use futures::{StreamExt, TryStreamExt};
 use log::{debug, warn};
@@ -872,6 +875,23 @@ impl ExecutionPlan for SortShuffleWriterExec {
         vec![&self.plan]
     }
 
+    /// This writer hashes rows itself rather than relying on an upstream
+    /// `RepartitionExec`, so the partitioning expressions are its own.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        // `try_new` rejects every other scheme, so a non-`Hash` partitioning
+        // here means the operator was built around that check.
+        let Partitioning::Hash(exprs, _) = &self.shuffle_output_partitioning else {
+            return internal_err!(
+                "SortShuffleWriterExec only supports Hash partitioning, got: {:?}",
+                self.shuffle_output_partitioning
+            );
+        };
+        apply_expression_roots(exprs, f)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
@@ -971,7 +991,6 @@ impl ExecutionPlan for SortShuffleWriterExec {
                     &job_id,
                     stage_id,
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
             })
             .try_flatten(),
         )))
@@ -981,8 +1000,16 @@ impl ExecutionPlan for SortShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 }
 
@@ -1036,19 +1063,18 @@ async fn run_coordinator(
     // Spawn per-input-partition write tasks concurrently — this matches the
     // parallelism main's design achieved by having DataFusion drive
     // `execute(0..M)` concurrently.
-    let handles: Vec<_> = (0..num_input_partitions)
-        .map(|input_partition| {
-            let w = writer.clone();
-            let c = ctx.clone();
-            tokio::spawn(async move { w.execute_shuffle_write(input_partition, c).await })
-        })
-        .collect();
+    let mut writes = JoinSet::new();
+    for input_partition in 0..num_input_partitions {
+        let w = writer.clone();
+        let c = ctx.clone();
+        writes.spawn(async move { w.execute_shuffle_write(input_partition, c).await });
+    }
 
     let mut grouped: Vec<Vec<ShuffleWritePartition>> =
         (0..k).map(|_| Vec::new()).collect();
     let mut first_error: Option<DataFusionError> = None;
-    for handle in handles {
-        match handle.await {
+    while let Some(joined) = writes.join_next().await {
+        match joined {
             Ok(Ok(summaries)) => {
                 for summary in summaries {
                     let idx = summary.partition_id as usize;
@@ -1058,15 +1084,18 @@ async fn run_coordinator(
                 }
             }
             Ok(Err(e)) => {
-                first_error.get_or_insert(e);
+                first_error = Some(e);
+                break;
             }
             Err(join_err) => {
-                first_error.get_or_insert_with(|| {
-                    DataFusionError::Execution(format!("write task panicked: {join_err}"))
-                });
+                first_error = Some(DataFusionError::Execution(format!(
+                    "write task panicked: {join_err}"
+                )));
+                break;
             }
         }
     }
+    writes.abort_all();
 
     if let Some(e) = first_error {
         // Share the original error with every output handoff so classification

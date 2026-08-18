@@ -36,6 +36,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+#[cfg(feature = "rest-api")]
+use crate::scheduler_server::event_log;
 
 use crate::state::SchedulerState;
 
@@ -51,6 +53,10 @@ pub(crate) struct QueryStageScheduler<
     /// per executor, and each would otherwise arm its own timer and fail every
     /// running job again. See <https://github.com/apache/datafusion-ballista/issues/2029>
     no_executor_check_pending: Arc<AtomicBool>,
+    /// Tees scheduler events into a durable per-job event log. `None` unless
+    /// `event_log_dir` is configured.
+    #[cfg(feature = "rest-api")]
+    event_log: Option<ballista_history::writer::EventLogWriter>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
@@ -58,12 +64,46 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         config: Arc<SchedulerConfig>,
+        #[cfg(feature = "rest-api")] event_log: Option<
+            ballista_history::writer::EventLogWriter,
+        >,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             config,
             no_executor_check_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "rest-api")]
+            event_log,
+        }
+    }
+
+    /// Fetches a job's execution graph for the event log, reporting rather than
+    /// swallowing the cases where it is unavailable. Returning `None` costs the
+    /// job its event, not its execution: event logging is never allowed to fail
+    /// scheduling.
+    #[cfg(feature = "rest-api")]
+    async fn event_log_graph(
+        &self,
+        job_id: &ballista_core::JobId,
+    ) -> Option<crate::state::execution_graph::ExecutionGraphBox> {
+        match self
+            .state
+            .task_manager
+            .get_job_execution_graph(job_id)
+            .await
+        {
+            Ok(Some(graph)) => Some(graph),
+            Ok(None) => {
+                warn!("event log: no execution graph for job {job_id}, skipping event");
+                None
+            }
+            Err(e) => {
+                warn!(
+                    "event log: failed to read execution graph for job {job_id}: {e:?}"
+                );
+                None
+            }
         }
     }
 
@@ -88,6 +128,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     }
 }
 
+/// Groups task status updates by job id, so a single `TaskUpdating` batch
+/// (which can span multiple jobs) can be appended to each job's own event log.
+#[cfg(feature = "rest-api")]
+fn group_by_job(
+    statuses: &[ballista_core::serde::protobuf::TaskStatus],
+) -> std::collections::HashMap<String, Vec<ballista_core::serde::protobuf::TaskStatus>> {
+    let mut by_job: std::collections::HashMap<
+        String,
+        Vec<ballista_core::serde::protobuf::TaskStatus>,
+    > = std::collections::HashMap::new();
+    for status in statuses {
+        by_job
+            .entry(status.job_id.clone())
+            .or_default()
+            .push(status.clone());
+    }
+    by_job
+}
+
 #[async_trait::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
@@ -106,6 +165,100 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
         _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
+        #[cfg(feature = "rest-api")]
+        if let Some(log) = &self.event_log {
+            match &event {
+                QueryStageSchedulerEvent::JobSubmitted {
+                    job_id,
+                    queued_at,
+                    submitted_at,
+                } => {
+                    if let Some(graph) = self.event_log_graph(job_id).await {
+                        log.append(
+                            job_id.as_str(),
+                            event_log::job_start_event(&graph, *queued_at, *submitted_at),
+                        );
+                    }
+                }
+                QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
+                    for (job_id, group) in group_by_job(statuses) {
+                        for ev in event_log::task_end_events(executor_id, &group) {
+                            log.append(&job_id, ev);
+                        }
+                    }
+                }
+                // The three terminal events below each close out the job's log.
+                // `finish_job` runs even when no `JobEnd` could be built, so a
+                // job that cannot be recorded still releases its file handle;
+                // such a log has no `JobEnd` line and the history server skips
+                // it rather than serving a half-written job.
+                QueryStageSchedulerEvent::JobFinished {
+                    job_id,
+                    queued_at,
+                    completed_at,
+                } => {
+                    if let Some(graph) = self.event_log_graph(job_id).await {
+                        log.append_final(
+                            job_id.as_str(),
+                            event_log::job_end_event(
+                                &graph,
+                                ballista_history::event::JobEndStatus::Succeeded,
+                                *queued_at,
+                                *completed_at,
+                            ),
+                        )
+                        .await;
+                    }
+                    log.finish_job(job_id.as_str()).await;
+                }
+                QueryStageSchedulerEvent::JobRunningFailed {
+                    job_id,
+                    fail_message,
+                    queued_at,
+                    failed_at,
+                } => {
+                    if let Some(graph) = self.event_log_graph(job_id).await {
+                        log.append_final(
+                            job_id.as_str(),
+                            event_log::job_end_event(
+                                &graph,
+                                ballista_history::event::JobEndStatus::Failed(
+                                    fail_message.clone(),
+                                ),
+                                *queued_at,
+                                *failed_at,
+                            ),
+                        )
+                        .await;
+                    }
+                    log.finish_job(job_id.as_str()).await;
+                }
+                QueryStageSchedulerEvent::JobCancel(job_id) => {
+                    // Cancellation is terminal: the handler below drops the
+                    // graph, so this is the last point at which the job can be
+                    // recorded. Without this the log would never receive a
+                    // `JobEnd`, leaving the cancelled job invisible to the
+                    // history server and its file handle open for the life of
+                    // the process.
+                    if let Some(graph) = self.event_log_graph(job_id).await {
+                        log.append_final(
+                            job_id.as_str(),
+                            event_log::job_cancel_event(
+                                &graph,
+                                ballista_core::utils::get_current_time() as u64,
+                            ),
+                        )
+                        .await;
+                    }
+                    log.finish_job(job_id.as_str()).await;
+                }
+                // `JobPlanningFailed` is deliberately absent: it is only posted
+                // when `submit_job` fails, i.e. instead of `JobSubmitted`, so
+                // the job has neither an execution graph nor an open log file.
+                _ => {}
+            }
+        }
+
         let mut time_recorder = None;
         if self.config.scheduler_event_expected_processing_duration > 0 {
             time_recorder = Some((Instant::now(), event.clone()));
@@ -644,7 +797,10 @@ mod tests {
             .session_manager
             .create_or_update_session(
                 "session",
-                &SessionConfig::new_with_ballista().with_target_partitions(2),
+                &SessionConfig::new_with_ballista()
+                    .with_target_partitions(2)
+                    // Asserts the static planner's stage/partition layout.
+                    .with_ballista_adaptive_query_planner(false),
             )
             .await?;
         let job_id = scheduler.submit_job("", ctx, &test_plan(2), None).await?;

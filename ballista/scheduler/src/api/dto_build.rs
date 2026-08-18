@@ -29,17 +29,19 @@
 
 use crate::display::format_stage_metrics;
 use crate::state::execution_graph::{ExecutionGraphBox, ExecutionStage};
+use crate::state::execution_graph_dot::ExecutionGraphDot;
 use crate::state::execution_stage::TaskInfo;
 use crate::state::task_manager::JobOverview;
 use ballista_api_types::dto::{
-    JobResponse, Percentiles, PlanFormat, QueryStageSummary, QueryStagesResponse,
-    TaskStatus, TaskSummary,
+    JobConfig, JobResponse, Percentiles, PlanFormat, QueryStageSummary,
+    QueryStagesResponse, TaskStatus, TaskSummary,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason::{
     ExecutionError, ExecutorLost, FetchPartitionError, IoError, ResultLost, TaskKilled,
 };
 use ballista_core::serde::protobuf::job_status::Status;
-use ballista_core::serde::protobuf::{FailedTask, task_status};
+use ballista_core::serde::protobuf::{FailedTask, OperatorMetricsSet, task_status};
+use datafusion::execution::context::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
@@ -113,6 +115,12 @@ pub fn graph_to_job_response(
         physical_plan: Some(physical_plan),
         stage_plan: Some(stage_plan),
     }
+}
+
+/// Flatten a session config into the sorted key/value map served by
+/// `GET /api/job/{job_id}/config`.
+pub fn session_config_to_job_config(config: &SessionConfig) -> JobConfig {
+    config.to_props().into_iter().collect()
 }
 
 /// Build the per-stage summaries served by `GET /api/job/{job_id}/stages`.
@@ -225,11 +233,48 @@ fn task_summaries(
         .collect()
 }
 
+/// Render a job's stage DAG in DOT format.
+pub fn build_job_dot(graph: &ExecutionGraphBox) -> Result<String, std::fmt::Error> {
+    ExecutionGraphDot::generate(graph.as_ref())
+}
+
+/// Sum one task's raw operator metrics into
+/// `(input_rows, output_rows, elapsed_compute_nanos)`.
+///
+/// Distinct from [`get_partition_counts`], which reads a stage's already-merged
+/// [`MetricsSet`]s and filters by partition. This takes the raw protobuf
+/// [`OperatorMetricsSet`]s an executor reports for a single task, so there is no
+/// partition to filter on, and it also sums `elapsed_compute` for the event
+/// log's per-task timeline records.
+pub fn task_row_counts(metrics: &[OperatorMetricsSet]) -> (u64, u64, u64) {
+    let mut input_rows: u64 = 0;
+    let mut output_rows: u64 = 0;
+    let mut elapsed_compute_nanos: u64 = 0;
+
+    for operator_metrics in metrics {
+        let Ok(metrics_set) = TryInto::<MetricsSet>::try_into(operator_metrics.clone())
+        else {
+            continue;
+        };
+        for metric in metrics_set.iter() {
+            let value = metric.value();
+            match value.name() {
+                "input_rows" => input_rows += value.as_usize() as u64,
+                "output_rows" => output_rows += value.as_usize() as u64,
+                "elapsed_compute" => elapsed_compute_nanos += value.as_usize() as u64,
+                _ => {}
+            }
+        }
+    }
+
+    (input_rows, output_rows, elapsed_compute_nanos)
+}
+
 /// Map a protobuf task status onto the wire enum.
 ///
 /// A free function rather than a `From` impl: both types are foreign to this
 /// crate now that [`TaskStatus`] lives in `ballista-api-types`.
-fn task_status_to_dto(value: &task_status::Status) -> TaskStatus {
+pub fn task_status_to_dto(value: &task_status::Status) -> TaskStatus {
     match value {
         task_status::Status::Running(_) => TaskStatus::Running,
         task_status::Status::Failed(failed) => TaskStatus::Failed {

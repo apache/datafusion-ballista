@@ -62,23 +62,24 @@ use std::fmt;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Distribution, OrderingRequirements};
+use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{CardinalityEffect, InputOrderMode};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-    SendableRecordBatchStream,
+    SendableRecordBatchStream, StatisticsArgs, statistics::ChildStats,
 };
 
-// The rule's `as_candidate` gates guarantee no PARTITION BY + single Column
-// ORDER BY over a sorted source, so `BWAG::try_new` is always invoked with
-// `InputOrderMode::Sorted` and `can_repartition=false` (partition_keys() is
-// empty either way when there's no PARTITION BY). Hardcode both to keep the
-// wire and the type small.
+// `maybe_rewrite_bwag`'s shape gates guarantee no PARTITION BY + single
+// Column ORDER BY over a sorted source, so `BWAG::try_new` is always invoked
+// with `InputOrderMode::Sorted` and `can_repartition=false` (partition_keys()
+// is empty either way when there's no PARTITION BY). Hardcode both to keep
+// the wire and the type small.
 const BWAG_INPUT_ORDER_MODE: InputOrderMode = InputOrderMode::Sorted;
 const BWAG_CAN_REPARTITION: bool = false;
 
@@ -151,6 +152,15 @@ impl ExecutionPlan for PartitionedBoundedWindowAggExec {
         vec![&self.input]
     }
 
+    /// The window expressions live on `inner_bwag`, which is not a plan-tree
+    /// child, so this wrapper must report them as its own.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.inner_bwag.apply_expressions(f)
+    }
+
     fn required_input_distribution(&self) -> Vec<Distribution> {
         // The whole point of this wrapper.
         vec![Distribution::UnspecifiedDistribution]
@@ -192,8 +202,18 @@ impl ExecutionPlan for PartitionedBoundedWindowAggExec {
         self.inner_bwag.metrics()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.inner_bwag.partition_statistics(partition)
+    /// Stats are whatever the inner BWAG computes from the input's stats —
+    /// this wrapper only changes distribution requirements, not row content.
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        self.inner_bwag.statistics_from_inputs(input_stats, args)
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 
     fn cardinality_effect(&self) -> CardinalityEffect {
@@ -285,8 +305,10 @@ mod tests {
             "PBWAG must not collapse partitions"
         );
         assert!(matches!(
-            pbwag.required_input_distribution().as_slice(),
-            [Distribution::UnspecifiedDistribution]
+            pbwag
+                .input_distribution_requirements()
+                .child_distribution(0),
+            Some(Distribution::UnspecifiedDistribution)
         ));
         assert_eq!(
             pbwag.children().len(),

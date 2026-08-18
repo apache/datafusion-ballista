@@ -23,7 +23,9 @@
 
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
+use ballista_core::execution_plans::{
+    RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriterExec,
+};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::serde::scheduler::PartitionStats;
 use ballista_core::{JobId, utils};
@@ -135,11 +137,18 @@ impl ExecutionEngine for DefaultExecutionEngine {
     ) -> Result<Arc<dyn QueryStageExecutor>> {
         let plan = plan
             .transform(|p| {
-                // TODO: RangeShuffleReaderExec needs the same late-bind
-                // (with_work_dir + with_client_pool) once a planner rule
-                // plants it; without it, the first task carrying one will
-                // fail with "work dir should have been set by executor".
                 if let Some(reader) = p.downcast_ref::<ShuffleReaderExec>() {
+                    match &self.client_pool {
+                        Some(client_pool) => Ok(Transformed::yes(Arc::new(
+                            reader
+                                .with_work_dir(work_dir.to_string())
+                                .with_client_pool(client_pool.clone()),
+                        ))),
+                        None => Ok(Transformed::yes(Arc::new(
+                            reader.with_work_dir(work_dir.to_string()),
+                        ))),
+                    }
+                } else if let Some(reader) = p.downcast_ref::<RangeShuffleReaderExec>() {
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
                             reader

@@ -77,6 +77,7 @@ Table of content
    :caption: Contributors Guide
 
    contributors-guide/architecture
+   contributors-guide/shuffle
    contributors-guide/code-organization
    contributors-guide/user-personas
    contributors-guide/development

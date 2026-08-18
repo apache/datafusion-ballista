@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::JobId;
+use crate::error::BallistaError;
 use crate::execution_plans::{
     OrderedRangeRepartitionExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
     create_shuffle_path,
@@ -42,7 +43,9 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -51,11 +54,10 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, statistics::ChildStats,
 };
 use futures::TryStreamExt;
 
-use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -63,6 +65,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::debug;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use super::shuffle_writer_trait::ShuffleWriter;
 
@@ -128,6 +131,12 @@ fn walk_child_partition_mapping(
     if let Some(repart) = plan.downcast_ref::<RepartitionExec>() {
         match repart.partitioning() {
             Partitioning::Hash(_, _) | Partitioning::RoundRobinBatch(_) => {
+                return GlobalPartitionMap::KSpace;
+            }
+            Partitioning::Range(_) => {
+                // Range-partitioning also freshly numbers its K outputs by
+                // range bucket, so it forms a K-space just like Hash. Global
+                // input ids from before the repartition are meaningless here.
                 return GlobalPartitionMap::KSpace;
             }
             Partitioning::UnknownPartitioning(_) => {
@@ -541,7 +550,7 @@ impl ShuffleWriterExec {
             // and deadlocks the scatter side.
             let num_partitions =
                 plan.properties().output_partitioning().partition_count();
-            let mut handles = Vec::with_capacity(num_partitions);
+            let mut handles = JoinSet::new();
             for local_input_partition in 0..num_partitions {
                 // Each drain owns its own metric bucket, keyed by the
                 // operator-local input partition it drains. Passthrough
@@ -566,7 +575,7 @@ impl ShuffleWriterExec {
                 debug!("Writing results to {path:?}");
 
                 let mut stream = plan.execute(local_input_partition, context.clone())?;
-                handles.push(tokio::spawn(async move {
+                handles.spawn(async move {
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
                         path.as_path(),
@@ -575,22 +584,17 @@ impl ShuffleWriterExec {
                         compression_type,
                     )
                     .await
-                    .map_err(|e| {
-                        DataFusionError::ArrowError(
-                            Box::new(ArrowError::ExternalError(Box::new(e))),
-                            None,
-                        )
-                    })?;
+                    .map_err(BallistaError::into_datafusion)?;
                     let rows = stats.num_rows.unwrap_or(0) as usize;
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
                     Ok::<_, DataFusionError>((local_input_partition, stats))
-                }));
+                });
             }
 
             let mut results = Vec::with_capacity(num_partitions);
-            for handle in handles {
-                let (local_input_partition, stats) = handle.await.map_err(|e| {
+            while let Some(joined) = handles.join_next().await {
+                let (local_input_partition, stats) = joined.map_err(|e| {
                     DataFusionError::Execution(format!(
                         "shuffle-write drain task panicked: {e}"
                     ))
@@ -624,14 +628,16 @@ impl DisplayAs for ShuffleWriterExec {
         t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
+        // This writer never repartitions, so its output partitioning is its
+        // input's. `shuffle_output_partitioning()` is the *repartitioning
+        // scheme*, always None here, which says nothing a reader can use.
+        let partitioning = self.properties().output_partitioning();
         match t {
-            // "None" is retained for plan-shape stability: this writer never
-            // repartitions, so the value can only ever be None.
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ShuffleWriterExec: partitioning: None")
+                write!(f, "ShuffleWriterExec: partitioning: {partitioning}")
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "partitioning=None")
+                write!(f, "partitioning={partitioning}")
             }
         }
     }
@@ -652,6 +658,15 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.plan]
+    }
+
+    /// Owns no expressions — this writer preserves its input partitioning, so
+    /// any partitioning expressions belong to the child plan.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -756,7 +771,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     &job_id,
                     stage_id,
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
             })
             .try_flatten(),
         )))
@@ -766,8 +780,16 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 }
 
@@ -942,6 +964,7 @@ mod tests {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use datafusion::physical_plan::display::DefaultDisplay;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
@@ -1009,15 +1032,12 @@ mod tests {
             matches!(e.as_ref(), DataFusionError::Shared(_)),
             "expected shared DataFusionError, got {e:?}"
         );
-        let DataFusionError::ArrowError(arrow, _) = e.find_root() else {
-            panic!("expected ArrowError root, got {:?}", e.find_root());
-        };
-        let ArrowError::ExternalError(inner) = arrow.as_ref() else {
-            panic!("expected Arrow external error, got {arrow:?}");
+        let DataFusionError::External(inner) = e.find_root() else {
+            panic!("expected External root, got {:?}", e.find_root());
         };
         assert!(
             inner.downcast_ref::<BallistaError>().is_some(),
-            "expected Arrow external BallistaError, got {inner:?}"
+            "expected External BallistaError, got {inner:?}"
         );
     }
 
@@ -1104,6 +1124,41 @@ mod tests {
             rendered.contains("elapsed_compute"),
             "expected populated elapsed_compute metric in rendered plan:\n{rendered}"
         );
+        Ok(())
+    }
+
+    /// The rendered partitioning has to track the input plan, not be a constant.
+    /// Two plans with different partitioning must render differently.
+    #[tokio::test]
+    async fn display_as_reports_real_partitioning() -> Result<()> {
+        fn render(input: Arc<dyn ExecutionPlan>) -> Result<String> {
+            let work_dir = TempDir::new()?;
+            let writer = ShuffleWriterExec::try_new(
+                JobId::new("jobPartitioning"),
+                1,
+                input,
+                work_dir.path().to_str().unwrap().to_owned(),
+            )?;
+            Ok(format!("{}", DefaultDisplay(writer)))
+        }
+
+        // the passthrough case: the writer inherits its input's partitioning
+        let passthrough = render(create_input_plan()?)?;
+        assert!(
+            passthrough.contains("UnknownPartitioning(2)"),
+            "expected the input plan's 2 partitions:\n{passthrough}"
+        );
+
+        // a hash-partitioned input has to come through as such, exprs and all
+        let hashed = render(Arc::new(RepartitionExec::try_new(
+            create_input_plan()?,
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+        )?))?;
+        assert!(
+            hashed.contains("Hash([a@0], 4)"),
+            "expected the input plan's hash partitioning:\n{hashed}"
+        );
+
         Ok(())
     }
 

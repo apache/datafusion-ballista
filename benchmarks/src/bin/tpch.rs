@@ -384,7 +384,6 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                     opt.path.to_str().unwrap(),
                     table,
                     opt.file_format.as_str(),
-                    opt.partitions,
                 )
                 .await?
             };
@@ -405,7 +404,6 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
             &ctx,
             opt.path.to_str().unwrap(),
             opt.file_format.as_str(),
-            opt.partitions,
         )
         .await?;
     }
@@ -554,13 +552,8 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             .with_target_partitions(opt.partitions)
             .with_batch_size(opt.batch_size);
         let ctx = SessionContext::new_with_config(cfg);
-        register_datafusion_tables(
-            &ctx,
-            opt.path.as_str(),
-            opt.file_format.as_str(),
-            opt.partitions,
-        )
-        .await?;
+        register_datafusion_tables(&ctx, opt.path.as_str(), opt.file_format.as_str())
+            .await?;
         Some(ctx)
     } else {
         None
@@ -963,12 +956,11 @@ async fn register_datafusion_tables(
     ctx: &SessionContext,
     path: &str,
     file_format: &str,
-    partitions: usize,
 ) -> Result<()> {
     for table in TABLES {
         let table_provider = {
             let mut session_state = ctx.state();
-            get_table(&mut session_state, path, table, file_format, partitions).await?
+            get_table(&mut session_state, path, table, file_format).await?
         };
         ctx.register_table(*table, table_provider)?;
     }
@@ -1198,12 +1190,13 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
     Ok(())
 }
 
+/// `target_partitions` is not a parameter: `ListingOptions` no longer carries
+/// one, so the listing table takes it from the session config.
 async fn get_table(
     ctx: &mut SessionState,
     path: &str,
     table: &str,
     table_format: &str,
-    target_partitions: usize,
 ) -> Result<Arc<dyn TableProvider>> {
     let (format, path, extension, schema): (
         Arc<dyn FileFormat>,
@@ -1255,14 +1248,7 @@ async fn get_table(
         }
     };
 
-    let options = ListingOptions {
-        format,
-        file_extension: extension.to_owned(),
-        target_partitions,
-        collect_stat: true,
-        table_partition_cols: vec![],
-        file_sort_order: vec![],
-    };
+    let options = ListingOptions::new(format).with_file_extension(extension.to_owned());
 
     let url = ListingTableUrl::parse(path)?;
     let config = ListingTableConfig::new(url).with_listing_options(options);

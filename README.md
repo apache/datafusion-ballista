@@ -118,6 +118,16 @@ See the [architecture guide](docs/source/contributors-guide/architecture.md) for
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
 that, refer to the [Getting Started Guide](ballista/client/README.md).
 
+## Web Terminal User Interface (Web TUI)
+
+Ballista provides a browser-based Web TUI for monitoring a running cluster. It exposes the TUI views for jobs, executors, metrics, and scheduler information directly in a web browser.
+
+![Ballista Web TUI](docs/source/user-guide/screenshots/tui-web-main.png)
+
+When the scheduler HTTP endpoint is available, opening the scheduler address in a browser, for example `http://localhost:50050`, redirects to a hosted Web TUI.
+
+For more information, including how to run the Web TUI locally, see the [Ballista CLI documentation](https://datafusion.apache.org/ballista/user-guide/cli.html).
+
 ## Cargo Features
 
 Ballista uses Cargo features to enable optional functionality. Below are the available features for each crate.

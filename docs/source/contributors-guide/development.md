@@ -182,6 +182,29 @@ This includes instructions for:
 - Comparing performance with Apache Spark
 - Running load tests
 
+## DataFusion dependency
+
+Between releases, `main` depends on a pinned git revision of
+[`apache/datafusion`](https://github.com/apache/datafusion) `main` rather than a crates.io release, so
+that breaking changes arrive in small increments instead of piling up at release time.
+
+The `datafusion*` entries in the workspace `Cargo.toml` move through one cycle per release:
+
+| Phase                        | `datafusion*` dependency                    |
+| ---------------------------- | ------------------------------------------- |
+| Between releases             | pinned git `rev` of DataFusion `main`       |
+| DataFusion release candidate | the RC tag, to validate early               |
+| DataFusion released          | the crates.io version                       |
+| Ballista release branch cut  | (branch keeps the crates.io version)        |
+| Back on `main`               | pinned git `rev` of DataFusion `main` again |
+
+A release branch therefore only ever depends on published crates. Each `rev` bump on `main` is a PR
+that ports any DataFusion API changes, refreshes affected golden files, and keeps `cargo test` and
+`cargo clippy --all-targets --workspace -- -D warnings` green.
+
+The remaining release steps are described in the
+[release process](https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md).
+
 ## Upgrade notes
 
 When a change breaks a public API, renames or removes a configuration key or CLI

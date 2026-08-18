@@ -482,8 +482,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
 
             match ipc_stream.next().await {
                 Some(Ok(blob)) => {
-                    state_buffer =
-                        Self::combine_buffers(&state_buffer, &Buffer::from(blob));
+                    state_buffer = Self::append_block(state_buffer, blob);
 
                     match try_schema_from_ipc_buffer(state_buffer.as_slice()) {
                         Ok(schema) => {
@@ -517,10 +516,21 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
 }
 
 impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
-    fn combine_buffers(first: &Buffer, second: &Buffer) -> Buffer {
-        let mut combined = MutableBuffer::new(first.len() + second.len());
-        combined.extend_from_slice(first.as_slice());
-        combined.extend_from_slice(second.as_slice());
+    /// Appends a transport block to the bytes still waiting to be decoded.
+    ///
+    /// `Buffer::from(Bytes)` adopts the transport allocation instead of copying
+    /// it, so when nothing is pending — which is the steady state, since
+    /// [`StreamDecoder::decode`] drains `state_buffer` completely before the
+    /// stream asks for another block — the block is taken as-is. Only a partial
+    /// message straddling a block boundary needs the concatenating path.
+    fn append_block(pending: Buffer, blob: prost::bytes::Bytes) -> Buffer {
+        let incoming = Buffer::from(blob);
+        if pending.is_empty() {
+            return incoming;
+        }
+        let mut combined = MutableBuffer::new(pending.len() + incoming.len());
+        combined.extend_from_slice(pending.as_slice());
+        combined.extend_from_slice(incoming.as_slice());
         combined.into()
     }
 
@@ -533,7 +543,8 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
         //TODO: do we want to limit maximum buffer size here as well?
         //
         self.transmitted += blob.len();
-        self.state_buffer = Self::combine_buffers(&self.state_buffer, &Buffer::from(blob))
+        let pending = std::mem::take(&mut self.state_buffer);
+        self.state_buffer = Self::append_block(pending, blob);
     }
 }
 
@@ -697,6 +708,31 @@ mod tests {
                 .await;
 
         assert_eq!(batches, result.unwrap())
+    }
+
+    #[tokio::test]
+    async fn should_process_multi_block_payload() {
+        // Realistic transport shape: a payload spanning several whole blocks.
+        // Once the decoder has drained the previous block, the next one is
+        // adopted rather than copied; block sizes that leave a partial schema
+        // message still exercise the concatenating path in `try_new`.
+        let batches = generate_batches();
+        let ipc_blob = generate_ipc_stream(&batches);
+
+        for block_size in [8usize, 64, 512] {
+            let stream = futures::stream::iter(ipc_blob.clone())
+                .chunks(block_size)
+                .map(|b| Ok(Bytes::from(b)));
+
+            let result: datafusion::error::Result<Vec<RecordBatch>> =
+                BlockDataStream::try_new(stream)
+                    .await
+                    .unwrap()
+                    .try_collect()
+                    .await;
+
+            assert_eq!(batches, result.unwrap(), "block_size={block_size}");
+        }
     }
 
     #[tokio::test]

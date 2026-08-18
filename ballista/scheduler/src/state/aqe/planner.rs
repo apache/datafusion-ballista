@@ -21,7 +21,8 @@ use crate::state::aqe::execution_plan::{
 };
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
-    CoalescePartitionsRule, DelayJoinSelectionRule, DistributedExchangeRule,
+    CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
+    DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
     PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
@@ -70,8 +71,8 @@ pub struct AdaptivePlanner {
     pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// caches current runnable stages
     runnable_stage_cache: HashMap<usize, Arc<dyn ExecutionPlan>>,
-    /// job name
-    job_name: String,
+    /// Unique identifier for the job, used to key this job's shuffle output.
+    job_id: JobId,
 
     runnable_stage_output: HashMap<usize, StageOutput>,
 }
@@ -79,7 +80,7 @@ pub struct AdaptivePlanner {
 impl Debug for AdaptivePlanner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdaptivePlanner")
-            .field("job_name", &self.job_name)
+            .field("job_id", &self.job_id)
             .finish()
     }
 }
@@ -90,7 +91,7 @@ impl AdaptivePlanner {
     /// # Arguments:
     /// * `state_builder` -  Session state builder,
     /// * `plan` - The physical execution plan for the job.
-    /// * `job_name` - The name of the job.
+    /// * `job_id` - The unique identifier for the job.
     /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
     ///
     /// # Returns
@@ -98,7 +99,7 @@ impl AdaptivePlanner {
     pub fn try_new_with_optimizers(
         state_builder: SessionStateBuilder,
         plan: Arc<dyn ExecutionPlan>,
-        job_name: String,
+        job_id: JobId,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> common::Result<Self> {
         let session_state =
@@ -112,7 +113,7 @@ impl AdaptivePlanner {
             physical_planner: planner.into(),
             plan,
             runnable_stage_cache: HashMap::new(),
-            job_name,
+            job_id,
             runnable_stage_output: HashMap::new(),
         })
     }
@@ -122,7 +123,7 @@ impl AdaptivePlanner {
     ///
     /// * `session_config` - The session configuration for the job.
     /// * `plan` - The physical execution plan for the job.
-    /// * `job_name` - The name of the job.
+    /// * `job_id` - The unique identifier for the job.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
@@ -130,7 +131,7 @@ impl AdaptivePlanner {
     pub fn try_from_plan(
         session_config: &SessionConfig,
         plan: Arc<dyn ExecutionPlan>,
-        job_name: String,
+        job_id: JobId,
     ) -> common::Result<Self> {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
         let state_builder = SessionStateBuilder::new_with_default_features()
@@ -138,7 +139,7 @@ impl AdaptivePlanner {
         Self::try_new_with_optimizers(
             state_builder,
             plan,
-            job_name,
+            job_id,
             Self::default_optimizers(plan_id_generator),
         )
     }
@@ -149,14 +150,14 @@ impl AdaptivePlanner {
     ///
     /// * `ctx` - The session context
     /// * `logical_plan` - The logical plan for the job.
-    /// * `job_name` - The name of the job.
+    /// * `job_id` - The unique identifier for the job.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
     pub async fn try_new(
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
-        job_name: String,
+        job_id: JobId,
     ) -> common::Result<Self> {
         // session state with very limited set of optimizers.
         // this optimizer set will be executed only once, before
@@ -174,9 +175,6 @@ impl AdaptivePlanner {
             .create_physical_plan(logical_plan)
             .await?;
 
-        // Note: the signature requires a JobId, but we are passing a JobName. The below is a
-        // dirty fix but this seems like a bug or a design flaw.
-        let job_id: JobId = job_name.clone().into();
         let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan)
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
@@ -185,7 +183,7 @@ impl AdaptivePlanner {
         Self::try_new_with_optimizers(
             state_builder,
             plan,
-            job_name,
+            job_id,
             Self::default_optimizers(plan_id_generator),
         )
     }
@@ -200,6 +198,13 @@ impl AdaptivePlanner {
         // TODO consider marking cancelled stage
         let _ = self.runnable_stage_cache.remove(&stage_id);
         Ok(())
+    }
+
+    /// Whether `stage_id` is still part of the current plan. A replan can drop
+    /// a stage that already has tasks in flight; their completions arrive after
+    /// the stage has left the cache.
+    pub fn is_stage_active(&self, stage_id: usize) -> bool {
+        self.runnable_stage_cache.contains_key(&stage_id)
     }
 
     /// Attaches range-repartition-recovered range boundaries to the
@@ -417,9 +422,7 @@ impl AdaptivePlanner {
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
-                        // adapt_to_ballista takes an job_id, we are passing a job_name. Need to transform to fix compiler.
-                        let job_id = self.job_name.clone().into();
-                        BallistaAdapter::adapt_to_ballista(plan, &job_id, config)
+                        BallistaAdapter::adapt_to_ballista(plan, &self.job_id, config)
                             .map(|w| (w.plan.stage_id(), w))
                     })
                     .collect::<common::Result<(HashSet<_>, Vec<_>)>>()?;
@@ -541,6 +544,11 @@ impl AdaptivePlanner {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
 
+        // Must run first: the rules below rewrite union branches independently,
+        // which an InterleaveExec cannot survive. EnforceDistribution re-forms
+        // the interleave later in this same chain when it is still valid.
+        physical_optimizers.push(Arc::new(NormalizeInterleaveRule::default()));
+
         // changing plan before other built in optimizers kick in
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
 
@@ -554,6 +562,16 @@ impl AdaptivePlanner {
         // );
         //
         physical_optimizers.extend(Self::datafusion_optimizers());
+
+        // Rewrite bounded RANGE-frame windows into a range-shuffle so BWAG's
+        // single-partition constraint is not a serial bottleneck. Runs AFTER
+        // DataFusion's optimizer chain (EnforceSorting, RepartitionFileScans,
+        // …) so we see the fully-materialized SortExec placement — placement
+        // we peel and re-plant so RSE#1 sits *below* the pipeline-break Sort,
+        // letting the sketch fully report before ORRE routes. Must still run
+        // before DistributedExchangeRule — the rule emits an ORRE that DE
+        // picks up as the shuffle-boundary K-space source.
+        physical_optimizers.push(Arc::new(ParallelWindowRule));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers
@@ -572,9 +590,18 @@ impl AdaptivePlanner {
         datafusion::physical_optimizer::optimizer::PhysicalOptimizer::new()
             .rules
             .into_iter()
-            .map(|r| match r.name() {
-                "FilterPushdown" => Arc::new(FilterPushdown::new()),
-                _ => r,
+            .flat_map(|r| match r.name() {
+                "FilterPushdown" => vec![Arc::new(FilterPushdown::new())
+                    as Arc<dyn PhysicalOptimizerRule + Send + Sync>],
+                // `join_selection` promotes a small build side to `CollectLeft`
+                // without restricting by join type -- safe in one process, but
+                // Ballista runs one task per probe partition. Demote the unsafe
+                // ones straight after, while `EnsureRequirements` can still add
+                // the repartitions a `Partitioned` join needs.
+                "join_selection" => {
+                    vec![r, Arc::new(DemoteUnsafeBroadcastJoinRule::default())]
+                }
+                _ => vec![r],
             })
             .collect()
     }

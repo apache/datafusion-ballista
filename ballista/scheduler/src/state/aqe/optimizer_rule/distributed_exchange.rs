@@ -17,7 +17,8 @@
 
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use ballista_core::execution_plans::{
-    OrderedRangeRepartitionExec, UnorderedRangeRepartitionExec, preserves_partitioning,
+    OrderedRangeRepartitionExec, RangeFilterExec, UnorderedRangeRepartitionExec,
+    preserves_partitioning,
 };
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -27,7 +28,9 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::{ExecutionPlan, execution_plan};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, execution_plan,
+};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -80,9 +83,10 @@ impl DistributedExchangeRule {
                 right
             };
             let right = Arc::new(CoalescePartitionsExec::new(right));
-            return Ok(Transformed::yes(
-                execution_plan.with_new_children(vec![left, right])?,
-            ));
+            return Ok(Transformed::yes(execution_plan.replace_children(
+                vec![left, right],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?));
         }
 
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
@@ -96,15 +100,16 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(sort_preserving_merge) =
             execution_plan.downcast_ref::<SortPreservingMergeExec>()
         {
             let input = sort_preserving_merge.input();
-            if input.downcast_ref::<ExchangeExec>().is_none()
+            if !is_stage_boundary(input)
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
             {
                 let exchange_exec = ExchangeExec::new(
@@ -113,9 +118,10 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(repartition) = execution_plan.downcast_ref::<RepartitionExec>()
             && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
@@ -142,10 +148,12 @@ impl DistributedExchangeRule {
                             self.plan_id_generator
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                         );
-                        return Ok(Transformed::yes(
-                            execution_plan
-                                .with_new_children(vec![Arc::new(exchange_exec)])?,
-                        ));
+                        return Ok(Transformed::yes(execution_plan.replace_children(
+                            vec![Arc::new(exchange_exec)],
+                            ReplaceChildrenOptions::new(
+                                ChildrenPropertiesMode::Recompute,
+                            ),
+                        )?));
                     }
                 }
                 many => {
@@ -261,6 +269,22 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
     }
 }
 
+/// True when `node` is (or transparently sits on) a stage boundary.
+/// `RangeFilterExec` counts because we chose not to fold range-filtering
+/// into `ShuffleReader`/`ExchangeExec` — the operator is part of the
+/// boundary shape by design.
+fn is_stage_boundary(node: &Arc<dyn ExecutionPlan>) -> bool {
+    if node.is::<ExchangeExec>() {
+        return true;
+    }
+    if node.is::<RangeFilterExec>()
+        && let [child] = node.children().as_slice()
+    {
+        return child.is::<ExchangeExec>();
+    }
+    false
+}
+
 /// Scans the subtree for the nearest `ExchangeExec` in each path and returns the
 /// aggregate status. Stops recursing at `ExchangeExec` boundaries so that only the
 /// shallowest exchange in each branch is considered.
@@ -295,8 +319,8 @@ fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_plan;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+    use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
     };
@@ -374,7 +398,7 @@ mod tests {
 
         assert_plan!(result.as_ref(), @ r"
         AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
-          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)]
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)], null_aware
             StatisticsExec: col_count=1, row_count=Absent
             CoalescePartitionsExec
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
@@ -531,6 +555,52 @@ mod tests {
         assert!(
             spm.children()[0].downcast_ref::<ExchangeExec>().is_none(),
             "should not inject ExchangeExec when unresolved exchange is in subtree"
+        );
+    }
+
+    #[test]
+    fn spm_skips_when_range_filter_covers_exchange() {
+        // ParallelWindowRule plants a RangeFilterExec directly on the
+        // resolved range-repartition ExchangeExec with SPM above. The
+        // filter must count as part of the boundary — otherwise DE
+        // inserts another ExchangeExec between SPM and the filter,
+        // collapsing K partitions into a single outer-stage task.
+        use ballista_core::execution_plans::RangeFilterExec;
+        use datafusion::scalar::ScalarValue;
+
+        let rule = DistributedExchangeRule::default();
+        let exchange = resolved_exchange(float_leaf_exec());
+        let filter: Arc<dyn ExecutionPlan> = Arc::new(
+            RangeFilterExec::try_new_pending(
+                exchange,
+                Arc::new(Column::new("v", 0)),
+                ScalarValue::Float64(Some(0.0)),
+                ScalarValue::Float64(Some(0.0)),
+            )
+            .unwrap(),
+        );
+        let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("v", 0)));
+        let ordering = LexOrdering::new(vec![sort_expr]).unwrap();
+        let spm: Arc<dyn ExecutionPlan> =
+            Arc::new(SortPreservingMergeExec::new(ordering, filter));
+
+        let result = rule.optimize(spm, &config()).unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let spm_out = adaptive
+            .input()
+            .downcast_ref::<SortPreservingMergeExec>()
+            .unwrap();
+        let below_spm = spm_out.children()[0];
+        assert!(
+            below_spm.downcast_ref::<RangeFilterExec>().is_some(),
+            "SPM's direct child should remain RangeFilterExec, not a new ExchangeExec"
+        );
+        assert!(
+            below_spm.children()[0]
+                .downcast_ref::<ExchangeExec>()
+                .is_some(),
+            "resolved ExchangeExec should remain under the RangeFilterExec"
         );
     }
 
@@ -830,7 +900,7 @@ mod tests {
     /// range-repartition-inserting rule emits, with nothing above it —
     /// must still get an `ExchangeExec` wrapped above it. Without it,
     /// `set_repartition_routing` has no parking slot for the recovered
-    /// cuts and downstream never gets a `PerPartitionFilterExec` to
+    /// cuts and downstream never gets a `RangeFilterExec` to
     /// trim straddler duplication.
     #[test]
     fn range_repartition_at_plan_root_gets_exchange_inserted() {
@@ -920,7 +990,7 @@ mod tests {
 
     /// A `ProjectionExec` between (O/U)RRE and the boundary could
     /// reindex, drop, or shadow the routing expression's referenced
-    /// columns — the read-side `PerPartitionFilterExec` would evaluate
+    /// columns — the read-side `RangeFilterExec` would evaluate
     /// against the wrong column and silently misroute. DER rejects the
     /// shape at plan time; the fix will be revisited when arbitrary
     /// routing expressions replace the current single-column form.

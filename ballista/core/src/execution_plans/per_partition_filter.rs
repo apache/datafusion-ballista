@@ -43,6 +43,7 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::cast::as_boolean_array;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
@@ -52,7 +53,7 @@ use datafusion::physical_plan::stream::{
 };
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    RecordBatchStream, SendableRecordBatchStream,
+    RecordBatchStream, SendableRecordBatchStream, apply_expression_roots,
 };
 use futures::{Stream, StreamExt, ready};
 
@@ -156,6 +157,14 @@ impl ExecutionPlan for PerPartitionFilterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// Every predicate is evaluated by `execute` — one per input partition.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(&self.predicates, f)
     }
 
     fn with_new_children(
@@ -348,7 +357,9 @@ mod tests {
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+    use datafusion::physical_plan::{
+        ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
+    };
     use datafusion::prelude::SessionContext;
     use datafusion::scalar::ScalarValue;
     use futures::TryStreamExt;
@@ -563,7 +574,10 @@ mod tests {
             src,
             Partitioning::RoundRobinBatch(3),
         )?);
-        let swapped: Arc<dyn ExecutionPlan> = ppf.with_new_children(vec![repart])?;
+        let swapped: Arc<dyn ExecutionPlan> = ppf.replace_children(
+            vec![repart],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
         // Just verify construction succeeded and the operator name survives.
         assert_eq!(swapped.name(), "PerPartitionFilterExec");
         Ok(())

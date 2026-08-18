@@ -19,6 +19,7 @@
 //! server, so both serialize byte-identical JSON.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Summary of one job, served by `GET /api/jobs` and `GET /api/job/{job_id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,3 +165,10 @@ pub enum PlanFormat {
     /// `?plan_format=metrics` => indent with aggregated metrics
     Metrics,
 }
+
+/// Session config for one job, as flat key/value pairs. Served by
+/// `GET /api/job/{job_id}/config`.
+///
+/// A `BTreeMap` so key order is deterministic: the same job must serialize
+/// identically whether it is served live or replayed from a stored log.
+pub type JobConfig = BTreeMap<String, String>;

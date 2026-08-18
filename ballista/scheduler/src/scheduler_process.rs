@@ -101,30 +101,24 @@ pub async fn start_grpc_service<
     let mut tonic_builder = RoutesBuilder::default();
     tonic_builder.add_service(scheduler_grpc_server);
 
-    match &config.advertise_flight_sql_endpoint {
-        Some(proxy) if proxy.is_empty() => {
-            info!("Adding embedded flight proxy service on scheduler");
-            // Wrap the endpoint override function in BallistaConfigGrpcEndpoint
-            let customize_endpoint = config
-                .override_create_grpc_client_endpoint
-                .clone()
-                .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
+    if config.enable_embedded_flight_proxy {
+        info!("Adding embedded flight proxy service on scheduler");
+        let customize_endpoint = config
+            .override_create_grpc_client_endpoint
+            .clone()
+            .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
 
-            let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
-                config.grpc_server_max_encoding_message_size as usize,
-                config.grpc_server_max_decoding_message_size as usize,
-                config.use_tls,
-                customize_endpoint,
-            ))
-            .max_decoding_message_size(
-                config.grpc_server_max_decoding_message_size as usize,
-            )
-            .max_encoding_message_size(
-                config.grpc_server_max_encoding_message_size as usize,
-            );
-            tonic_builder.add_service(flight_proxy);
-        }
-        _ => {}
+        // `BallistaFlightProxyService::new` takes decoding before encoding; these sizes
+        // configure the proxy's own client to the executors.
+        let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
+            config.grpc_server_max_decoding_message_size as usize,
+            config.grpc_server_max_encoding_message_size as usize,
+            config.use_tls,
+            customize_endpoint,
+        ))
+        .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize)
+        .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize);
+        tonic_builder.add_service(flight_proxy);
     }
 
     #[cfg(feature = "keda-scaler")]
@@ -182,6 +176,7 @@ pub async fn start_server(
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {address:?}"
     );
+    config.validate()?;
     let scheduler =
         create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
 
