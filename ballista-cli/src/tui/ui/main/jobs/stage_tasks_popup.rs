@@ -106,8 +106,8 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         StageTaskStatus::Successful => {
             Text::from("Successful").style(app.theme.status_completed)
         }
-        StageTaskStatus::Failed { reason, .. } => {
-            Text::from(reason.clone()).style(app.theme.status_failed)
+        StageTaskStatus::Failed { reason, error } => {
+            Text::from(format!("{reason}: {error}")).style(app.theme.status_failed)
         }
     };
 
