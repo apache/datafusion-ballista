@@ -288,8 +288,6 @@ fn maybe_rewrite_bwag(
     if SortKeyCodec::try_new(&routing_type, order.options).is_none() {
         return Ok(None);
     }
-    // Needs the key's type, so it waits until the source is known. Declining
-    // here also leaves the query on the non-parallel path.
     let (Some(halo_lo), Some(halo_hi)) = (
         halo_from_bound(&frame.start_bound, &routing_type),
         halo_from_bound(&frame.end_bound, &routing_type),
