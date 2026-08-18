@@ -336,7 +336,7 @@ fn select_output_partitions(
         ) else {
             return Ok(None);
         };
-        return Ok(Some(Arc::new(restricted)));
+        return Ok(Some(Arc::new(restricted.with_fetch_limit(reader.fetch()))));
     }
 
     // DataSourceExec: file-backed or in-memory scans.
