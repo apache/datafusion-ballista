@@ -23,6 +23,7 @@ pub mod join_selection;
 pub mod normalize_interleave;
 pub mod parallel_window;
 pub mod propagate_empty;
+pub mod reuse_stages;
 
 pub use coalesce_partitions::*;
 pub use demote_broadcast_join::*;
@@ -31,3 +32,4 @@ pub use join_selection::*;
 pub use normalize_interleave::*;
 pub use parallel_window::*;
 pub use propagate_empty::*;
+pub use reuse_stages::*;

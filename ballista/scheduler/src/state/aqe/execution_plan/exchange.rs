@@ -157,6 +157,31 @@ impl ExchangeExec {
         )
     }
 
+    /// A copy of `self` that reads `canonical`'s stage instead of running its own.
+    ///
+    /// Both exchanges keep their own input, but share the stage id and the slot
+    /// the resolved shuffle partitions land in, so the stage runs once and both
+    /// readers consume its output. Only meaningful when the two inputs are
+    /// structurally identical — see `ReuseIdenticalStagesRule`.
+    pub fn sharing_stage_with(&self, canonical: &ExchangeExec, plan_id: usize) -> Self {
+        Self::new_with_details(
+            self.input.clone(),
+            self.partitioning.clone(),
+            plan_id,
+            canonical.stage_id.clone(),
+            canonical.shuffle_partitions.clone(),
+            canonical.coalesce.clone(),
+            canonical.range_repartition_routing.clone(),
+            self.broadcast,
+            self.inactive_stage,
+        )
+    }
+
+    /// True when this exchange already shares `other`'s stage slot.
+    pub fn shares_stage_with(&self, other: &ExchangeExec) -> bool {
+        Arc::ptr_eq(&self.stage_id, &other.stage_id)
+    }
+
     pub fn to_broadcast(&self, plan_id: usize) -> Self {
         Self::new_with_details(
             self.input.clone(),
