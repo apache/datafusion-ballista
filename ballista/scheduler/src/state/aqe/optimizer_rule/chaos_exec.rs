@@ -109,7 +109,7 @@ impl PhysicalOptimizerRule for ChaosCreatingRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_plan;
+    use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::ChaosExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};

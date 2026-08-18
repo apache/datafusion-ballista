@@ -18,9 +18,11 @@
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
 use ballista_benchmarks::{
-    answer_statement_index, compare_results, execute_query_capturing_answer,
-    register_parquet_tables,
+    answer_statement_index, cells_equal, compare_results, execute_query_capturing_answer,
+    register_parquet_tables, rows_as_cells,
 };
+use datafusion::arrow::record_batch::RecordBatch;
+
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
@@ -58,17 +60,9 @@ const TABLES: &[&str] = &[
     "web_site",
 ];
 
-/// Queries excluded from the correctness gate, with the reason.
-/// Remove an entry as the underlying cause is fixed.
-const SKIP: &[(usize, &str)] = &[
-    // Non-deterministic: LIMIT/ORDER BY ties without a total order make the
-    // result vary run-to-run in both engines, so a row-by-row diff is unstable.
-    (31, "non-deterministic (ORDER BY ties; varies run-to-run)"),
-    (
-        71,
-        "non-deterministic (ORDER BY ext_price ties; varies run-to-run)",
-    ),
-];
+/// Queries excluded from the correctness gate, with the reason. Empty:
+/// `compare_allowing_order_by_ties` handles ORDER BY ties, so all 99 run.
+const SKIP: &[(usize, &str)] = &[];
 
 /// Column renames applied to the query text before planning, as
 /// `(query text, tpcgen-cli)` pairs.
@@ -213,6 +207,59 @@ fn selected_queries(explicit: Option<usize>, skip: &[(usize, &str)]) -> Vec<usiz
 
 /// Run a single TPC-DS query end to end: load its SQL, stand up a fresh
 /// Ballista session, execute it on the cluster, and (if `oracle_ctx` is
+/// How closely a cluster result matched the oracle.
+enum Ordering {
+    /// Same rows in the same order.
+    Exact,
+    /// Same rows, different order — only reachable when `ORDER BY` ties.
+    SameRowsDifferentOrder,
+}
+
+/// Compares the oracle and cluster results, tolerating row-order differences.
+///
+/// `ORDER BY` leaves the relative order of rows with equal sort keys
+/// unspecified, so two correct engines may emit tied rows in different orders.
+/// Comparing positionally first keeps ordering under test; the canonical
+/// (row-sorted) retry only runs once that has already failed, so a wrong value
+/// still fails and only a pure permutation passes.
+///
+/// Rows are ordered by their rendered form purely to get a stable canonical
+/// sequence; the pairwise check still uses `cells_equal`, preserving the float
+/// tolerance.
+fn compare_allowing_order_by_ties(
+    expected: &[RecordBatch],
+    actual: &[RecordBatch],
+) -> Result<Ordering> {
+    let Err(strict) = compare_results(expected, actual) else {
+        return Ok(Ordering::Exact);
+    };
+
+    let sort_key = |row: &Vec<_>| {
+        row.iter()
+            .map(|c| format!("{c}"))
+            .collect::<Vec<_>>()
+            .join("\u{1}")
+    };
+    let mut expected_rows = rows_as_cells(expected);
+    let mut actual_rows = rows_as_cells(actual);
+    if expected_rows.len() != actual_rows.len() {
+        return Err(strict);
+    }
+    expected_rows.sort_by_key(sort_key);
+    actual_rows.sort_by_key(sort_key);
+
+    let permuted = expected_rows
+        .iter()
+        .zip(actual_rows.iter())
+        .all(|(e, a)| e.iter().zip(a.iter()).all(|(ec, ac)| cells_equal(ec, ac)));
+
+    if permuted {
+        Ok(Ordering::SameRowsDifferentOrder)
+    } else {
+        Err(strict)
+    }
+}
+
 /// set) verify the result against single-process DataFusion.
 ///
 /// Every fallible step is tagged with a `<phase>: ` prefix and returned as
@@ -291,8 +338,13 @@ async fn run_one_query(
         let expected = execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug)
             .await
             .map_err(|e| DataFusionError::Execution(format!("oracle: {e}")))?;
-        match compare_results(&expected, &batches) {
-            Ok(()) => println!("Query {query} verified against DataFusion: OK"),
+        match compare_allowing_order_by_ties(&expected, &batches) {
+            Ok(Ordering::Exact) => {
+                println!("Query {query} verified against DataFusion: OK")
+            }
+            Ok(Ordering::SameRowsDifferentOrder) => println!(
+                "Query {query} verified against DataFusion: OK (row order differs; ORDER BY has ties)"
+            ),
             Err(e) => {
                 println!("Query {query} VERIFY MISMATCH: {e}");
                 return Err(DataFusionError::Execution(format!("verify: {e}")));

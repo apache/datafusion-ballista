@@ -22,10 +22,11 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Statistics;
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
-        Partitioning, PlanProperties,
+        Partitioning, PlanProperties, apply_expression_roots,
     },
 };
 use log::trace;
@@ -190,7 +191,13 @@ impl ExchangeExec {
             (None, false) => input.output_partitioning().clone(),
             (_, true) => Partitioning::UnknownPartitioning(1),
         };
-        let eq_properties = input.properties().eq_properties.clone();
+        // An exchange redistributes rows, so a constant that only holds within
+        // each input partition does not hold afterwards. Keeping it lets
+        // `EnforceSorting` drop sort keys that are no longer constant — a
+        // `UNION ALL` branch projecting a literal, reshuffled by hash on that
+        // same column. `RepartitionExec` clears them for the same reason.
+        let mut eq_properties = input.properties().eq_properties.clone();
+        eq_properties.clear_per_partition_constants();
         let properties = Arc::new(PlanProperties::new(
             eq_properties,
             plan_partitioning,
@@ -388,6 +395,23 @@ impl ExecutionPlan for ExchangeExec {
         vec![&self.input]
     }
 
+    /// The shuffle partitioning this exchange lowers into is evaluated by the
+    /// writer it becomes; the expressions are owned here and reachable nowhere
+    /// else in the tree, so report them like `RepartitionExec` does.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        match &self.partitioning {
+            Some(Partitioning::Hash(exprs, _)) => apply_expression_roots(exprs, f),
+            Some(Partitioning::Range(range)) => apply_expression_roots(
+                range.ordering().iter().map(|sort_expr| &sort_expr.expr),
+                f,
+            ),
+            _ => Ok(TreeNodeRecursion::Continue),
+        }
+    }
+
     fn maintains_input_order(&self) -> Vec<bool> {
         match self.partitioning {
             Some(_) => vec![false; self.children().len()],
@@ -494,7 +518,9 @@ mod range_repartition_routing_tests {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::expressions::col;
-    use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+    use datafusion::physical_plan::{
+        ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
+    };
 
     fn v_source() -> Arc<dyn ExecutionPlan> {
         let schema =
@@ -557,7 +583,10 @@ mod range_repartition_routing_tests {
         // Rebuild with a fresh (equivalent-schema) child.
         let rebuilt = exchange
             .clone()
-            .with_new_children(vec![v_source()])
+            .replace_children(
+                vec![v_source()],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
             .unwrap();
         let rebuilt_exchange = rebuilt
             .downcast_ref::<ExchangeExec>()

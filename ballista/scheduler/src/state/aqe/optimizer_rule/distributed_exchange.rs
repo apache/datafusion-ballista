@@ -28,7 +28,9 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::{ExecutionPlan, execution_plan};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, execution_plan,
+};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -81,9 +83,10 @@ impl DistributedExchangeRule {
                 right
             };
             let right = Arc::new(CoalescePartitionsExec::new(right));
-            return Ok(Transformed::yes(
-                execution_plan.with_new_children(vec![left, right])?,
-            ));
+            return Ok(Transformed::yes(execution_plan.replace_children(
+                vec![left, right],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?));
         }
 
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
@@ -97,9 +100,10 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(sort_preserving_merge) =
             execution_plan.downcast_ref::<SortPreservingMergeExec>()
@@ -114,9 +118,10 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(repartition) = execution_plan.downcast_ref::<RepartitionExec>()
             && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
@@ -143,10 +148,12 @@ impl DistributedExchangeRule {
                             self.plan_id_generator
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                         );
-                        return Ok(Transformed::yes(
-                            execution_plan
-                                .with_new_children(vec![Arc::new(exchange_exec)])?,
-                        ));
+                        return Ok(Transformed::yes(execution_plan.replace_children(
+                            vec![Arc::new(exchange_exec)],
+                            ReplaceChildrenOptions::new(
+                                ChildrenPropertiesMode::Recompute,
+                            ),
+                        )?));
                     }
                 }
                 many => {
@@ -312,8 +319,8 @@ fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_plan;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+    use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
     };
@@ -391,7 +398,7 @@ mod tests {
 
         assert_plan!(result.as_ref(), @ r"
         AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
-          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)]
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)], null_aware
             StatisticsExec: col_count=1, row_count=Absent
             CoalescePartitionsExec
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false

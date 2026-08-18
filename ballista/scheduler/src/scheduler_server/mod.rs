@@ -621,8 +621,10 @@ mod test {
                 .await?;
         }
 
-        let config =
-            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(total_vcores)
+            // Asserts the static planner's stage/partition layout.
+            .with_ballista_adaptive_query_planner(false);
 
         let ctx = scheduler
             .state
@@ -732,8 +734,10 @@ mod test {
                 .await?;
         }
 
-        let config =
-            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(total_vcores)
+            // Asserts the static planner's stage/partition layout.
+            .with_ballista_adaptive_query_planner(false);
 
         let ctx = scheduler
             .state

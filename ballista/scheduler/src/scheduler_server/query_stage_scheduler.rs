@@ -797,7 +797,10 @@ mod tests {
             .session_manager
             .create_or_update_session(
                 "session",
-                &SessionConfig::new_with_ballista().with_target_partitions(2),
+                &SessionConfig::new_with_ballista()
+                    .with_target_partitions(2)
+                    // Asserts the static planner's stage/partition layout.
+                    .with_ballista_adaptive_query_planner(false),
             )
             .await?;
         let job_id = scheduler.submit_job("", ctx, &test_plan(2), None).await?;

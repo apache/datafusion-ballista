@@ -159,6 +159,12 @@ impl TryInto<operator_metric::Metric> for &MetricValue {
                     value: gauge.value() as u64,
                 }))
             }
+            MetricValue::PeakMemoryUsage { name, gauge } => {
+                Ok(operator_metric::Metric::Gauge(NamedGauge {
+                    name: name.to_string(),
+                    value: gauge.value() as u64,
+                }))
+            }
             MetricValue::Time { name, time } => {
                 Ok(operator_metric::Metric::Time(NamedTime {
                     name: name.to_string(),

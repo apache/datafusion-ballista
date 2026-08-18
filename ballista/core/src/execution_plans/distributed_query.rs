@@ -30,10 +30,11 @@ use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::metrics::{
     ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
@@ -227,6 +228,15 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    /// Owns no physical expressions — it ships a `LogicalPlan` to the
+    /// scheduler, which plans and executes it on the cluster.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -888,6 +898,7 @@ mod test {
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
@@ -957,7 +968,13 @@ mod test {
         ));
         *exec.job_id.lock() = Some("job-123".into());
 
-        let new_exec = exec.clone().with_new_children(vec![]).unwrap();
+        let new_exec = exec
+            .clone()
+            .replace_children(
+                vec![],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap();
         let new_exec = new_exec
             .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
             .unwrap();

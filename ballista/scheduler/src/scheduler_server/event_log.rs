@@ -325,7 +325,7 @@ mod tests {
         assert!(json.contains("\"job_id\":\"job_id\""));
         // The job's top-level physical plan, embedded via `build_job_response`.
         assert!(
-            json.contains("DataSourceExec: (Memory)"),
+            json.contains("\"physical_plan\":\"HashJoinExec"),
             "expected job physical plan in JobEnd event, got: {json}"
         );
         // The per-stage summaries, embedded via `build_query_stages_response`.
@@ -356,8 +356,7 @@ mod tests {
         assert!(json.contains("\"submitted_at\":10"));
         // `job_start_event` renders the graph's pre-staging physical plan
         // (`graph.physical_plan()`), unlike `job_end_event`'s embedded job
-        // DTO which shows the plan reconstructed from stages -- assert on the
-        // join at its root rather than the leaf scan string.
+        // DTO which shows the plan reconstructed from stages.
         assert!(
             json.contains("HashJoinExec"),
             "expected job physical plan in JobStart event, got: {json}"
@@ -392,6 +391,6 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"ev\":\"JobStart\""));
         assert!(lines[1].contains("\"ev\":\"JobEnd\""));
-        assert!(lines[1].contains("DataSourceExec: (Memory)"));
+        assert!(lines[1].contains("\"physical_plan\":\"HashJoinExec"));
     }
 }

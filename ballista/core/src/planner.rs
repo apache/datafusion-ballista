@@ -20,9 +20,10 @@ use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec
 use crate::serde::BallistaLogicalExtensionCodec;
 
 use datafusion::arrow::datatypes::Schema;
+use datafusion::catalog::Session;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::{LogicalPlan, TableScan};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -105,7 +106,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session_state: &dyn Session,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         log::debug!("create_physical_plan - plan: {:?}", logical_plan);
         // we inspect if plan scans local tables only,
@@ -181,8 +182,8 @@ impl<'n> TreeNodeVisitor<'n> for LocalRun {
     ) -> datafusion::error::Result<datafusion::common::tree_node::TreeNodeRecursion> {
         match node {
             LogicalPlan::TableScan(TableScan { table_name, .. }) => match table_name {
-                datafusion::sql::TableReference::Partial { schema, .. }
-                | datafusion::sql::TableReference::Full { schema, .. }
+                datafusion::common::TableReference::Partial { schema, .. }
+                | datafusion::common::TableReference::Full { schema, .. }
                     if schema.as_ref() == "information_schema" =>
                 {
                     self.can_be_local = true;

@@ -434,11 +434,15 @@ impl SchedulerTest {
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
+        // These tests assert the static planner's stage and partition layout,
+        // so pin it rather than follow the (now adaptive) default. AQE has its
+        // own coverage in the TPC-DS suite.
         let session_config = if num_executors > 0 && vcores_per_executor > 0 {
             SessionConfig::new_with_ballista()
                 .with_target_partitions(num_executors * vcores_per_executor)
+                .with_ballista_adaptive_query_planner(false)
         } else {
-            SessionConfig::new_with_ballista()
+            SessionConfig::new_with_ballista().with_ballista_adaptive_query_planner(false)
         };
 
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));

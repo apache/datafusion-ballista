@@ -24,9 +24,9 @@
 //! `coalesce_target_partition_bytes` so the bin-pack outcome is hand-traceable
 //! against `split_size_list_by_target_size`.
 
-use crate::assert_plan;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{mock_batch, mock_schema};
+use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -494,7 +494,7 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages[0].plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: Hash([c2@2], 2)
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2), coalesce: 2 of 8

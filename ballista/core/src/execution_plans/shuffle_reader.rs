@@ -29,8 +29,10 @@ use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use datafusion::physical_plan::metrics::{
     self, BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -320,6 +322,14 @@ impl ExecutionPlan for ShuffleReaderExec {
     }
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    /// Owns no expressions — it replays batches written by an upstream stage.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -1287,7 +1297,9 @@ mod tests {
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_plan::StatisticsArgs;
     use datafusion::physical_plan::common;
+    use datafusion::physical_plan::statistics::StatisticsContext;
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
 
@@ -1459,7 +1471,8 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(None)?;
+        let stats = StatisticsContext::new()
+            .compute(&shuffle_reader_exec, &StatisticsArgs::new())?;
         assert_eq!(8, *stats.num_rows.get_value().unwrap());
         assert_eq!(80, *stats.total_byte_size.get_value().unwrap());
 
@@ -1510,7 +1523,10 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(Some(3))?;
+        let stats = StatisticsContext::new().compute(
+            &shuffle_reader_exec,
+            &StatisticsArgs::new().with_partition(Some(3)),
+        )?;
         assert_eq!(2, *stats.num_rows.get_value().unwrap());
         assert_eq!(20, *stats.total_byte_size.get_value().unwrap());
 
@@ -1562,7 +1578,10 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(Some(4));
+        let stats = StatisticsContext::new().compute(
+            &shuffle_reader_exec,
+            &StatisticsArgs::new().with_partition(Some(4)),
+        );
         assert!(stats.is_err());
 
         Ok(())
@@ -2217,7 +2236,9 @@ mod tests {
         assert_eq!(reader.properties().partitioning.partition_count(), 1);
         assert_eq!(reader.partition[0].len(), 3);
 
-        let stats = reader.partition_statistics(Some(0)).unwrap();
+        let stats = StatisticsContext::new()
+            .compute(&reader, &StatisticsArgs::new().with_partition(Some(0)))
+            .unwrap();
         assert_eq!(stats.num_rows.get_value().copied(), Some(300));
         assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
     }
@@ -2226,10 +2247,17 @@ mod tests {
     fn broadcast_reader_rejects_out_of_range_partition_index() {
         let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
         let reader = ShuffleReaderExec::try_new_broadcast(7, vec![], schema, 3).unwrap();
-        let err = reader.partition_statistics(Some(1)).unwrap_err();
+        let err = StatisticsContext::new()
+            .compute(&reader, &StatisticsArgs::new().with_partition(Some(1)))
+            .unwrap_err();
         let msg = err.to_string();
+        // DataFusion bounds-checks the partition index inside
+        // `StatisticsContext::compute` before dispatching to the operator, so
+        // this is upstream's assertion rather than the broadcast guard in
+        // `partition_statistics`. Pin the index so the test still fails if the
+        // out-of-range request stops being rejected.
         assert!(
-            msg.contains("invalid partition index 1"),
+            msg.contains("Invalid partition index: 1"),
             "unexpected error message: {msg}"
         );
     }
@@ -2313,11 +2341,13 @@ mod tests {
         )?;
 
         // partition[0] = upstream [0,1,2] -> 10+20+30 = 60 bytes, 1+2+3 = 6 rows
-        let stats0 = exec.partition_statistics(Some(0))?;
+        let stats0 = StatisticsContext::new()
+            .compute(&exec, &StatisticsArgs::new().with_partition(Some(0)))?;
         assert_eq!(60, *stats0.total_byte_size.get_value().unwrap());
         assert_eq!(6, *stats0.num_rows.get_value().unwrap());
         // partition[1] = upstream [3,4] -> 40+50 = 90 bytes, 4+5 = 9 rows
-        let stats1 = exec.partition_statistics(Some(1))?;
+        let stats1 = StatisticsContext::new()
+            .compute(&exec, &StatisticsArgs::new().with_partition(Some(1)))?;
         assert_eq!(90, *stats1.total_byte_size.get_value().unwrap());
         assert_eq!(9, *stats1.num_rows.get_value().unwrap());
         Ok(())

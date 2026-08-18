@@ -21,7 +21,7 @@
 //! These tests differ from `join_selection` in two ways that matter:
 //!
 //! * They run under [`SessionConfig::new_with_ballista`], so the thresholds are
-//!   the ones a deployment actually uses (10 MB / 1,000,000 rows) rather than
+//!   the ones a deployment actually uses (128 MB / 1,000,000 rows) rather than
 //!   DataFusion's defaults. A test that sets its own thresholds can only show
 //!   the rule is self-consistent, not that the shipped numbers behave.
 //! * Their tables declare statistics instead of holding rows, so a case like
@@ -46,12 +46,24 @@ use std::sync::Arc;
 
 const MB: usize = 1024 * 1024;
 
-/// A join key plus one variable-width column, so the row width is realistic and
+/// A join key plus two variable-width columns, so the row width is realistic and
 /// `Statistics::calculate_total_byte_size` cannot reconstruct a size for it.
+///
+/// The row has to be this wide to stay interesting: the shipped byte threshold
+/// is 128 MB and the shipped row threshold is 1,000,000, so a build side that is
+/// under the row threshold yet over the byte threshold needs more than ~134
+/// bytes per row. At the estimator's widths (`Int32` 4, `Binary` 100) this
+/// schema is 204.
+///
+/// Every query below reads both payload columns. Projection pushdown trims the
+/// scan to the columns a query actually reads, and the estimate is taken from
+/// that projected schema, so a column left unread would not count toward the
+/// width.
 fn wide_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
-        Field::new("name", DataType::Utf8, false),
+        Field::new("payload", DataType::Binary, false),
+        Field::new("thumbnail", DataType::Binary, false),
     ]))
 }
 
@@ -94,9 +106,9 @@ async fn plan_broadcasts(ctx: &SessionContext, sql: &str) -> (bool, String) {
 /// The case this guards: a build side under the row threshold but far over the
 /// byte threshold, whose size is unknown.
 ///
-/// 800,000 rows of an `Int32` and a `Utf8` is roughly 19 MB, so broadcasting it
-/// hands every probe task ~19 MB. Deciding on the row count alone cannot see
-/// that, and a rule that reads `800_000 < 1_000_000` will broadcast it.
+/// 800,000 rows of [`wide_schema`] is roughly 163 MB, so broadcasting it hands
+/// every probe task ~163 MB. Deciding on the row count alone cannot see that,
+/// and a rule that reads `800_000 < 1_000_000` will broadcast it.
 #[tokio::test]
 async fn wide_rows_of_unknown_size_are_not_broadcast() {
     let ctx = ballista_ctx();
@@ -116,13 +128,13 @@ async fn wide_rows_of_unknown_size_are_not_broadcast() {
 
     let (broadcast, plan) = plan_broadcasts(
         &ctx,
-        "SELECT big.name FROM big JOIN probe ON big.id = probe.id",
+        "SELECT big.payload, big.thumbnail FROM big JOIN probe ON big.id = probe.id",
     )
     .await;
 
     assert!(
         !broadcast,
-        "800k rows of unknown size (~19 MB) must not be broadcast; plan was:\n{plan}"
+        "800k rows of unknown size (~163 MB) must not be broadcast; plan was:\n{plan}"
     );
 }
 
@@ -148,7 +160,7 @@ async fn small_dimension_of_unknown_size_is_still_broadcast() {
 
     let (broadcast, plan) = plan_broadcasts(
         &ctx,
-        "SELECT dim.name FROM dim JOIN probe ON dim.id = probe.id",
+        "SELECT dim.payload, dim.thumbnail FROM dim JOIN probe ON dim.id = probe.id",
     )
     .await;
 
@@ -199,7 +211,7 @@ async fn known_size_over_threshold_is_not_broadcast() {
         &ctx,
         "big",
         Arc::clone(&schema),
-        sized_statistics(&schema, 1_000, 64 * MB),
+        sized_statistics(&schema, 1_000, 256 * MB),
     );
     register(
         &ctx,
@@ -216,7 +228,7 @@ async fn known_size_over_threshold_is_not_broadcast() {
 
     assert!(
         !broadcast,
-        "a known 64 MB side must not be broadcast; plan was:\n{plan}"
+        "a known 256 MB side must not be broadcast; plan was:\n{plan}"
     );
 }
 
@@ -252,7 +264,7 @@ async fn known_size_under_threshold_is_broadcast() {
     );
 }
 
-/// Ballista ships `hash_join_single_partition_threshold = 10 MB`, and this
+/// Ballista ships `hash_join_single_partition_threshold = 128 MB`, and this
 /// decision is only meaningful if that is what the planner reads. A test that
 /// sets the threshold itself would pass even if the shipped default were zero,
 /// which is what it was until recently.
@@ -265,7 +277,7 @@ async fn ballista_config_carries_the_shipped_thresholds() {
             .options()
             .optimizer
             .hash_join_single_partition_threshold,
-        10 * 1024 * 1024,
+        128 * MB,
     );
     assert_eq!(
         config

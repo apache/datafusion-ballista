@@ -366,6 +366,14 @@ impl AdaptiveExecutionGraph {
             .update_exchange_locations(stage_id, locations)?;
 
         if is_completed {
+            // A replan can drop a stage that still has tasks in flight. Its
+            // output is no longer part of the plan, and erroring here fails the
+            // whole task-status update, which the caller only logs — hanging
+            // the job.
+            if !self.planner.is_stage_active(stage_id) {
+                debug!("ignoring completion for superseded stage {stage_id}");
+                return Ok(HashSet::new());
+            }
             let partitions = self.planner.take_stage_output_partitions(stage_id)?;
 
             // Range-repartition stages need overlap-based remap of their partitions
@@ -1523,16 +1531,4 @@ fn scalar_to_f64(sv: &ScalarValue) -> datafusion::common::Result<f64> {
             "only f64 halos are implemented, got: {other:?}"
         ),
     }
-}
-
-/// Checks is the plan same as expected string representation
-#[cfg(test)]
-#[macro_export]
-macro_rules! assert_plan {
-    ($PLAN: expr, @ $EXPECTED_LINES: literal $(,)?) => {
-        let plan = datafusion::physical_plan::displayable($PLAN).indent(true).to_string();
-        let actual_lines = plan.trim();
-
-        insta::assert_snapshot!(actual_lines, @ $EXPECTED_LINES);
-    };
 }
