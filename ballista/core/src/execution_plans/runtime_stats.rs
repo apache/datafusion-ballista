@@ -472,10 +472,6 @@ impl StreamState {
         if let Some(routing_expr) = &self.routing_expr {
             let evaluated = routing_expr.evaluate(batch)?;
             let array = evaluated.into_array(batch.num_rows())?;
-
-            // Counted on the ingest path rather than inside the sketch, so
-            // it describes what the operator observed rather than what one
-            // consumer of it did.
             if !array.is_empty() {
                 self.sketch_batches.add(1);
             }

@@ -699,11 +699,6 @@ impl SortKeySketch {
 
     /// The rank *among the values* that population-quantile `q` asks for,
     /// or `None` when it lands inside the NULL run.
-    ///
-    /// This is the remap [`Self::quantile`] documents. [`Self::cuts`]
-    /// deliberately does not route through it: a boundary that lands in the
-    /// run has to become a value rather than a NULL, so it clamps where this
-    /// gives up. Callers must have checked that something was observed.
     fn value_rank(&self, q: f64) -> Option<u64> {
         let rank = (q.clamp(0.0, 1.0) * self.count() as f64) as u64;
         // No NULL run to step over, so the population rank *is* the value
@@ -724,10 +719,8 @@ impl SortKeySketch {
     }
 
     /// The `partitions - 1` boundaries splitting everything observed into
-    /// `partitions` runs of equal size, in sort order. Never NULL: ranks are
-    /// taken among the values, so no rank a NULL could answer exists. A NULL
-    /// boundary drops its partition in silence — three-valued logic in the
-    /// consumers' predicates, `NULL + halo` in `cut_partitions`.
+    /// `partitions` runs of equal size, in sort order. If a cut _would be_ NULL, it is adjusted to
+    /// include the nearest value, so this function never returns a NULL cut.
     ///
     /// The run is indivisible, so it takes the partition at its end whole and
     /// only the values beside it balance.

@@ -261,9 +261,7 @@ impl<T: Ord + Clone> KllSketch<T> {
         }
     }
 
-    /// Nominal top-level compactor capacity, as handed to [`Self::new`].
-    /// Every level's capacity derives from it, so it is the one parameter a
-    /// rebuild needs.
+    /// Nominal top-level compactor capacity
     pub fn k(&self) -> usize {
         self.k
     }

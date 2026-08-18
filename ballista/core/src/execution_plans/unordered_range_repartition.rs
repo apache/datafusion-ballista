@@ -53,19 +53,6 @@
 //! outcome of `boundaries.len() + 1 = 1`. Runtime routing must never crash;
 //! degraded-but-alive beats the alternative, and downstream sees an empty
 //! stream on the K-1 partitions that got no data.
-//!
-//! # Type generality
-//!
-//! Any key [`crate::sort_key::SortKeyCodec`] encodes: every fixed-width type,
-//! nullable or not. NULLs are counted beside the values rather than sketched
-//! among them, and the whole run scatters to the partition at the end
-//! `nulls_first` names.
-//!
-//! Sibling `OrderedRangeRepartitionExec` (not yet built) handles the sorted
-//! case (N sorted → M sorted range-disjoint via k-way merge). See
-//! `docs/source/contributors-guide/parallel-window-kll-adaptive.md`.
-//!
-//! [`RuntimeStatsExec`]: crate::execution_plans::RuntimeStatsExec
 
 use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -158,9 +145,6 @@ impl UnorderedRangeRepartitionExec {
         };
         let schema = input.schema();
         let routing_type = routing.expr.data_type(&schema)?;
-        // What the sketch can encode is the only restriction. A nullable key
-        // is fine: the run is counted beside the values, sized into the cuts,
-        // scattered to the end `nulls_first` names, and read back from there.
         if SortKeyCodec::try_new(&routing_type, routing.options).is_none() {
             return internal_err!(
                 "UnorderedRangeRepartitionExec routing expression `{}` has no sort-key encoding for {:?}",
