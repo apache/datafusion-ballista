@@ -134,6 +134,15 @@ impl SelectJoinRule {
     }
 }
 
+/// Whether giving the build side its own broadcast stage is worth it.
+fn broadcast_build_side_pays_off(
+    build: &dyn ExecutionPlan,
+    probe: &dyn ExecutionPlan,
+) -> bool {
+    build.properties().partitioning.partition_count() > 1
+        && probe.properties().partitioning.partition_count() > 1
+}
+
 impl PhysicalOptimizerRule for SelectJoinRule {
     fn optimize(
         &self,
@@ -246,13 +255,13 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                                 ),
                                             )?;
                                             Ok(Transformed::yes(p))
-                                        } else if hash_join
-                                            .left
-                                            .properties()
-                                            .partitioning
-                                            .partition_count()
-                                            > 1
-                                        {
+                                        } else if broadcast_build_side_pays_off(
+                                            hash_join.left.as_ref(),
+                                            hash_join.right.as_ref(),
+                                        ) {
+                                            // Broadcasting the build side buys
+                                            // nothing when the probe has a single
+                                            // partition.
                                             let left = if let Some(exchange) = hash_join
                                                 .left
                                                 .downcast_ref::<ExchangeExec>()
@@ -367,6 +376,7 @@ mod tests {
 
     use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::{
         arrow::{
             array::{Int32Array, RecordBatch},
@@ -837,5 +847,25 @@ mod tests {
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
+    }
+    #[test]
+    fn broadcast_pays_off_only_when_both_sides_are_partitioned() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let one = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
+        let many = Arc::new(EmptyExec::new(Arc::clone(&schema)).with_partitions(4))
+            as Arc<dyn ExecutionPlan>;
+
+        assert!(
+            broadcast_build_side_pays_off(many.as_ref(), many.as_ref()),
+            "both sides partitioned: the build is worth its own stage"
+        );
+        assert!(
+            !broadcast_build_side_pays_off(many.as_ref(), one.as_ref()),
+            "single-partition probe pins the join to one task either way"
+        );
+        assert!(
+            !broadcast_build_side_pays_off(one.as_ref(), many.as_ref()),
+            "single-partition build needs no stage of its own"
+        );
     }
 }
