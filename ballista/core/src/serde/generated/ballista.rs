@@ -107,26 +107,16 @@ pub struct RuntimeStatsExecNode {
         ::datafusion_proto::protobuf::PhysicalSortExprNode,
     >,
 }
-/// A `SortKeySketch`: a KLL compactor stack over one ORDER BY key, plus the
-/// NULLs that have no position among its values.
+/// A `SortKeySketch` is a wrapper around a KLL, that also includes NULL counts
 ///
-/// `levels` is an Arrow IPC stream rather than a packed blob so the arrow
-/// schema states what a key is. That is what carries a multi-column key
-/// without a discriminant field, and it keeps the key's in-memory
-/// representation out of the wire format.
-///
-/// Alternatives priced and discarded: a packed blob tagged with a key-family
-/// discriminant, which needs a hand-written codec per family to say what the
-/// schema already says; and delta + varint over the sorted levels, which lands
-/// within 10% of the information-theoretic floor for a sorted sample and is
-/// therefore worth only ~24% on `Float64` keys, whose mantissas are genuinely
-/// random. Byte-plane splitting measured no better than delta. Dense `Int64`
-/// keys measured ~4x, which is the case worth revisiting for; adopting it
-/// bumps `BALLISTA_PROTOCOL_VERSION` rather than needing a field here.
+/// `levels` is an Arrow IPC stream for now. Binary blob encoding was considered
+/// so that encoding tricks could be used like delta+varint. These showed a 4x
+/// improvement for u64, but only 25% on f64 due to mantissas being effectively
+/// random. Ultimately it was decided that a more complex encoder is not worth
+/// the added complexity in this PR. We can revisit the decision in the future.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SortKeySketchState {
-    /// KLL's nominal top-level compactor capacity. Lower levels shrink
-    /// geometrically from it, so this reconstructs every level's capacity.
+    /// KLL's nominal top-level compactor capacity
     #[prost(uint32, tag = "1")]
     pub k: u32,
     /// Rows whose key was NULL. Not in `levels`, and not recoverable from it.
@@ -136,24 +126,31 @@ pub struct SortKeySketchState {
     /// ORDER BY expression. Tracked outside the compactor stack so no coin flip
     /// can move them, which is what keeps `quantile(0.0)` and `quantile(1.0)`
     /// exact. Empty when no value was observed.
-    ///
-    /// These equal the fold of the surrounding report's per-partition
-    /// `key_min` / `key_max`, and are carried anyway so this message decodes to
-    /// a usable sketch on its own. The two are authoritative for different
-    /// questions — these for what the sketch answers, the per-partition pair
-    /// for which file overlaps a range — and a disagreement is a producer bug.
     #[prost(message, repeated, tag = "3")]
     pub key_min: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
     #[prost(message, repeated, tag = "4")]
     pub key_max: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
     /// The compactor stack: one row per level in level order, single column
-    /// `items: List<Struct<...>>` holding that level's retained keys ascending,
+    /// `levels: List<Struct<...>>` holding that level's retained keys ascending,
     /// one struct field per ORDER BY expression. An item's weight is
     /// `2^level`, so the row index carries the weight and the total count is
     /// the weighted sum — neither ships.
     ///
     /// Levels are sorted before serialization, so a decoder takes ascending
     /// order as given rather than being told per level.
+    ///
+    /// A three-level stack over an `Int64` key decodes to one batch of one
+    /// column, where the row index is the level:
+    ///
+    /// levels: List\<item: Struct\<expr_0: Int64>>
+    ///
+    /// +-------------------------------------------+
+    /// \| levels                                    |
+    /// +-------------------------------------------+
+    /// \| \[{expr_0: 4}, {expr_0: 17}, {expr_0: 23}\] |  level 0, weight 1
+    /// \| \[{expr_0: 9}, {expr_0: 31}\]               |  level 1, weight 2
+    /// \| \[{expr_0: 12}\]                            |  level 2, weight 4
+    /// +-------------------------------------------+
     #[prost(bytes = "vec", tag = "5")]
     pub levels: ::prost::alloc::vec::Vec<u8>,
 }
@@ -1024,18 +1021,8 @@ pub struct RuntimeStatsReport {
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<RuntimeStatsPartitionEntry>,
     /// Every partition's observations folded into one sketch, merged on the
-    /// executor before the report is sent.
-    ///
-    /// Merged here because no consumer reads a per-partition *distribution*:
-    /// `merge_reports` folds them all together for global cuts anyway, and
-    /// `cut_partitions` needs only each partition's extremes and count to route
-    /// files. One sketch per report is therefore lossless for every consumer
-    /// that exists, and it is what keeps a report's size independent of the
-    /// operator's partition count. The executor is also where the merge is
-    /// cheapest, since the task already holds every partition's sketch when it
-    /// builds this message.
-    ///
-    /// Absent in row-count-only mode, and when no partition observed a value.
+    /// executor before the report is sent. Absent in row-count-only mode,
+    /// and when no partition observed a value.
     #[prost(message, optional, tag = "3")]
     pub sketch: ::core::option::Option<SortKeySketchState>,
 }

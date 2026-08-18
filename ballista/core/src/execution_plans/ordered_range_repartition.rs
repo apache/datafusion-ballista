@@ -64,11 +64,9 @@
 //!
 //! # Ordering claim
 //!
-//! Constructor requires `input.output_ordering()` to lead with the routing
-//! expression — otherwise the merger would produce garbled output.
-//! [`PlanProperties::eq_properties`] declares each output partition sorted
-//! on `order_by`, letting downstream operators (BWAG, HaloDrop) rely on the
-//! claim without inserting a redundant `SortExec`.
+//! [`PlanProperties::eq_properties`] declares each output partition sorted on
+//! `order_by`, letting downstream operators (BWAG, HaloDrop) rely on the claim
+//! without inserting a redundant `SortExec`.
 //!
 //! [`StreamingMerge`]: datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder
 
@@ -117,8 +115,7 @@ const CHANNEL_CAPACITY: usize = 2;
 /// module-level docs.
 pub struct OrderedRangeRepartitionExec {
     input: Arc<dyn ExecutionPlan>,
-    /// Lexicographic ORDER BY. `try_new` guarantees the first entry is
-    /// encodable and matches the input's declared output ordering.
+    /// Lexicographic ORDER BY
     order_by: Vec<PhysicalSortExpr>,
     /// K — number of output partitions.
     output_partitions: usize,
@@ -150,15 +147,13 @@ struct DispatchState {
 }
 
 impl OrderedRangeRepartitionExec {
-    /// Wrap `input`. `order_by` must be non-empty, the first entry must
-    /// evaluate to a type the sort-key codec encodes, and
-    /// `input.output_ordering()` must lead with
-    /// the same expression (otherwise the merger produces garbled output).
+    /// Creates a new `OrderedRangeRepartitionExec`
+    /// `order_by` must be non-empty, the first entry must evaluate to a type the sort-key codec
+    /// encodes, and `order_by` must be a prefix of `input.output_ordering()`
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         order_by: Vec<PhysicalSortExpr>,
         output_partitions: usize,
-        // TODO: support RANGE & ROW halos
     ) -> Result<Self> {
         let [routing, ..] = order_by.as_slice() else {
             return internal_err!(
@@ -167,9 +162,6 @@ impl OrderedRangeRepartitionExec {
         };
         let schema = input.schema();
         let routing_type = routing.expr.data_type(&schema)?;
-        // What the sketch can encode is the only restriction. A nullable key
-        // is fine: the run is counted beside the values, sized into the cuts,
-        // scattered to the end `nulls_first` names, and read back from there.
         if SortKeyCodec::try_new(&routing_type, routing.options).is_none() {
             return internal_err!(
                 "OrderedRangeRepartitionExec routing expression `{}` has no sort-key encoding for {:?}",
@@ -177,36 +169,25 @@ impl OrderedRangeRepartitionExec {
                 routing_type
             );
         }
-        // Input MUST claim to be sorted on our routing expression — otherwise
-        // the k-way merge produces garbled output. Sortedness of individual
-        // input partitions is enforced by the operator upstream (`SortExec`
-        // with `preserve_partitioning=true`); this check verifies the plan
-        // node declares that property.
-        let input_first_sort = input.output_ordering().map(|ordering| ordering.first());
-        let Some(input_first) = input_first_sort else {
+        let lex_ordering = LexOrdering::new(order_by.clone()).ok_or_else(|| {
+            internal_datafusion_err!("order_by is non-empty but LexOrdering rejected it")
+        })?;
+        let Some(input_ordering) = input.output_ordering() else {
             return internal_err!(
                 "OrderedRangeRepartitionExec requires sorted input — child plan claims no ordering"
             );
         };
-        if input_first.expr.as_ref() != routing.expr.as_ref() {
+        if !input_ordering.starts_with(&lex_ordering) {
             return internal_err!(
-                "OrderedRangeRepartitionExec: input's first sort key `{}` does not match \
-                 routing expression `{}`",
-                input_first.expr,
-                routing.expr
+                "OrderedRangeRepartitionExec: ORDER BY [{lex_ordering}] is not a prefix of \
+                 the child's declared ordering [{input_ordering}]"
             );
         }
         // Advertise each output partition as sorted on `order_by`. Downstream
         // operators (BWAG, HaloDrop) rely on this claim to skip redundant
         // Sort insertions.
-        let eq_properties = EquivalenceProperties::new_with_orderings(
-            schema,
-            vec![LexOrdering::new(order_by.clone()).ok_or_else(|| {
-                internal_datafusion_err!(
-                    "order_by is non-empty but LexOrdering rejected it"
-                )
-            })?],
-        );
+        let eq_properties =
+            EquivalenceProperties::new_with_orderings(schema, vec![lex_ordering]);
         let properties = Arc::new(
             PlanProperties::new(
                 eq_properties,
@@ -821,7 +802,7 @@ mod tests {
         )
         .expect_err("mismatched sort key must be rejected");
         assert!(
-            err.to_string().contains("does not match routing"),
+            err.to_string().contains("is not a prefix of"),
             "got: {err}"
         );
     }
