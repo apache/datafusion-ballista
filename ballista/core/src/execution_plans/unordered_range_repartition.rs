@@ -432,12 +432,8 @@ async fn scatter_input_partition(
         // `Arc<RecordBatch>` broadcast + receiver-side filter would skip
         // the scatter-side allocations at the cost of duplicating the
         // filter work K times. Worth measuring under skew.
-        let splits = split_batch_by_range(
-            &batch,
-            &routing_sort.expr,
-            cuts,
-            routing_sort.options.nulls_first,
-        )?;
+        let splits =
+            split_batch_by_range(&batch, &routing_sort.expr, cuts, routing_sort.options)?;
         for (output, sub) in splits.into_iter().enumerate() {
             if sub.num_rows() == 0 {
                 continue;

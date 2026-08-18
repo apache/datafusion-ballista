@@ -585,12 +585,8 @@ async fn scatter_input_partition(
         //      `take_arrays`-materialised sub-batches. Arc bumps replace
         //      allocations under skew.
         let split_timer = metrics.split_time.timer();
-        let splits = split_batch_by_range(
-            &batch,
-            &routing_sort.expr,
-            cuts,
-            routing_sort.options.nulls_first,
-        )?;
+        let splits =
+            split_batch_by_range(&batch, &routing_sort.expr, cuts, routing_sort.options)?;
         split_timer.done();
         // Stop the compute timer around the send.await so backpressure
         // waits get billed to `send_time` alone, not double-counted.
