@@ -235,6 +235,8 @@ message RangeShuffleReaderExecNode {
   // Sort key the reader's k-way merge preserves. Advertised on the reader's
   // `PlanProperties.eq_properties` for downstream consumers.
   repeated datafusion.PhysicalSortExprNode merge_ordering = 4;
+  // Row limit pushed down by a consuming merge. Absent means read everything.
+  optional uint64 fetch = 5;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.

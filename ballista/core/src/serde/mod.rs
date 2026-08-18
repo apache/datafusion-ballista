@@ -542,12 +542,15 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         "RangeShuffleReaderExec: merge_ordering must be non-empty",
                     )
                 })?;
-                Ok(Arc::new(RangeShuffleReaderExec::try_new(
+                let reader = RangeShuffleReaderExec::try_new(
                     stage_id,
                     partition_location,
                     schema,
                     merge_ordering,
-                )?))
+                )?;
+                Ok(Arc::new(
+                    reader.with_fetch_limit(range_reader.fetch.map(|f| f as usize)),
+                ))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
@@ -934,6 +937,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partition,
                         schema: Some(exec.schema().as_ref().try_into()?),
                         merge_ordering,
+                        fetch: exec.fetch().map(|f| f as u64),
                     },
                 )),
             };
@@ -1430,7 +1434,8 @@ mod test {
             schema.clone(),
             merge_ordering.clone(),
         )
-        .unwrap();
+        .unwrap()
+        .with_fetch_limit(Some(20));
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -1461,6 +1466,13 @@ mod test {
         assert_eq!(
             decoded.merge_ordering().first().expr.to_string(),
             sort_expr.expr.to_string(),
+        );
+        // Dropped on the wire, the limit would silently stop applying: the
+        // reader only ever executes after being decoded on an executor.
+        assert_eq!(
+            ExecutionPlan::fetch(decoded),
+            Some(20),
+            "fetch must round-trip"
         );
         // The ordering must land on `PlanProperties.eq_properties` — downstream
         // consumers (BWAG, SMJ build side) read it there.

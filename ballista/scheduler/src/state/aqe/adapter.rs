@@ -30,7 +30,10 @@ use ballista_core::execution_plans::{
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::{
+    ExecutionPlanProperties, Partitioning, replace_children_if_necessary,
+};
 use datafusion::scalar::ScalarValue;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
@@ -76,94 +79,120 @@ pub(crate) struct BallistaAdapter {
 /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
 ///
 impl BallistaAdapter {
+    /// Build the reader that replaces `exchange`, recording its upstream
+    /// stage as an input of this stage. `fetch` is a row limit from the
+    /// consumer; only the ordered reader can honor it.
+    fn build_reader(
+        &mut self,
+        exchange: &ExchangeExec,
+        fetch: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let schema = exchange.schema().clone();
+        let partitions = exchange.shuffle_partitions().ok_or_else(|| {
+            DataFusionError::Execution(
+                "partitions have to be resolved at this point".to_string(),
+            )
+        })?;
+
+        let stage_id = exchange.stage_id().ok_or_else(|| {
+            DataFusionError::Execution(
+                "stage ID has to be generated at this point".to_string(),
+            )
+        })?;
+        let mut stage_output = StageOutput::new();
+        for partition in partitions.iter().flatten().cloned() {
+            stage_output.add_partition(partition);
+        }
+        stage_output.complete = true;
+        self.inputs.insert(stage_id, stage_output);
+        let partitioning = exchange.properties().partitioning.clone();
+
+        Ok(match (exchange.coalesce(), exchange.broadcast) {
+            (Some(cp), false) => {
+                // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
+                let k_shape: Vec<Vec<_>> = cp
+                    .groups
+                    .iter()
+                    .map(|pg| {
+                        let mut concat = Vec::new();
+                        for &idx in &pg.upstream_indices {
+                            if let Some(inner) = partitions.get(idx as usize) {
+                                concat.extend_from_slice(inner);
+                            }
+                        }
+                        concat
+                    })
+                    .collect();
+                let new_partitioning = match &partitioning {
+                    Partitioning::Hash(keys, _m) => {
+                        Partitioning::Hash(keys.clone(), cp.groups.len())
+                    }
+                    _ => Partitioning::UnknownPartitioning(cp.groups.len()),
+                };
+                Arc::new(ShuffleReaderExec::try_new_coalesced(
+                    stage_id,
+                    k_shape,
+                    (*cp).clone(),
+                    schema,
+                    new_partitioning,
+                )?)
+            }
+            (None, false) => {
+                // Ordered-writer path: when the child declared an output
+                // ordering, preserve it across the shuffle boundary with a
+                // k-way merge instead of the arrival-order concat that the
+                // regular reader does.
+                if let Some(ordering) = exchange.input().output_ordering() {
+                    Arc::new(
+                        RangeShuffleReaderExec::try_new(
+                            stage_id,
+                            partitions,
+                            schema,
+                            ordering.clone(),
+                        )?
+                        .with_fetch_limit(fetch),
+                    )
+                } else {
+                    Arc::new(ShuffleReaderExec::try_new(
+                        stage_id,
+                        partitions,
+                        schema,
+                        partitioning,
+                    )?)
+                }
+            }
+            (_, true) => Arc::new(ShuffleReaderExec::try_new_broadcast(
+                stage_id,
+                exchange.shuffle_partitions_flattened(),
+                schema,
+                exchange.input().output_partitioning().partition_count(),
+            )?),
+        })
+    }
+
     fn transform_children(
         &mut self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
-            let schema = exchange.schema().clone();
-            let partitions = exchange.shuffle_partitions().ok_or_else(|| {
-                DataFusionError::Execution(
-                    "partitions have to be resolved at this point".to_string(),
-                )
-            })?;
-
-            let stage_id = exchange.stage_id().ok_or_else(|| {
-                DataFusionError::Execution(
-                    "stage ID has to be generated at this point".to_string(),
-                )
-            })?;
-            let mut stage_output = StageOutput::new();
-            for partition in partitions.iter().flatten().cloned() {
-                stage_output.add_partition(partition);
-            }
-            stage_output.complete = true;
-            self.inputs.insert(stage_id, stage_output);
-            let partitioning = exchange.properties().partitioning.clone();
-
-            let reader: Arc<dyn ExecutionPlan> =
-                match (exchange.coalesce(), exchange.broadcast) {
-                    (Some(cp), false) => {
-                        // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
-                        let k_shape: Vec<Vec<_>> = cp
-                            .groups
-                            .iter()
-                            .map(|pg| {
-                                let mut concat = Vec::new();
-                                for &idx in &pg.upstream_indices {
-                                    if let Some(inner) = partitions.get(idx as usize) {
-                                        concat.extend_from_slice(inner);
-                                    }
-                                }
-                                concat
-                            })
-                            .collect();
-                        let new_partitioning = match &partitioning {
-                            Partitioning::Hash(keys, _m) => {
-                                Partitioning::Hash(keys.clone(), cp.groups.len())
-                            }
-                            _ => Partitioning::UnknownPartitioning(cp.groups.len()),
-                        };
-                        Arc::new(ShuffleReaderExec::try_new_coalesced(
-                            stage_id,
-                            k_shape,
-                            (*cp).clone(),
-                            schema,
-                            new_partitioning,
-                        )?)
-                    }
-                    (None, false) => {
-                        // Ordered-writer path: when the child declared an output
-                        // ordering, preserve it across the shuffle boundary with a
-                        // k-way merge instead of the arrival-order concat that the
-                        // regular reader does.
-                        if let Some(ordering) = exchange.input().output_ordering() {
-                            Arc::new(RangeShuffleReaderExec::try_new(
-                                stage_id,
-                                partitions,
-                                schema,
-                                ordering.clone(),
-                            )?)
-                        } else {
-                            Arc::new(ShuffleReaderExec::try_new(
-                                stage_id,
-                                partitions,
-                                schema,
-                                partitioning,
-                            )?)
-                        }
-                    }
-                    (_, true) => Arc::new(ShuffleReaderExec::try_new_broadcast(
-                        stage_id,
-                        exchange.shuffle_partitions_flattened(),
-                        schema,
-                        exchange.input().output_partitioning().partition_count(),
-                    )?),
-                };
-            Ok(Transformed::yes(reader))
-        } else {
-            Ok(Transformed::no(plan))
+        // A merge with a row limit on top of an exchange: build the reader
+        // with the limit already set. Both merge on the same ordering, so the
+        // consumer's first `n` rows come from the reader's first `n`.
+        if let Some(spm) = plan.downcast_ref::<SortPreservingMergeExec>()
+            && let Some(fetch) = spm.fetch()
+            && let Some(exchange) = spm.input().downcast_ref::<ExchangeExec>()
+        {
+            let reader = self.build_reader(exchange, Some(fetch))?;
+            return Ok(Transformed::yes(replace_children_if_necessary(
+                plan,
+                vec![reader],
+            )?));
         }
+
+        if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
+            return Ok(Transformed::yes(self.build_reader(exchange, None)?));
+        }
+
+        Ok(Transformed::no(plan))
     }
 
     /// Converts Adaptive plan to plan which ballista expects
@@ -412,5 +441,38 @@ mod tests {
             out.name()
         );
         assert!(out.downcast_ref::<RangeShuffleReaderExec>().is_none());
+    }
+
+    /// The consuming merge's row limit must reach the reader. The merge is
+    /// rebuilt around the new reader, so a dropped limit is silent.
+    #[test]
+    fn pushes_consumer_limit_into_range_reader() {
+        let schema = f64_schema();
+        let empty: Vec<Vec<RecordBatch>> = vec![vec![]];
+        let source =
+            MemorySourceConfig::try_new_exec(&empty, schema.clone(), None).unwrap();
+        let sort_lex = LexOrdering::new(vec![asc(&schema, "v")]).unwrap();
+        let sorted = Arc::new(
+            SortExec::new(sort_lex.clone(), source).with_preserve_partitioning(true),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let exchange = ExchangeExec::new(sorted, None, 0);
+        exchange.set_stage_id(1);
+        exchange.resolve_shuffle_partitions(vec![vec![]]);
+        let merge = Arc::new(
+            SortPreservingMergeExec::new(sort_lex, Arc::new(exchange))
+                .with_fetch(Some(7)),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let mut adapter = BallistaAdapter::default();
+        let out = adapter.transform_children(merge).unwrap().data;
+
+        let children = out.children();
+        let reader = children[0]
+            .downcast_ref::<RangeShuffleReaderExec>()
+            .unwrap_or_else(|| {
+                panic!("expected a range reader, got {}", children[0].name())
+            });
+        assert_eq!(reader.fetch(), Some(7));
     }
 }
