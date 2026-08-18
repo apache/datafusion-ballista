@@ -591,8 +591,13 @@ impl AdaptivePlanner {
             .rules
             .into_iter()
             .flat_map(|r| match r.name() {
-                "FilterPushdown" => vec![Arc::new(FilterPushdown::new())
-                    as Arc<dyn PhysicalOptimizerRule + Send + Sync>],
+                // Pushdown runs once, from `plan_preparation_optimizers`. AQE
+                // re-optimizes after every stage completion, and pushing an
+                // already-pushed filter appends it to the scan again: TPC-H
+                // scans accumulated one copy per replan — six of
+                // `r_name = EUROPE` in q2 — and every copy is evaluated per row
+                // and again in the row-group pruning predicate.
+                "FilterPushdown" => vec![],
                 // `join_selection` promotes a small build side to `CollectLeft`
                 // without restricting by join type -- safe in one process, but
                 // Ballista runs one task per probe partition. Demote the unsafe
@@ -612,6 +617,7 @@ impl AdaptivePlanner {
         plan_id_generator: Arc<AtomicUsize>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         vec![
+            Arc::new(FilterPushdown::new()),
             Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
         ]
