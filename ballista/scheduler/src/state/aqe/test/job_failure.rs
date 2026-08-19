@@ -200,6 +200,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
                     file_id: None,
                     is_sort_shuffle: false,
                 }],
+                runtime_stats: vec![],
             })),
         };
         graph.update_task_status(&executor, vec![status], 4, 4)?;
@@ -236,6 +237,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
         status: Some(task_status::Status::Successful(SuccessfulTask {
             executor_id: executor.id.clone(),
             partitions: vec![],
+            runtime_stats: vec![],
         })),
     };
     graph
