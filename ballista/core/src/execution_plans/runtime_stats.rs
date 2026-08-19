@@ -675,6 +675,8 @@ pub struct MergedRuntimeStats {
     pub task_count: usize,
     /// Sum of `row_count` across every partition entry in the group.
     pub total_rows: u64,
+    /// Rows in the group whose key was NULL. `0` in row-count-only mode
+    pub null_count: u64,
     /// `partition_count - 1` cut points at quantiles `i/partition_count`
     /// on the merged sketch. Empty when `partition_count < 2` or no
     /// non-empty sketches were merged.
@@ -786,6 +788,7 @@ fn merge_group(group: &[&RuntimeStatsReport]) -> Result<MergedRuntimeStats> {
             partition_count,
             task_count,
             total_rows,
+            null_count: 0,
             cuts: Vec::new(),
             min: None,
             max: None,
@@ -800,6 +803,7 @@ fn merge_group(group: &[&RuntimeStatsReport]) -> Result<MergedRuntimeStats> {
         partition_count,
         task_count,
         total_rows,
+        null_count: merged.null_count(),
         cuts,
         min,
         max,
@@ -1487,6 +1491,35 @@ mod merge_tests {
         }
     }
 
+    /// A report whose key is NULL in every row. The sketch retains nothing,
+    /// so its NULL count is all that survives the round-trip.
+    fn all_null_report(
+        order_by: Vec<PhysicalSortExprNode>,
+        nulls_per_slot: Vec<usize>,
+    ) -> RuntimeStatsReport {
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sketch_options()).unwrap();
+        let mut merged = SortKeySketch::new(codec);
+        let partitions = nulls_per_slot
+            .into_iter()
+            .enumerate()
+            .map(|(slot_id, nulls)| {
+                merged
+                    .ingest(&Float64Array::from(vec![None::<f64>; nulls]))
+                    .expect("NULL Float64 samples into a Float64 sketch");
+                RuntimeStatsPartitionEntry {
+                    partition_id: slot_id as u32,
+                    row_count: nulls as u64,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        RuntimeStatsReport {
+            order_by,
+            partitions,
+            sketch: Some(merged.to_proto().unwrap()),
+        }
+    }
+
     fn only_group(reports: &[RuntimeStatsReport]) -> MergedRuntimeStats {
         let mut groups = merge_reports(reports).expect("merge should succeed");
         match groups.as_slice() {
@@ -1585,6 +1618,24 @@ mod merge_tests {
         assert!(group.cuts.is_empty());
         assert!(group.min.is_none());
         assert!(group.max.is_none());
+    }
+
+    /// A key that is NULL in every row has no value to cut on, so `cuts`
+    /// comes back empty — the same answer a report carrying no sketch at all
+    /// gives. The two have to stay distinguishable: one is a degenerate
+    /// distribution whose every row belongs in a single partition, the other
+    /// is a broken invariant a range-repartition stage must refuse to route
+    /// on.
+    #[test]
+    fn merge_reports_distinguishes_an_all_null_key_from_a_missing_sketch() {
+        let group = only_group(&[
+            all_null_report(sketch_tag(), vec![3, 1]),
+            all_null_report(sketch_tag(), vec![2, 4]),
+        ]);
+
+        assert_eq!(group.total_rows, 10);
+        assert!(group.cuts.is_empty(), "no value to cut on");
+        assert_eq!(group.null_count, group.total_rows, "every key was NULL");
     }
 
     /// Mismatched partition counts within a group surface as an error —

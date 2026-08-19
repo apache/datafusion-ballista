@@ -294,11 +294,16 @@ impl AdaptiveExecutionGraph {
     /// have already established via `range_repartition_routing_expr` that
     /// the stage's plan warrants routing, and passes the recovered expr in.
     ///
-    /// `Ok(None)` means the stage produced no rows (nothing to route
-    /// through — passthrough is safe). `Err` means the stage's plan says
-    /// it should route but something went wrong recovering the cuts —
-    /// an invariant break, not a soft fallback (would misroute real data
+    /// `Ok(None)` means the stage has a single output partition, so there is
+    /// no boundary to route across. `Err` means the stage's plan says it
+    /// should route but something went wrong recovering the cuts — an
+    /// invariant break, not a soft fallback (would misroute real data
     /// downstream).
+    ///
+    /// Every other stage gets routing back even when its cuts are empty. A
+    /// boundary always has a consuming `RangeFilterExec`, which resolves its
+    /// bounds from the routing parked on that boundary, so declining to park
+    /// leaves the filter unresolvable rather than saving anyone work.
     fn repartition_routing(
         running_stage: &RunningStage,
         routing_expr: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
@@ -330,10 +335,6 @@ impl AdaptiveExecutionGraph {
                 )));
             }
         };
-        if entry.total_rows == 0 {
-            debug!("range-repartition stage {stage_id}: no rows produced, passthrough");
-            return Ok(None);
-        }
         if entry.partition_count < 2 {
             // K=1: single output partition — no cuts needed, no routing to
             // recover. Everything flows to the one downstream partition.
@@ -343,10 +344,12 @@ impl AdaptiveExecutionGraph {
             );
             return Ok(None);
         }
-        if entry.cuts.is_empty() {
+        if entry.cuts.is_empty() && entry.null_count != entry.total_rows {
+            // entirely NULL or empty are valid but degenerate cases
             return Err(BallistaError::General(format!(
-                "range-repartition stage {stage_id}: {} rows, K={}, but no cuts (sketch missed)",
-                entry.total_rows, entry.partition_count
+                "range-repartition stage {stage_id}: {} rows ({} NULL), K={}, \
+                 but no cuts (sketch missed)",
+                entry.total_rows, entry.null_count, entry.partition_count
             )));
         }
         Ok(Some(RangeRepartitionRouting {

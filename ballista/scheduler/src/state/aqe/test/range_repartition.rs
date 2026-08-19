@@ -21,10 +21,13 @@
 //! cuts on it, and `cut_partitions` duplicates straddlers so
 //! downstream can inject a `PerPartitionFilterExec` to trim them.
 
+use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::execution_plan::RangeRepartitionRouting;
 use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::execution_stage::RunningStage;
 use ballista_core::execution_plans::{
     RuntimeStatsExec, UnorderedRangeRepartitionExec, cut_partitions,
+    repartition_routing_expr,
 };
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
@@ -32,6 +35,8 @@ use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
 };
+use ballista_core::sort_key::{SortKeyCodec, SortKeySketch};
+use datafusion::arrow::array::Float64Array;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ScalarValue;
@@ -41,6 +46,7 @@ use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::expressions::col;
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::protobuf::PhysicalSortExprNode;
 use std::sync::Arc;
 
 fn v_schema() -> Arc<Schema> {
@@ -266,4 +272,120 @@ async fn routing_parks_when_range_repartition_has_a_parent()
     );
 
     Ok(())
+}
+
+/// A producer report whose key was NULL in every row. The sketch retains no
+/// values, so its NULL count is all that crosses the wire.
+fn all_null_report(nulls_per_sub_part: Vec<usize>) -> RuntimeStatsReport {
+    let options = SortOptions {
+        descending: false,
+        nulls_first: false,
+    };
+    let codec = SortKeyCodec::try_new(&DataType::Float64, options)
+        .expect("Float64 is a sortable key type");
+    let mut sketch = SortKeySketch::new(codec);
+    let partitions = nulls_per_sub_part
+        .into_iter()
+        .enumerate()
+        .map(|(sub_part_id, nulls)| {
+            sketch
+                .ingest(&Float64Array::from(vec![None::<f64>; nulls]))
+                .expect("NULL Float64 samples into a Float64 sketch");
+            RuntimeStatsPartitionEntry {
+                partition_id: sub_part_id as u32,
+                row_count: nulls as u64,
+                null_count: nulls as u64,
+                ..Default::default()
+            }
+        })
+        .collect();
+    RuntimeStatsReport {
+        // The tag is where the key's ordering lives, so it has to agree with
+        // the sort expression `stats_over_urre_root` sketches on.
+        order_by: vec![PhysicalSortExprNode {
+            expr: None,
+            asc: true,
+            nulls_first: false,
+        }],
+        partitions,
+        sketch: Some(sketch.to_proto().expect("a NULL-only sketch serializes")),
+    }
+}
+
+/// A key that is NULL in every row is a real distribution, not a missed
+/// sketch. No value exists for a boundary to name, so the cuts come back
+/// empty and the whole population belongs in the one partition that leaves —
+/// still a valid range partitioning. Refusing to route here fails any query
+/// whose routing column happens to hold only NULLs.
+#[test]
+fn repartition_routing_accepts_a_key_that_is_null_in_every_row() {
+    let mut stage = RunningStage::new(
+        1,
+        0,
+        stats_over_urre_root(),
+        2,
+        vec![],
+        std::collections::HashMap::new(),
+        Arc::new(SessionConfig::default()),
+    );
+    stage.append_runtime_stats_reports(7, vec![all_null_report(vec![4, 6])]);
+
+    let routing_expr = repartition_routing_expr(stage.plan.as_ref())
+        .expect("the URRE spine is a shape the walker recognizes")
+        .expect("a range-repartition stage routes on an expression");
+    let routing = AdaptiveExecutionGraph::repartition_routing(&stage, routing_expr)
+        .expect("an all-NULL key is a distribution, not an invariant break")
+        .expect("rows were observed, so the stage still routes");
+
+    assert!(routing.cuts.is_empty(), "a NULL is not a value to cut on");
+}
+
+/// A producer report from a task that read nothing: sub-part entries with no
+/// rows and no sketch to carry, which is what `RuntimeStatsExec` emits when
+/// no batch ever reached it.
+fn empty_report(sub_parts: usize) -> RuntimeStatsReport {
+    RuntimeStatsReport {
+        order_by: vec![PhysicalSortExprNode {
+            expr: None,
+            asc: true,
+            nulls_first: false,
+        }],
+        partitions: (0..sub_parts)
+            .map(|sub_part_id| RuntimeStatsPartitionEntry {
+                partition_id: sub_part_id as u32,
+                row_count: 0,
+                ..Default::default()
+            })
+            .collect(),
+        sketch: None,
+    }
+}
+
+/// A stage that produced no rows still has to park its routing. The
+/// downstream `RangeFilterExec` resolves its bounds from the boundary
+/// `ExchangeExec`, and every range-repartition boundary has one — an
+/// unparked boundary fails that resolution instead of yielding the empty
+/// result. No rows means no cuts, which is the same single valid partition
+/// an all-NULL key leaves.
+#[test]
+fn repartition_routing_parks_a_boundary_for_a_stage_that_produced_no_rows() {
+    let mut stage = RunningStage::new(
+        1,
+        0,
+        stats_over_urre_root(),
+        2,
+        vec![],
+        std::collections::HashMap::new(),
+        Arc::new(SessionConfig::default()),
+    );
+    stage.append_runtime_stats_reports(7, vec![empty_report(2)]);
+
+    let routing_expr = repartition_routing_expr(stage.plan.as_ref())
+        .expect("the URRE spine is a shape the walker recognizes")
+        .expect("a range-repartition stage routes on an expression");
+    let routing = AdaptiveExecutionGraph::repartition_routing(&stage, routing_expr)
+        .expect("no rows is not an invariant break")
+        .expect("the boundary still needs routing for its downstream filter");
+
+    assert!(routing.cuts.is_empty(), "no rows, so no value to cut on");
 }
