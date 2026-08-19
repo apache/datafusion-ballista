@@ -294,11 +294,16 @@ impl AdaptiveExecutionGraph {
     /// have already established via `range_repartition_routing_expr` that
     /// the stage's plan warrants routing, and passes the recovered expr in.
     ///
-    /// `Ok(None)` means the stage produced no rows (nothing to route
-    /// through — passthrough is safe). `Err` means the stage's plan says
-    /// it should route but something went wrong recovering the cuts —
-    /// an invariant break, not a soft fallback (would misroute real data
+    /// `Ok(None)` means the stage has a single output partition, so there is
+    /// no boundary to route across. `Err` means the stage's plan says it
+    /// should route but something went wrong recovering the cuts — an
+    /// invariant break, not a soft fallback (would misroute real data
     /// downstream).
+    ///
+    /// Every other stage gets routing back even when its cuts are empty. A
+    /// boundary always has a consuming `RangeFilterExec`, which resolves its
+    /// bounds from the routing parked on that boundary, so declining to park
+    /// leaves the filter unresolvable rather than saving anyone work.
     fn repartition_routing(
         running_stage: &RunningStage,
         routing_expr: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
@@ -330,10 +335,6 @@ impl AdaptiveExecutionGraph {
                 )));
             }
         };
-        if entry.total_rows == 0 {
-            debug!("range-repartition stage {stage_id}: no rows produced, passthrough");
-            return Ok(None);
-        }
         if entry.partition_count < 2 {
             // K=1: single output partition — no cuts needed, no routing to
             // recover. Everything flows to the one downstream partition.
@@ -343,14 +344,17 @@ impl AdaptiveExecutionGraph {
             );
             return Ok(None);
         }
-        if entry.cuts.is_empty() {
+        if entry.cuts.is_empty() && entry.null_count != entry.total_rows {
+            // entirely NULL or empty are valid but degenerate cases
             return Err(BallistaError::General(format!(
-                "range-repartition stage {stage_id}: {} rows, K={}, but no cuts (sketch missed)",
-                entry.total_rows, entry.partition_count
+                "range-repartition stage {stage_id}: {} rows ({} NULL), K={}, \
+                 but no cuts (sketch missed)",
+                entry.total_rows, entry.null_count, entry.partition_count
             )));
         }
         Ok(Some(RangeRepartitionRouting {
             cuts: entry.cuts.clone(),
+            nulls_first: entry.nulls_first,
             routing_expr,
         }))
     }
@@ -400,8 +404,9 @@ impl AdaptiveExecutionGraph {
                     partitions,
                     reports,
                     &routing.cuts,
-                    halo_lo,
-                    halo_hi,
+                    &halo_lo,
+                    &halo_hi,
+                    routing.nulls_first,
                 )
                 .map_err(|err| {
                     BallistaError::General(format!(
@@ -1486,8 +1491,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 fn downstream_halos(
     full_plan: &Arc<dyn ExecutionPlan>,
     producer_stage_id: usize,
-) -> datafusion::common::Result<(f64, f64)> {
-    let mut result: Option<(f64, f64)> = None;
+) -> datafusion::common::Result<(ScalarValue, ScalarValue)> {
+    let mut result: Option<(ScalarValue, ScalarValue)> = None;
     full_plan.apply(|node| {
         let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
             return Ok(TreeNodeRecursion::Continue);
@@ -1508,7 +1513,7 @@ fn downstream_halos(
         if exchange.stage_id() != Some(producer_stage_id) {
             return Ok(TreeNodeRecursion::Continue);
         }
-        result = Some((scalar_to_f64(rf.halo_lo())?, scalar_to_f64(rf.halo_hi())?));
+        result = Some((rf.halo_lo().clone(), rf.halo_hi().clone()));
         Ok(TreeNodeRecursion::Stop)
     })?;
     result.ok_or_else(|| {
@@ -1518,17 +1523,4 @@ fn downstream_halos(
              downstream partial aggregates. Check the rule that planted this ORRE."
         ))
     })
-}
-
-/// Halos travel through the RFE public API as `ScalarValue` for future
-/// type widening (Interval, timestamps under KLL). Today the internal
-/// routing math is `f64`; any other variant is a shape violation upstream
-/// and we fail loud rather than silently zero-widen.
-fn scalar_to_f64(sv: &ScalarValue) -> datafusion::common::Result<f64> {
-    match sv {
-        ScalarValue::Float64(Some(v)) => Ok(*v),
-        other => datafusion::common::internal_err!(
-            "only f64 halos are implemented, got: {other:?}"
-        ),
-    }
 }

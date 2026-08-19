@@ -277,12 +277,12 @@ fn resolve_range_filter_cuts(
             );
         };
         let routing = descend_to_boundary_routing(child)?;
-        if !rf.routing_expr().eq(&routing.routing_expr) {
+        if !rf.filter_expr().eq(&routing.routing_expr) {
             return datafusion::common::internal_err!(
-                "RangeFilterExec routing_expr `{}` disagrees with its descendant \
+                "RangeFilterExec filter_expr `{}` disagrees with its descendant \
                  boundary ExchangeExec's routing_expr `{}` — plant-time invariant \
                  broken",
-                rf.routing_expr(),
+                rf.filter_expr(),
                 routing.routing_expr
             );
         }
@@ -327,15 +327,14 @@ fn descend_to_boundary_routing(
 /// Project K-1 cuts to K half-open `(cuts[k-1], cuts[k])` ranges with `None`
 /// sentinels at ±∞. This is the pure range-partitioning projection — no halo
 /// arithmetic here (RFE widens internally at resolve time).
-fn raw_bounds_from_cuts(cuts: &[f64]) -> Vec<(Option<ScalarValue>, Option<ScalarValue>)> {
+fn raw_bounds_from_cuts(
+    cuts: &[ScalarValue],
+) -> Vec<(Option<ScalarValue>, Option<ScalarValue>)> {
     let k = cuts.len() + 1;
     (0..k)
         .map(|i| {
-            let lo = i
-                .checked_sub(1)
-                .and_then(|j| cuts.get(j).copied())
-                .map(|v| ScalarValue::Float64(Some(v)));
-            let hi = cuts.get(i).copied().map(|v| ScalarValue::Float64(Some(v)));
+            let lo = i.checked_sub(1).and_then(|j| cuts.get(j).cloned());
+            let hi = cuts.get(i).cloned();
             (lo, hi)
         })
         .collect()

@@ -22,8 +22,8 @@
 //!   `AtomicUsize::fetch_add` on the hot path (no cross-partition
 //!   contention, no lock overhead).
 //! - **Quantile sketch** — optional (only when `order_by` is set at
-//!   construction). Per-partition `Mutex<TDigest>` keeps writes off any
-//!   shared lock.
+//!   construction). A per-partition `Mutex` around each sketch keeps writes
+//!   off any shared lock.
 //!
 //! Timing is decoupled from correctness: both accessors are readable at
 //! any point. Callers get whatever has flowed through so far — a
@@ -36,13 +36,8 @@
 //! downstream `SortExec` / `BoundedWindowAggExec` even though only the
 //! first key drives the sketch today).
 //!
-//! TODO: swap `TDigest` for a generic-over-`Ord` KLL sketch. TDigest is
-//! `Float64`-only, single-column, and has no representation for NULLs;
-//! a KLL implementation would sketch the full `Vec<PhysicalSortExpr>`
-//! (composite keys, non-numeric types) and position NULLs per each
-//! sort key's `SortOptions::nulls_first`, letting the operator drop
-//! both the "first expression, `Float64` only" restriction and the
-//! not-null-routing-column requirement enforced at construction today.
+//! The sketch is a [`SortKeySketch`], which covers any fixed-width key and
+//! gives NULLs a position per each sort key's `SortOptions::nulls_first`.
 //!
 //! This PR lands the tap in isolation: nothing wires it into a plan yet,
 //! and the executor doesn't yet ship the accumulated state back to the
@@ -53,10 +48,12 @@ use std::fmt::{self, Debug, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use datafusion::arrow::array::Float64Array;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::compute::SortOptions;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, OrderingRequirements, PhysicalExpr, PhysicalSortExpr,
@@ -71,19 +68,13 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, StatisticsArgs, apply_expression_roots,
     statistics::ChildStats,
 };
-use datafusion_functions_aggregate_common::tdigest::TDigest;
 use futures::stream::StreamExt;
 use log::debug;
 
-use crate::serde::protobuf::{
-    QuantileSketchState, RuntimeStatsPartitionEntry, RuntimeStatsReport,
-};
+use crate::execution_plans::range_filter::{widen_above, widen_below};
+use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
 use crate::serde::scheduler::PartitionLocation;
-
-/// T-Digest centroid budget. 100 is DataFusion's default and gives ~1%
-/// quantile error, plenty of margin over the sub-partition counts we
-/// expect at bin-pack time.
-const TDIGEST_MAX_SIZE: usize = 100;
+use crate::sort_key::{SortKeyCodec, SortKeySketch};
 
 /// Streaming runtime-stats operator. See module-level docs.
 pub struct RuntimeStatsExec {
@@ -96,55 +87,52 @@ pub struct RuntimeStatsExec {
     /// `AtomicUsize::fetch_add` on the hot path — no cross-partition
     /// contention, no lock overhead.
     row_counts: Arc<[AtomicUsize]>,
-    /// Only allocated when `order_by` is `Some`. Sketches over the first
-    /// ORDER BY expression's `Float64` values. `Mutex`-per-partition to
-    /// keep writes off any shared lock.
-    sketches: Option<Arc<[Mutex<TDigest>]>>,
+    /// Only allocated when `order_by` is `Some`. Sketches the first ORDER BY
+    /// expression. `Mutex`-per-partition to keep writes off any shared lock.
+    sort_key_sketches: Option<Arc<[Mutex<SortKeySketch>]>>,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl RuntimeStatsExec {
-    /// Wrap `input`. If `order_by` is provided, its first entry drives
-    /// the per-partition T-Digest; the full slice is preserved for serde
-    /// and for downstream operators (`SortExec`, `BoundedWindowAggExec`)
-    /// that need it. When `Some`, at least one expression is required —
-    /// nothing to sketch on with an empty slice — and the first
-    /// expression must evaluate to a non-nullable `Float64` (T-Digest is
-    /// `Float64`-only and has no NULL slot; the KLL swap will lift both
-    /// restrictions).
+    /// Wrap `input`. If `order_by` is provided, its first entry drives the
+    /// per-partition sketch; the full slice is preserved for serde and for
+    /// downstream operators (`SortExec`, `BoundedWindowAggExec`) that need it.
+    /// When `Some`, at least one expression is required — nothing to sketch on
+    /// with an empty slice — and its type must be one [`SortKeyCodec`] encodes.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         order_by: Option<Vec<PhysicalSortExpr>>,
     ) -> Result<Self> {
-        if let Some(exprs) = &order_by {
-            let [first, ..] = exprs.as_slice() else {
-                return internal_err!(
-                    "RuntimeStatsExec: order_by is Some but empty; pass None to skip sketching"
-                );
-            };
-            let schema = input.schema();
-            let routing_type = first.expr.data_type(&schema)?;
-            if routing_type != DataType::Float64 {
-                return internal_err!(
-                    "RuntimeStatsExec: routing expression must be Float64, got {routing_type:?}"
-                );
+        let codec = match &order_by {
+            Some(exprs) => {
+                let [first, ..] = exprs.as_slice() else {
+                    return internal_err!(
+                        "RuntimeStatsExec: order_by is Some but empty; pass None to skip sketching"
+                    );
+                };
+                let schema = input.schema();
+                let routing_type = first.expr.data_type(&schema)?;
+                // What the codec covers is the only restriction: any
+                // fixed-width type, nullable or not, in either direction.
+                let Some(codec) = SortKeyCodec::try_new(&routing_type, first.options)
+                else {
+                    return internal_err!(
+                        "RuntimeStatsExec: no sort-key encoding for {routing_type:?}"
+                    );
+                };
+                Some(codec)
             }
-            if first.expr.nullable(&schema)? {
-                return internal_err!(
-                    "RuntimeStatsExec: routing expression must be non-nullable; \
-                     T-Digest has no NULL slot (lifts with the KLL swap)"
-                );
-            }
-        }
+            None => None,
+        };
         let partition_count = input.output_partitioning().partition_count();
         let row_counts: Arc<[AtomicUsize]> = (0..partition_count)
             .map(|_| AtomicUsize::new(0))
             .collect::<Vec<_>>()
             .into();
-        let sketches: Option<Arc<[Mutex<TDigest>]>> = order_by.as_ref().map(|_| {
+        let sort_key_sketches: Option<Arc<[Mutex<SortKeySketch>]>> = codec.map(|codec| {
             (0..partition_count)
-                .map(|_| Mutex::new(TDigest::new(TDIGEST_MAX_SIZE)))
+                .map(|_| Mutex::new(SortKeySketch::new(codec.clone())))
                 .collect::<Vec<_>>()
                 .into()
         });
@@ -158,7 +146,7 @@ impl RuntimeStatsExec {
             input,
             order_by,
             row_counts,
-            sketches,
+            sort_key_sketches,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
         })
@@ -202,15 +190,13 @@ impl RuntimeStatsExec {
             .sum()
     }
 
-    /// Snapshot of one partition's running quantile sketch. Returns
-    /// `None` when the operator was built in row-count-only mode (no
-    /// `order_by`). Cheap clone (a `Vec<Centroid>` of size
-    /// ≤ `TDIGEST_MAX_SIZE`).
+    /// Snapshot of one partition's running [`SortKeySketch`]. `None` in
+    /// row-count-only mode.
     ///
     /// Errors if `partition` ≥ input's partition count — callers pass a
     /// partition id they've already used with `execute`.
-    pub fn quantile_sketch(&self, partition: usize) -> Result<Option<TDigest>> {
-        let Some(sketches) = &self.sketches else {
+    pub fn sort_key_sketch(&self, partition: usize) -> Result<Option<SortKeySketch>> {
+        let Some(sketches) = &self.sort_key_sketches else {
             return Ok(None);
         };
         let slot = sketches.get(partition).ok_or_else(|| {
@@ -222,33 +208,38 @@ impl RuntimeStatsExec {
         })?;
         let guard = slot.lock().map_err(|e| {
             internal_datafusion_err!(
-                "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
+                "RuntimeStatsExec partition {}: sort-key sketch mutex poisoned: {e}",
                 partition
             )
         })?;
         Ok(Some(guard.clone()))
     }
 
-    /// All partitions merged into one sketch. `Ok(None)` in
+    /// All partitions merged into one [`SortKeySketch`]. `Ok(None)` in
     /// row-count-only mode.
-    pub fn merged_quantile_sketch(&self) -> Result<Option<TDigest>> {
-        let Some(sketches) = self.sketches.as_ref() else {
+    pub fn merged_sort_key_sketch(&self) -> Result<Option<SortKeySketch>> {
+        let Some(sketches) = self.sort_key_sketches.as_ref() else {
             return Ok(None);
         };
-        let snapshots: Vec<TDigest> = sketches
-            .iter()
-            .enumerate()
-            .map(|(partition, m)| {
-                let guard = m.lock().map_err(|e| {
+        let mut merged: Option<SortKeySketch> = None;
+        for (partition, slot) in sketches.iter().enumerate() {
+            let snapshot = slot
+                .lock()
+                .map_err(|e| {
                     internal_datafusion_err!(
-                        "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
+                        "RuntimeStatsExec partition {}: sort-key sketch mutex poisoned: {e}",
                         partition
                     )
-                })?;
-                Ok(guard.clone())
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Some(TDigest::merge_digests(snapshots.iter())))
+                })?
+                .clone();
+            match &mut merged {
+                // Every slot shares the codec built once in `try_new`, so
+                // the codec-mismatch arm of `merge` can't fire here.
+                Some(accumulated) => accumulated.merge(snapshot)?,
+                None => merged = Some(snapshot),
+            }
+        }
+        Ok(merged)
     }
 }
 
@@ -397,7 +388,7 @@ impl ExecutionPlan for RuntimeStatsExec {
         // state share the counters/sketches. First ORDER BY expression,
         // if any, drives sketching.
         let row_counts = self.row_counts.clone();
-        let sketches = self.sketches.clone();
+        let sort_key_sketches = self.sort_key_sketches.clone();
         let routing_expr = self
             .order_by
             .as_ref()
@@ -406,8 +397,7 @@ impl ExecutionPlan for RuntimeStatsExec {
 
         let baseline = BaselineMetrics::new(&self.metrics, partition);
         // Separates sketch cost from the rest so we can tell whether the
-        // hot path in sketching mode is the T-Digest merge_unsorted_f64
-        // or something else (evaluate/downcast/flatten).
+        // hot path in sketching mode is the sketch or the evaluate above it.
         let sketch_time =
             MetricBuilder::new(&self.metrics).subset_time("sketch_time", partition);
         let sketch_batches =
@@ -416,7 +406,7 @@ impl ExecutionPlan for RuntimeStatsExec {
         let state = StreamState {
             input: input_stream,
             row_counts,
-            sketches,
+            sort_key_sketches,
             routing_expr,
             partition,
             baseline,
@@ -448,7 +438,7 @@ impl ExecutionPlan for RuntimeStatsExec {
 struct StreamState {
     input: SendableRecordBatchStream,
     row_counts: Arc<[AtomicUsize]>,
-    sketches: Option<Arc<[Mutex<TDigest>]>>,
+    sort_key_sketches: Option<Arc<[Mutex<SortKeySketch>]>>,
     routing_expr: Option<Arc<dyn datafusion::physical_plan::PhysicalExpr>>,
     partition: usize,
     baseline: BaselineMetrics,
@@ -476,49 +466,32 @@ impl StreamState {
         })?;
 
         // Sketch first: any failure returns before we count rows that
-        // never made it downstream. With Float64 validated at
-        // construction, the downcast is belt-and-braces — evaluate()
-        // itself can still fail for expr-internal reasons.
-        if let (Some(sketches), Some(routing_expr)) = (&self.sketches, &self.routing_expr)
-        {
+        // never made it downstream. Both sketches read one evaluation of
+        // the routing expression, so running them side by side costs a
+        // second ingest and not a second evaluate.
+        if let Some(routing_expr) = &self.routing_expr {
             let evaluated = routing_expr.evaluate(batch)?;
             let array = evaluated.into_array(batch.num_rows())?;
-            let f64_arr =
-                array
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .ok_or_else(|| {
-                        internal_datafusion_err!(
-                            "RuntimeStatsExec partition {}: routing expr produced {:?}, \
-                         expected Float64",
-                            self.partition,
-                            array.data_type()
-                        )
-                    })?;
-            // Construction rejects nullable routing exprs, so nulls
-            // shouldn't reach us; keep the flatten as cheap defense
-            // against a Field/data mismatch. NULLs are still forwarded
-            // downstream and counted — they just can't enter the
-            // sketch until the KLL swap gives us a `nulls_first`-aware
-            // slot.
-            let values: Vec<f64> = f64_arr.iter().flatten().collect();
-            if !values.is_empty() {
+            if !array.is_empty() {
+                self.sketch_batches.add(1);
+            }
+
+            if let Some(sketches) = &self.sort_key_sketches {
                 let slot = sketches.get(self.partition).ok_or_else(|| {
                     internal_datafusion_err!(
-                        "RuntimeStatsExec: partition {} out of range on sketch slot",
+                        "RuntimeStatsExec: partition {} out of range on sort-key sketch slot",
                         self.partition
                     )
                 })?;
                 let mut sketch = slot.lock().map_err(|e| {
                     internal_datafusion_err!(
-                        "RuntimeStatsExec partition {}: sketch mutex poisoned: {e}",
+                        "RuntimeStatsExec partition {}: sort-key sketch mutex poisoned: {e}",
                         self.partition
                     )
                 })?;
                 let sketch_timer = self.sketch_time.timer();
-                *sketch = sketch.merge_unsorted_f64(values);
+                sketch.ingest(array.as_ref())?;
                 sketch_timer.done();
-                self.sketch_batches.add(1);
             }
         }
 
@@ -544,31 +517,30 @@ impl Drop for StreamState {
         if rows == 0 {
             return;
         }
-        match self.sketches.as_ref().and_then(|s| s.get(self.partition)) {
-            Some(slot) => match slot.lock() {
+        if let Some(slot) = self
+            .sort_key_sketches
+            .as_ref()
+            .and_then(|sketches| sketches.get(self.partition))
+        {
+            match slot.lock() {
                 Ok(sketch) => {
                     debug!(
-                        "RuntimeStatsExec partition {}: rows={} T-Digest count={} min={} max={}",
+                        "RuntimeStatsExec partition {}: sort-key sketch count={} nulls={} \
+                         min={:?} max={:?}",
                         self.partition,
-                        rows,
                         sketch.count(),
+                        sketch.null_count(),
                         sketch.min(),
                         sketch.max(),
                     );
                 }
                 Err(e) => {
                     log::error!(
-                        "RuntimeStatsExec partition {}: sketch mutex poisoned on Drop; \
-                         skipping end-of-stream log: {e}",
+                        "RuntimeStatsExec partition {}: sort-key sketch mutex poisoned \
+                         on Drop; skipping end-of-stream log: {e}",
                         self.partition,
                     );
                 }
-            },
-            None => {
-                debug!(
-                    "RuntimeStatsExec partition {}: rows={}",
-                    self.partition, rows
-                );
             }
         }
     }
@@ -644,65 +616,48 @@ fn stats_to_report(
     let mut partitions = Vec::with_capacity(partition_count);
     for partition_id in 0..partition_count {
         let row_count = stats.row_count(partition_id)? as u64;
-        let sketch = match stats.quantile_sketch(partition_id)? {
-            Some(sk) if sk.count() > 0.0 => Some(sketch_to_proto(&sk)?),
-            _ => None,
+        // The router needs each partition's value range, never its
+        // distribution — hence extremes here and one merged sketch below.
+        let (key_min, key_max, null_count) = match stats.sort_key_sketch(partition_id)? {
+            Some(sk) => (
+                extreme_to_proto(sk.value_min()?)?,
+                extreme_to_proto(sk.value_max()?)?,
+                sk.null_count(),
+            ),
+            None => (Vec::new(), Vec::new(), 0),
         };
         partitions.push(RuntimeStatsPartitionEntry {
             partition_id: partition_id as u32,
             row_count,
-            sketch,
+            key_min,
+            key_max,
+            null_count,
         });
     }
+    let sort_key_sketch = match stats.merged_sort_key_sketch()? {
+        Some(sk) if sk.count() > 0 => Some(sk.to_proto()?),
+        _ => None,
+    };
     Ok(RuntimeStatsReport {
         order_by,
         partitions,
+        sketch: sort_key_sketch,
     })
 }
 
-/// Serialize a T-Digest to the on-wire
-/// [`QuantileSketchState`].
-///
-/// Wraps `TDigest::to_scalar_state()` — the 6-element canonical form
-/// `(max_size, sum, count, max, min, centroids_as_list)` — each element
-/// encoded via `datafusion_proto_common::ScalarValue::try_from`.
-pub fn sketch_to_proto(sketch: &TDigest) -> Result<QuantileSketchState> {
-    let state = sketch.to_scalar_state();
-    let proto_state = state
-        .iter()
-        .map(datafusion_proto_common::ScalarValue::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            internal_datafusion_err!("failed to encode TDigest to proto: {e:?}")
-        })?;
-    Ok(QuantileSketchState { state: proto_state })
-}
-
-/// Deserialize a [`QuantileSketchState`] into a
-/// T-Digest.
-///
-/// Reverses [`sketch_to_proto`]. Guards against corrupted wire input by
-/// checking the element count before calling
-/// `TDigest::from_scalar_state`, which would panic on invalid shape.
-pub fn sketch_from_proto(proto: &QuantileSketchState) -> Result<TDigest> {
-    let scalars = proto
-        .state
-        .iter()
-        .map(datafusion::common::ScalarValue::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            internal_datafusion_err!(
-                "failed to decode QuantileSketchState scalars: {e:?}"
-            )
-        })?;
-    if scalars.len() != 6 {
-        return internal_err!(
-            "QuantileSketchState: expected 6 elements per TDigest::to_scalar_state, got {} \
-             — likely wire corruption",
-            scalars.len()
-        );
-    }
-    Ok(TDigest::from_scalar_state(&scalars))
+/// One extreme as the wire's `repeated ScalarValue`: a tuple with one element
+/// per key column, empty when no value was observed.
+fn extreme_to_proto(
+    extreme: Option<datafusion::common::ScalarValue>,
+) -> Result<Vec<datafusion_proto_common::ScalarValue>> {
+    extreme
+        .map(|value| {
+            datafusion_proto_common::ScalarValue::try_from(&value).map_err(|e| {
+                internal_datafusion_err!("failed to encode key extreme {value:?}: {e:?}")
+            })
+        })
+        .transpose()
+        .map(|encoded| encoded.into_iter().collect())
 }
 
 /// One group's merged view: sketches from every report sharing the same
@@ -720,16 +675,23 @@ pub struct MergedRuntimeStats {
     pub task_count: usize,
     /// Sum of `row_count` across every partition entry in the group.
     pub total_rows: u64,
+    /// Rows in the group whose key was NULL. `0` in row-count-only mode
+    pub null_count: u64,
     /// `partition_count - 1` cut points at quantiles `i/partition_count`
-    /// on the merged T-Digest. Empty when `partition_count < 2` or no
+    /// on the merged sketch. Empty when `partition_count < 2` or no
     /// non-empty sketches were merged.
-    pub cuts: Vec<f64>,
-    /// Merged T-Digest's `min()` if at least one non-empty sketch
-    /// contributed; `None` in row-count-only mode.
-    pub min: Option<f64>,
-    /// Merged T-Digest's `max()` if at least one non-empty sketch
-    /// contributed; `None` in row-count-only mode.
-    pub max: Option<f64>,
+    pub cuts: Vec<ScalarValue>,
+    /// Merged sketch's minimum if at least one non-empty sketch contributed;
+    /// `None` in row-count-only mode.
+    pub min: Option<ScalarValue>,
+    /// Merged sketch's maximum if at least one non-empty sketch contributed;
+    /// `None` in row-count-only mode.
+    pub max: Option<ScalarValue>,
+    /// Which end of the order the NULL run occupies, from the `order_by` tag.
+    /// Travels with the cuts because every consumer that routes by them also
+    /// has to place the run, and re-deriving it invites the two to disagree.
+    /// Meaningless when `cuts` is empty.
+    pub nulls_first: bool,
 }
 
 /// Group `RuntimeStatsReport`s by `order_by` wire tag, merge the T-Digests
@@ -792,49 +754,60 @@ fn merge_group(group: &[&RuntimeStatsReport]) -> Result<MergedRuntimeStats> {
     }
 
     let mut total_rows: u64 = 0;
-    let mut sketches: Vec<TDigest> = Vec::new();
+    // The key's direction and NULL placement live once per report, in the
+    // `order_by` tag every consumer already reads to know which expression a
+    // sketch describes.
+    let options = first.order_by.first().map(|sort| SortOptions {
+        descending: !sort.asc,
+        nulls_first: sort.nulls_first,
+    });
+    let mut merged: Option<SortKeySketch> = None;
     for report in group {
         for entry in &report.partitions {
             total_rows = total_rows.saturating_add(entry.row_count);
-            if let Some(proto_sketch) = entry.sketch.as_ref() {
-                let sketch = sketch_from_proto(proto_sketch)?;
-                if sketch.count() > 0.0 {
-                    sketches.push(sketch);
-                }
-            }
+        }
+        let Some(state) = report.sketch.as_ref() else {
+            continue;
+        };
+        let Some(options) = options else {
+            return internal_err!(
+                "runtime stats merge: a report carries a sketch with an empty \
+                 order_by tag, so the key's ordering is unknown"
+            );
+        };
+        let sketch = SortKeySketch::try_from_proto(state, options)?;
+        match &mut merged {
+            Some(accumulated) => accumulated.merge(sketch)?,
+            None => merged = Some(sketch),
         }
     }
 
-    if sketches.is_empty() {
+    let Some(merged) = merged.filter(|sketch| sketch.count() > 0) else {
         return Ok(MergedRuntimeStats {
             order_by_len: first.order_by.len(),
             partition_count,
             task_count,
             total_rows,
+            null_count: 0,
             cuts: Vec::new(),
             min: None,
             max: None,
+            nulls_first: false,
         });
-    }
-
-    let merged_sketch = TDigest::merge_digests(sketches.iter());
-    let cuts: Vec<f64> = if partition_count > 1 {
-        (1..partition_count)
-            .map(|cut_index| {
-                merged_sketch.estimate_quantile(cut_index as f64 / partition_count as f64)
-            })
-            .collect()
-    } else {
-        Vec::new()
     };
+
+    let cuts = merged.cuts(partition_count)?;
+    let (min, max) = (merged.min()?, merged.max()?);
     Ok(MergedRuntimeStats {
         order_by_len: first.order_by.len(),
         partition_count,
         task_count,
         total_rows,
+        null_count: merged.null_count(),
         cuts,
-        min: Some(merged_sketch.min()),
-        max: Some(merged_sketch.max()),
+        min,
+        max,
+        nulls_first: options.is_some_and(|options| options.nulls_first),
     })
 }
 
@@ -943,24 +916,28 @@ pub fn repartition_routing_expr(
 pub fn cut_partitions(
     original_partitions: Vec<Vec<PartitionLocation>>,
     reports: &[TaskRuntimeStats],
-    global_cuts: &[f64],
-    halo_lo: f64,
-    halo_hi: f64,
+    global_cuts: &[ScalarValue],
+    halo_lo: &ScalarValue,
+    halo_hi: &ScalarValue,
+    nulls_first: bool,
 ) -> Result<Vec<Vec<PartitionLocation>>> {
     use std::collections::HashMap;
 
     // Index sketches by (producer_task_id, sub_part_id). Under
     // ShuffleWriter(Passthrough) file_id == task_id, so PartitionLocation's
     // (file_id, partition_id.partition_id) is the same pair.
-    let sketches: HashMap<(usize, u32), &QuantileSketchState> = reports
-        .iter()
-        .flat_map(|stats| {
-            stats.report.partitions.iter().filter_map(move |entry| {
-                let sketch = entry.sketch.as_ref()?;
-                Some(((stats.producer_task_id, entry.partition_id), sketch))
+    // Only each file's value range is needed, never its distribution, which
+    // is why the sketch beside these is merged once per report rather than
+    // repeated per partition.
+    let ranges: HashMap<(usize, u32), &RuntimeStatsPartitionEntry> =
+        reports
+            .iter()
+            .flat_map(|stats| {
+                stats.report.partitions.iter().map(move |entry| {
+                    ((stats.producer_task_id, entry.partition_id), entry)
+                })
             })
-        })
-        .collect();
+            .collect();
 
     debug_assert!(
         global_cuts.windows(2).all(|w| w[0] <= w[1]),
@@ -978,18 +955,27 @@ pub fn cut_partitions(
                 );
             };
             let sub_part_id = file.partition_id.partition_id as u32;
-            // Fold "no sketch" and "empty sketch" into one Option — both
-            // mean "no routing info for this file"
-            let sketch = sketches
-                .get(&(task_id as usize, sub_part_id))
-                .map(|proto| sketch_from_proto(proto))
-                .transpose()?
-                .filter(|s| s.count() > 0.0);
-            let Some(sketch) = sketch else {
+            // A file of NULLs has a null count but no value range, and it
+            // belongs wholly to the partition holding the run — which the
+            // `nulls_first` end names, not an overlap check.
+            let entry = ranges.get(&(task_id as usize, sub_part_id));
+            let null_only = entry
+                .is_some_and(|entry| entry.null_count > 0 && entry.key_min.is_empty());
+            if null_only {
+                let run = if nulls_first { 0 } else { partition_count - 1 };
+                remapped[run].push(file);
+                continue;
+            }
+            let range = entry.and_then(|entry| {
+                let lo = entry.key_min.first()?;
+                let hi = entry.key_max.first()?;
+                Some((lo, hi))
+            });
+            let Some((min_proto, max_proto)) = range else {
                 // No routing info. Safe to skip only if the file has zero rows
                 if file.partition_stats.num_rows != Some(0) {
                     return internal_err!(
-                        "range-repartition remap: file has num_rows={:?} but no usable sketch (task_id={task_id}, sub_part_id={sub_part_id})",
+                        "range-repartition remap: file has num_rows={:?} but no usable key range (task_id={task_id}, sub_part_id={sub_part_id})",
                         file.partition_stats.num_rows
                     );
                 }
@@ -1001,9 +987,22 @@ pub fn cut_partitions(
             // Monotone cuts → the set of matching buckets is a contiguous
             // range [b_lo, b_hi], found by two partition_points over
             // `global_cuts` with the sketch shifted by the halos.
-            let (sketch_min, sketch_max) = (sketch.min(), sketch.max());
-            let b_lo = global_cuts.partition_point(|&c| c <= sketch_min - halo_hi);
-            let b_hi = global_cuts.partition_point(|&c| c <= sketch_max + halo_lo);
+            let sketch_min = ScalarValue::try_from(min_proto).map_err(|e| {
+                internal_datafusion_err!(
+                    "range-repartition remap: undecodable key_min: {e:?}"
+                )
+            })?;
+            let sketch_max = ScalarValue::try_from(max_proto).map_err(|e| {
+                internal_datafusion_err!(
+                    "range-repartition remap: undecodable key_max: {e:?}"
+                )
+            })?;
+            // Typed widening with the same zero shortcut `RangeFilterExec`
+            // uses, so a zero halo of one type cannot refuse a key of another.
+            let reach_lo = widen_below(&sketch_min, halo_hi)?;
+            let reach_hi = widen_above(&sketch_max, halo_lo)?;
+            let b_lo = global_cuts.partition_point(|cut| cut <= &reach_lo);
+            let b_hi = global_cuts.partition_point(|cut| cut <= &reach_hi);
             for bucket in &mut remapped[b_lo..=b_hi] {
                 bucket.push(file.clone());
             }
@@ -1064,67 +1063,6 @@ pub fn log_merged_runtime_stats(
 }
 
 #[cfg(test)]
-mod wire_tests {
-    use super::*;
-
-    /// Round-trip a populated T-Digest through the wire. Count / min /
-    /// max should survive unchanged; quantile queries should agree to
-    /// within floating-point equality since serde is lossless.
-    #[test]
-    fn tdigest_wire_roundtrip_preserves_populated_sketch() {
-        let mut original = TDigest::new(100);
-        original = original
-            .merge_unsorted_f64(vec![1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0]);
-        let proto = sketch_to_proto(&original).unwrap();
-        let decoded = sketch_from_proto(&proto).unwrap();
-        assert_eq!(decoded.count(), original.count());
-        assert_eq!(decoded.min(), original.min());
-        assert_eq!(decoded.max(), original.max());
-        // Quantile agreement at the median.
-        assert_eq!(
-            decoded.estimate_quantile(0.5),
-            original.estimate_quantile(0.5),
-        );
-    }
-
-    /// Empty T-Digest — zero centroids, no samples — still survives
-    /// the round-trip. This is the case an executor hits when a
-    /// `RuntimeStatsExec` was present in the plan but no batches
-    /// flowed through (e.g. empty input partition).
-    #[test]
-    fn tdigest_wire_roundtrip_preserves_empty_sketch() {
-        let original = TDigest::new(100);
-        let proto = sketch_to_proto(&original).unwrap();
-        let decoded = sketch_from_proto(&proto).unwrap();
-        assert_eq!(decoded.count(), 0.0);
-        assert_eq!(decoded.max_size(), original.max_size());
-    }
-
-    /// Corrupted wire input (wrong element count) is caught before
-    /// `TDigest::from_scalar_state` gets a chance to panic.
-    #[test]
-    fn sketch_from_proto_rejects_wrong_shape() {
-        use datafusion::common::ScalarValue;
-        let proto = QuantileSketchState {
-            state: (0..3)
-                .map(|_| {
-                    datafusion_proto_common::ScalarValue::try_from(&ScalarValue::Float64(
-                        Some(0.0),
-                    ))
-                    .unwrap()
-                })
-                .collect(),
-        };
-        let err = sketch_from_proto(&proto)
-            .expect_err("wrong-count wire input must be rejected before decode");
-        assert!(
-            err.to_string().contains("expected 6 elements"),
-            "got: {err}"
-        );
-    }
-}
-
-#[cfg(test)]
 mod stream_tests {
     //! End-to-end: build a small in-memory input, wrap it in
     //! `RuntimeStatsExec`, drain the stream, and verify the accumulated
@@ -1135,6 +1073,7 @@ mod stream_tests {
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
@@ -1200,16 +1139,74 @@ mod stream_tests {
         assert_eq!(stats.row_count(0).unwrap(), 5);
         assert_eq!(stats.total_row_count(), 5);
 
-        // Sketch observed every non-null routing value.
-        let sketch = stats.quantile_sketch(0).unwrap().unwrap();
-        assert_eq!(sketch.count(), 5.0);
-        assert_eq!(sketch.min(), 1.0);
-        assert_eq!(sketch.max(), 5.0);
-        // Merged over the (single) partition matches the per-partition view.
+        // Sketch observed every routing value.
+        let sort_key = stats.sort_key_sketch(0).unwrap().unwrap();
+        assert_eq!(sort_key.count(), 5);
+        assert_eq!(sort_key.null_count(), 0);
         assert_eq!(
-            stats.merged_quantile_sketch().unwrap().unwrap().count(),
-            5.0
+            sort_key.min().unwrap(),
+            Some(ScalarValue::Float64(Some(1.0)))
         );
+        assert_eq!(
+            sort_key.max().unwrap(),
+            Some(ScalarValue::Float64(Some(5.0)))
+        );
+        assert_eq!(stats.merged_sort_key_sketch().unwrap().unwrap().count(), 5);
+    }
+
+    /// Volume through the operator, not just a handful of rows: past KLL's
+    /// k=800 level-0 capacity so compaction actually runs, and ascending to
+    /// match the post-`SortExec` position the operator occupies in a
+    /// range-repartition plan.
+    #[tokio::test]
+    async fn the_sketch_sees_every_row_through_the_operator() {
+        let schema = schema_v_id();
+        const ROWS: i64 = 5_000;
+        let batches: Vec<RecordBatch> = (0..5)
+            .map(|chunk| {
+                let lo = chunk * (ROWS / 5);
+                let hi = lo + (ROWS / 5);
+                batch(
+                    &schema,
+                    (lo..hi).map(|v| Some(v as f64)).collect(),
+                    (lo..hi).collect(),
+                )
+            })
+            .collect();
+
+        let memory = Arc::new(
+            MemorySourceConfig::try_new(&[batches], schema.clone(), None).unwrap(),
+        );
+        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let sort_expr = PhysicalSortExpr {
+            expr: col("v", schema.as_ref()).unwrap(),
+            options: SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        };
+        let stats =
+            Arc::new(RuntimeStatsExec::try_new(input, Some(vec![sort_expr])).unwrap());
+
+        let ctx = SessionContext::new().task_ctx();
+        let stream = stats.execute(0, ctx).unwrap();
+        common::collect(stream).await.unwrap();
+
+        let sketch = stats.merged_sort_key_sketch().unwrap().unwrap();
+        assert_eq!(sketch.count(), ROWS as u64);
+        assert_eq!(sketch.null_count(), 0);
+        // The extremes are tracked outside the compactor, so compaction
+        // cannot have moved them however many times it ran.
+        assert_eq!(sketch.min().unwrap(), Some(ScalarValue::Float64(Some(0.0))));
+        assert_eq!(
+            sketch.max().unwrap(),
+            Some(ScalarValue::Float64(Some((ROWS - 1) as f64)))
+        );
+        // K-1 real, non-decreasing boundaries over what it saw.
+        let cuts = sketch.cuts(8).unwrap();
+        assert_eq!(cuts.len(), 7);
+        assert!(cuts.iter().all(|cut| !cut.is_null()));
+        assert!(cuts.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     /// Row-count-only mode (`order_by = None`): the operator still
@@ -1234,10 +1231,10 @@ mod stream_tests {
         assert_eq!(output.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
         assert_eq!(stats.row_count(0).unwrap(), 3);
         assert!(
-            stats.quantile_sketch(0).unwrap().is_none(),
+            stats.sort_key_sketch(0).unwrap().is_none(),
             "row-count-only mode must not allocate a sketch"
         );
-        assert!(stats.merged_quantile_sketch().unwrap().is_none());
+        assert!(stats.merged_sort_key_sketch().unwrap().is_none());
     }
 }
 
@@ -1325,11 +1322,28 @@ mod collect_tests {
         };
         assert_eq!(entry.partition_id, 0);
         assert_eq!(entry.row_count, 5);
-        let proto_sketch = entry.sketch.as_ref().expect("sketch present in wire");
-        let round_tripped = sketch_from_proto(proto_sketch).unwrap();
-        assert_eq!(round_tripped.count(), 5.0);
-        assert_eq!(round_tripped.min(), 1.0);
-        assert_eq!(round_tripped.max(), 5.0);
+        // The report's merged sketch is what routing reads; the entry
+        // carries only the key range a file router needs.
+        let state = report.sketch.as_ref().expect("sketch present in wire");
+        let round_tripped = SortKeySketch::try_from_proto(
+            state,
+            SortOptions {
+                descending: false,
+                nulls_first: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(round_tripped.count(), 5);
+        assert_eq!(
+            round_tripped.min().unwrap(),
+            Some(ScalarValue::Float64(Some(1.0)))
+        );
+        assert_eq!(
+            round_tripped.max().unwrap(),
+            Some(ScalarValue::Float64(Some(5.0)))
+        );
+        assert_eq!(entry.key_min.len(), 1, "entry carries its own range");
+        assert_eq!(entry.key_max.len(), 1);
     }
 
     /// Row-count-only mode: report emitted, but its partition entry
@@ -1351,10 +1365,8 @@ mod collect_tests {
         };
         assert!(report.order_by.is_empty());
         assert_eq!(report.partitions.len(), 1);
-        assert!(
-            report.partitions[0].sketch.is_none(),
-            "no sketch in row-count-only mode"
-        );
+        assert!(report.sketch.is_none(), "no sketch in row-count-only mode");
+        assert!(report.partitions[0].key_min.is_empty());
         assert_eq!(report.partitions[0].row_count, 5);
     }
 
@@ -1418,6 +1430,9 @@ mod merge_tests {
     //! sharing an `order_by` tag, verify the merged view (total rows,
     //! cuts, min/max) reflects the union of the underlying samples.
 
+    use datafusion::arrow::array::Float64Array;
+    use datafusion::arrow::datatypes::DataType;
+
     use super::*;
     use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
     use datafusion_proto::protobuf::PhysicalSortExprNode;
@@ -1426,31 +1441,82 @@ mod merge_tests {
     /// from that slot's `values`. Slot `slot_id` in the resulting
     /// report has `row_count = values[slot_id].len()` and a sketch
     /// over those values.
+    /// The wire tag matching [`sketch_options`]. A report carrying a sketch
+    /// must have one, since the tag is where the key's ordering lives.
+    fn sketch_tag() -> Vec<PhysicalSortExprNode> {
+        vec![PhysicalSortExprNode {
+            expr: None,
+            asc: true,
+            nulls_first: true,
+        }]
+    }
+
+    /// The ordering a fixture sketch is built under. Must match the tag the
+    /// merge reads, since that is where direction and NULL placement live.
+    fn sketch_options() -> SortOptions {
+        SortOptions {
+            descending: false,
+            nulls_first: true,
+        }
+    }
+
     fn sketching_report(
         order_by: Vec<PhysicalSortExprNode>,
         values_per_slot: Vec<Vec<f64>>,
     ) -> RuntimeStatsReport {
+        // One merged sketch per report, as the executor builds it, plus the
+        // per-partition row counts.
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sketch_options()).unwrap();
+        let mut merged = SortKeySketch::new(codec);
         let partitions = values_per_slot
             .into_iter()
             .enumerate()
             .map(|(slot_id, slot_values)| {
                 let row_count = slot_values.len() as u64;
-                let sketch = if slot_values.is_empty() {
-                    None
-                } else {
-                    let digest = TDigest::new(100).merge_unsorted_f64(slot_values);
-                    Some(sketch_to_proto(&digest).unwrap())
-                };
+                merged
+                    .ingest(&Float64Array::from(slot_values))
+                    .expect("Float64 samples into a Float64 sketch");
                 RuntimeStatsPartitionEntry {
                     partition_id: slot_id as u32,
                     row_count,
-                    sketch,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let sketch = (merged.count() > 0).then(|| merged.to_proto().unwrap());
+        RuntimeStatsReport {
+            order_by,
+            partitions,
+            sketch,
+        }
+    }
+
+    /// A report whose key is NULL in every row. The sketch retains nothing,
+    /// so its NULL count is all that survives the round-trip.
+    fn all_null_report(
+        order_by: Vec<PhysicalSortExprNode>,
+        nulls_per_slot: Vec<usize>,
+    ) -> RuntimeStatsReport {
+        let codec = SortKeyCodec::try_new(&DataType::Float64, sketch_options()).unwrap();
+        let mut merged = SortKeySketch::new(codec);
+        let partitions = nulls_per_slot
+            .into_iter()
+            .enumerate()
+            .map(|(slot_id, nulls)| {
+                merged
+                    .ingest(&Float64Array::from(vec![None::<f64>; nulls]))
+                    .expect("NULL Float64 samples into a Float64 sketch");
+                RuntimeStatsPartitionEntry {
+                    partition_id: slot_id as u32,
+                    row_count: nulls as u64,
+                    ..Default::default()
                 }
             })
             .collect();
         RuntimeStatsReport {
             order_by,
             partitions,
+            sketch: Some(merged.to_proto().unwrap()),
         }
     }
 
@@ -1462,6 +1528,14 @@ mod merge_tests {
         }
     }
 
+    /// A cut as the number the band assertions are written in terms of.
+    fn as_f64(cut: &ScalarValue) -> f64 {
+        match cut {
+            ScalarValue::Float64(Some(v)) => *v,
+            other => panic!("expected a Float64 cut, got {other:?}"),
+        }
+    }
+
     /// Two reports over disjoint value ranges — merged sketch spans the
     /// union, total_rows sums, and the partition_count=2 midpoint cut
     /// falls between the two ranges.
@@ -1469,23 +1543,24 @@ mod merge_tests {
     fn merge_reports_combines_disjoint_ranges() {
         // Both reports share an empty `order_by` — we just need two
         // reports that land in the same group.
-        let low_range = sketching_report(vec![], vec![vec![1.0, 2.0, 3.0], vec![]]);
-        let high_range = sketching_report(vec![], vec![vec![], vec![10.0, 11.0, 12.0]]);
+        let low_range = sketching_report(sketch_tag(), vec![vec![1.0, 2.0, 3.0], vec![]]);
+        let high_range =
+            sketching_report(sketch_tag(), vec![vec![], vec![10.0, 11.0, 12.0]]);
 
         let group = only_group(&[low_range, high_range]);
         assert_eq!(group.partition_count, 2);
         assert_eq!(group.task_count, 2);
         assert_eq!(group.total_rows, 6);
         let midpoint = match group.cuts.as_slice() {
-            [midpoint] => *midpoint,
+            [midpoint] => as_f64(midpoint),
             other => panic!("expected exactly one cut, got {other:?}"),
         };
         assert!(
             (3.0..=10.0).contains(&midpoint),
             "midpoint cut should land between ranges (got {midpoint})"
         );
-        assert_eq!(group.min, Some(1.0));
-        assert_eq!(group.max, Some(12.0));
+        assert_eq!(group.min.as_ref().map(as_f64), Some(1.0));
+        assert_eq!(group.max.as_ref().map(as_f64), Some(12.0));
     }
 
     /// partition_count=4 cuts on a uniform [0, 100) sample land roughly
@@ -1502,12 +1577,12 @@ mod merge_tests {
             uniform[50..75].to_vec(),
             uniform[75..100].to_vec(),
         ];
-        let report = sketching_report(vec![], values_per_slot);
+        let report = sketching_report(sketch_tag(), values_per_slot);
 
         let group = only_group(&[report]);
         assert_eq!(group.partition_count, 4);
         let (p25, p50, p75) = match group.cuts.as_slice() {
-            [p25, p50, p75] => (*p25, *p50, *p75),
+            [p25, p50, p75] => (as_f64(p25), as_f64(p50), as_f64(p75)),
             other => panic!("expected 3 cuts, got {other:?}"),
         };
         // Loose bounds — T-Digest quantile estimates aren't exact, but
@@ -1527,14 +1602,15 @@ mod merge_tests {
                 RuntimeStatsPartitionEntry {
                     partition_id: 0,
                     row_count: row_counts[0],
-                    sketch: None,
+                    ..Default::default()
                 },
                 RuntimeStatsPartitionEntry {
                     partition_id: 1,
                     row_count: row_counts[1],
-                    sketch: None,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         };
         let group = only_group(&[make_report([100, 200]), make_report([300, 400])]);
         assert_eq!(group.partition_count, 2);
@@ -1544,13 +1620,31 @@ mod merge_tests {
         assert!(group.max.is_none());
     }
 
+    /// A key that is NULL in every row has no value to cut on, so `cuts`
+    /// comes back empty — the same answer a report carrying no sketch at all
+    /// gives. The two have to stay distinguishable: one is a degenerate
+    /// distribution whose every row belongs in a single partition, the other
+    /// is a broken invariant a range-repartition stage must refuse to route
+    /// on.
+    #[test]
+    fn merge_reports_distinguishes_an_all_null_key_from_a_missing_sketch() {
+        let group = only_group(&[
+            all_null_report(sketch_tag(), vec![3, 1]),
+            all_null_report(sketch_tag(), vec![2, 4]),
+        ]);
+
+        assert_eq!(group.total_rows, 10);
+        assert!(group.cuts.is_empty(), "no value to cut on");
+        assert_eq!(group.null_count, group.total_rows, "every key was NULL");
+    }
+
     /// Mismatched partition counts within a group surface as an error —
     /// the caller (scheduler / slice-D consumer) sees the invariant
     /// break rather than silently getting a partial merge.
     #[test]
     fn merge_reports_errors_on_mismatched_partition_counts() {
-        let two_partitions = sketching_report(vec![], vec![vec![1.0], vec![2.0]]);
-        let one_partition = sketching_report(vec![], vec![vec![3.0]]);
+        let two_partitions = sketching_report(sketch_tag(), vec![vec![1.0], vec![2.0]]);
+        let one_partition = sketching_report(sketch_tag(), vec![vec![3.0]]);
         let err = merge_reports(&[two_partitions, one_partition])
             .expect_err("mismatched partition counts must error");
         let message = err.to_string();
@@ -1560,38 +1654,30 @@ mod merge_tests {
         );
     }
 
-    /// A wire-corrupted sketch — one whose scalar-state length is wrong
-    /// — surfaces the underlying `sketch_from_proto` error rather than
-    /// getting silently dropped.
+    /// A sketch the decoder cannot read surfaces as an error rather than
+    /// getting silently dropped, which would size partitions from a
+    /// population missing whatever that report observed.
     #[test]
     fn merge_reports_propagates_sketch_decode_errors() {
-        use datafusion::common::ScalarValue;
-
-        // Six scalars is the valid shape; three is a corrupted wire.
-        let corrupt_sketch = QuantileSketchState {
-            state: (0..3)
-                .map(|_| {
-                    datafusion_proto_common::ScalarValue::try_from(&ScalarValue::Float64(
-                        Some(0.0),
-                    ))
-                    .unwrap()
-                })
-                .collect(),
+        let corrupt = crate::serde::protobuf::SortKeySketchState {
+            k: 800,
+            null_count: 0,
+            key_min: vec![],
+            key_max: vec![],
+            levels: b"not an arrow stream".to_vec(),
         };
         let report = RuntimeStatsReport {
-            order_by: vec![],
+            order_by: sketch_tag(),
             partitions: vec![RuntimeStatsPartitionEntry {
                 partition_id: 0,
                 row_count: 1,
-                sketch: Some(corrupt_sketch),
+                ..Default::default()
             }],
+            sketch: Some(corrupt),
         };
         let err = merge_reports(&[report])
-            .expect_err("corrupt sketch must surface as an error");
-        assert!(
-            err.to_string().contains("expected 6 elements"),
-            "expected shape-error propagation, got: {err}"
-        );
+            .expect_err("an undecodable sketch must surface as an error");
+        assert!(!err.to_string().is_empty(), "got: {err}");
     }
 
     /// Empty input → empty output; ensures no panics or spurious groups.
@@ -1767,26 +1853,53 @@ mod overlap_remap_tests {
         }
     }
 
-    /// Build a report whose sub-parts each carry a T-Digest sketch over
-    /// `values`. Slot `sub_part_id` gets a sketch of `values[sub_part_id]`.
+    /// A zero halo of the routing key's type, which is what the scheduler
+    /// passes for a consumer with no halo at all.
+    const ZERO_HALO: ScalarValue = ScalarValue::Float64(Some(0.0));
+
+    /// Cuts as `Float64` scalars, which is what merging produces.
+    fn cuts_f64<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+        values
+            .into_iter()
+            .map(|v| ScalarValue::Float64(Some(v)))
+            .collect()
+    }
+
+    /// Build a report whose sub-parts carry the key range routing reads.
+    /// Slot `sub_part_id` covers `values[sub_part_id]`.
     fn sketch_report(
         producer_task_id: usize,
         values_per_sub_part: Vec<Vec<f64>>,
     ) -> TaskRuntimeStats {
+        let scalar = |v: f64| {
+            vec![
+                datafusion_proto_common::ScalarValue::try_from(&ScalarValue::Float64(
+                    Some(v),
+                ))
+                .unwrap(),
+            ]
+        };
         let partitions = values_per_sub_part
             .into_iter()
             .enumerate()
             .map(|(sub_part_id, samples)| {
-                let sketch = if samples.is_empty() {
-                    None
-                } else {
-                    let digest = TDigest::new(100).merge_unsorted_f64(samples.clone());
-                    Some(sketch_to_proto(&digest).unwrap())
+                let extremes = samples.iter().copied().fold(
+                    None::<(f64, f64)>,
+                    |acc, v| match acc {
+                        None => Some((v, v)),
+                        Some((lo, hi)) => Some((lo.min(v), hi.max(v))),
+                    },
+                );
+                let (key_min, key_max) = match extremes {
+                    Some((lo, hi)) => (scalar(lo), scalar(hi)),
+                    None => (Vec::new(), Vec::new()),
                 };
                 RuntimeStatsPartitionEntry {
                     partition_id: sub_part_id as u32,
                     row_count: samples.len() as u64,
-                    sketch,
+                    key_min,
+                    key_max,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -1795,6 +1908,7 @@ mod overlap_remap_tests {
             report: RuntimeStatsReport {
                 order_by: vec![],
                 partitions,
+                ..Default::default()
             },
         }
     }
@@ -1809,12 +1923,19 @@ mod overlap_remap_tests {
             sketch_report(200, vec![vec![20.0, 25.0, 29.0]]),
         ];
         // Cut at 15 → partition 0 = (-∞, 15), partition 1 = [15, +∞).
-        let cuts = vec![15.0];
+        let cuts = cuts_f64([15.0]);
         // Passthrough map: both producers wrote to sub_part_id=0.
         let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
 
-        let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .unwrap();
         assert_eq!(remapped.len(), 2, "K = cuts.len() + 1");
         // Partition 0: only producer 100.
         assert_eq!(remapped[0].len(), 1);
@@ -1831,11 +1952,18 @@ mod overlap_remap_tests {
     fn overlap_remap_straddling_producer_appears_in_both_partitions() {
         // Producer 300 covers [5, 25) — straddles the cut at 15.
         let reports = vec![sketch_report(300, vec![vec![5.0, 15.0, 25.0]])];
-        let cuts = vec![15.0];
+        let cuts = cuts_f64([15.0]);
         let original_partitions = vec![vec![location(0, 300)]];
 
-        let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .unwrap();
         assert_eq!(remapped.len(), 2);
         assert_eq!(remapped[0].len(), 1, "straddler in partition 0");
         assert_eq!(remapped[0][0].file_id, Some(300));
@@ -1849,14 +1977,21 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_missing_file_id_errors() {
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         // Loc has file_id=None — invalid for URRE/ORRE stages.
         let mut bad = location(0, 100);
         bad.file_id = None;
         let original_partitions = vec![vec![bad]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
-            .expect_err("missing file_id must surface as an error");
+        let err = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .expect_err("missing file_id must surface as an error");
         assert!(
             err.to_string().contains("missing file_id"),
             "unexpected error: {err}"
@@ -1874,11 +2009,18 @@ mod overlap_remap_tests {
         // Report from producer 100, but original_partitions only has
         // producer 200 — no file to route.
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         let original_partitions = vec![vec![location(0, 200)]];
 
-        let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -1889,11 +2031,18 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_empty_sketches_produce_empty_partitions() {
         let reports = vec![sketch_report(100, vec![vec![]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         let original_partitions = vec![vec![location(0, 100)]];
 
-        let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .unwrap();
         assert_eq!(remapped.len(), 2);
         assert!(remapped[0].is_empty());
         assert!(remapped[1].is_empty());
@@ -1904,17 +2053,24 @@ mod overlap_remap_tests {
     #[test]
     fn missing_sketch_with_rows_errors() {
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0]])];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         // File 200 has 5 rows but no report entry exists for it.
         let mut orphan = location(0, 200);
         orphan.partition_stats = PartitionStats::new(Some(5), None, None);
         let original_partitions = vec![vec![orphan]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
-            .expect_err("file with rows but no sketch must error");
+        let err = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .expect_err("file with rows but no sketch must error");
         let msg = err.to_string();
         assert!(
-            msg.contains("num_rows=Some(5)") && msg.contains("no usable sketch"),
+            msg.contains("num_rows=Some(5)") && msg.contains("no usable key range"),
             "unexpected error: {msg}"
         );
     }
@@ -1940,7 +2096,7 @@ mod overlap_remap_tests {
             // F: spans the whole range → every bucket
             sketch_report(6, vec![vec![0.0, 20.0, 100.0]]),
         ];
-        let cuts = vec![10.0, 20.0, 30.0];
+        let cuts = cuts_f64([10.0, 20.0, 30.0]);
         let original_partitions = vec![vec![
             location(0, 1),
             location(0, 2),
@@ -1950,8 +2106,15 @@ mod overlap_remap_tests {
             location(0, 6),
         ]];
 
-        let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0).unwrap();
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .unwrap();
         assert_eq!(remapped.len(), 4);
         let ids = |b: &[PartitionLocation]| {
             let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
@@ -1970,16 +2133,23 @@ mod overlap_remap_tests {
     #[test]
     fn missing_sketch_with_unknown_rows_errors() {
         let reports: Vec<TaskRuntimeStats> = vec![];
-        let cuts = vec![10.0];
+        let cuts = cuts_f64([10.0]);
         let mut orphan = location(0, 100);
         orphan.partition_stats = PartitionStats::default(); // num_rows = None
         let original_partitions = vec![vec![orphan]];
 
-        let err = cut_partitions(original_partitions, &reports, &cuts, 0.0, 0.0)
-            .expect_err("file with unknown rows but no sketch must error");
+        let err = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .expect_err("file with unknown rows but no sketch must error");
         let msg = err.to_string();
         assert!(
-            msg.contains("num_rows=None") && msg.contains("no usable sketch"),
+            msg.contains("num_rows=None") && msg.contains("no usable key range"),
             "unexpected error: {msg}"
         );
     }
@@ -1997,9 +2167,9 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_halo_band_widens_both_sides_without_bleeding_to_far_partitions() {
         // K=5, asymmetric halos so we can tell halo_lo and halo_hi apart.
-        let cuts = vec![10.0, 20.0, 30.0, 40.0];
-        let halo_lo = 1.0;
-        let halo_hi = 2.0;
+        let cuts = cuts_f64([10.0, 20.0, 30.0, 40.0]);
+        let halo_lo = ScalarValue::Float64(Some(1.0));
+        let halo_hi = ScalarValue::Float64(Some(2.0));
         // Effective partition ranges:
         //   P0: (-∞, 12)   P1: [9, 22)   P2: [19, 32)   P3: [29, 42)   P4: [39, +∞)
         let reports = vec![
@@ -2026,9 +2196,15 @@ mod overlap_remap_tests {
             location(0, 500),
         ]];
 
-        let remapped =
-            cut_partitions(original_partitions, &reports, &cuts, halo_lo, halo_hi)
-                .unwrap();
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &halo_lo,
+            &halo_hi,
+            true,
+        )
+        .unwrap();
         let ids = |b: &[PartitionLocation]| {
             let mut v: Vec<u64> = b.iter().map(|l| l.file_id.unwrap()).collect();
             v.sort();

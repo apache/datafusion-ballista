@@ -56,17 +56,18 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
-    RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, InputOrder,
+    OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
+    PerPartitionFilterExec, RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec,
+    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+    UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
     ballista_physical_plan_node::PhysicalPlanType,
 };
 use crate::serde::scheduler::PartitionLocation;
+use datafusion::arrow::compute::SortOptions;
 pub use generated::ballista as protobuf;
 
 /// Generated protobuf code from Ballista protocol definitions.
@@ -715,18 +716,31 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     )));
                 };
                 let schema = input.schema();
-                let routing_expr_proto = node.routing_expr.as_ref().ok_or_else(|| {
+                let filter_expr_proto = node.filter_expr.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
-                        "RangeFilterExecNode missing routing_expr".into(),
+                        "RangeFilterExecNode missing filter_expr".into(),
                     )
                 })?;
-                let routing_expr =
+                let filter_expr =
                     datafusion_proto::physical_plan::from_proto::parse_physical_expr(
-                        routing_expr_proto,
+                        filter_expr_proto,
                         ctx,
                         schema.as_ref(),
                         self,
                     )?;
+                let input_order = node.input_order.as_ref().map(|order| match order {
+                    protobuf::range_filter_exec_node::InputOrder::UnorderedNullsFirst(
+                        nulls_first,
+                    ) => InputOrder::Unordered {
+                        nulls_first: *nulls_first,
+                    },
+                    protobuf::range_filter_exec_node::InputOrder::Ordered(options) => {
+                        InputOrder::Ordered(SortOptions {
+                            descending: options.descending,
+                            nulls_first: options.nulls_first,
+                        })
+                    }
+                });
                 let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
                     datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
                         DataFusionError::Internal(format!(
@@ -757,9 +771,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 Ok(Arc::new(RangeFilterExec::try_new_resolved(
                     input.clone(),
-                    routing_expr,
+                    filter_expr,
                     halo_lo,
                     halo_hi,
+                    input_order,
                     raw_bounds,
                 )?))
             }
@@ -1096,9 +1111,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "RangeFilterExec: cannot serialize before resolve_bounds()".into(),
                 )
             })?;
-            let routing_expr =
+            let filter_expr =
                 datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
-                    exec.routing_expr(),
+                    exec.filter_expr(),
                     self.default_codec.as_ref(),
                 )?;
             let encode_sv = |sv: &datafusion::scalar::ScalarValue| {
@@ -1121,10 +1136,23 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::RangeFilter(
                     protobuf::RangeFilterExecNode {
-                        routing_expr: Some(routing_expr),
+                        filter_expr: Some(filter_expr),
                         halo_lo: Some(halo_lo),
                         halo_hi: Some(halo_hi),
                         raw_bounds: raw_bounds_proto,
+                        input_order: exec.input_order().map(|order| match order {
+                            InputOrder::Unordered { nulls_first } => {
+                                protobuf::range_filter_exec_node::InputOrder::UnorderedNullsFirst(nulls_first)
+                            }
+                            InputOrder::Ordered(options) => {
+                                protobuf::range_filter_exec_node::InputOrder::Ordered(
+                                    protobuf::SortOptions {
+                                        descending: options.descending,
+                                        nulls_first: options.nulls_first,
+                                    },
+                                )
+                            }
+                        }),
                     },
                 )),
             };
@@ -2017,14 +2045,14 @@ mod test {
         // EmptyExec exposes one partition, so partition-0 is the only slot.
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert_eq!(original.total_row_count(), 0);
-        assert_eq!(original.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
+        assert_eq!(original.sort_key_sketch(0).unwrap().unwrap().count(), 0);
         assert_eq!(
-            original.merged_quantile_sketch().unwrap().unwrap().count(),
-            0.0
+            original.merged_sort_key_sketch().unwrap().unwrap().count(),
+            0
         );
         // Out-of-range partition surfaces as an internal error, not a panic.
         assert!(original.row_count(1).is_err());
-        assert!(original.quantile_sketch(1).is_err());
+        assert!(original.sort_key_sketch(1).is_err());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -2051,10 +2079,10 @@ mod test {
         assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
         assert!(!order_by[0].options.descending);
         assert_eq!(decoded.row_count(0).unwrap(), 0);
-        assert_eq!(decoded.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
+        assert_eq!(decoded.sort_key_sketch(0).unwrap().unwrap().count(), 0);
         assert_eq!(
-            decoded.merged_quantile_sketch().unwrap().unwrap().count(),
-            0.0
+            decoded.merged_sort_key_sketch().unwrap().unwrap().count(),
+            0
         );
     }
 
@@ -2075,10 +2103,10 @@ mod test {
         assert!(original.order_by().is_none());
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert!(
-            original.quantile_sketch(0).unwrap().is_none(),
+            original.sort_key_sketch(0).unwrap().is_none(),
             "no sketch was requested at construction"
         );
-        assert!(original.merged_quantile_sketch().unwrap().is_none());
+        assert!(original.merged_sort_key_sketch().unwrap().is_none());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -2098,8 +2126,8 @@ mod test {
             .downcast_ref::<RuntimeStatsExec>()
             .expect("Expected RuntimeStatsExec");
         assert!(decoded.order_by().is_none());
-        assert!(decoded.quantile_sketch(0).unwrap().is_none());
-        assert!(decoded.merged_quantile_sketch().unwrap().is_none());
+        assert!(decoded.sort_key_sketch(0).unwrap().is_none());
+        assert!(decoded.merged_sort_key_sketch().unwrap().is_none());
     }
 
     /// `try_new` refuses an empty ORDER BY — no routing key means the
@@ -2124,10 +2152,12 @@ mod test {
     }
 
     /// `try_new` refuses a routing expression whose evaluated type is
-    /// not `Float64` — TDigest can't ingest anything else, so failing
-    /// at construction beats a downcast error mid-stream.
+    /// not encodable — the sketch needs a fixed-width key, so failing
+    /// An `Int64` key and a nullable key are both sketchable now: the codec
+    /// covers every fixed-width type and NULLs are counted beside the values
+    /// rather than having nowhere to go.
     #[test]
-    fn test_runtime_stats_exec_rejects_non_float64_routing_expr() {
+    fn test_runtime_stats_exec_accepts_widened_routing_exprs() {
         use crate::execution_plans::RuntimeStatsExec;
         use datafusion::arrow::compute::SortOptions;
         use datafusion::physical_expr::PhysicalSortExpr;
@@ -2135,53 +2165,29 @@ mod test {
         use datafusion::physical_plan::expressions::col;
 
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v", DataType::Float64, true),
+            Field::new("nullable_float", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
+            Field::new("when", DataType::Utf8, false),
         ]));
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let sort_expr = PhysicalSortExpr {
-            expr: col("id", schema.as_ref()).unwrap(),
+        let sort_on = |name: &str| PhysicalSortExpr {
+            expr: col(name, schema.as_ref()).unwrap(),
             options: SortOptions {
                 descending: false,
                 nulls_first: true,
             },
         };
-        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
-            .expect_err("non-Float64 routing expr must be rejected");
-        assert!(
-            err.to_string()
-                .contains("routing expression must be Float64"),
-            "got: {err}"
-        );
-    }
 
-    /// `try_new` refuses a nullable routing expression — TDigest has no
-    /// NULL slot, so allowing nulls would silently exclude them from
-    /// the sketch while `row_count` still saw them. The KLL swap lifts
-    /// this by positioning nulls per `SortOptions::nulls_first`.
-    #[test]
-    fn test_runtime_stats_exec_rejects_nullable_routing_expr() {
-        use crate::execution_plans::RuntimeStatsExec;
-        use datafusion::arrow::compute::SortOptions;
-        use datafusion::physical_expr::PhysicalSortExpr;
-        use datafusion::physical_plan::empty::EmptyExec;
-        use datafusion::physical_plan::expressions::col;
+        for name in ["nullable_float", "id"] {
+            RuntimeStatsExec::try_new(input.clone(), Some(vec![sort_on(name)]))
+                .unwrap_or_else(|e| panic!("{name} must be sketchable: {e}"));
+        }
 
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
-        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let sort_expr = PhysicalSortExpr {
-            expr: col("v", schema.as_ref()).unwrap(),
-            options: SortOptions {
-                descending: false,
-                nulls_first: true,
-            },
-        };
-        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
-            .expect_err("nullable routing expr must be rejected");
+        // What the codec does not cover is still refused, and says so.
+        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_on("when")]))
+            .expect_err("a variable-width key has no fixed-width encoding");
         assert!(
-            err.to_string()
-                .contains("routing expression must be non-nullable"),
+            err.to_string().contains("no sort-key encoding"),
             "got: {err}"
         );
     }
@@ -2269,7 +2275,7 @@ mod test {
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(3)).unwrap(),
         );
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         // K=3 raw bounds: (-∞, 10), [10, 20), [20, +∞)
         let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
             (None, Some(ScalarValue::Float64(Some(10.0)))),
@@ -2279,11 +2285,18 @@ mod test {
             ),
             (Some(ScalarValue::Float64(Some(20.0))), None),
         ];
+        // Round-tripped alongside the bounds: the placement of the NULL run is
+        // not recoverable from the child on the far side.
+        let original_input_order = Some(InputOrder::Ordered(SortOptions {
+            descending: false,
+            nulls_first: true,
+        }));
         let original = RangeFilterExec::try_new_resolved(
             input.clone(),
-            routing_expr.clone(),
+            filter_expr.clone(),
             ScalarValue::Float64(Some(3.0)),
             ScalarValue::Float64(Some(0.0)),
+            original_input_order,
             raw_bounds.clone(),
         )
         .unwrap();
@@ -2308,7 +2321,8 @@ mod test {
         assert_eq!(decoded.raw_bounds().unwrap(), raw_bounds);
         assert_eq!(decoded.halo_lo(), &ScalarValue::Float64(Some(3.0)));
         assert_eq!(decoded.halo_hi(), &ScalarValue::Float64(Some(0.0)));
-        assert_eq!(decoded.routing_expr().to_string(), routing_expr.to_string());
+        assert_eq!(decoded.filter_expr().to_string(), filter_expr.to_string());
+        assert_eq!(decoded.input_order(), original_input_order);
     }
 
     /// A pending RangeFilterExec (unresolved bounds) refuses to serialize —
@@ -2329,12 +2343,13 @@ mod test {
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(2)).unwrap(),
         );
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         let pending = RangeFilterExec::try_new_pending(
             input,
-            routing_expr,
+            filter_expr,
             ScalarValue::Float64(Some(0.0)),
             ScalarValue::Float64(Some(0.0)),
+            None,
         )
         .unwrap();
 

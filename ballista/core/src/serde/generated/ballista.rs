@@ -107,13 +107,52 @@ pub struct RuntimeStatsExecNode {
         ::datafusion_proto::protobuf::PhysicalSortExprNode,
     >,
 }
-/// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
-/// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
-/// centroid_means..., centroid_weights....
+/// A `SortKeySketch` is a wrapper around a KLL, that also includes NULL counts
+///
+/// `levels` is an Arrow IPC stream for now. Binary blob encoding was considered
+/// so that encoding tricks could be used like delta+varint. These showed a 4x
+/// improvement for u64, but only 25% on f64 due to mantissas being effectively
+/// random. Ultimately it was decided that a more complex encoder is not worth
+/// the added complexity in this PR. We can revisit the decision in the future.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QuantileSketchState {
-    #[prost(message, repeated, tag = "1")]
-    pub state: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+pub struct SortKeySketchState {
+    /// KLL's nominal top-level compactor capacity
+    #[prost(uint32, tag = "1")]
+    pub k: u32,
+    /// Rows whose key was NULL. Not in `levels`, and not recoverable from it.
+    #[prost(uint64, tag = "2")]
+    pub null_count: u64,
+    /// The exact minimum and maximum over every value observed, one element per
+    /// ORDER BY expression. Tracked outside the compactor stack so no coin flip
+    /// can move them, which is what keeps `quantile(0.0)` and `quantile(1.0)`
+    /// exact. Empty when no value was observed.
+    #[prost(message, repeated, tag = "3")]
+    pub key_min: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, repeated, tag = "4")]
+    pub key_max: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    /// The compactor stack: one row per level in level order, single column
+    /// `levels: List<Struct<...>>` holding that level's retained keys ascending,
+    /// one struct field per ORDER BY expression. An item's weight is
+    /// `2^level`, so the row index carries the weight and the total count is
+    /// the weighted sum — neither ships.
+    ///
+    /// Levels are sorted before serialization, so a decoder takes ascending
+    /// order as given rather than being told per level.
+    ///
+    /// A three-level stack over an `Int64` key decodes to one batch of one
+    /// column, where the row index is the level:
+    ///
+    /// levels: List\<item: Struct\<expr_0: Int64>>
+    ///
+    /// +-------------------------------------------+
+    /// \| levels                                    |
+    /// +-------------------------------------------+
+    /// \| \[{expr_0: 4}, {expr_0: 17}, {expr_0: 23}\] |  level 0, weight 1
+    /// \| \[{expr_0: 9}, {expr_0: 31}\]               |  level 1, weight 2
+    /// \| \[{expr_0: 12}\]                            |  level 2, weight 4
+    /// +-------------------------------------------+
+    #[prost(bytes = "vec", tag = "5")]
+    pub levels: ::prost::alloc::vec::Vec<u8>,
 }
 /// Flow-control operator with an operator-mode enum. The child plan is
 /// plumbed by the framework as `inputs\[0\]` during decode.
@@ -163,7 +202,7 @@ pub struct PerPartitionFilterExecNode {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RangeFilterExecNode {
     #[prost(message, optional, tag = "1")]
-    pub routing_expr: ::core::option::Option<
+    pub filter_expr: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalExprNode,
     >,
     #[prost(message, optional, tag = "2")]
@@ -172,6 +211,44 @@ pub struct RangeFilterExecNode {
     pub halo_hi: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
     #[prost(message, repeated, tag = "4")]
     pub raw_bounds: ::prost::alloc::vec::Vec<RangeBound>,
+    /// What the operator that produced the cuts says about the rows arriving.
+    /// Unset claims nothing, which a nullable `filter_expr` has no answer for:
+    /// a NULL has a side in the order, not a position among the values.
+    ///
+    /// `ordered` is also required of the input, so nothing planted between can
+    /// reorder the rows the placement was stated against. `unordered_nulls_first`
+    /// states the side without demanding an order, which is what leaves an
+    /// unordered range-repartition upstream legal.
+    #[prost(oneof = "range_filter_exec_node::InputOrder", tags = "5, 6")]
+    pub input_order: ::core::option::Option<range_filter_exec_node::InputOrder>,
+}
+/// Nested message and enum types in `RangeFilterExecNode`.
+pub mod range_filter_exec_node {
+    /// What the operator that produced the cuts says about the rows arriving.
+    /// Unset claims nothing, which a nullable `filter_expr` has no answer for:
+    /// a NULL has a side in the order, not a position among the values.
+    ///
+    /// `ordered` is also required of the input, so nothing planted between can
+    /// reorder the rows the placement was stated against. `unordered_nulls_first`
+    /// states the side without demanding an order, which is what leaves an
+    /// unordered range-repartition upstream legal.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum InputOrder {
+        #[prost(bool, tag = "5")]
+        UnorderedNullsFirst(bool),
+        #[prost(message, tag = "6")]
+        Ordered(super::SortOptions),
+    }
+}
+/// An arrow `SortOptions`, which has no proto of its own in the DataFusion
+/// descriptors — `PhysicalSortExprNode` carries the pair inline beside an
+/// expression this message's users already have.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SortOptions {
+    #[prost(bool, tag = "1")]
+    pub descending: bool,
+    #[prost(bool, tag = "2")]
+    pub nulls_first: bool,
 }
 /// Half-open `[lo, hi)` cut range for one input partition. Either side may be
 /// unset to signal ±∞.
@@ -981,6 +1058,11 @@ pub struct RuntimeStatsReport {
     /// scheduler groups by `order_by` tag and aggregates.
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<RuntimeStatsPartitionEntry>,
+    /// Every partition's observations folded into one sketch, merged on the
+    /// executor before the report is sent. Absent in row-count-only mode,
+    /// and when no partition observed a value.
+    #[prost(message, optional, tag = "3")]
+    pub sketch: ::core::option::Option<SortKeySketchState>,
 }
 /// One partition's observations from a `RuntimeStatsExec`.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -989,14 +1071,23 @@ pub struct RuntimeStatsPartitionEntry {
     pub partition_id: u32,
     #[prost(uint64, tag = "2")]
     pub row_count: u64,
-    /// Present when the `RuntimeStatsExec` was in sketch mode AND this
-    /// partition observed at least one non-null routing value.
+    /// This partition's exact key range, one element per ORDER BY expression.
+    /// `cut_partitions` routes a whole shuffle file into every downstream
+    /// partition whose range overlaps `\[key_min, key_max\]`, so these are the
+    /// only per-partition facts a router needs — never the distribution, which
+    /// is why the sketch beside them is merged rather than repeated here.
     ///
-    /// TODO: `optional MinMaxState min_max` — for a lighter post-repartition
-    /// mode where the bin-packer just needs (min, max, count) per
-    /// sub-partition and a full T-Digest is overkill.
-    #[prost(message, optional, tag = "3")]
-    pub sketch: ::core::option::Option<QuantileSketchState>,
+    /// Both empty when this partition observed no value, which `null_count`
+    /// then distinguishes: some NULLs means a file of NULLs with no value range
+    /// to overlap, none means the partition saw nothing at all.
+    #[prost(message, repeated, tag = "4")]
+    pub key_min: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, repeated, tag = "5")]
+    pub key_max: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    /// Rows in this partition whose key was NULL. Folds to the report-level
+    /// `SortKeySketchState.null_count`.
+    #[prost(uint64, tag = "6")]
+    pub null_count: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}

@@ -48,13 +48,13 @@ pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
 pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
 pub use plan_algebra::{preserves_distribution, preserves_partitioning};
-pub use range_filter::{RangeBound, RangeFilterExec, WidenedBound};
+pub use range_filter::{InputOrder, RangeBound, RangeFilterExec, WidenedBound};
 pub use range_shuffle_reader::RangeShuffleReaderExec;
 pub use runtime_stats::{
     MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
     collect_reports as collect_runtime_stats_reports, cut_partitions,
     log_merged_runtime_stats, merge_reports as merge_runtime_stats_reports,
-    repartition_routing_expr, sketch_from_proto, sketch_to_proto,
+    repartition_routing_expr,
 };
 pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};

@@ -1007,15 +1007,17 @@ fn log_runtime_stats_arrival(
         let non_empty_partitions =
             report.partitions.iter().filter(|p| p.row_count > 0).count();
         let total_rows: u64 = report.partitions.iter().map(|p| p.row_count).sum();
-        let sketch_count = report
+        let ranged_partitions = report
             .partitions
             .iter()
-            .filter(|p| p.sketch.is_some())
+            .filter(|p| !p.key_min.is_empty() && !p.key_max.is_empty())
             .count();
+        // Counted rather than assumed: an entry whose range never got filled
+        // in would route no files, and nothing else here would say so.
         debug!(
             "RuntimeStats arrival: executor={} job={} stage={} task={} \
              report[{}] order_by_len={} partitions={} non_empty={} \
-             total_rows={} sketches={}",
+             total_rows={} key_ranges={}/{} sort_key_sketch={}",
             executor.id,
             status.job_id,
             status.stage_id,
@@ -1025,8 +1027,50 @@ fn log_runtime_stats_arrival(
             report.partitions.len(),
             non_empty_partitions,
             total_rows,
-            sketch_count,
+            ranged_partitions,
+            report.partitions.len(),
+            describe_sort_key_sketch(report),
         );
+    }
+}
+
+/// Decode the report's merged [`SortKeySketch`] far enough to say what
+/// arrived. Rebuilding it here is the point: a byte count proves the field
+/// crossed, where a decoded count and range prove it survived.
+///
+/// Any failure is described rather than propagated — this is a log line, and
+/// the query's data was already produced correctly.
+///
+/// [`SortKeySketch`]: ballista_core::sort_key::SortKeySketch
+fn describe_sort_key_sketch(
+    report: &ballista_core::serde::protobuf::RuntimeStatsReport,
+) -> String {
+    use ballista_core::sort_key::SortKeySketch;
+    use datafusion::arrow::compute::SortOptions;
+
+    let Some(state) = report.sketch.as_ref() else {
+        return "none".to_string();
+    };
+    // The key's direction and NULL placement are not in the sketch — they
+    // live once here, in the tag that says which expression it describes.
+    let Some(first) = report.order_by.first() else {
+        return "undescribable (sketch present with an empty order_by tag)".to_string();
+    };
+    let options = SortOptions {
+        descending: !first.asc,
+        nulls_first: first.nulls_first,
+    };
+    match SortKeySketch::try_from_proto(state, options) {
+        Ok(sketch) => format!(
+            "{{bytes={} k={} count={} nulls={} min={:?} max={:?}}}",
+            state.levels.len(),
+            state.k,
+            sketch.count(),
+            sketch.null_count(),
+            sketch.value_min(),
+            sketch.value_max(),
+        ),
+        Err(e) => format!("undecodable ({e})"),
     }
 }
 
