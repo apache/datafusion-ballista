@@ -27,7 +27,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
-ballista-api-types = { path = "../api-types", version = "54.0.0" }
+ballista-api-types = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
