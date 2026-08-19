@@ -18,7 +18,8 @@
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
-use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::aqe::execution_plan::{ExchangeExec, RangeRepartitionRouting};
+use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
@@ -27,7 +28,10 @@ use crate::state::execution_stage::RunningStage;
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriter;
+use ballista_core::execution_plans::{
+    RangeFilterExec, cut_partitions, merge_runtime_stats_reports,
+    repartition_routing_expr,
+};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
@@ -35,10 +39,12 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
+use datafusion::scalar::ScalarValue;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -113,8 +119,6 @@ pub(crate) struct AdaptiveExecutionGraph {
 
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
-    /// Task ID generator, generate unique TID in the execution graph
-    task_id_gen: usize,
     /// Failed stage attempts, record the failed stage attempts to limit the retry times.
     /// Map from Stage ID -> Set<Stage_ATTPMPT_NUM>
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
@@ -141,7 +145,7 @@ impl AdaptiveExecutionGraph {
         let session_id = ctx.session_id();
 
         let mut planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_name.to_owned()).await?;
+            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone()).await?;
 
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
@@ -166,7 +170,7 @@ impl AdaptiveExecutionGraph {
         let stages: ballista_core::error::Result<HashMap<usize, ExecutionStage>> =
             runnable
                 .into_iter()
-                .map(|s| Self::create_resolved_stage(session_config.clone(), s.plan))
+                .map(|s| Self::create_resolved_stage(session_config.clone(), s))
                 .collect();
         let stages = stages?;
 
@@ -191,7 +195,6 @@ impl AdaptiveExecutionGraph {
             end_time: 0,
             stages,
             output_locations: vec![],
-            task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
@@ -202,27 +205,20 @@ impl AdaptiveExecutionGraph {
 impl AdaptiveExecutionGraph {
     fn create_resolved_stage(
         session_config: Arc<SessionConfig>,
-        stage: Arc<dyn ShuffleWriter>,
+        stage: AdaptiveStageInfo,
     ) -> ballista_core::error::Result<(usize, ExecutionStage)> {
-        let stage_id = stage.stage_id();
+        let stage_id = stage.plan.stage_id();
         let stage = ExecutionStage::Resolved(ResolvedStage::new(
             stage_id,
             0,
-            stage,
-            vec![],         // we do not know output links at this moment
-            HashMap::new(), // we do not keep inputs at the moment
+            stage.plan,
+            vec![], // we do not know output links at this moment
+            stage.inputs,
             HashSet::new(),
             session_config,
         ));
 
         Ok((stage_id, stage))
-    }
-
-    #[cfg(test)]
-    fn next_task_id(&mut self) -> usize {
-        let new_tid = self.task_id_gen;
-        self.task_id_gen += 1;
-        new_tid
     }
 
     /// Processing stage status update after task status changing
@@ -293,6 +289,72 @@ impl AdaptiveExecutionGraph {
         Ok(events)
     }
 
+    /// Recover the range-repartition routing (cuts + routing expression)
+    /// from a completed stage's merged runtime-stats sketches. Caller must
+    /// have already established via `range_repartition_routing_expr` that
+    /// the stage's plan warrants routing, and passes the recovered expr in.
+    ///
+    /// `Ok(None)` means the stage produced no rows (nothing to route
+    /// through — passthrough is safe). `Err` means the stage's plan says
+    /// it should route but something went wrong recovering the cuts —
+    /// an invariant break, not a soft fallback (would misroute real data
+    /// downstream).
+    fn repartition_routing(
+        running_stage: &RunningStage,
+        routing_expr: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    ) -> ballista_core::error::Result<Option<RangeRepartitionRouting>> {
+        let stage_id = running_stage.stage_id;
+        if running_stage.runtime_stats_reports.is_empty() {
+            return Err(BallistaError::General(format!(
+                "range-repartition stage {stage_id}: no runtime-stats reports"
+            )));
+        }
+        let reports = running_stage
+            .runtime_stats_reports
+            .iter()
+            .map(|task| task.report.clone())
+            .collect::<Vec<_>>();
+        let merged = merge_runtime_stats_reports(&reports).map_err(|err| {
+            BallistaError::General(format!(
+                "range-repartition stage {stage_id}: merge_reports failed: {err}"
+            ))
+        })?;
+        // A range-repartition stage produces exactly one report group (its
+        // single routing expression); any other count is a shape bug.
+        let entry = match merged.as_slice() {
+            [entry] => entry,
+            groups => {
+                return Err(BallistaError::General(format!(
+                    "range-repartition stage {stage_id}: merge_reports returned {} groups, expected 1",
+                    groups.len()
+                )));
+            }
+        };
+        if entry.total_rows == 0 {
+            debug!("range-repartition stage {stage_id}: no rows produced, passthrough");
+            return Ok(None);
+        }
+        if entry.partition_count < 2 {
+            // K=1: single output partition — no cuts needed, no routing to
+            // recover. Everything flows to the one downstream partition.
+            debug!(
+                "range-repartition stage {stage_id}: K={}, no routing needed",
+                entry.partition_count
+            );
+            return Ok(None);
+        }
+        if entry.cuts.is_empty() {
+            return Err(BallistaError::General(format!(
+                "range-repartition stage {stage_id}: {} rows, K={}, but no cuts (sketch missed)",
+                entry.total_rows, entry.partition_count
+            )));
+        }
+        Ok(Some(RangeRepartitionRouting {
+            cuts: entry.cuts.clone(),
+            routing_expr,
+        }))
+    }
+
     /// Return a Vec of stages to cancel
     fn update_stage_progress(
         &mut self,
@@ -304,7 +366,48 @@ impl AdaptiveExecutionGraph {
             .update_exchange_locations(stage_id, locations)?;
 
         if is_completed {
-            let locations = self.planner.finalise_stage(stage_id)?;
+            let partitions = self.planner.take_stage_output_partitions(stage_id)?;
+
+            // Range-repartition stages need overlap-based remap of their partitions
+            let maybe_stage = self.stages.get(&stage_id);
+            let partitions = if let Some(ExecutionStage::Running(stage)) = maybe_stage
+                && let Some(routing_expr) = repartition_routing_expr(stage.plan.as_ref())?
+                && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
+            {
+                let reports = &stage.runtime_stats_reports;
+                // Reader-side halos widen each partition's effective
+                // range to `[cuts[k-1] - halo_lo, cuts[k] + halo_hi)`;
+                // files straddling that band must route to both sides.
+                // Range-repartition boundaries always have a consuming
+                // RFE (writer produces straddler duplicates that only
+                // the reader-side filter can trim), so the walker errors
+                // if none is found.
+                let (halo_lo, halo_hi) = downstream_halos(&self.planner.plan, stage_id)
+                    .map_err(|err| {
+                    BallistaError::General(format!(
+                        "range-repartition stage {stage_id}: halo lookup failed: {err}"
+                    ))
+                })?;
+                let remapped = cut_partitions(
+                    partitions,
+                    reports,
+                    &routing.cuts,
+                    halo_lo,
+                    halo_hi,
+                )
+                .map_err(|err| {
+                    BallistaError::General(format!(
+                        "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                    ))
+                })?;
+                // Save boundaries to ExchangeExec so they are there for resolve_stage_partitions
+                self.planner.set_repartition_routing(stage_id, routing)?;
+                remapped
+            } else {
+                partitions
+            };
+            self.planner
+                .resolve_stage_partitions(stage_id, partitions.clone())?;
 
             let (runnable, stages_to_cancel) = self.planner.actionable_stages()?;
 
@@ -318,7 +421,7 @@ impl AdaptiveExecutionGraph {
                     if !self.stages.contains_key(&stage.plan.stage_id()) {
                         let (stage_id, stage) = Self::create_resolved_stage(
                             self.session_config.clone(),
-                            stage.plan,
+                            stage,
                         )?;
                         self.stages.insert(stage_id, stage);
                     }
@@ -326,7 +429,7 @@ impl AdaptiveExecutionGraph {
             } else {
                 // There is no more tasks to run
                 // we update output locations
-                self.output_locations = locations.into_iter().flatten().collect();
+                self.output_locations = partitions.into_iter().flatten().collect();
             }
             // marking stages which need cancelling as canceled.
             // stage ids are returned for task cancellation action
@@ -443,6 +546,11 @@ impl AdaptiveExecutionGraph {
                     }
                 }
             });
+
+        for stage_id in &reset_running_stage {
+            self.planner
+                .remove_exchange_locations(*stage_id, executor_id);
+        }
 
         // check and reset the successful stages
         if !resubmit_inputs.is_empty() {
@@ -656,17 +764,13 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             );
                             continue;
                         }
-                        let partition_id = task_status.partition_id as usize;
+                        let task_id = task_status.task_id as usize;
                         let task_identity = format!(
-                            "TID {} {}/{}.{}/{}",
-                            task_status.task_id,
-                            job_id,
-                            stage_id,
-                            task_stage_attempt_num,
-                            partition_id
+                            "TID {}/{}.{}/{}",
+                            job_id, stage_id, task_stage_attempt_num, task_id
                         );
 
-                        if !running_stage.update_task_info(partition_id, &task_status) {
+                        if !running_stage.update_task_info(task_id, task_status.clone()) {
                             continue;
                         }
 
@@ -750,16 +854,16 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                     if failed_task.retryable
                                         && failed_task.count_to_failures
                                     {
-                                        if running_stage.task_failure_number(partition_id)
+                                        if running_stage.task_failure_number(task_id)
                                             < max_task_failures
                                         {
                                             // TODO add new struct to track all the failed task infos
                                             // The failure TaskInfo is ignored and set to None here
-                                            running_stage.reset_task_info(partition_id);
+                                            running_stage.reset_task_info(task_id);
                                         } else {
                                             let error_msg = format!(
                                                 "Task {} in Stage {} failed {} times, fail the stage, most recent failure reason: {:?}",
-                                                partition_id,
+                                                task_id,
                                                 stage_id,
                                                 max_task_failures,
                                                 failed_task.error
@@ -770,12 +874,12 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                     } else if failed_task.retryable {
                                         // TODO add new struct to track all the failed task infos
                                         // The failure TaskInfo is ignored and set to None here
-                                        running_stage.reset_task_info(partition_id);
+                                        running_stage.reset_task_info(task_id);
                                     }
                                 }
                                 None => {
                                     let error_msg = format!(
-                                        "Task {partition_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage"
+                                        "Task {task_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage"
                                     );
                                     error!("{error_msg}");
                                     failed_stages.insert(stage_id, error_msg);
@@ -789,17 +893,28 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successfu task
+                            // update task metrics for successful task
                             running_stage
-                                .update_task_metrics(partition_id, operator_metrics)?;
+                                .update_task_metrics(task_id, operator_metrics)?;
+
+                            let ballista_core::serde::protobuf::SuccessfulTask {
+                                partitions,
+                                runtime_stats,
+                                ..
+                            } = successful_task;
+                            debug!(
+                                "append_runtime_stats_reports: job={} stage={} task={} report_count={}",
+                                job_id,
+                                stage_id,
+                                task_id,
+                                runtime_stats.len(),
+                            );
+                            running_stage
+                                .append_runtime_stats_reports(task_id, runtime_stats);
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
-                                    &job_id,
-                                    partition_id,
-                                    stage_id,
-                                    executor,
-                                    successful_task.partitions,
+                                    &job_id, task_id, stage_id, executor, partitions,
                                 ),
                             );
                         } else {
@@ -829,6 +944,11 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                 stage_metrics,
                             );
                         }
+                        ballista_core::execution_plans::log_merged_runtime_stats(
+                            job_id.as_str(),
+                            stage_id,
+                            &running_stage.runtime_stats_reports,
+                        );
                     }
                     let stages_to_cancel = self.update_stage_progress(
                         stage_id,
@@ -849,7 +969,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                         stage_id,
                         stage_task_statuses
                             .into_iter()
-                            .map(|task_status| task_status.partition_id)
+                            .map(|task_status| task_status.task_id)
                             .collect::<Vec<_>>(),
                     );
                 }
@@ -866,17 +986,22 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 .insert(*stage_id, HashSet::from_iter(attempts.iter().copied()));
         }
 
-        for (stage_id, missing_parts) in &resubmit_successful_stages {
+        // Values coming out of `remove_input_partitions` are task_ids
+        // (append slots) under the multi-partition-task model (see the mirror
+        // site in `execution_graph.rs` for the TODO on partition-id semantics).
+        for (stage_id, missing_task_ids) in &resubmit_successful_stages {
             if let Some(stage) = self.stages.get_mut(stage_id) {
                 if let ExecutionStage::Successful(success_stage) = stage {
-                    for partition in missing_parts {
-                        if *partition > success_stage.partitions {
+                    for task_id in missing_task_ids {
+                        if *task_id >= success_stage.task_infos.len() {
                             return Err(BallistaError::Internal(format!(
-                                "Invalid partition ID {} in map stage {}",
-                                *partition, stage_id
+                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
+                                *task_id,
+                                stage_id,
+                                success_stage.task_infos.len()
                             )));
                         }
-                        let task_info = &mut success_stage.task_infos[*partition];
+                        let task_info = &mut success_stage.task_infos[*task_id];
                         // Update the task info to failed
                         task_info.task_status = task_status::Status::Failed(FailedTask {
                             error: "FetchPartitionError in parent stage".to_owned(),
@@ -897,17 +1022,19 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             }
         }
 
-        for (stage_id, missing_parts) in &reset_running_stages {
+        for (stage_id, missing_task_ids) in &reset_running_stages {
             if let Some(stage) = self.stages.get_mut(stage_id) {
                 if let ExecutionStage::Running(running_stage) = stage {
-                    for partition in missing_parts {
-                        if *partition > running_stage.partitions {
+                    for task_id in missing_task_ids {
+                        if *task_id >= running_stage.task_infos.len() {
                             return Err(BallistaError::Internal(format!(
-                                "Invalid partition ID {} in map stage {}",
-                                *partition, stage_id
+                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
+                                *task_id,
+                                stage_id,
+                                running_stage.task_infos.len()
                             )));
                         }
-                        running_stage.reset_task_info(*partition);
+                        running_stage.reset_task_info(*task_id);
                     }
                 } else {
                     warn!(
@@ -956,14 +1083,11 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     stage
                         .running_tasks()
                         .into_iter()
-                        .map(|(task_id, stage_id, partition_id, executor_id)| {
-                            RunningTaskInfo {
-                                task_id,
-                                job_id: self.job_id.clone(),
-                                stage_id,
-                                partition_id,
-                                executor_id,
-                            }
+                        .map(|(task_id, stage_id, executor_id)| RunningTaskInfo {
+                            task_id,
+                            job_id: self.job_id.clone(),
+                            stage_id,
+                            executor_id,
                         })
                         .collect::<Vec<RunningTaskInfo>>()
                 } else {
@@ -987,10 +1111,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             .sum()
     }
 
-    fn fetch_running_stage(
-        &mut self,
-        black_list: &[usize],
-    ) -> Option<(&mut RunningStage, &mut usize)> {
+    fn fetch_running_stage(&mut self, black_list: &[usize]) -> Option<&mut RunningStage> {
         if matches!(
             self.status,
             JobStatus {
@@ -1007,7 +1128,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             if let Some(ExecutionStage::Running(running_stage)) =
                 self.stages.get_mut(&running_stage_id)
             {
-                Some((running_stage, &mut self.task_id_gen))
+                Some(running_stage)
             } else {
                 warn!("Fail to find running stage with id {running_stage_id}");
                 None
@@ -1112,15 +1233,12 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             let running_tasks = stage
                 .running_tasks()
                 .into_iter()
-                .map(
-                    |(task_id, stage_id, partition_id, executor_id)| RunningTaskInfo {
-                        task_id,
-                        job_id: self.job_id.clone(),
-                        stage_id,
-                        partition_id,
-                        executor_id,
-                    },
-                )
+                .map(|(task_id, stage_id, executor_id)| RunningTaskInfo {
+                    task_id,
+                    job_id: self.job_id.clone(),
+                    stage_id,
+                    executor_id,
+                })
                 .collect();
             self.stages.insert(
                 stage_id,
@@ -1254,19 +1372,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         let job_id = self.job_id.clone();
         let session_id = self.session_id.clone();
 
-        let find_candidate = self.stages.iter().any(|(_stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                stage.available_tasks() > 0
-            } else {
-                false
-            }
-        });
-        let next_task_id = if find_candidate {
-            Some(self.next_task_id())
-        } else {
-            None
-        };
-
         let mut next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
                 stage.available_tasks() > 0
@@ -1275,25 +1380,25 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             }
         }).map(|(stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
-                use ballista_core::serde::scheduler::PartitionId;
+                use ballista_core::serde::scheduler::TaskKey;
 
-                let (partition_id, _) = stage
-                    .task_infos
+                // pop_next_task hands out a single-partition task — the
+                // bind path sized to `exec.vcores` lives in cluster/mod.rs.
+                let input_partition_ids = stage.pending.next_slice(1);
+                if input_partition_ids.is_empty() {
+                    return Err(BallistaError::Internal(format!(
+                        "Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks"
+                    )));
+                }
+                // task_id is the append slot in `task_infos` — assigned as
+                // `task_infos.len()` at bind time. `(job_id, stage_id, task_id)`
+                // is globally unique.
+                let task_id = stage.task_infos.len();
+                let task_attempt = input_partition_ids
                     .iter()
-                    .enumerate()
-                    .find(|(_partition, info)| info.is_none())
-                    .ok_or_else(|| {
-                        BallistaError::Internal(format!("Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks"))
-                    })?;
-
-                let partition = PartitionId {
-                    job_id,
-                    stage_id: *stage_id,
-                    partition_id,
-                };
-
-                let task_id = next_task_id.unwrap();
-                let task_attempt = stage.task_failure_numbers[partition_id];
+                    .map(|pid| stage.task_failure_numbers[*pid])
+                    .max()
+                    .unwrap_or(0);
                 let task_info = crate::state::execution_graph::TaskInfo {
                     task_id,
                     scheduled_time: timestamp_millis() as u128,
@@ -1305,17 +1410,25 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     task_status: task_status::Status::Running(ballista_core::serde::protobuf::RunningTask {
                         executor_id: executor_id.to_owned()
                     }),
+                    global_input_partition_ids: input_partition_ids.clone(),
+                    vcores_consumed: input_partition_ids.len() as u32,
+                };
+                stage.task_infos.push(task_info);
+
+                let key = TaskKey {
+                    job_id,
+                    stage_id: *stage_id,
+                    task_id,
                 };
 
-                // Set the task info to Running for new task
-                stage.task_infos[partition_id] = Some(task_info);
-
+                let vcores_consumed = input_partition_ids.len() as u32;
                 Ok(crate::state::execution_graph::TaskDescription {
                     session_id,
-                    partition,
+                    key,
                     stage_attempt_num: stage.stage_attempt_num,
-                    task_id,
                     task_attempt,
+                    global_input_partition_ids: input_partition_ids,
+                    vcores_consumed,
                     plan: stage.plan.clone(),
                     session_config: self.session_config.clone()
                 })
@@ -1335,6 +1448,80 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         }
 
         Ok(next_task)
+    }
+}
+
+/// Find the halos of the downstream `RangeFilterExec` planted directly on
+/// the boundary `ExchangeExec` produced by `producer_stage_id`. A
+/// range-repartition boundary always has a consuming RFE — the writer
+/// produces straddler duplicates that only the reader-side filter can
+/// trim — so absence is a shape bug, not a runtime default.
+///
+/// Boundaries are disambiguated by `ExchangeExec::stage_id()` (the id
+/// of the stage that produces to the exchange), not by routing
+/// expression: two range-repartition stages could share the same
+/// `Column(name, index)` shape after independent projections, so
+/// `PhysicalExpr::eq` isn't unique across stages. The producer stage id
+/// is.
+///
+/// The rule may plant multiple RFEs (e.g. wide directly on the boundary
+/// and narrow above the window operator). Only the one whose immediate
+/// child is the boundary `ExchangeExec` describes the reader-visible
+/// halo band and matters for straddler routing.
+///
+/// # Arguments
+///
+/// * `full_plan` — the AdaptivePlanner's current plan tree; the walker
+///   descends the whole tree looking for the RFE on this boundary.
+/// * `producer_stage_id` — the id of the completing upstream stage;
+///   matches `ExchangeExec::stage_id()` on the boundary exchange.
+fn downstream_halos(
+    full_plan: &Arc<dyn ExecutionPlan>,
+    producer_stage_id: usize,
+) -> datafusion::common::Result<(f64, f64)> {
+    let mut result: Option<(f64, f64)> = None;
+    full_plan.apply(|node| {
+        let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let children = rf.children();
+        let [child] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "RangeFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        // RFE above the window op (narrow, halo=[0,0]) has a
+        // `PartitionedBoundedWindowAggExec` child, not the boundary
+        // exchange — keep looking for the wide RFE below.
+        let Some(exchange) = child.downcast_ref::<ExchangeExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        if exchange.stage_id() != Some(producer_stage_id) {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        result = Some((scalar_to_f64(rf.halo_lo())?, scalar_to_f64(rf.halo_hi())?));
+        Ok(TreeNodeRecursion::Stop)
+    })?;
+    result.ok_or_else(|| {
+        datafusion::common::DataFusionError::Internal(format!(
+            "range-repartition boundary for producer stage {producer_stage_id} has \
+             no consuming RangeFilterExec — straddler files would corrupt \
+             downstream partial aggregates. Check the rule that planted this ORRE."
+        ))
+    })
+}
+
+/// Halos travel through the RFE public API as `ScalarValue` for future
+/// type widening (Interval, timestamps under KLL). Today the internal
+/// routing math is `f64`; any other variant is a shape violation upstream
+/// and we fail loud rather than silently zero-widen.
+fn scalar_to_f64(sv: &ScalarValue) -> datafusion::common::Result<f64> {
+    match sv {
+        ScalarValue::Float64(Some(v)) => Ok(*v),
+        other => datafusion::common::internal_err!(
+            "only f64 halos are implemented, got: {other:?}"
+        ),
     }
 }
 

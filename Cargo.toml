@@ -17,7 +17,18 @@
 
 [workspace]
 exclude = ["dev/msrvcheck", "python"]
-members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "benchmarks", "examples"]
+members = [
+    "ballista-cli",
+    "ballista/api-types",
+    "ballista/client",
+    "ballista/core",
+    "ballista/executor",
+    "ballista/history",
+    "ballista/scheduler",
+    "benchmarks",
+    "chaos-testing",
+    "examples",
+]
 resolver = "3"
 
 [workspace.package]
@@ -26,20 +37,28 @@ edition = "2024"
 rust-version = "1.88.0"
 
 [workspace.dependencies]
-arrow = { version = "58.3", features = ["ipc_compression"] }
-arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
+arrow = { version = "58.4", features = ["ipc_compression"] }
+arrow-flight = { version = "58.4", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
+# Keep these as minor-version requirements rather than exact patch pins. The
+# python workspace shares these crates through path dependencies, and
+# datafusion-python lags behind datafusion patch releases, so pinning a patch
+# here can break the wheel build. Cargo.lock records the exact patch version.
 datafusion = "54"
 datafusion-cli = "54"
+datafusion-functions-aggregate-common = "54"
 datafusion-proto = "54"
 datafusion-proto-common = "54"
 datafusion-spark = "54"
 datafusion-substrait = "54"
 
+ctor = { version = "1.0" }
 insta = "1.47"
 itertools = "0.15"
+mimalloc = { version = "0.1" }
 object_store = "0.13.2"
+ordered-float = "4"
 prost = "0.14"
 prost-types = "0.14"
 rstest = { version = "0.26" }
@@ -52,22 +71,21 @@ tonic-prost-build = { version = "0.14" }
 tracing = "0.1"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ctor = { version = "1.0" }
-mimalloc = { version = "0.1" }
 
-tokio = { version = "1" }
-uuid = { version = "1.23", features = ["v4", "v7"] }
-rand = { version = "0.10" }
+async-trait = { version = "0.1" }
+dashmap = { version = "6.2" }
 env_logger = { version = "0.11" }
 futures = { version = "0.3" }
 log = { version = "0.4" }
 parking_lot = { version = "0.12" }
-tempfile = { version = "3.27" }
-dashmap = { version = "6.2" }
-async-trait = { version = "0.1" }
+rand = { version = "0.10" }
 serde = { version = "1.0" }
+tempfile = { version = "3.27" }
+tokio = { version = "1" }
 tokio-stream = { version = "0.1" }
 url = { version = "2.5" }
+url-escape = { version = "0.1.2" }
+uuid = { version = "1.23", features = ["v4", "v7"] }
 
 # cargo build --profile release-lto
 [profile.release-lto]

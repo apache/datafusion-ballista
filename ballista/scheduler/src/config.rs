@@ -27,12 +27,45 @@
 
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
+use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
+use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use log::warn;
 use std::fmt::Display;
 use std::sync::Arc;
+
+/// Why the scheduler believes new work has become available for executors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkAvailableReason {
+    /// A job was submitted and its initial tasks are ready to be scheduled.
+    JobSubmitted {
+        /// Identifier of the submitted job.
+        job_id: JobId,
+    },
+    /// Completed tasks resolved downstream stages of a job, and the tasks of
+    /// those stages are now schedulable.
+    NewStagesRunnable {
+        /// Identifier of the job that gained schedulable tasks.
+        job_id: JobId,
+    },
+}
+
+/// Callback invoked when new work becomes available for executors, e.g. to
+/// wake idle pull-based executors via the poll loop's `poll_now_notify`.
+///
+/// It fires only after the work is visible to a polling executor, so waking
+/// one cannot race the scheduler's internal event processing.
+///
+/// # Warning
+///
+/// The callback runs synchronously inside the scheduler's main event loop.
+/// Implementations **must be non-blocking**; offload blocking or long-running
+/// work (such as network I/O) to a separate task or thread.
+///
+/// `Arc` rather than `Box` so [`SchedulerConfig`] remains [`Clone`].
+pub type OnWorkAvailableFn = Arc<dyn Fn(WorkAvailableReason) + Send + Sync>;
 
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
@@ -48,13 +81,26 @@ pub struct Config {
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
     /// Namespace for the ballista cluster.
-    #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join.")]
+    #[arg(
+        short = 'n',
+        long,
+        default_value_t = String::from("ballista"),
+        help = "Namespace for the ballista cluster that this executor will join."
+    )]
     pub namespace: String,
     /// Local host name or IP address to bind to.
-    #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to.")]
+    #[arg(
+        long,
+        default_value_t = String::from("0.0.0.0"),
+        help = "Local host name or IP address to bind to."
+    )]
     pub bind_host: String,
     /// External host name for executors to connect to.
-    #[arg(long, default_value_t = String::from("localhost"), help = "Host name or IP address so that executors can connect to this scheduler.")]
+    #[arg(
+        long,
+        default_value_t = String::from("localhost"),
+        help = "Host name or IP address so that executors can connect to this scheduler."
+    )]
     pub external_host: String,
     /// Port to bind the scheduler gRPC service.
     #[arg(
@@ -103,6 +149,9 @@ pub struct Config {
         help = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
     )]
     pub log_dir: Option<String>,
+    /// Directory to write per-job event logs to. Enables the history server.
+    #[arg(long)]
+    pub event_log_dir: Option<String>,
     /// Whether to print thread IDs and names in log files.
     #[arg(
         long,
@@ -159,6 +208,16 @@ pub struct Config {
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// Maximum size of messages sent by the scheduler's outbound gRPC clients
+    /// (e.g. task assignment to executors). Should be at least as large as the
+    /// executor's `--grpc-server-max-decoding-message-size` for those RPCs to
+    /// succeed with big encoded plans.
+    #[arg(
+        long,
+        default_value_t = 16777216,
+        help = "The maximum size of a message sent by the scheduler's outbound gRPC clients (in bytes)."
+    )]
+    pub grpc_client_max_message_size: u32,
     /// Timeout in seconds before marking an executor as dead.
     #[arg(
         long,
@@ -173,6 +232,20 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)appear after the
+    /// cluster has lost its last executor before failing the running jobs.
+    #[arg(
+        long,
+        help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Must be >= the executor heartbeat interval, or an executor removed by a transient task-launch failure may not re-register before this elapses; defaults to --executor-timeout-seconds (which is always longer than the heartbeat interval). Set to 0 to fail as soon as the loss is observed."
+    )]
+    pub no_executors_grace_period_seconds: Option<u64>,
+    /// Minimum number of registered executors before /readyz returns 200
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to always report ready."
+    )]
+    pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     #[arg(
         long,
@@ -211,6 +284,14 @@ pub struct Config {
         help = "Comma-separated list of allowed methods for CORS. By default, GET, PATCH, and OPTIONS are allowed."
     )]
     pub cors_allowed_methods: String,
+    #[cfg(feature = "rest-api")]
+    /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
+    #[arg(
+        long,
+        default_value_t = String::from("/"),
+        help = "The HTTP path that will redirect to the WebTUI app at https://nightlies.apache.org."
+    )]
+    pub web_tui_route: String,
 }
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
@@ -249,10 +330,24 @@ pub struct SchedulerConfig {
     pub grpc_server_max_decoding_message_size: u32,
     /// The maximum size of an encoded message at the grpc server side.
     pub grpc_server_max_encoding_message_size: u32,
+    /// The maximum size of a message sent by the scheduler's outbound gRPC clients.
+    pub grpc_client_max_message_size: u32,
     /// The executor timeout in seconds. It should be longer than executor's heartbeat intervals.
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Grace period in seconds to wait for an executor to (re)register after the
+    /// cluster has lost its last executor before failing the running jobs. This
+    /// bounds the otherwise-unbounded wait so that a total executor loss fails
+    /// the affected jobs instead of hanging forever.
+    ///
+    /// Must be `>=` the executor heartbeat interval: an executor removed by a
+    /// transient task-launch failure re-registers on its next heartbeat, so a
+    /// grace shorter than that interval could fail a still-healthy executor's
+    /// jobs before it comes back. It therefore defaults to
+    /// [`Self::executor_timeout_seconds`], which is required to be longer than
+    /// the heartbeat interval. Set to 0 to fail as soon as the loss is observed.
+    pub no_executors_grace_period_seconds: u64,
     /// [ConfigProducer] override option
     pub override_config_producer: Option<ConfigProducer>,
     /// [SessionBuilder] override option
@@ -265,6 +360,8 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
+    /// Minimum number of registered executors before /readyz returns 200
+    pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
@@ -278,6 +375,16 @@ pub struct SchedulerConfig {
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed methods for CORS
     pub cors_allowed_methods: String,
+    /// Directory to write per-job event logs to. `None` disables event logging.
+    pub event_log_dir: Option<String>,
+    #[cfg(feature = "rest-api")]
+    /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
+    pub web_tui_route: String,
+    /// Callback invoked when new work becomes available for executors.
+    /// See [`OnWorkAvailableFn`].
+    pub on_work_available: Option<OnWorkAvailableFn>,
+    /// Job id generator to be used by this scheduler
+    pub job_id_generator: Option<Arc<dyn JobIdGenerator>>,
 }
 
 impl Default for SchedulerConfig {
@@ -298,14 +405,19 @@ impl Default for SchedulerConfig {
             scheduler_event_expected_processing_duration: 0,
             grpc_server_max_decoding_message_size: 16777216,
             grpc_server_max_encoding_message_size: 16777216,
+            grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            // Defaults to `executor_timeout_seconds` so the grace is always >=
+            // the executor heartbeat interval (see the field doc).
+            no_executors_grace_period_seconds: 180,
             override_config_producer: None,
             override_session_builder: None,
             override_logical_codec: None,
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
             #[cfg(feature = "rest-api")]
@@ -314,11 +426,44 @@ impl Default for SchedulerConfig {
             cors_allowed_origins: String::default(),
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
+            event_log_dir: None,
+            #[cfg(feature = "rest-api")]
+            web_tui_route: String::from("/"),
+            on_work_available: None,
+            job_id_generator: None,
         }
     }
 }
 
 impl SchedulerConfig {
+    /// Validate invariants between interdependent configuration values.
+    ///
+    /// Suspicious combinations are logged as warnings rather than rejected,
+    /// since small values are legitimate for fail-fast setups and tests.
+    pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.no_executors_grace_period_seconds != 0
+            && self.no_executors_grace_period_seconds < self.executor_timeout_seconds
+        {
+            warn!(
+                "no_executors_grace_period_seconds ({}) is less than \
+                 executor_timeout_seconds ({}); an executor removed by a transient \
+                 task-launch failure may not re-register before the grace elapses, \
+                 which can spuriously fail its jobs (see #2226). Use 0 for \
+                 deliberate fail-fast, or a value >= executor_timeout_seconds.",
+                self.no_executors_grace_period_seconds, self.executor_timeout_seconds,
+            );
+        }
+        if self.executor_timeout_seconds <= self.expire_dead_executor_interval_seconds {
+            warn!(
+                "executor_timeout_seconds ({}) is not greater than \
+                 expire_dead_executor_interval_seconds ({}); dead executors may not \
+                 be detected within the timeout window.",
+                self.executor_timeout_seconds, self.expire_dead_executor_interval_seconds,
+            );
+        }
+        Ok(())
+    }
+
     /// Returns the scheduler name in host:port format.
     pub fn scheduler_name(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
@@ -404,6 +549,13 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the grace period, in seconds, to wait for an executor to (re)register
+    /// after the last executor is lost before failing running jobs.
+    pub fn with_no_executors_grace_period_seconds(mut self, value: u64) -> Self {
+        self.no_executors_grace_period_seconds = value;
+        self
+    }
+
     /// Sets the maximum gRPC server decoding message size.
     pub fn with_grpc_server_max_decoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_decoding_message_size = value;
@@ -413,6 +565,12 @@ impl SchedulerConfig {
     /// Sets the maximum gRPC server encoding message size.
     pub fn with_grpc_server_max_encoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_encoding_message_size = value;
+        self
+    }
+
+    /// Sets the maximum message size for the scheduler's outbound gRPC clients.
+    pub fn with_grpc_client_max_message_size(mut self, value: u32) -> Self {
+        self.grpc_client_max_message_size = value;
         self
     }
 
@@ -444,9 +602,33 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the directory to write per-job event logs to.
+    pub fn with_event_log_dir(mut self, event_log_dir: Option<String>) -> Self {
+        self.event_log_dir = event_log_dir;
+        self
+    }
+
     /// Sets whether TLS should be used when connecting to executors (for flight proxy).
     pub fn with_use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
+        self
+    }
+
+    /// Sets the callback invoked when new work becomes available for
+    /// executors. See [`OnWorkAvailableFn`].
+    pub fn with_on_work_available(
+        mut self,
+        on_work_available: OnWorkAvailableFn,
+    ) -> Self {
+        self.on_work_available = Some(on_work_available);
+        self
+    }
+    /// Sets the job id generator
+    pub fn with_job_id_generator(
+        mut self,
+        job_id_generator: Arc<dyn JobIdGenerator>,
+    ) -> Self {
+        self.job_id_generator = Some(job_id_generator);
         self
     }
 }
@@ -456,7 +638,7 @@ impl SchedulerConfig {
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskDistribution {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -486,7 +668,7 @@ impl std::str::FromStr for TaskDistribution {
 /// Policy for distributing tasks to available executor slots.
 #[derive(Debug, Clone, Default)]
 pub enum TaskDistributionPolicy {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// Eagerly assign tasks to executor slots. This will assign as many vcores per executor
     /// as are currently available
     #[default]
     Bias,
@@ -529,15 +711,23 @@ impl TryFrom<Config> for SchedulerConfig {
                 .grpc_server_max_decoding_message_size,
             grpc_server_max_encoding_message_size: opt
                 .grpc_server_max_encoding_message_size,
+            grpc_client_max_message_size: opt.grpc_client_max_message_size,
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            // Default to the executor-liveness timeout when unset, so the grace
+            // is always >= the executor heartbeat interval and a transiently
+            // removed but healthy executor can re-register before it elapses.
+            no_executors_grace_period_seconds: opt
+                .no_executors_grace_period_seconds
+                .unwrap_or(opt.executor_timeout_seconds),
             override_config_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
             #[cfg(feature = "rest-api")]
@@ -546,8 +736,77 @@ impl TryFrom<Config> for SchedulerConfig {
             cors_allowed_origins: opt.cors_allowed_origins,
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
+            event_log_dir: opt.event_log_dir,
+            #[cfg(feature = "rest-api")]
+            web_tui_route: opt.web_tui_route,
+            on_work_available: None,
+            job_id_generator: None,
         };
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_grace_period_covers_executor_timeout() {
+        // The no-executors grace must be >= the executor-liveness window, so an
+        // executor removed by a transient task-launch failure can re-register on
+        // its next heartbeat before its jobs are failed. See #2226.
+        let cfg = SchedulerConfig::default();
+        assert!(
+            cfg.no_executors_grace_period_seconds >= cfg.executor_timeout_seconds,
+            "grace {} must be >= executor_timeout {}",
+            cfg.no_executors_grace_period_seconds,
+            cfg.executor_timeout_seconds,
+        );
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_grace_period_defaults_to_executor_timeout_when_unset() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--executor-timeout-seconds", "90"]);
+        assert_eq!(opt.no_executors_grace_period_seconds, None);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.no_executors_grace_period_seconds, 90);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_grace_period_explicit_value_is_respected() {
+        use clap::Parser;
+        let opt = Config::parse_from([
+            "scheduler",
+            "--executor-timeout-seconds",
+            "90",
+            "--no-executors-grace-period-seconds",
+            "5",
+        ]);
+        assert_eq!(opt.no_executors_grace_period_seconds, Some(5));
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.no_executors_grace_period_seconds, 5);
+    }
+
+    #[test]
+    fn validate_accepts_default_config() {
+        SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_allows_fail_fast_and_small_grace() {
+        // A small (or zero, fail-fast) grace only warns — it must not be rejected,
+        // since deliberate fail-fast setups and tests rely on it.
+        SchedulerConfig::default()
+            .with_no_executors_grace_period_seconds(0)
+            .validate()
+            .unwrap();
+        SchedulerConfig::default()
+            .with_no_executors_grace_period_seconds(1)
+            .validate()
+            .unwrap();
     }
 }

@@ -23,6 +23,14 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ARG RELEASE_FLAG=release
 
+# ca-certificates so the scheduler can complete TLS handshakes at
+# plan-time. Applies to any outbound HTTPS: e.g. STS
+# AssumeRoleWithWebIdentity for IRSA-authenticated S3 reads during
+# schema inference, or fetching from HTTPS-hosted config sources.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full

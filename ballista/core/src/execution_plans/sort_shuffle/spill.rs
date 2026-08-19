@@ -17,7 +17,9 @@
 
 //! Spill manager for sort-based shuffle.
 //!
-//! Handles writing partition buffers to disk when memory pressure is high.
+//! Handles writing partition buffers to disk when the writer decides to flush
+//! them, either because the runtime `MemoryPool` rejected a reservation grow or
+//! because the per-task buffer budget was reached.
 //! At finalization, the spill bytes are concatenated verbatim into the
 //! consolidated output file alongside the in-memory remainder.
 
@@ -51,7 +53,7 @@ pub struct SpillManager {
     /// Active writers per partition, kept open for appending
     active_writers: HashMap<usize, StreamWriter<BufWriter<File>>>,
     /// Compression codec for spill files
-    compression: CompressionType,
+    compression: Option<CompressionType>,
     /// Total number of batches written across all spill files. One call to
     /// `spill_all_partitions` typically increments this multiple times (once
     /// per partition that had buffered rows).
@@ -78,7 +80,7 @@ impl SpillManager {
         stage_id: usize,
         input_partition: usize,
         schema: SchemaRef,
-        compression: CompressionType,
+        compression: Option<CompressionType>,
     ) -> Result<Self> {
         let mut spill_dir = PathBuf::from(work_dir);
         spill_dir.push(job_id.as_str());
@@ -119,8 +121,8 @@ impl SpillManager {
             let file = File::create(&spill_path).map_err(BallistaError::IoError)?;
             let buffered = BufWriter::new(file);
 
-            let options = IpcWriteOptions::default()
-                .try_with_compression(Some(self.compression))?;
+            let options =
+                IpcWriteOptions::default().try_with_compression(self.compression)?;
 
             let writer =
                 StreamWriter::try_new_with_options(buffered, &self.schema, options)?;
@@ -191,7 +193,7 @@ impl SpillManager {
 
     /// Returns the total number of batches written to spill files across all
     /// partitions. Note this counts batches, not spill *events*: a single
-    /// memory-pressure event in the writer typically produces one batch per
+    /// spill event in the writer typically produces one batch per
     /// non-empty output partition. Spill-event accounting lives at the writer
     /// layer because the spill manager only sees batch-level calls.
     pub fn total_spilled_batches(&self) -> u64 {
@@ -278,7 +280,7 @@ mod tests {
             1,
             0,
             schema.clone(),
-            CompressionType::LZ4_FRAME,
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         let b1 = create_test_batch(&schema, vec![1, 2, 3]);
@@ -313,7 +315,7 @@ mod tests {
             1,
             0,
             schema.clone(),
-            CompressionType::LZ4_FRAME,
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         manager.spill(0, &create_test_batch(&schema, vec![1, 2]))?;
@@ -350,7 +352,7 @@ mod tests {
             1,
             0,
             schema.clone(),
-            CompressionType::LZ4_FRAME,
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         manager.spill(0, &create_test_batch(&schema, vec![1, 2, 3]))?;
@@ -396,7 +398,7 @@ mod tests {
             1,
             0,
             schema.clone(),
-            CompressionType::LZ4_FRAME,
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         manager.spill(0, &create_test_batch(&schema, vec![1, 2]))?;

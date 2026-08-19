@@ -21,7 +21,7 @@ build-backend = "maturin"
 
 [project]
 name = "ballista"
-description = "Python client for Apache Arrow Ballista Distributed SQL Query Engine"
+description = "Python client for Apache DataFusion Ballista Distributed SQL Query Engine"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
 requires-python = ">=3.10"

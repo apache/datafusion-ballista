@@ -35,8 +35,8 @@ impl Executor {
         self.os_info.physical_cores
     }
 
-    pub fn task_slots(&self) -> u32 {
-        self.specification.task_slots
+    pub fn vcores(&self) -> u32 {
+        self.specification.vcores
     }
 
     pub fn proc_physical_memory_usage(&self) -> u64 {
@@ -65,7 +65,7 @@ pub struct Metric {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Specification {
-    pub task_slots: u32,
+    pub vcores: u32,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -113,7 +113,7 @@ pub enum SortColumn {
     Host,
     Id,
     CpuCores,
-    TaskSlots,
+    Vcores,
     ProcPhysicalMemoryUsage,
     PeakPhysicalMemoryUsage,
     LastSeen,
@@ -171,8 +171,8 @@ impl ExecutorsData {
                     cmp
                 }
             }),
-            SortColumn::TaskSlots => self.executors.sort_by(|a, b| {
-                let cmp = a.task_slots().cmp(&b.task_slots());
+            SortColumn::Vcores => self.executors.sort_by(|a, b| {
+                let cmp = a.vcores().cmp(&b.vcores());
                 if self.sort_order == SortOrder::Descending {
                     cmp.reverse()
                 } else {
@@ -270,7 +270,7 @@ mod tests {
         host: &str,
         port: u16,
         id: &str,
-        task_slots: u32,
+        vcores: u32,
         proc_physical_memory_usage: u64,
         peak_physical_memory_usage: u64,
         last_seen: Option<u64>,
@@ -280,7 +280,7 @@ mod tests {
             port,
             id: id.to_string(),
             last_seen,
-            specification: Specification { task_slots },
+            specification: Specification { vcores },
             metrics: vec![
                 Metric {
                     typ: "proc_physical_memory".to_string(),
@@ -468,43 +468,43 @@ mod tests {
     }
 
     #[test]
-    fn sort_by_task_slots_ascending() {
+    fn sort_by_vcores_ascending() {
         let mut data = make_executors_data(
             vec![
                 make_executor("host", 8080, "id-a", 2, 0, 0, Some(100)),
                 make_executor("host", 8080, "id-b", 3, 0, 0, Some(200)),
                 make_executor("host", 8080, "id-c", 1, 0, 0, Some(300)),
             ],
-            SortColumn::TaskSlots,
+            SortColumn::Vcores,
             SortOrder::Ascending,
         );
         data.sort();
         assert_eq!(data.executors[0].id, "id-c");
-        assert_eq!(data.executors[0].task_slots(), 1);
+        assert_eq!(data.executors[0].vcores(), 1);
         assert_eq!(data.executors[1].id, "id-a");
-        assert_eq!(data.executors[1].task_slots(), 2);
+        assert_eq!(data.executors[1].vcores(), 2);
         assert_eq!(data.executors[2].id, "id-b");
-        assert_eq!(data.executors[2].task_slots(), 3);
+        assert_eq!(data.executors[2].vcores(), 3);
     }
 
     #[test]
-    fn sort_by_task_slots_descending() {
+    fn sort_by_vcores_descending() {
         let mut data = make_executors_data(
             vec![
                 make_executor("host", 8080, "id-a", 1, 0, 0, Some(100)),
                 make_executor("host", 8080, "id-c", 2, 0, 0, Some(300)),
                 make_executor("host", 8080, "id-b", 3, 0, 0, Some(200)),
             ],
-            SortColumn::TaskSlots,
+            SortColumn::Vcores,
             SortOrder::Descending,
         );
         data.sort();
         assert_eq!(data.executors[0].id, "id-b");
-        assert_eq!(data.executors[0].task_slots(), 3);
+        assert_eq!(data.executors[0].vcores(), 3);
         assert_eq!(data.executors[1].id, "id-c");
-        assert_eq!(data.executors[1].task_slots(), 2);
+        assert_eq!(data.executors[1].vcores(), 2);
         assert_eq!(data.executors[2].id, "id-a");
-        assert_eq!(data.executors[2].task_slots(), 1);
+        assert_eq!(data.executors[2].vcores(), 1);
     }
 
     #[test]

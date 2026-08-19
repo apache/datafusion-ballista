@@ -17,7 +17,7 @@
 
 use crate::tui::app::App;
 use crate::tui::ui::header::scheduler_state::render_scheduler_state;
-use ratatui::style::{Style, Stylize};
+use ratatui::style::Stylize;
 use ratatui::widgets::BorderType;
 use ratatui::{
     Frame,
@@ -29,52 +29,14 @@ use ratatui::{
 pub mod scheduler_state;
 
 const MENU_ITEMS: [&str; 3] = ["Jobs", "Executors", "Metrics"];
-const PERCENTAGE: u16 = 100 / MENU_ITEMS.len() as u16;
-const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
-    [Constraint::Percentage(PERCENTAGE); MENU_ITEMS.len()];
+const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] = [
+    Constraint::Percentage(33),
+    Constraint::Percentage(34),
+    Constraint::Percentage(33),
+];
 
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
-    let banner_percentage = match area.width {
-        0..200 => 30,
-        220..230 => 40,
-        _ => 45,
-    };
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(banner_percentage), // banner
-            Constraint::Percentage(100 - banner_percentage), // scheduler info and menu
-        ])
-        .split(area);
-
-    render_banner(f, chunks[0], app.theme.banner);
-    render_navbar(f, chunks[1], app);
-}
-
-#[cfg(not(feature = "web"))]
-fn render_banner(f: &mut Frame, area: Rect, banner_style: Style) {
-    use tui_big_text::{BigText, PixelSize};
-
-    let banner_size = match area.width {
-        0..70 => PixelSize::Octant,
-        70..80 => PixelSize::QuarterHeight,
-        _ => PixelSize::ThirdHeight,
-    };
-
-    let big_text = BigText::builder()
-        .pixel_size(banner_size)
-        .style(banner_style)
-        .lines(vec![" DataFusion".into(), " Ballista".into()])
-        .build();
-    f.render_widget(big_text, area);
-}
-
-// Web: logo is displayed as a DOM <img> element overlaid on the Ratzilla canvas.
-// Halfblock characters are not reliably present in Ratzilla's WebGL2 glyph atlas,
-// so we leave this area blank and rely on setup_logo_dom() in wasm.rs.
-#[cfg(feature = "web")]
-fn render_banner(f: &mut Frame, area: Rect, _banner_style: Style) {
-    f.render_widget(Block::default(), area);
+    render_navbar(f, area, app);
 }
 
 fn render_navbar(f: &mut Frame, area: Rect, app: &App) {

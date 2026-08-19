@@ -72,7 +72,8 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
     ShuffleWriterExec: partitioning: None
-      EmptyExec
+      RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
+        EmptyExec
     ");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics_no_data())?;
 
@@ -146,7 +147,8 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
     ShuffleWriterExec: partitioning: None
-      EmptyExec
+      RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
+        EmptyExec
     ");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics_no_data())?;
 
@@ -520,7 +522,7 @@ fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
+            specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
         // next few properties are needed
@@ -552,7 +554,7 @@ fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
             host: "".to_string(),
             port: 0,
             grpc_port: 0,
-            specification: ExecutorSpecification::default().with_task_slots(0),
+            specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
 

@@ -76,7 +76,7 @@ tokio = { workspace = true, features = [
     "rt",
     "rt-multi-thread",
     "sync",
-    "parking_lot"
+    "parking_lot",
 ] }
 tonic = { workspace = true }
 url = { workspace = true }

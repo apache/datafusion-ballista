@@ -114,9 +114,9 @@ mod web {
         pub(super) fn parse() -> File<FileSourceString, FileFormat> {
             let mut data_reload_interval_ms = 2000;
             let mut repaint_interval_ms = 50;
-            let mut scheduler_url = "http://localhost:50050";
+            let mut scheduler_url = String::from("http://localhost:50050");
             let mut http_timeout_ms = 2000;
-            let mut theme_name = "dark";
+            let mut theme_name = String::from("dark");
             let mut theme_app_background_bg = String::from("black");
 
             let query_string = Self::decode_request();
@@ -131,13 +131,18 @@ mod web {
                         "ballista_repaint_interval_ms" => {
                             repaint_interval_ms = value.parse::<u64>().unwrap_or(50)
                         }
-                        "ballista_scheduler_url" => scheduler_url = value,
+                        "ballista_scheduler_url" => {
+                            scheduler_url = url_escape::decode(value).to_string()
+                        }
                         "ballista_http_timeout" => {
                             http_timeout_ms = value.parse::<u64>().unwrap_or(2000)
                         }
-                        "ballista_theme_name" => theme_name = value,
+                        "ballista_theme_name" => {
+                            theme_name = url_escape::decode(value).to_string()
+                        }
                         "ballista_theme_overrides_app_background_bg" => {
-                            theme_app_background_bg = value.replace("%23", "#");
+                            theme_app_background_bg =
+                                url_escape::decode(value).to_string();
                         }
                         _ => {}
                     }

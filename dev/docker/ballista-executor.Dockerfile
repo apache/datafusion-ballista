@@ -23,6 +23,13 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ARG RELEASE_FLAG=release
 
+# ca-certificates so DataFusion's object_store S3 client can verify TLS
+# certs at query time (executors do the parquet reads). Reads from
+# s3:// fail with InvalidCertificate(UnknownIssuer) otherwise.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full

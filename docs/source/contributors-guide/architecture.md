@@ -33,13 +33,13 @@ than for data science.
 ### Arrow-native
 
 Ballista uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
-shuffle files and for exchanging data between executors. Queries can be submitted using the Arrow Flight SQL API
-and the Arrow Flight SQL JDBC Driver.
+shuffle files and for exchanging data between executors. Queries can be submitted from Rust and Python clients
+or the Ballista CLI.
 
 ### Language Agnostic
 
 Although most of the implementation code is written in Rust, the scheduler and executor APIs are based on open
-standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight SQL.
+standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight.
 
 This language agnostic approach will allow Ballista to eventually support UDFs in languages other than Rust,
 including Wasm.
@@ -72,7 +72,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 The scheduler provides the following interfaces:
 
 - gRPC service for submitting and managing jobs
-- Flight SQL API
 - REST API for monitoring jobs
 
 Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
@@ -96,8 +95,6 @@ There are multiple clients available for submitting jobs to a Ballista cluster:
   context with support for SQL and DataFrame operations.
 - The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for
   SQL and DataFrame operations.
-- The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from
-  popular SQL tools to execute SQL queries against a cluster.
 
 ## Distributed Query Scheduling
 

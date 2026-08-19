@@ -56,7 +56,13 @@ tokio = { version = "^1.52", features = [
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+datafusion-functions-aggregate-common = { workspace = true }
+ordered-float = { workspace = true }
 
 [[bench]]
 harness = false
 name = "sort_shuffle"
+
+[[bench]]
+harness = false
+name = "quantile_sketch"

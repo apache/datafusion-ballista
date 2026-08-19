@@ -24,6 +24,8 @@ mod supported {
         standalone_context_with_state,
     };
     use ballista_core::config::BallistaConfig;
+    use ballista_core::execution_plans::DistributedQueryExec;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -960,14 +962,6 @@ mod supported {
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
-        // Exercise the plain sort-merge-join execution path: disable the
-        // default SortMergeJoinExec broadcast conversion so the join stays a
-        // SortMergeJoinExec in the distributed plan.
-        ctx.sql("SET ballista.optimizer.broadcast_sort_merge_join_enabled = false")
-            .await?
-            .collect()
-            .await?;
-
         ctx.register_parquet(
             "t0",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -1200,7 +1194,7 @@ mod supported {
             "|                   |           PlaceholderRowExec, metrics=[...]                                                                                                                                                                                                                                                                                                                                                       |",
             "|                   |                                                                                                                                                                                                                                                                                                                                                                                                   |",
             "|                   | =========SuccessfulStage[stage_id=2, partitions=16]=========                                                                                                                                                                                                                                                                                                                                      |",
-            "|                   | ShuffleWriterExec: partitioning: None, metrics=[output_rows=..., input_rows=..., repart_time=..., write_time=...]                                                                                                                                                                                                                                                                                 |",
+            "|                   | ShuffleWriterExec: partitioning: None, metrics=[output_rows=..., input_rows=..., write_time=...]                                                                                                                                                                                                                                                                                                  |",
             "|                   |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., expr_0_eval_time=..., expr_1_eval_time=...]                                                                                                                                                                                              |",
             "|                   |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., spill_count=..., spilled_bytes=..., spilled_rows=..., peak_mem_used=..., aggregate_arguments_time=..., aggregation_time=..., emitting_time=..., time_calculating_group_ids=...]                                          |",
             "|                   |       ShuffleReaderExec: upstream_stage: 1, partitioning: Hash([id@0], 16), metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=..., decoded_bytes=..., fetch_requests=..., fetch_retries=..., local_partitions=..., remote_partitions=..., fetch_time=..., local_read_time=..., permit_wait_time=...]                                                                |",
@@ -1208,6 +1202,53 @@ mod supported {
         ];
 
         assert_batches_eq!(expected, &[sanitized]);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_explain_executed_plan(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let df = ctx
+            .sql(
+                "select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id",
+            )
+            .await?;
+
+        let plan = df.create_physical_plan().await?;
+
+        // Execute so the scheduler assigns a job id and completes the stages.
+        let _ = collect(plan.clone(), ctx.task_ctx()).await?;
+
+        let dqe = plan
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .expect("top operator should be a DistributedQueryExec<LogicalPlanNode>");
+
+        let config = ctx.copied_config();
+
+        // Plan without metrics.
+        let plan_text = dqe.explain_executed_plan(&config, false).await?;
+        assert!(
+            plan_text.contains("SuccessfulStage"),
+            "expected per-stage plan, got: {plan_text}"
+        );
+        assert!(
+            !plan_text.contains("metrics=["),
+            "expected no metrics, got: {plan_text}"
+        );
+
+        // Same plan with metrics.
+        let plan_with_metrics = dqe.explain_executed_plan(&config, true).await?;
+        assert!(
+            plan_with_metrics.contains("metrics=["),
+            "expected metrics, got: {plan_with_metrics}"
+        );
 
         Ok(())
     }

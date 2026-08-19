@@ -25,7 +25,7 @@ use ballista_core::serde::protobuf::ExecutorMetric;
 use ballista_core::serde::protobuf::executor_metric::Metric;
 use log::trace;
 
-use crate::cluster::{BoundTask, ClusterState, ExecutorSlot};
+use crate::cluster::{BoundTask, ClusterState, ClusterStateEventStream, ExecutorSlot};
 use crate::config::SchedulerConfig;
 
 use crate::state::execution_graph::RunningTaskInfo;
@@ -60,7 +60,7 @@ type ExecutorClients = Arc<DashMap<String, ExecutorGrpcClient<Channel>>>;
 /// - Cleaning up job data on executors
 #[derive(Clone)]
 pub struct ExecutorManager {
-    /// Cluster state for tracking executor registration and task slots.
+    /// Cluster state for tracking executor registration and vcores.
     cluster_state: Arc<dyn ClusterState>,
     /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
@@ -79,13 +79,22 @@ impl ExecutorManager {
         cluster_state: Arc<dyn ClusterState>,
         config: Arc<SchedulerConfig>,
     ) -> Self {
+        // Prefer an explicit override_config_producer if the embedder wired one,
+        // so a full BallistaConfig (with all its grpc-client knobs) still takes
+        // precedence. Otherwise, use `default()` but override
+        // `max_message_size` from the scheduler's `grpc_client_max_message_size`
+        // CLI flag so users can raise the ceiling for outbound task-assignment
+        // RPCs without having to write a config-producer in Rust.
         let grpc_client_config =
             if let Some(config_producer) = &config.override_config_producer {
                 let session_config = config_producer();
                 let ballista_config = session_config.ballista_config();
                 GrpcClientConfig::from(&ballista_config)
             } else {
-                GrpcClientConfig::default()
+                GrpcClientConfig {
+                    max_message_size: config.grpc_client_max_message_size as usize,
+                    ..GrpcClientConfig::default()
+                }
             };
         Self {
             cluster_state,
@@ -101,6 +110,11 @@ impl ExecutorManager {
         self.cluster_state.init().await?;
 
         Ok(())
+    }
+
+    /// Returns a stream of cluster state events from the configured state backend.
+    pub async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
+        self.cluster_state.cluster_state_events().await
     }
 
     /// Binds ready-to-run tasks from active jobs to available executor slots.
@@ -128,7 +142,7 @@ impl ExecutorManager {
             .await
     }
 
-    /// Returns reserved task slots to the pool of available slots.
+    /// Returns reserved vcores to the pool of available slots.
     ///
     /// This operation is atomic: either all slots are returned or none are.
     pub async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()> {
@@ -146,7 +160,6 @@ impl ExecutorManager {
                 task_id: task_info.task_id as u32,
                 job_id: task_info.job_id.into(),
                 stage_id: task_info.stage_id as u32,
-                partition_id: task_info.partition_id as u32,
             });
         }
 
@@ -332,15 +345,15 @@ impl ExecutorManager {
     /// For push-based scheduling, use [`Self::register_executor`] instead.
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         trace!(
-            "save executor metadata {} with {} task slots (pull-based registration)",
-            metadata.id, metadata.specification.task_slots
+            "save executor metadata {} with {} vcores (pull-based registration)",
+            metadata.id, metadata.specification.vcores
         );
         self.cluster_state.save_executor_metadata(metadata).await
     }
 
     /// Registers the executor with the scheduler for push-based task scheduling.
     ///
-    /// This saves both the executor metadata and available task slots to persistent state.
+    /// This saves both the executor metadata and vcore inventory to persistent state.
     /// For pull-based scheduling, use [`Self::save_executor_metadata`] instead.
     pub async fn register_executor(
         &self,
@@ -348,8 +361,8 @@ impl ExecutorManager {
         specification: ExecutorData,
     ) -> Result<()> {
         debug!(
-            "registering executor {} with {} task slots (push-based registration)",
-            metadata.id, specification.total_task_slots
+            "registering executor {} with {} vcores (push-based registration)",
+            metadata.id, specification.total_vcores
         );
 
         ExecutorManager::test_connectivity(&metadata).await?;
@@ -553,7 +566,13 @@ impl ExecutorManager {
             }
 
             let connection = endpoint.connect().await?;
-            let client = ExecutorGrpcClient::new(connection);
+            // Message-size limits are tonic codec settings, not `Endpoint`
+            // settings, so `create_grpc_client_endpoint` cannot apply them.
+            // Without this the configured `max_message_size` is silently
+            // ignored and task assignment falls back to tonic's own defaults.
+            let client = ExecutorGrpcClient::new(connection)
+                .max_encoding_message_size(grpc_client_config.max_message_size)
+                .max_decoding_message_size(grpc_client_config.max_message_size);
 
             {
                 self.clients.insert(executor_id.to_owned(), client.clone());
@@ -580,5 +599,51 @@ impl ExecutorManager {
     #[cfg(test)]
     async fn test_connectivity(_metadata: &ExecutorMetadata) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::test_cluster_context;
+    use ballista_core::extension::SessionConfigExt;
+    use datafusion::prelude::SessionConfig;
+
+    #[test]
+    fn grpc_client_max_message_size_flag_reaches_client_config() {
+        let config = Arc::new(
+            SchedulerConfig::default()
+                .with_grpc_client_max_message_size(64 * 1024 * 1024),
+        );
+        let manager =
+            ExecutorManager::new(test_cluster_context().cluster_state(), config);
+
+        assert_eq!(
+            manager.grpc_client_config.max_message_size,
+            64 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn config_producer_still_wins_over_the_flag() {
+        let config = Arc::new(
+            SchedulerConfig::default()
+                .with_grpc_client_max_message_size(64 * 1024 * 1024)
+                .with_override_config_producer(Arc::new(|| {
+                    let mut session_config = SessionConfig::new_with_ballista();
+                    session_config
+                        .options_mut()
+                        .set("ballista.client.grpc_max_message_size", "33554432")
+                        .expect("valid setting");
+                    session_config
+                })),
+        );
+        let manager =
+            ExecutorManager::new(test_cluster_context().cluster_state(), config);
+
+        assert_eq!(
+            manager.grpc_client_config.max_message_size,
+            32 * 1024 * 1024
+        );
     }
 }

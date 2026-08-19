@@ -16,13 +16,16 @@
 // under the License.
 
 use crate::assert_plan;
+use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
-    mock_batch, mock_context, mock_context_sort_shuffle, mock_memory_table,
-    mock_partitions_with_statistics,
+    mock_batch, mock_context, mock_memory_table, mock_partitions_with_statistics,
 };
+use crate::state::execution_graph::ExecutionGraph;
+use ballista_core::JobId;
 use ballista_core::execution_plans::SortShuffleWriterExec;
+use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::ColumnStatistics;
 use datafusion::physical_plan::ExecutionPlan;
@@ -41,11 +44,8 @@ async fn should_add_exchanges() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -70,11 +70,8 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -122,11 +119,8 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -144,6 +138,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
       AggregateExec: mode=Partial, gby=[c@2 as c], aggr=[min(t.a), max(t.b)]
         DataSourceExec: partitions=1, partition_sizes=[1]
     ");
+    assert_eq!(stages.first().unwrap().plan.job_id().as_str(), "test_job");
 
     planner.finalise_stage_internal(0, mock_partitions_with_statistics())?;
 
@@ -155,6 +150,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2)
     ");
+    assert_eq!(stages.first().unwrap().plan.job_id().as_str(), "test_job");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
 
     let stages = planner.runnable_stages()?;
@@ -181,11 +177,8 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     // plan has only two exchanges after initial planning
     // other stages will be added as stages get resolved
@@ -231,11 +224,8 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -301,11 +291,8 @@ async fn should_split_stages_resolve_left_branch() -> datafusion::error::Result<
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -376,11 +363,8 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
 
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -439,7 +423,7 @@ async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
     let mut planner = AdaptivePlanner::try_from_plan(
         ctx.state().config(),
         exchange_exec,
-        "test_job".to_owned(),
+        "test_job".into(),
     )?;
 
     assert_plan!(planner.current_plan(), @ r"
@@ -456,36 +440,6 @@ async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
 }
 
 #[tokio::test]
-async fn should_use_sort_shuffle_when_enabled() -> datafusion::error::Result<()> {
-    let ctx = mock_context_sort_shuffle();
-    ctx.register_batch("t", mock_batch()?)?;
-
-    let q = r#"
-            select min(a) as c0, max(b) as c1, c as c2 from t group by c
-        "#;
-
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
-
-    let stages = planner.runnable_stages()?.unwrap();
-    assert_eq!(1, stages.len());
-
-    let plan = stages.first().unwrap().plan.as_ref();
-    assert!(
-        (plan as &dyn ExecutionPlan)
-            .downcast_ref::<SortShuffleWriterExec>()
-            .is_some(),
-        "expected SortShuffleWriterExec when sort shuffle is enabled, got plan: {plan:?}"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
     let ctx = mock_context();
     ctx.register_batch("t", mock_batch()?)?;
@@ -495,11 +449,8 @@ async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
         "#;
 
     let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner = AdaptivePlanner::try_from_plan(
-        ctx.state().config(),
-        plan,
-        "test_job".to_owned(),
-    )?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
@@ -511,6 +462,53 @@ async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
             .is_some(),
         "expected SortShuffleWriterExec by default, got plan: {plan:?}"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn newly_built_adaptive_graph_has_expected_state()
+-> ballista_core::error::Result<()> {
+    let ctx = mock_context();
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let q = r#"
+            select min(a) as c0, max(b) as c1, c as c2 from t group by c
+        "#;
+    let logical_plan = ctx.sql(q).await?.logical_plan().clone();
+    let job_id: JobId = "job-id-xyz".into();
+
+    let mut graph = AdaptiveExecutionGraph::try_new(
+        "scheduler-1",
+        &job_id,
+        "my job name",
+        &ctx,
+        &logical_plan,
+        7,
+    )
+    .await?;
+
+    // Identity comes straight from the constructor arguments.
+    assert_eq!(graph.job_id().as_str(), "job-id-xyz");
+    assert_eq!(graph.job_name(), "my job name");
+    assert_eq!(graph.session_id(), ctx.session_id().as_str());
+    assert!(graph.logical_plan().is_some());
+
+    // A freshly built graph is a running job that has done no work yet.
+    assert!(matches!(
+        graph.status().status.as_ref(),
+        Some(Status::Running(_))
+    ));
+    assert!(graph.start_time() > 0);
+    assert_eq!(graph.end_time(), 0);
+    assert_eq!(graph.completed_stages(), 0);
+    assert!(!graph.is_successful());
+    assert!(graph.output_locations().is_empty());
+
+    // The plan was split into stages that expose runnable tasks once revived.
+    assert!(graph.revive());
+    assert!(!graph.running_stages().is_empty());
+    assert!(graph.available_tasks() > 0);
 
     Ok(())
 }

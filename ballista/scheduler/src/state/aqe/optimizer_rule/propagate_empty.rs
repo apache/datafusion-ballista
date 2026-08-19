@@ -60,6 +60,9 @@ pub struct JoinInfo<'a> {
     pub left: &'a Arc<dyn ExecutionPlan>,
     pub right: &'a Arc<dyn ExecutionPlan>,
     pub schema: SchemaRef,
+    /// True when the join carries an embedded projection, in which case its
+    /// output schema no longer maps positionally onto the input schemas.
+    pub has_projection: bool,
 }
 
 /// This is [datafusion::optimizer::propagate_empty_relation::PropagateEmptyRelation] rule with difference
@@ -78,7 +81,10 @@ impl PropagateEmptyExecRule {
         if let Some(filter) = plan.downcast_ref::<FilterExec>()
             && is_empty_exec!(filter.input())
         {
-            Ok(Transformed::yes(filter.input().clone()))
+            // A FilterExec may carry an embedded projection, so its schema can
+            // differ from its input's — build a fresh EmptyExec instead of
+            // reusing the input.
+            empty_exec!(filter)
         } else if let Some(coalesce) = plan.downcast_ref::<CoalesceBatchesExec>()
             && is_empty_exec!(coalesce.input())
         {
@@ -86,7 +92,10 @@ impl PropagateEmptyExecRule {
         } else if let Some(exchange) = plan.downcast_ref::<ExchangeExec>()
             && is_empty_exec!(exchange.input())
         {
-            Ok(Transformed::yes(exchange.input().clone()))
+            // Keep the exchange's output partitioning: parents were planned
+            // against it, and the stats-based exchange arm below preserves it
+            // the same way.
+            empty_exec!(exchange)
         } else if let Some(projection) = plan.downcast_ref::<ProjectionExec>()
             && is_empty_exec!(projection.input())
         {
@@ -101,6 +110,18 @@ impl PropagateEmptyExecRule {
             Ok(Transformed::yes(limit.input().clone()))
         } else if let Some(aggregation) = plan.downcast_ref::<AggregateExec>()
             && is_empty_exec!(aggregation.input())
+            // An aggregate with no GROUP BY emits exactly one row even over zero
+            // input rows (`sum` -> NULL, `count` -> 0), so it must be preserved.
+            && !aggregation.group_expr().is_empty()
+            // Same for the empty grouping set `()` of GROUPING SETS/ROLLUP/CUBE:
+            // an all-true null mask is the grand-total group, which also emits
+            // one row over empty input. Mirrors `has_empty_grouping_set` in
+            // DataFusion's logical PropagateEmptyRelation rule.
+            && !aggregation
+                .group_expr()
+                .groups()
+                .iter()
+                .any(|group| group.iter().all(|&null_masked| null_masked))
         {
             empty_exec!(aggregation)
         } else if let Some(repartition) = plan.downcast_ref::<RepartitionExec>()
@@ -123,13 +144,19 @@ impl PropagateEmptyExecRule {
 
             let left_field_count = join.left.schema().fields.len();
 
+            // Rewrites that keep one input alive assume the join schema maps
+            // positionally onto the input schemas; an embedded projection
+            // breaks that, so those arms must not fire. Arms that produce an
+            // EmptyExec use the join's own (projected) schema and stay safe.
+            let no_projection = !join.has_projection;
+
             // Checking whether join would produce an empty result
             match join.join_type {
                 JoinType::Inner if left_empty || right_empty => empty_exec!(plan),
                 JoinType::Left if left_empty => empty_exec!(plan),
                 // Left Join with empty right: all left rows survive
                 // with NULLs for right columns.
-                JoinType::Left if right_empty => {
+                JoinType::Left if right_empty && no_projection => {
                     Ok(Transformed::yes(build_null_padded_projection(
                         Arc::clone(join.left),
                         join.schema,
@@ -140,7 +167,7 @@ impl PropagateEmptyExecRule {
                 JoinType::Right if right_empty => empty_exec!(plan),
                 // Right Join with empty left: all right rows survive
                 // with NULLs for left columns.
-                JoinType::Right if left_empty => {
+                JoinType::Right if left_empty && no_projection => {
                     Ok(Transformed::yes(build_null_padded_projection(
                         Arc::clone(join.right),
                         join.schema,
@@ -151,18 +178,22 @@ impl PropagateEmptyExecRule {
                 JoinType::LeftSemi if left_empty || right_empty => empty_exec!(plan),
                 JoinType::RightSemi if left_empty || right_empty => empty_exec!(plan),
                 JoinType::LeftAnti if left_empty => empty_exec!(plan),
-                JoinType::LeftAnti if right_empty => {
+                JoinType::LeftAnti if right_empty && no_projection => {
                     Ok(Transformed::yes((*join.left).clone()))
                 }
                 JoinType::RightAnti if right_empty => empty_exec!(plan),
-                JoinType::RightAnti if left_empty => {
+                JoinType::RightAnti if left_empty && no_projection => {
                     Ok(Transformed::yes((*join.right).clone()))
                 }
                 // Return empty if both sides are empty
                 JoinType::Full if left_empty && right_empty => empty_exec!(plan),
                 // For Full Join, if one side is empty, replace with a
                 // Projection that null-pads the empty side's columns.
-                JoinType::Full if right_empty && is_guaranteed_non_empty(join.left) => {
+                JoinType::Full
+                    if right_empty
+                        && no_projection
+                        && is_guaranteed_non_empty(join.left) =>
+                {
                     Ok(Transformed::yes(build_null_padded_projection(
                         Arc::clone(join.left),
                         join.schema.clone(),
@@ -170,7 +201,11 @@ impl PropagateEmptyExecRule {
                         true,
                     )?))
                 }
-                JoinType::Full if left_empty && is_guaranteed_non_empty(join.right) => {
+                JoinType::Full
+                    if left_empty
+                        && no_projection
+                        && is_guaranteed_non_empty(join.right) =>
+                {
                     Ok(Transformed::yes(build_null_padded_projection(
                         Arc::clone(join.right),
                         join.schema.clone(),
@@ -221,6 +256,7 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
             left: join.left(),
             right: join.right(),
             schema: join.schema(),
+            has_projection: join.contains_projection(),
         });
     }
     if let Some(join) = any.downcast_ref::<SortMergeJoinExec>() {
@@ -229,6 +265,7 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
             left: join.left(),
             right: join.right(),
             schema: join.schema(),
+            has_projection: false,
         });
     }
 
@@ -327,9 +364,13 @@ mod tests {
 
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
-        common::{ColumnStatistics, JoinType, NullEquality, Statistics},
+        common::{ColumnStatistics, JoinType, NullEquality, ScalarValue, Statistics},
+        physical_expr::aggregate::AggregateExprBuilder,
         physical_plan::{
-            expressions::Column, joins::PartitionMode, test::exec::StatisticsExec,
+            aggregates::{AggregateMode, PhysicalGroupBy},
+            expressions::{Column, Literal},
+            joins::PartitionMode,
+            test::exec::StatisticsExec,
         },
     };
 
@@ -869,6 +910,232 @@ mod tests {
         );
         let result = transform(plan);
         assert!(result.downcast_ref::<StatisticsExec>().is_some());
+    }
+
+    // ── Aggregate ────────────────────────────────────────────────────────────
+
+    /// Build an `AggregateExec` over `input` with the given grouping.
+    fn aggregate(
+        input: Arc<dyn ExecutionPlan>,
+        group_by: PhysicalGroupBy,
+        mode: AggregateMode,
+    ) -> Arc<dyn ExecutionPlan> {
+        let aggr = AggregateExprBuilder::new(
+            datafusion::functions_aggregate::count::count_udaf(),
+            vec![Arc::new(Column::new("a", 0))],
+        )
+        .schema(input.schema())
+        .alias("count(a)")
+        .build()
+        .unwrap();
+
+        Arc::new(
+            AggregateExec::try_new(
+                mode,
+                group_by,
+                vec![Arc::new(aggr)],
+                vec![None],
+                input,
+                schema(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn aggregate_with_grouping_over_empty_eliminated() {
+        // GROUP BY over zero rows produces zero groups — collapsing is correct.
+        let group_by = PhysicalGroupBy::new_single(vec![(
+            Arc::new(Column::new("a", 0)),
+            "a".into(),
+        )]);
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            group_by,
+            AggregateMode::Single,
+        );
+        assert_empty(&transform(plan));
+    }
+
+    #[test]
+    fn aggregate_without_grouping_over_empty_is_preserved() {
+        // No GROUP BY means exactly one output row even over zero input rows
+        // (`sum` -> NULL, `count` -> 0). Collapsing to EmptyExec loses that row.
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            PhysicalGroupBy::default(),
+            AggregateMode::Single,
+        );
+        assert_untouched(&transform(plan));
+    }
+
+    #[test]
+    fn partial_aggregate_without_grouping_over_empty_is_preserved() {
+        // Same holds for a partial aggregate: it emits one row of accumulator
+        // state per partition, which the final aggregate needs.
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            PhysicalGroupBy::default(),
+            AggregateMode::Partial,
+        );
+        assert_untouched(&transform(plan));
+    }
+
+    #[test]
+    fn aggregate_grouping_sets_with_empty_subset_over_empty_is_preserved() {
+        // `ROLLUP(a)` / `GROUPING SETS ((a), ())` lowers to a non-empty `expr`
+        // list plus a `groups` mask containing the all-null (empty) subset.
+        // Over zero input rows, that empty subset still emits one all-NULL row
+        // — matches DataFusion's logical `has_empty_grouping_set` guard.
+        let group_by = PhysicalGroupBy::new(
+            vec![(Arc::new(Column::new("a", 0)), "a".into())],
+            vec![(Arc::new(Literal::new(ScalarValue::Int32(None))), "a".into())],
+            vec![vec![false], vec![true]],
+            true,
+        );
+        let plan = aggregate(
+            Arc::new(EmptyExec::new(schema())),
+            group_by,
+            AggregateMode::Single,
+        );
+        assert_untouched(&transform(plan));
+    }
+
+    // ── embedded projections — schema no longer matches the inputs ─────────
+
+    fn two_col_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ])
+    }
+
+    fn non_empty_two_col_stats_exec() -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Exact(100),
+                total_byte_size: Precision::Exact(800),
+                column_statistics: vec![ColumnStatistics::new_unknown(); 2],
+            },
+            two_col_schema(),
+        ))
+    }
+
+    fn hash_join_with_projection(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+        join_type: JoinType,
+        projection: Vec<usize>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                join_on(),
+                None,
+                &join_type,
+                None,
+                PartitionMode::Partitioned,
+                NullEquality::NullEqualsNothing,
+                false,
+            )
+            .unwrap()
+            .with_projection(Some(projection))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn left_join_with_embedded_projection_right_empty_untouched() {
+        // ProjectionPushdown can embed a projection into HashJoinExec. The join
+        // schema is then no longer `left fields ++ right fields`, so positional
+        // null-padding would read the wrong columns. The join must stay as is.
+        let plan = hash_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::Left,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert!(
+            result.downcast_ref::<HashJoinExec>().is_some(),
+            "expected join to be untouched, got {:?}",
+            result.name()
+        );
+        assert_eq!(result.schema(), join_schema);
+    }
+
+    #[test]
+    fn left_anti_with_embedded_projection_right_empty_untouched() {
+        // A LeftAnti join with an embedded projection outputs a subset of the
+        // left columns; replacing it with the raw left child changes the schema.
+        let plan = hash_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::LeftAnti,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert_eq!(result.schema(), join_schema);
+        assert!(
+            result.downcast_ref::<HashJoinExec>().is_some(),
+            "expected join to be untouched, got {:?}",
+            result.name()
+        );
+    }
+
+    #[test]
+    fn filter_with_embedded_projection_over_empty_preserves_schema() {
+        // FilterExec can carry an embedded projection, so its schema may differ
+        // from its input's. The result must use the filter's schema, not the
+        // input's.
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_plan::expressions::BinaryExpr;
+        use datafusion::physical_plan::filter::FilterExecBuilder;
+
+        let input = Arc::new(EmptyExec::new(Arc::new(two_col_schema())));
+        let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Gt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+        ));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            FilterExecBuilder::new(predicate, input)
+                .apply_projection(Some(vec![1]))
+                .unwrap()
+                .build()
+                .unwrap(),
+        );
+        let filter_schema = plan.schema();
+        let result = transform(plan);
+        assert_empty(&result);
+        assert_eq!(result.schema(), filter_schema);
+    }
+
+    // ── exchange over empty input — partitioning must survive ───────────────
+
+    #[test]
+    fn exchange_over_empty_input_preserves_partition_count() {
+        // Replacing ExchangeExec with its EmptyExec input would drop the
+        // exchange's output partitioning; parents planned against it would see
+        // the wrong partition count. Mirrors the stats-based exchange arm,
+        // which already preserves the partition count.
+        use datafusion::physical_plan::Partitioning;
+
+        let empty = Arc::new(EmptyExec::new(schema()).with_partitions(1));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(ExchangeExec::new(
+            empty,
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16)),
+            0,
+        ));
+        let result = transform(plan);
+        assert_empty(&result);
+        assert_eq!(
+            result.properties().output_partitioning().partition_count(),
+            16
+        );
     }
 
     // ── unknown stats — never optimised ─────────────────────────────────────

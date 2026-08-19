@@ -18,31 +18,68 @@
 //! This module contains execution plans that are needed to distribute DataFusion's execution plans into
 //! several Ballista executors.
 
+mod buffer;
 mod chaos_exec;
 mod distributed_explain_analyze;
 mod distributed_query;
+mod ordered_range_repartition;
+mod partitioned_bounded_window_agg;
+mod per_partition_filter;
+pub mod plan_algebra;
+mod range_filter;
+mod range_repartition_common;
+mod range_shuffle_reader;
+mod runtime_stats;
 mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+mod unordered_range_repartition;
 mod unresolved_shuffle;
 
 use std::path::{Path, PathBuf};
 
+pub use buffer::{BufferExec, BufferMode};
 pub use chaos_exec::ChaosExec;
 use datafusion::common::exec_err;
 pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
 pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
+pub use ordered_range_repartition::OrderedRangeRepartitionExec;
+pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
+pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
+pub use plan_algebra::{preserves_distribution, preserves_partitioning};
+pub use range_filter::{RangeBound, RangeFilterExec, WidenedBound};
+pub use range_shuffle_reader::RangeShuffleReaderExec;
+pub use runtime_stats::{
+    MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
+    collect_reports as collect_runtime_stats_reports, cut_partitions,
+    log_merged_runtime_stats, merge_reports as merge_runtime_stats_reports,
+    repartition_routing_expr, sketch_from_proto, sketch_to_proto,
+};
 pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
-pub use shuffle_writer::ShuffleWriteResult;
 pub use shuffle_writer::ShuffleWriterExec;
+pub use shuffle_writer::compute_global_output_partition_ids;
 pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
+pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
 
 use crate::JobId;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
+
+/// Result of a completed shuffle-write task, returned from the executor to
+/// the scheduler: per-partition file summaries plus per-column statistics
+/// folded across the task's output.
+#[derive(Debug, Clone)]
+pub struct ShuffleWriteResult {
+    /// Per-output-partition file summaries (location, row/batch/byte counts).
+    pub partitions: Vec<ShuffleWritePartition>,
+    /// Per-column statistics aggregated over this task's output. Empty until
+    /// collection is wired into the shuffle writers.
+    pub column_stats: Vec<TaskColumnStats>,
+}
 
 /// Creates the file path for a shuffle output partition.
 ///

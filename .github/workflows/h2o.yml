@@ -1,0 +1,188 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs the h2o `window.sql` suite against a Ballista cluster with AQE + MPT on.
+# groupby/join are already exercised by the TPC-H job; window is where h2o adds
+# incremental coverage.
+
+name: h2o
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/h2o.yml"
+      - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/h2o.yml"
+      - ".github/actions/setup-builder/**"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  workflow_dispatch:
+
+jobs:
+  h2o-window-small:
+    name: window SMALL
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y netcat-traditional
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: stable
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+        with:
+          shared-key: h2o-window-small
+
+      - name: Build Ballista binaries
+        run: |
+          cargo build --profile tpch-ci --locked \
+            -p ballista-scheduler \
+            -p ballista-executor \
+            -p ballista-benchmarks
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Generate h2o SMALL data (join dataset — window reuses it)
+        env:
+          H2O_DIR: ${{ runner.temp }}/h2o-data
+        run: |
+          mkdir -p "$H2O_DIR"
+          # `falsa join` produces J1_1e7_{NA_0,1e1_0,1e4_0,1e7_NA}.parquet.
+          # The window suite only needs the `large` file (J1_1e7_1e7_NA.parquet),
+          # but the h2o binary's --join-paths CLI expects all four, so we
+          # generate the full set here.
+          cd benchmarks
+          uv run falsa join --path-prefix "$H2O_DIR" --size SMALL --data-format PARQUET
+
+      - name: Run h2o window suite against Ballista cluster
+        env:
+          H2O_DIR: ${{ runner.temp }}/h2o-data
+          WORK_DIR: ${{ runner.temp }}/work
+          SCHEDULER_LOG: ${{ runner.temp }}/scheduler.log
+          EXECUTOR_LOG: ${{ runner.temp }}/executor.log
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORK_DIR"
+
+          ./target/tpch-ci/ballista-scheduler \
+            --bind-host 127.0.0.1 \
+            > "$SCHEDULER_LOG" 2>&1 &
+          SCHEDULER_PID=$!
+
+          ./target/tpch-ci/ballista-executor \
+            --bind-host 127.0.0.1 \
+            --bind-port 50051 \
+            --scheduler-host 127.0.0.1 \
+            --scheduler-connect-timeout-seconds 10 \
+            --vcores 4 \
+            --memory-pool-size 2GB \
+            --work-dir "$WORK_DIR" \
+            > "$EXECUTOR_LOG" 2>&1 &
+          EXECUTOR_PID=$!
+
+          cleanup() {
+            echo "::group::scheduler log (tail)"
+            tail -n 200 "$SCHEDULER_LOG" || true
+            echo "::endgroup::"
+            echo "::group::executor log (tail)"
+            tail -n 200 "$EXECUTOR_LOG" || true
+            echo "::endgroup::"
+            kill "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+            wait "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for scheduler on 127.0.0.1:50050..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50050; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
+
+          echo "Waiting for executor on 127.0.0.1:50051..."
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 50051; then
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
+
+          JOIN_PATHS="$H2O_DIR/J1_1e7_NA_0.parquet,$H2O_DIR/J1_1e7_1e1_0.parquet,$H2O_DIR/J1_1e7_1e4_0.parquet,$H2O_DIR/J1_1e7_1e7_NA.parquet"
+
+          for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17; do
+            echo "::group::window Q$q"
+            ./target/tpch-ci/h2o ballista \
+              --host 127.0.0.1 --port 50050 \
+              --queries-path benchmarks/queries/h2o/window.sql \
+              --join-paths "$JOIN_PATHS" \
+              --query "$q" \
+              --iterations 1 \
+              --partitions 4 \
+              --verify \
+              -c ballista.planner.adaptive.enabled=true \
+              -c ballista.planner.parallel_window.enabled=true \
+              -c ballista.scheduler.max_partitions_per_task=0
+            echo "::endgroup::"
+          done
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: h2o-window-small-cluster-logs
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/scheduler.log
+            ${{ runner.temp }}/executor.log
+          if-no-files-found: ignore

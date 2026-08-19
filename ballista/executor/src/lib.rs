@@ -37,6 +37,8 @@ pub mod executor_process;
 pub mod executor_server;
 /// Arrow Flight service for streaming shuffle data between executors.
 pub mod flight_service;
+/// HTTP server for Kubernetes-style /healthz and /readyz probes.
+pub mod health;
 /// Metrics collection for executor runtime statistics.
 pub mod metrics;
 /// Session-scoped cache of shared executor runtime environments.
@@ -60,9 +62,10 @@ pub use standalone::new_standalone_executor_from_state;
 use crate::shutdown::Shutdown;
 use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, SuccessfulTask, TaskStatus, task_status,
+    FailedTask, OperatorMetricsSet, RuntimeStatsReport, SuccessfulTask, TaskStatus,
+    task_status,
 };
-use ballista_core::serde::scheduler::PartitionId;
+use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
 use log::info;
 
@@ -95,6 +98,21 @@ pub struct TaskExecutionTimes {
     end_exec_time: u64,
 }
 
+/// Side-channel data harvested from a task's executed plan, attached to the
+/// [`TaskStatus`] reported to the scheduler on success.
+///
+/// Marked `#[non_exhaustive]` so future additions (e.g. tracing IDs, further
+/// runtime reports) are non-breaking for external callers that construct via
+/// `TaskCompletionExtras { operator_metrics: …, ..Default::default() }`.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct TaskCompletionExtras {
+    /// Per-operator metrics collected from the executed plan.
+    pub operator_metrics: Option<Vec<OperatorMetricsSet>>,
+    /// Runtime-stats reports harvested from `RuntimeStatsExec` taps in the plan.
+    pub runtime_stats: Vec<RuntimeStatsReport>,
+}
+
 /// Converts a task execution result into a [`TaskStatus`] protobuf message.
 ///
 /// This function wraps the outcome of task execution (success or failure)
@@ -103,28 +121,32 @@ pub struct TaskExecutionTimes {
 pub fn as_task_status(
     execution_result: Result<ShuffleWriteResult, BallistaError>,
     executor_id: String,
-    task_id: usize,
     stage_attempt_num: usize,
-    partition_id: PartitionId,
-    operator_metrics: Option<Vec<OperatorMetricsSet>>,
+    key: TaskKey,
     execution_times: TaskExecutionTimes,
+    extras: TaskCompletionExtras,
 ) -> TaskStatus {
+    let TaskCompletionExtras {
+        operator_metrics,
+        runtime_stats,
+    } = extras;
     let metrics = operator_metrics.unwrap_or_default();
+    let task_id = key.task_id;
     match execution_result {
         Ok(shuffle_write_result) => {
             debug!(
-                "Task {:?} finished with operator_metrics array size {}",
-                task_id,
-                metrics.len()
+                "Task {task_id} finished with operator_metrics array size {} \
+                 and {} runtime-stats report(s)",
+                metrics.len(),
+                runtime_stats.len(),
             );
             let partition = shuffle_write_result.partitions;
             let col_stats = shuffle_write_result.column_stats;
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id.into(),
-                stage_id: partition_id.stage_id as u32,
+                job_id: key.job_id.clone().into(),
+                stage_id: key.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                partition_id: partition_id.partition_id as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,
@@ -132,20 +154,20 @@ pub fn as_task_status(
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
                     partitions: partition,
+                    runtime_stats,
                     task_column_stats: col_stats,
                 })),
             }
         }
         Err(e) => {
             let error_msg = e.to_string();
-            info!("Task {task_id:?} failed: {error_msg}");
+            info!("Task {task_id} failed: {error_msg}");
 
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id.into(),
-                stage_id: partition_id.stage_id as u32,
+                job_id: key.job_id.clone().into(),
+                stage_id: key.stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                partition_id: partition_id.partition_id as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,
