@@ -564,12 +564,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 self.get_active_execution_graph(&job_id.clone().into())
             {
                 let mut graph = cached.write().await;
-                graph.update_task_status(
+                // A failure updating one job must not abort the batch and
+                // drop the remaining jobs' task updates. Log the failure and
+                // continue with the next job.
+                match graph.update_task_status(
                     executor,
                     statuses,
                     self.task_max_failures,
                     self.stage_max_failures,
-                )?
+                ) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        warn!(
+                            "Failed to update task statuses for job {job_id}, skipping its updates: {error}"
+                        );
+                        vec![]
+                    }
+                }
             } else {
                 // TODO Deal with curator changed case
                 error!(
