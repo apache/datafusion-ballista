@@ -99,14 +99,6 @@ pub struct PartitionedBoundedWindowAggExec {
     /// Installed on `inner_bwag` when every frame permits it; see
     /// [`Self::try_new`]. `None` for the halo shape, whose sliding frames
     /// DataFusion refuses to observe.
-    ///
-    /// TODO: move the install off this wrapper. Catching the state has
-    /// nothing to do with overriding a distribution declaration — they are
-    /// colocated only because this wrapper happens to own the BWAG today.
-    /// When DataFusion's BWAG can declare a non-single input distribution
-    /// itself and this type collapses, the install moves to whatever ends up
-    /// holding the BWAG (a bare BWAG, or a small node planted above it by
-    /// the prefix rule). `WindowStateCollector` itself is unaffected.
     state_collector: Option<Arc<WindowStateCollector>>,
 }
 
@@ -130,11 +122,6 @@ impl PartitionedBoundedWindowAggExec {
         // accumulator retracts as the frame advances, so at partition close
         // it holds the last frame rather than the partition aggregate, and
         // `with_state_observer` refuses it.
-        //
-        // Deriving this from the frames rather than taking it as a flag keeps
-        // the wire format unchanged: the executor rebuilds the same decision
-        // from the window expressions it decodes. It also means the halo
-        // rewrite, which plants this wrapper over finite frames, is untouched.
         let state_collector = bwag
             .window_expr()
             .iter()

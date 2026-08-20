@@ -62,44 +62,6 @@
 //! `rank` / `dense_rank` / `percent_rank` / `cume_dist` / `ntile` need a
 //! separate segment-tree-plus-broadcast design and are out of scope here.
 //!
-//! # Prefix-state input
-//!
-//! [`FinalizedPartitionState`] — one entry per input partition, holding
-//! the *pre-merged* [`Accumulator::state`] for each aggregate window
-//! expression (indexed by position in `BoundedWindowAggExec::window_expr()`).
-//! Only consumed by [`WindowApply::Aggregate`] entries;
-//! [`WindowApply::Scalar`] carries its own offsets inline. No PARTITION BY
-//! dimension is exposed: DataFusion publishes state per closed group, but the
-//! rewrite that plants this operator only fires on windows without a
-//! PARTITION BY, and the scheduler rejects any report carrying a key rather
-//! than flattening two groups together. A window that does have a PARTITION
-//! BY needs no help from this operator, since `BoundedWindowAggExec` asks for
-//! `KeyPartitioned` input and each partition's window is already independent.
-//! The scheduler bakes the state when it constructs the downstream stage
-//! after the upstream stage's tasks complete.
-//!
-//! **Status.** Both apply paths are implemented.
-//!
-//! - [`WindowApply::Aggregate`] builds a fresh `Accumulator` per partition,
-//!   seeds it via `merge_batch` from the offset state, and replays each row
-//!   through `update_batch` + `evaluate` to overwrite the output column.
-//! - [`WindowApply::Scalar`] applies the [`ScalarOp`] batch-at-a-time via
-//!   arrow kernels — `numeric::add` for `Add`, `cmp::lt_eq`/`gt_eq` + `zip`
-//!   for `Min`/`Max`, and a constant-fill for `Overwrite`.
-//!
-//! Inherits the DF-side getter's at-most-one-PARTITION-BY-group scoping
-//! (matches the AQE synthetic-PARTITION-BY pattern) — multi-key queries
-//! are handled by DataFusion's normal key-partitioned distribution and
-//! don't route through this operator.
-//!
-//! # Relation to DataFusion
-//!
-//! The upstream tasks' finalized state — which the scheduler prefix-merges
-//! before handing the result to this operator — comes from the accumulators
-//! inside `BoundedWindowAggExec`, captured by a `WindowStateObserver` and
-//! shipped to the scheduler on task completion. See
-//! [`window_state`](super::window_state) for that half.
-//!
 //! An empty `applies` list makes this operator a passthrough. A non-empty one
 //! always rewrites its output columns, including when a state slot is `None` —
 //! that seeds the accumulator with nothing rather than skipping the column, so
