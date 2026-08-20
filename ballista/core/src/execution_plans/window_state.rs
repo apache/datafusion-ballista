@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Executor-side capture of finalized window-aggregate state.
+//! Module of helpers for executor-side capture of finalized window-aggregate state.
 //!
 //! DataFusion's `BoundedWindowAggExec` fires
 //! [`WindowStateObserver::finalize_window_aggregate`] once per (output
@@ -25,23 +25,6 @@
 //! to a cross-task prefix scan: the scheduler merges the contributions of
 //! all prior partitions and bakes the result into a downstream
 //! `PrefixMergeExec`.
-//!
-//! # Why catching is required rather than polling
-//!
-//! `Accumulator::state` is a destructive read — several built-in aggregates
-//! `std::mem::take` their internal buffers to build it — so DataFusion fires
-//! the callback at most once per group and errors on a second call. There is
-//! no getter to poll afterwards. Whatever the callback hands over is either
-//! retained here or gone.
-//!
-//! # Lifetime relative to the operator that installs it
-//!
-//! Nothing here is specific to `PartitionedBoundedWindowAggExec`. That
-//! wrapper only exists until DataFusion's BWAG can declare a non-single
-//! input distribution itself, at which point the install site moves to a bare
-//! BWAG or to a small dedicated node — and this module is unaffected. Kept
-//! separate for that reason: the collector outlives the operator currently
-//! installing it.
 
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
@@ -56,11 +39,7 @@ use crate::execution_plans::prefix_merge::FinalizedPartitionState;
 use crate::serde::protobuf::WindowStateReport;
 
 /// One finalized window-aggregate state, as DataFusion reported it.
-///
-/// Every dimension the callback is keyed by is preserved. Callers that only
-/// support a subset — a single window expression, or no PARTITION BY —
-/// enforce that themselves rather than having it flattened away here, so the
-/// wire format downstream doesn't inherit today's gates.
+/// Preserves all the info from the callback for storage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservedWindowState {
     /// Output partition index of the `BoundedWindowAggExec` stream that
