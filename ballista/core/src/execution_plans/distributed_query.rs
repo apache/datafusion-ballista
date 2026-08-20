@@ -50,7 +50,7 @@ use datafusion_proto::logical_plan::{
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use futures::{Stream, StreamExt, TryStreamExt};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -452,6 +452,22 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
+/// Logs a warning if the scheduler's advertised version (from the `server`
+/// response header, e.g. `ballista/1.2.3`) doesn't match this client's.
+fn check_scheduler_version<T>(response: &tonic::Response<T>) {
+    let expected = format!("ballista/{}", crate::BALLISTA_VERSION);
+    if let Some(server) = response
+        .metadata()
+        .get("server")
+        .and_then(|v| v.to_str().ok())
+        && server != expected
+    {
+        warn!(
+            "Scheduler version mismatch: scheduler reports '{server}', client is '{expected}'"
+        );
+    }
+}
+
 /// Client will periodically invoke scheduler to check
 /// job status. There is preconfigured wait period between
 /// pulls, which increases query latency.
@@ -501,11 +517,12 @@ async fn execute_query_pull(
     .max_encoding_message_size(max_message_size)
     .max_decoding_message_size(max_message_size);
 
-    let query_result = scheduler
+    let query_response = scheduler
         .execute_query(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        .into_inner();
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    check_scheduler_version(&query_response);
+    let query_result = query_response.into_inner();
 
     let query_result = match query_result.result.unwrap() {
         execute_query_result::Result::Success(success_result) => success_result,
@@ -673,11 +690,12 @@ async fn execute_query_push(
     .max_encoding_message_size(max_message_size)
     .max_decoding_message_size(max_message_size);
 
-    let mut query_status_stream = scheduler
+    let query_push_response = scheduler
         .execute_query_push(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        .into_inner();
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    check_scheduler_version(&query_push_response);
+    let mut query_status_stream = query_push_response.into_inner();
 
     let mut prev_status: Option<job_status::Status> = None;
 
