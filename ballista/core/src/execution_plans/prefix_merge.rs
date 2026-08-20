@@ -101,26 +101,11 @@ use crate::execution_plans::plan_algebra::{
     PartitionSliceable, slice_by_global_partition,
 };
 
-/// A single already-prefix-merged window-aggregate state. Indexed by window
-/// expression (same order the upstream `BoundedWindowAggExec` reports in
-/// `window_expr()`); `None` at a slot indicates a non-aggregate window
-/// function (`row_number`, `rank`, `lead`/`lag`, ...) that contributes no
-/// state. The inner `Vec<ScalarValue>` is whatever `Accumulator::state()`
-/// returned for that aggregate (1 for SUM/COUNT/MIN/MAX, 2 for AVG's
-/// `(sum, count)`, N for sketch-backed / higher-moment aggregates).
+/// A single already-prefix-merged window-aggregate state.
 ///
 /// The scheduler produces one of these per input partition, having already
 /// combined the individual states from every prior partition into one merged
-/// value per window expression — see the `prefix_merge` module docs for the
-/// division of labor. This operator applies it; it does not compute it.
-///
-/// A newtype rather than an alias for `Vec<Option<Vec<ScalarValue>>>`. That
-/// type appears in this operator's public signatures, where it is neither
-/// readable nor searchable, and it spells "no state for this window
-/// expression" two ways — a missing index and a `None` — which every caller
-/// then has to handle. [`Self::slot`] collapses both into one answer. Any
-/// later change to the representation also stays internal rather than
-/// breaking whoever wrote the concrete type.
+/// value per window expression. This operator applies it; it does not compute it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FinalizedPartitionState {
     /// Indexed by position in the upstream operator's `window_expr()` list.
@@ -159,16 +144,6 @@ impl FinalizedPartitionState {
 
 /// How to combine each row's existing value in an output column with a
 /// scheduler-provided scalar offset. The result overwrites the column.
-///
-/// [`Overwrite`] ignores the row's existing value and just writes the offset;
-/// it's the shape needed for `first_value` / `last_value`, where the scheduler
-/// picks the correct global value once and every row gets a copy.
-///
-/// [`Overwrite`]: ScalarOp::Overwrite
-///
-/// `#[non_exhaustive]`: more ops will land (the ranking family, and whatever
-/// a segment-tree correction needs), and each would otherwise be a breaking
-/// change for anyone matching on this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ScalarOp {
@@ -191,14 +166,6 @@ pub enum ScalarOp {
 
 /// How to correct one window-function output column at row-apply time. Each
 /// entry describes exactly one column PrefixMergeExec should rewrite.
-///
-/// Two shapes are covered by construction; anything else is out of scope
-/// (`lead`/`lag`/`nth_value` are solved by halo rows in the shuffle layer, and
-/// ranking-family functions like `rank`/`percent_rank`/`ntile` want a separate
-/// segment-tree-plus-broadcast infrastructure).
-/// `#[non_exhaustive]`: the two shapes here cover what the prefix rewrite
-/// plants today, and a third (a segment-tree broadcast for the ranking
-/// family) is anticipated.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum WindowApply {
@@ -214,8 +181,7 @@ pub enum WindowApply {
         /// Combining op between `row_value` and `offset`.
         op: ScalarOp,
         /// One scalar per input partition. `offset[k]` combines with every
-        /// row passing through partition `k`. Length must match the input's
-        /// output partition count.
+        /// row passing through partition `k`.
         offset: Vec<ScalarValue>,
         /// Column overwritten with `op(row_value, offset[partition])`.
         output_column: usize,
@@ -229,9 +195,6 @@ pub enum WindowApply {
     /// AVG (without decomposition), sketch-backed windows like
     /// APPROX_DISTINCT and APPROX_QUANTILE, and statistical aggregates like
     /// STDDEV / VAR / correlation whose state is a tuple of running moments.
-    ///
-    /// [`Accumulator::merge_batch`]: datafusion::logical_expr::Accumulator::merge_batch
-    /// [`Accumulator::evaluate`]: datafusion::logical_expr::Accumulator::evaluate
     Aggregate {
         /// UDF used to construct a fresh `Accumulator` per partition.
         udf: Arc<AggregateUDF>,
@@ -250,6 +213,7 @@ pub enum WindowApply {
         /// state lives.
         window_expr_index: usize,
     },
+    // TODO: segment trees, deconstructable ops (AVG, stddev)
 }
 
 impl WindowApply {
@@ -262,26 +226,14 @@ impl WindowApply {
 }
 
 /// Apply pre-merged window-aggregate state (computed by the scheduler) to
-/// each row of the current partition's output. See the `prefix_merge` module
-/// docs for the division of labor between scheduler and executor and the AQE
-/// pipeline this fits into.
-///
-/// [`WindowApply::Aggregate`] entries are applied per row via a seeded
-/// `Accumulator`; [`WindowApply::Scalar`] entries are applied per batch via
-/// arrow kernels.
+/// each row of the current partition's output.
 pub struct PrefixMergeExec {
     input: Arc<dyn ExecutionPlan>,
     /// One entry per window-function output column that needs cross-partition
-    /// correction. Non-corrected columns (e.g. `lead`/`lag` handled by halos,
-    /// or ranking functions left to segment-tree infrastructure) don't appear
-    /// here.
+    /// correction. Non-corrected columns here.
     applies: Vec<WindowApply>,
-    /// `per_partition_state[k]` is the *already-merged* state summarising
-    /// every input partition in `[0..k)`. Only consumed by
-    /// [`WindowApply::Aggregate`] entries — [`WindowApply::Scalar`] carries
-    /// its own offsets. Length equals
-    /// `input.output_partitioning().partition_count()`.
-    ///
+    /// `per_partition_state[k]` is the *already-merged* state summarizing
+    /// every input partition in `[0..k)`.
     /// Late-bound: `None` until [`PrefixMergeExec::resolve_state`]. The rule
     /// plants this operator at plan time, but the state only exists once
     /// every upstream task has closed its window and published accumulator
@@ -316,11 +268,6 @@ impl PrefixMergeExec {
         Self::try_new_inner(input, applies, Some(per_partition_state))
     }
 
-    /// Errors on any of:
-    /// - `per_partition_state.len()` != input's partition count, when given.
-    /// - Any [`WindowApply::Scalar`]'s `offset.len()` != input's partition
-    ///   count.
-    /// - Any entry's `output_column` outside the input schema's field range.
     fn try_new_inner(
         input: Arc<dyn ExecutionPlan>,
         applies: Vec<WindowApply>,
@@ -375,10 +322,6 @@ impl PrefixMergeExec {
     /// Bind the prefix state. Called by the scheduler once the upstream
     /// stage's tasks have all reported their finalized accumulator state and
     /// it has been prefix-merged into one carry-in per partition.
-    ///
-    /// Idempotent overwrite, matching `RangeFilterExec::resolve_bounds`: AQE
-    /// re-plans, and a later pass may resolve the same operator again with
-    /// the same values.
     pub fn resolve_state(&self, state: Vec<FinalizedPartitionState>) -> Result<()> {
         let partition_count = self.input.output_partitioning().partition_count();
         if state.len() != partition_count {
@@ -404,9 +347,7 @@ impl PrefixMergeExec {
         &self.applies
     }
 
-    /// This operator's input. The scheduler descends from here to find the
-    /// state-sync boundary and the window operator whose expressions the
-    /// reported state is indexed against.
+    /// This operator's input.
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
     }
@@ -455,9 +396,7 @@ impl DisplayAs for PrefixMergeExec {
 impl PartitionSliceable for PrefixMergeExec {
     /// Both the per-partition state and every [`WindowApply::Scalar`]'s
     /// offsets are indexed by global input partition, so both slice parallel
-    /// to the input. [`WindowApply::Aggregate`] carries `window_expr_index`,
-    /// which indexes window expressions rather than partitions, so it rides
-    /// over unchanged.
+    /// to the input.
     fn slice_to_partitions(
         &self,
         child: Arc<dyn ExecutionPlan>,
@@ -481,6 +420,9 @@ impl PartitionSliceable for PrefixMergeExec {
                     )?,
                     output_column: *output_column,
                 }),
+                // [`WindowApply::Aggregate`] carries `window_expr_index`,
+                // which indexes window expressions rather than partitions, so it rides
+                // over unchanged.
                 aggregate => Ok(aggregate.clone()),
             })
             .collect::<Result<Vec<_>>>()?;
@@ -764,6 +706,7 @@ struct AggregateApply {
     /// carried through so error messages can point at the offender.
     apply_index: usize,
     accumulator: Box<dyn Accumulator>,
+    /// arguments for the accumulator, ie. the x in AVG(x)
     args: Vec<Arc<dyn PhysicalExpr>>,
     output_column: usize,
 }
@@ -815,9 +758,9 @@ impl AggregateApply {
             .collect::<Result<Vec<_>>>()?;
 
         let mut new_values: Vec<ScalarValue> = Vec::with_capacity(num_rows);
-        for i in 0..num_rows {
+        for row_idx in 0..num_rows {
             let row_args: Vec<ArrayRef> =
-                arg_arrays.iter().map(|a| a.slice(i, 1)).collect();
+                arg_arrays.iter().map(|a| a.slice(row_idx, 1)).collect();
             self.accumulator.update_batch(&row_args)?;
             new_values.push(self.accumulator.evaluate()?);
         }
@@ -910,12 +853,6 @@ impl RecordBatchStream for ApplyStream {
 
 /// Rebuild a batch with one column replaced, naming the apply responsible if
 /// the new column's type no longer matches the schema.
-///
-/// Arrow's own error reports a type mismatch at a column index and nothing
-/// about which correction produced it. An apply can drift from its column by
-/// promotion in a scalar kernel, or by an accumulator's `evaluate()` widening
-/// relative to the column it overwrites — both of which are about the apply,
-/// not the batch.
 ///
 /// # Arguments
 ///
