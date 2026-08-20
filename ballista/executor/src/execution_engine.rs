@@ -113,8 +113,7 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     ///
     /// Errors fail the task. This state is load-bearing for the downstream
     /// stage's prefix merge, so losing a report yields a wrong answer rather
-    /// than a degraded one — unlike
-    /// [`Self::collect_runtime_stats_reports`], which is telemetry.
+    /// than a degraded one.
     fn collect_window_state_reports(
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {

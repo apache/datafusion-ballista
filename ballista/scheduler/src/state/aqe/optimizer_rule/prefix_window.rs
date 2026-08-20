@@ -19,10 +19,7 @@
 //! parallel prefix scan, so `BoundedWindowAggExec`'s single-partition
 //! constraint isn't a serial bottleneck.
 //!
-//! Sibling of the halo rewrite in [`super::parallel_window`], and mutually
-//! exclusive with it: that rule gates on `is_finite(&frame.start_bound)`,
-//! this one on `start_bound.is_unbounded()`. No plan can match both, so
-//! their order in the optimizer chain doesn't matter.
+//! Sibling of the halo rewrite in [`super::parallel_window`].
 //!
 //! # Status
 //!
