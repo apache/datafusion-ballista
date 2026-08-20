@@ -1616,9 +1616,6 @@ fn descend_to_boundary_stage_id(start: &Arc<dyn ExecutionPlan>) -> Option<usize>
 /// Walks the whole subtree rather than the spine: the operator sits below the
 /// state-sync boundary, whose input subtree the exchange retains even once
 /// resolved.
-///
-/// TODO: retarget when `PartitionedBoundedWindowAggExec` collapses, alongside
-/// the collector's own walk in `shuffle_writer`.
 fn descend_to_window_expr(
     start: &Arc<dyn ExecutionPlan>,
 ) -> Option<Vec<Arc<dyn WindowExpr>>> {

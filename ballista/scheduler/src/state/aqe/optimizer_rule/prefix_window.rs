@@ -29,34 +29,9 @@
 //! codec is what ORRE's routing sketch encodes keys with — widening the codec
 //! widens this rule.
 //!
-//! # Why halo can't cover this
-//!
-//! The halo rewrite widens each range partition by the frame's reach so
-//! every frame's rows are local, then drops the halo rows afterwards. That
-//! needs a *finite* reach. An `UNBOUNDED PRECEDING` frame reaches back to
-//! the first row of the dataset, so no halo width suffices — every
-//! partition would need every prior partition. The prefix scan instead lets
-//! each task compute a partition-local running aggregate, then corrects it
-//! with the merged state of all prior partitions.
-//!
-//! # Why it's worth doing
-//!
-//! h2o `window.sql` Q7 at scale 1e7, 8 partitions, 2 executors × 4 vcores:
-//!
-//! ```sql
-//! SELECT id1, id2, id3, v2,
-//!        sum(v2) OVER (ORDER BY id3 ROWS BETWEEN UNBOUNDED PRECEDING
-//!                                            AND CURRENT ROW) AS my_rolling_sum
-//! FROM large;
-//! ```
-//!
-//! Stage 0 sorts 8 partitions in parallel and costs `elapsed_compute` 1.94s.
-//! Stage 1 merges them to one partition and runs the whole window on a
-//! single core: 9.75s, 5x stage 0 for the same 10M rows.
-//!
 //! # Actual rule input
 //!
-//! Captured by logging `optimize`'s argument on the Q7 run above. The rule
+//! Captured by logging `optimize`'s argument on h2o q7. The rule
 //! sits after DataFusion's optimizer chain and before
 //! [`DistributedExchangeRule`](super::DistributedExchangeRule), so on the
 //! first pass there is no exchange or shuffle reader in the tree yet — just
@@ -80,43 +55,17 @@
 //!                         sort_order_for_reorder=[id3@2 ASC NULLS LAST]
 //! ```
 //!
-//! Note the frame is `ROWS`, not `RANGE`. The halo rule gates on
-//! `WindowFrameUnits::Range`; this one must accept both, since for an
-//! unbounded start the two differ only in tie handling at the frame edge.
-//!
-//! ## The rule fires more than once
-//!
-//! AQE re-plans as stages resolve, and `optimize` is called on each pass —
-//! three times for this query. Passes 2 and 3 receive the plan wrapped in
-//! `AdaptiveDatafusionExec` with the source subtree already behind a
-//! resolved exchange:
-//!
-//! ```text
-//! AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending
-//!   ProjectionExec: ...
-//!     BoundedWindowAggExec: ...
-//!       SortPreservingMergeExec: [id3@2 ASC NULLS LAST]
-//!         ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=true
-//!           SortExec: expr=[id3@2 ASC NULLS LAST], preserve_partitioning=[true]
-//!             DataSourceExec: ...
-//! ```
-//!
-//! So the rewrite needs the same idempotency guard the halo rule uses
-//! (`subtree_contains_our_rewrite`): without it, pass 2 would wrap the
-//! output of pass 1 again.
-//!
 //! # Target shape
 //!
 //! The input partitions are **not** range-disjoint. Stage 0 is a bare
 //! `SortExec` over 8 file groups, so each partition is locally sorted but
-//! spans the whole value range — which is exactly why the SPM is needed for
-//! correctness today. A prefix scan needs "all prior partitions" to be well
+//! spans the whole value range. A prefix scan needs "all prior partitions" to be well
 //! defined, so the rewrite has to introduce the disjointness itself, with
 //! the same `RSE#1 → SortExec → ORRE → RSE#2` preamble the halo rule builds:
 //!
 //! ```text
 //! PrefixMergeExec [per-partition state baked in by the scheduler]
-//!   ExchangeExec (partitioning: None)          <- boundary 2, planted here
+//!   ExchangeExec (partitioning: None)          <- boundary 2, to exchange prefixes with scheduler
 //!     PartitionedBoundedWindowAggExec [wraps BWAG; UnspecifiedDistribution,
 //!                                      WindowStateCollector installed]
 //!       RangeFilterExec (halo_lo=0, halo_hi=0, cuts=pending)
@@ -154,31 +103,6 @@
 //! each partition to itself, and exists only so the scheduler has a
 //! synchronization point at which every stage-1 task has published its
 //! accumulator state.
-//!
-//! ## Differences from the halo rewrite
-//!
-//! - One `RangeFilterExec` with zero halo, not a wide/narrow pair. The trim
-//!   above the shuffle reader is needed regardless — the reader delivers a
-//!   superset and RFE narrows to the partition's own cut range. Halo is the
-//!   *widening* on top of that trim, and an unbounded start has no finite
-//!   reach to widen by; the correction rides accumulator state instead of
-//!   neighbouring rows.
-//! - The SPM above BWAG is dropped rather than kept — that collapse is the
-//!   bottleneck being removed.
-//! - Three stages rather than two, for the state round trip.
-//!
-//! ## Why it can't be one stage
-//!
-//! `PrefixMergeExec::try_new` takes its per-partition state by value, and
-//! that state only exists once every upstream task has closed its window and
-//! published accumulator state. So the collector rides stage 1's tasks, the
-//! scheduler prefix-merges the reports as they arrive, and `PrefixMergeExec`
-//! is constructed for stage 2 with the merged result baked in.
-//!
-//! The cost of that round trip is a full materialization of the window
-//! output — for Q7, 10M rows — written and read back across boundary 2. The
-//! halo path never pays it. Worth measuring against the 9.75s serial
-//! baseline before assuming the parallel window is a net win.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -208,9 +132,7 @@ use log::debug;
 /// starting point and the target shape.
 ///
 /// Shares `ballista.planner.parallel_window.enabled` with the halo rule for
-/// now. The two rewrites are mutually exclusive on frame shape, so one key
-/// selects both without ambiguity; whether prefix earns its own key is still
-/// open.
+/// now.
 #[derive(Debug, Clone, Default)]
 pub struct PrefixWindowRule {
     /// Shared with every other rule that plants an `ExchangeExec`, so
@@ -392,9 +314,6 @@ fn maybe_rewrite_bwag(
         orre,
         Some(vec![sort_expr.clone()]),
     )?);
-    // Zero halo: the shuffle reader delivers a superset and this trims each
-    // task to its own cut range. There is no halo to widen by — the prefix
-    // correction rides accumulator state, not neighbouring rows.
     let trim: Arc<dyn ExecutionPlan> = Arc::new(RangeFilterExec::try_new_pending(
         rse2,
         sort_expr.expr.clone(),
@@ -404,7 +323,6 @@ fn maybe_rewrite_bwag(
     )?);
     // DER inserts boundary 1 under this trim, because its child (RSE#2) is
     // partition-preserving and sits directly on the ORRE.
-
     let partitioned_bwag: Arc<dyn ExecutionPlan> = Arc::new(
         PartitionedBoundedWindowAggExec::try_new(window.window_expr().to_vec(), trim)?,
     );
@@ -424,7 +342,7 @@ fn maybe_rewrite_bwag(
     // indices — which is why the aggregate's own argument expressions carry
     // over unchanged despite being resolved against the input schema.
     //
-    // SUM goes through the Aggregate path even though the cheaper Scalar path
+    // For now SUM goes through the Aggregate path even though the cheaper Scalar path
     // covers it: seeding an accumulator and replaying rows is the shape
     // non-decomposable aggregates need, and exercising it where the answer is
     // independently checkable beats the arrow-kernel shortcut. Choosing Scalar
