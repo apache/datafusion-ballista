@@ -21,16 +21,13 @@
 //!
 //! Sibling of the halo rewrite in [`super::parallel_window`].
 //!
-//! # Status
+//! # The shape it gates on
 //!
-//! Correct end to end for the shape it gates on: no PARTITION BY, a single
-//! ascending `Float64` ORDER BY column, and an ever-expanding frame.
-//! `prefix_window.rs` in `ballista/client/tests` holds it to the serial
-//! answer through a real cluster.
-//!
-//! Not yet reached by h2o Q7, which orders by an `Int64` column while ORRE
-//! routes on a Float64-only T-Digest — a sketch restriction that lifts with
-//! the KLL migration, not anything in this rule. See `declines_int64_routing`.
+//! No PARTITION BY, a single ascending ORDER BY column, and an ever-expanding
+//! frame. The ORDER BY column's type is gated by asking
+//! [`SortKeyCodec::try_new`] rather than by a type list here, because that
+//! codec is what ORRE's routing sketch encodes keys with — widening the codec
+//! widens this rule.
 //!
 //! # Why halo can't cover this
 //!
@@ -192,13 +189,12 @@ use ballista_core::execution_plans::{
     InputOrder, OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec,
     PrefixMergeExec, RangeFilterExec, RuntimeStatsExec, WindowApply,
 };
-use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::DataType;
+use ballista_core::sort_key::SortKeyCodec;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::window::PlainAggregateWindowExpr;
-use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::sorts::sort::SortExec;
@@ -289,19 +285,6 @@ fn subtree_contains_our_rewrite(nodes: &[&Arc<dyn ExecutionPlan>]) -> bool {
     false
 }
 
-/// ORRE requires `nulls_first == false` (T-Digest has no NULL slot). BWAG's
-/// `NULLS LAST` expressions already arrive that way; sanitize anyway so the
-/// invariant is visible.
-fn normalize_sort_expr(expr: &PhysicalSortExpr) -> PhysicalSortExpr {
-    PhysicalSortExpr {
-        expr: expr.expr.clone(),
-        options: SortOptions {
-            descending: expr.options.descending,
-            nulls_first: false,
-        },
-    }
-}
-
 /// Match the prefix-scan shape rooted at `node` and splice the target from
 /// the [module docs][self] in place of the DF-planted
 /// `BWAG → SPM → SortExec → <source>` subtree.
@@ -375,13 +358,17 @@ fn maybe_rewrite_bwag(
     }
     let source_schema = base_source.schema();
 
-    // ORRE routes on the ORDER BY column, Float64-only today (T-Digest).
+    // ORRE routes on the ORDER BY column via a `SortKeySketch`, so the gate
+    // is whatever that sketch's codec can encode — asked here rather than
+    // spelled as a type list, so widening the codec widens this rule with no
+    // edit. `SortKeyCodec` gives NULLs a position per `nulls_first`, so a
+    // nullable key needs no separate gate.
     let routing_type = order.expr.data_type(&source_schema)?;
-    if !matches!(routing_type, DataType::Float64) {
+    if SortKeyCodec::try_new(&routing_type, order.options).is_none() {
         return Ok(None);
     }
 
-    let sort_expr = normalize_sort_expr(order);
+    let sort_expr = order.clone();
 
     // RSE#1 below the pipeline-breaking Sort so its sketch fully ingests and
     // reports while Sort buffers — ORRE then routes against final cuts.
@@ -411,8 +398,8 @@ fn maybe_rewrite_bwag(
     let trim: Arc<dyn ExecutionPlan> = Arc::new(RangeFilterExec::try_new_pending(
         rse2,
         sort_expr.expr.clone(),
-        ScalarValue::Float64(Some(0.0)),
-        ScalarValue::Float64(Some(0.0)),
+        ScalarValue::new_zero(&routing_type)?,
+        ScalarValue::new_zero(&routing_type)?,
         Some(InputOrder::Ordered(sort_expr.options)),
     )?);
     // DER inserts boundary 1 under this trim, because its child (RSE#2) is
@@ -478,7 +465,7 @@ fn maybe_rewrite_bwag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::datatypes::{Field, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::config::ExtensionOptions;
     use datafusion::datasource::MemTable;
     use datafusion::physical_plan::displayable;
@@ -497,6 +484,10 @@ mod tests {
             Field::new("id2", DataType::Int64, false),
             Field::new("id3", DataType::Int64, false),
             Field::new("v2", DataType::Float64, false),
+            // Not in h2o's schema. The sketch codec places a NULL run per
+            // `nulls_first`, so nullability is not part of the type gate —
+            // `rewrites_nullable_routing` is what holds that open.
+            Field::new("nullable_key", DataType::Int64, true),
         ]));
         let ctx = SessionContext::new_with_config(
             SessionConfig::new().with_target_partitions(PARTITIONS),
@@ -523,10 +514,6 @@ mod tests {
     /// `UNBOUNDED PRECEDING` frame, no PARTITION BY, single ascending
     /// ORDER BY on a `Float64` column. Asserts the target from the module
     /// docs.
-    ///
-    /// Orders by `v2` rather than h2o Q7's `id3` because the routing gate is
-    /// `Float64`-only today — see `declines_int64_routing`, which pins Q7's
-    /// actual shape and why it doesn't rewrite.
     ///
     /// Only this rule runs here, so boundary 1's `ExchangeExec` is absent —
     /// `DistributedExchangeRule` inserts that one later in the chain. What
@@ -578,16 +565,12 @@ mod tests {
         Ok(())
     }
 
-    /// h2o Q7 verbatim. It has the right frame and the right partitioning,
-    /// but orders by `id3`, which is `Int64` in the h2o schema — and both
-    /// window rules gate routing on `Float64`, a T-Digest restriction that
-    /// lifts with the KLL migration.
-    ///
-    /// So Q7 is blocked on the sketch, not on anything in this rule. When
-    /// KLL lands this test starts failing, which is the signal to widen the
-    /// gate and delete it.
+    /// h2o Q7 verbatim, ordering by `Int64 id3`. The rewrite must not be
+    /// specific to the `Float64` key `rewrites_unbounded_preceding_shape`
+    /// uses: the gate is what the routing sketch's codec encodes, and that
+    /// covers every fixed-width type.
     #[tokio::test]
-    async fn declines_int64_routing() -> datafusion::common::Result<()> {
+    async fn rewrites_int64_routing() -> datafusion::common::Result<()> {
         let plan = plan(
             "SELECT sum(v2) OVER (ORDER BY id3 \
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) \
@@ -597,9 +580,29 @@ mod tests {
         let rewritten = optimize(plan)?;
         let rendered = format!("{}", displayable(rewritten.as_ref()).indent(true));
         assert!(
-            !rendered.contains("PrefixMergeExec"),
-            "ORRE cannot route on a non-Float64 key until the sketch \
-             widens:\n{rendered}"
+            rendered.contains("PrefixMergeExec"),
+            "an Int64 routing key is one the sketch codec encodes:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A nullable routing key. NULLs do not break the prefix: they sort as one
+    /// run to the end `nulls_first` names, so the run lands wholly inside one
+    /// partition and "every partition before k" stays well defined.
+    #[tokio::test]
+    async fn rewrites_nullable_routing() -> datafusion::common::Result<()> {
+        let plan = plan(
+            "SELECT sum(v2) OVER (ORDER BY nullable_key \
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) \
+             FROM large",
+        )
+        .await?;
+        let rewritten = optimize(plan)?;
+        let rendered = format!("{}", displayable(rewritten.as_ref()).indent(true));
+        assert!(
+            rendered.contains("PrefixMergeExec"),
+            "a nullable routing key is routable — the codec gives the NULL \
+             run a position:\n{rendered}"
         );
         Ok(())
     }

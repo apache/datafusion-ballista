@@ -158,7 +158,8 @@ impl RangeFilterExec {
     ///   `raw_bounds.len()`.
     /// * `filter_expr` - numeric physical expression each row is compared by.
     /// * `halo_lo`, `halo_hi` - non-negative widening amounts applied by
-    ///   [`RangeFilterExec::resolve_bounds`]. Both must be finite Float64 today.
+    ///   [`RangeFilterExec::resolve_bounds`], in `filter_expr`'s own type. A
+    ///   float halo must also be finite.
     /// * `input_order` - the order in which rows will arrive
     pub fn try_new_pending(
         input: Arc<dyn ExecutionPlan>,

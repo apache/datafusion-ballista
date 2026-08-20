@@ -1143,12 +1143,6 @@ pub struct SuccessfulTask {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WindowStateReport {
     /// The stage's *global* output partition this state belongs to.
-    ///
-    /// DataFusion reports a task-local index, because a task's plan is
-    /// restricted to a partition slice. The producing `ShuffleWriterExec`
-    /// translates it through the `global_output_partition_ids` the scheduler
-    /// stamped on it, so what crosses the wire is already global — the
-    /// scheduler must not re-derive it.
     #[prost(uint32, tag = "1")]
     pub global_partition_id: u32,
     /// Position in the window operator's `window_expr()` list. Indexes window

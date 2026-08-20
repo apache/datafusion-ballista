@@ -37,7 +37,7 @@ mod prefix_window_tests {
         BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_PARALLEL_WINDOW_ENABLED,
         BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK,
     };
-    use datafusion::arrow::array::Float64Array;
+    use datafusion::arrow::array::{Float64Array, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::Result;
@@ -82,6 +82,17 @@ mod prefix_window_tests {
             .collect()
     }
 
+    /// Non-NULL keys per partition of the nullable-key table. The remaining
+    /// row of each partition carries a NULL key.
+    const KEYS_PER_PARTITION: usize = ROWS_PER_PARTITION - 1;
+    /// `v` on every NULL-key row.
+    ///
+    /// Equal across the whole run, which is what makes the expectation well
+    /// defined: NULLs tie under `ORDER BY k`, so their order among themselves
+    /// is arbitrary, and equal values give the same running sums whichever
+    /// order the engine picks.
+    const NULL_KEY_VALUE: f64 = 100.0;
+
     /// `max_partitions_per_task`, so tasks carry a multi-partition slice
     /// rather than one partition each. That exercises the task builder's
     /// index remapping: `PrefixMergeExec`'s state is keyed by global
@@ -113,10 +124,6 @@ mod prefix_window_tests {
     /// [`PARTITIONS`]-wide rather than depending on how DataFusion chooses to
     /// split a single small file.
     ///
-    /// `v` is `Float64` because ORRE routes on a T-Digest, which is
-    /// Float64-only until the KLL migration. That restriction is what keeps
-    /// h2o Q7 (`ORDER BY id3`, `Int64`) from being rewritten today.
-    ///
     /// The returned [`TempDir`] owns the files and must outlive the query.
     async fn register_input(ctx: &SessionContext) -> Result<TempDir> {
         let schema =
@@ -140,6 +147,98 @@ mod prefix_window_tests {
         )
         .await?;
         Ok(dir)
+    }
+
+    /// `(k, v)` rows per partition, where `k` is a nullable `Int64` routing
+    /// key and `v` is the value summed over it.
+    ///
+    /// One NULL per input partition rather than one partition of NULLs, so
+    /// ORRE has to gather the run out of every input instead of passing a
+    /// single partition through.
+    fn nullable_key_partitions() -> Vec<Vec<(Option<i64>, f64)>> {
+        (0..PARTITIONS)
+            .map(|partition| {
+                let mut rows: Vec<(Option<i64>, f64)> = (0..KEYS_PER_PARTITION)
+                    .map(|row| {
+                        let key = (partition * KEYS_PER_PARTITION + row + 1) as i64;
+                        (Some(key), key as f64)
+                    })
+                    .collect();
+                rows.push((None, NULL_KEY_VALUE));
+                rows
+            })
+            .collect()
+    }
+
+    /// Running sums of [`nullable_key_partitions`] in `k ASC NULLS LAST`
+    /// order: the non-NULL keys ascending, then the NULL run.
+    fn expected_null_key_running_sums() -> Vec<f64> {
+        let mut total = 0.0;
+        let mut sums: Vec<f64> = (1..=PARTITIONS * KEYS_PER_PARTITION)
+            .map(|key| {
+                total += key as f64;
+                total
+            })
+            .collect();
+        sums.extend((0..PARTITIONS).map(|_| {
+            total += NULL_KEY_VALUE;
+            total
+        }));
+        sums
+    }
+
+    /// Register [`nullable_key_partitions`] as `tk(k Int64 NULL, v Float64)`,
+    /// one parquet file per partition. Same reasons as [`register_input`].
+    async fn register_nullable_key_input(ctx: &SessionContext) -> Result<TempDir> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, true),
+            Field::new("v", DataType::Float64, false),
+        ]));
+        let dir = TempDir::new().expect("temp dir");
+        for (partition, rows) in nullable_key_partitions().into_iter().enumerate() {
+            let keys: Int64Array = rows.iter().map(|(k, _)| *k).collect();
+            let values: Float64Array = rows.iter().map(|(_, v)| *v).collect();
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(keys), Arc::new(values)],
+            )?;
+            let path = dir.path().join(format!("part-{partition}.parquet"));
+            let file = File::create(&path).expect("create parquet file");
+            let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None)?;
+            writer.write(&batch)?;
+            writer.close()?;
+        }
+        ctx.register_parquet(
+            "tk",
+            dir.path().to_str().expect("utf-8 temp path"),
+            ParquetReadOptions::default(),
+        )
+        .await?;
+        Ok(dir)
+    }
+
+    /// Running sums over `tk`, ordered by the nullable key.
+    async fn running_sums_by_null_key(ctx: &SessionContext) -> Result<Vec<f64>> {
+        let batches = ctx
+            .sql(
+                "SELECT k, \
+                        sum(v) OVER (ORDER BY k \
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rs \
+                 FROM tk \
+                 ORDER BY k",
+            )
+            .await?
+            .collect()
+            .await?;
+
+        let mut sums = Vec::with_capacity(TOTAL_ROWS);
+        for batch in &batches {
+            let rs = datafusion::common::cast::as_float64_array(batch.column(1))?;
+            for row in 0..batch.num_rows() {
+                sums.push(rs.value(row));
+            }
+        }
+        Ok(sums)
     }
 
     /// `(v, running_sum)` pairs ordered by `v`.
@@ -195,6 +294,27 @@ mod prefix_window_tests {
         Ok(())
     }
 
+    /// Same, on an `Int64` key that carries NULLs — the two things the rule's
+    /// type gate used to refuse.
+    ///
+    /// A NULL run is the case where "all prior partitions" could quietly stop
+    /// meaning anything: the run has to sort wholly to one end and land in one
+    /// partition, or the rows around it get a prefix that skips it.
+    #[tokio::test]
+    async fn prefix_scan_matches_serial_running_sum_with_null_keys() -> Result<()> {
+        let ctx = context(true).await;
+        let _data = register_nullable_key_input(&ctx).await?;
+        let sums = running_sums_by_null_key(&ctx).await?;
+
+        assert_eq!(
+            sums,
+            expected_null_key_running_sums(),
+            "running sums over a nullable key must be global — the NULL run \
+             sorts last and must still be carried into the prefix"
+        );
+        Ok(())
+    }
+
     /// Same query with the rewrite off, as a guard on the test itself: if
     /// this ever fails, the harness is wrong rather than the rewrite.
     #[tokio::test]
@@ -205,6 +325,18 @@ mod prefix_window_tests {
 
         let actual_rs: Vec<f64> = rows.iter().map(|(_, rs)| *rs).collect();
         assert_eq!(actual_rs, expected_running_sums());
+        Ok(())
+    }
+
+    /// The nullable-key query with the rewrite off, guarding
+    /// `expected_null_key_running_sums` the same way.
+    #[tokio::test]
+    async fn serial_null_key_running_sum_is_correct_without_rewrite() -> Result<()> {
+        let ctx = context(false).await;
+        let _data = register_nullable_key_input(&ctx).await?;
+        let sums = running_sums_by_null_key(&ctx).await?;
+
+        assert_eq!(sums, expected_null_key_running_sums());
         Ok(())
     }
 }
