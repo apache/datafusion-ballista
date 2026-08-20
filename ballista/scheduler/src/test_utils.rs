@@ -90,7 +90,7 @@ impl TableProvider for ExplodingTableProvider {
     async fn scan(
         &self,
         _ctx: &dyn Session,
-        _projection: Option<&Vec<usize>>,
+        _projection: Option<&[usize]>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
