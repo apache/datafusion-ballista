@@ -24,13 +24,24 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-/// Reserve a free TCP port by binding to :0 and immediately releasing it.
+/// Reserve `N` free TCP ports by binding each to :0, releasing them only once
+/// every port has been read.
 ///
-/// Inherently racy, but adequate here: the child binds within milliseconds and
-/// the tests are the only thing running.
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("local addr").port()
+/// Holding all `N` listeners is what makes the ports distinct from each other.
+/// Releasing each before taking the next lets the kernel hand the same number
+/// back, and a caller that asked for two ports then gives its child one port
+/// for two servers: the second bind fails `AddrInUse` and the child exits
+/// during startup.
+///
+/// Still racy against the rest of the machine, which is adequate here: the
+/// child binds within milliseconds and the tests are the only thing running.
+fn free_ports<const N: usize>() -> [u16; N] {
+    let listeners: [TcpListener; N] = std::array::from_fn(|_| {
+        TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port")
+    });
+    listeners
+        .each_ref()
+        .map(|listener| listener.local_addr().expect("local addr").port())
 }
 
 /// Open a child process log file for append.
@@ -163,7 +174,7 @@ impl TestClusterBuilder {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        let scheduler_port = free_port();
+        let [scheduler_port] = free_ports();
 
         let scheduler_log = log_dir.join("scheduler.log");
         let scheduler_stdout = open_log(&scheduler_log).map_err(|e| {
@@ -304,8 +315,9 @@ impl TestCluster {
     }
 
     pub(crate) fn spawn_executor(&mut self, index: usize) -> Result<(), String> {
-        let port = free_port();
-        let grpc_port = free_port();
+        // One call, so the two are guaranteed distinct: the executor binds
+        // its flight server to `port` and its gRPC server to `grpc_port`.
+        let [port, grpc_port] = free_ports();
         let work_dir = self.temp.path().join(format!("executor-{index}"));
         std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
@@ -788,6 +800,24 @@ impl Drop for TestCluster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ports handed out together must differ. An executor gets two of them, one
+    /// for its flight server and one for its gRPC server, and a repeat makes
+    /// the second bind fail `AddrInUse` and kills the executor during startup,
+    /// which surfaces as the whole cluster timing out on registration.
+    ///
+    /// Guards the requirement rather than reproducing a failure: holding every
+    /// listener makes this hold by construction, since the OS will not assign
+    /// one port to two live sockets. It is here to fail if anyone returns to
+    /// reserving the ports one at a time, which is what allows a repeat.
+    #[test]
+    fn ports_reserved_together_are_distinct() {
+        let ports = free_ports::<16>();
+        let mut seen = std::collections::HashSet::new();
+        for port in ports {
+            assert!(seen.insert(port), "port {port} handed out twice: {ports:?}");
+        }
+    }
 
     #[tokio::test]
     async fn cluster_starts_with_the_requested_executors_registered() {
