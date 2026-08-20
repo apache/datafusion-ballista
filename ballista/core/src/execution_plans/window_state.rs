@@ -352,15 +352,70 @@ pub fn prefix_merge_window_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::{ArrayRef, Int64Array};
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::functions_aggregate::approx_distinct::approx_distinct_udaf;
     use datafusion::functions_aggregate::sum::sum_udaf;
     use datafusion::logical_expr::{
         WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
     };
     use datafusion::physical_expr::PhysicalSortExpr;
-    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+    use datafusion::physical_expr::expressions::{Column, col};
+    use datafusion::physical_plan::PhysicalExpr;
     use datafusion::physical_plan::windows::create_window_expr;
+    use prost::Message;
+
+    /// Encoded size of one `approx_distinct` state observed over `rows`
+    /// distinct values, as it would ride `SuccessfulTask`.
+    fn approx_distinct_wire_size(rows: i64) -> Result<usize> {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let aggregate = AggregateExprBuilder::new(approx_distinct_udaf(), vec![column])
+            .schema(Arc::clone(&schema))
+            .alias("wire_size")
+            .build()?;
+        let mut accumulator = aggregate.create_accumulator()?;
+        let values: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+        accumulator.update_batch(&[values])?;
+        let report = window_state_to_proto(
+            0,
+            &ObservedWindowState {
+                partition_idx: 0,
+                window_expr_index: 0,
+                partition_key: vec![],
+                state: accumulator.state()?,
+            },
+        )?;
+        Ok(report.encoded_len())
+    }
+
+    /// A sketch state's wire size is fixed by the sketch, not by the rows it
+    /// saw: `approx_distinct` keeps a dense HLL register array. That is what
+    /// makes a task's payload predictable — it is (partitions in the task's
+    /// slice) × (aggregate window expressions) × this, with no term for input
+    /// size.
+    ///
+    /// The ceiling is deliberately loose. It is not a budget, only a tripwire
+    /// for a representation change that grows the payload by an order of
+    /// magnitude.
+    #[test]
+    fn sketch_state_wire_size_does_not_grow_with_rows() -> Result<()> {
+        let one_row = approx_distinct_wire_size(1)?;
+        let many_rows = approx_distinct_wire_size(100_000)?;
+        assert_eq!(
+            one_row, many_rows,
+            "a dense HLL encodes to the same size at any cardinality"
+        );
+        assert!(
+            many_rows < 32 * 1024,
+            "one sketch state encodes to {many_rows} bytes, and a task \
+             carries one per partition in its slice per aggregate window \
+             expression"
+        );
+        Ok(())
+    }
 
     /// `sum(v) OVER (ORDER BY v ROWS UNBOUNDED PRECEDING TO CURRENT ROW)` —
     /// the ever-expanding shape the prefix rule plants.
