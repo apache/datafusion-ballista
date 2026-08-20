@@ -879,11 +879,8 @@ impl RunningStage {
         producer_task_id: usize,
         reports: Vec<WindowStateReport>,
     ) {
-        // TODO: prefix-merge these in global partition order and seed the
-        // downstream PrefixMergeExec. Logged for now so arrival is visible
-        // while the consumer is still being built.
         for report in &reports {
-            log::debug!(
+            debug!(
                 "stage {} window state arrived: global partition {} expr {} state {:?}",
                 self.stage_id,
                 report.global_partition_id,
