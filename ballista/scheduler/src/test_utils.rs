@@ -309,6 +309,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
                     runtime_stats: vec![],
+                    task_column_stats: vec![],
                 })),
             });
         }
@@ -1269,6 +1270,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
             executor_id: executor_id.to_owned(),
             partitions,
             runtime_stats: vec![],
+            task_column_stats: vec![],
         })),
     }
 }

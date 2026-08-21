@@ -59,15 +59,15 @@ pub use standalone::new_standalone_executor;
 pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
 
-use log::info;
-
 use crate::shutdown::Shutdown;
+use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, RuntimeStatsReport, ShuffleWritePartition,
-    SuccessfulTask, TaskStatus, task_status,
+    FailedTask, OperatorMetricsSet, RuntimeStatsReport, SuccessfulTask, TaskStatus,
+    task_status,
 };
 use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
+use log::info;
 
 /// [ArrowFlightServerProvider] provides a function which creates a new Arrow Flight server.
 ///
@@ -119,7 +119,7 @@ pub struct TaskCompletionExtras {
 /// along with timing and metrics information into a status message that
 /// can be sent back to the scheduler.
 pub fn as_task_status(
-    execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
+    execution_result: Result<ShuffleWriteResult, BallistaError>,
     executor_id: String,
     stage_attempt_num: usize,
     key: TaskKey,
@@ -133,13 +133,15 @@ pub fn as_task_status(
     let metrics = operator_metrics.unwrap_or_default();
     let task_id = key.task_id;
     match execution_result {
-        Ok(partitions) => {
+        Ok(shuffle_write_result) => {
             debug!(
                 "Task {task_id} finished with operator_metrics array size {} \
                  and {} runtime-stats report(s)",
                 metrics.len(),
                 runtime_stats.len(),
             );
+            let partition = shuffle_write_result.partitions;
+            let col_stats = shuffle_write_result.column_stats;
             TaskStatus {
                 task_id: task_id as u32,
                 job_id: key.job_id.clone().into(),
@@ -151,8 +153,9 @@ pub fn as_task_status(
                 metrics,
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
-                    partitions,
+                    partitions: partition,
                     runtime_stats,
+                    task_column_stats: col_stats,
                 })),
             }
         }

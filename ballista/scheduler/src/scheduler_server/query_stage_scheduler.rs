@@ -870,6 +870,7 @@ mod tests {
                         })
                         .collect(),
                     runtime_stats: vec![],
+                    task_column_stats: vec![],
                 })),
             })
             .collect();
