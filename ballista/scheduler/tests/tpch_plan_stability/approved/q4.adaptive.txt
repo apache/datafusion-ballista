@@ -1,0 +1,15 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=4, stage_resolved=true
+  SortPreservingMergeExec: [o_orderpriority@0 ASC NULLS LAST]
+    ExchangeExec: partitioning=None, plan_id=5, stage_id=3, stage_resolved=true
+      ProjectionExec: expr=[o_orderpriority@0 as o_orderpriority, count(Int64(1))@1 as order_count]
+        SortExec: expr=[o_orderpriority@0 ASC NULLS LAST], preserve_partitioning=[true]
+          AggregateExec: mode=FinalPartitioned, gby=[o_orderpriority@0 as o_orderpriority], aggr=[count(Int64(1))]
+            ExchangeExec: partitioning=Hash([o_orderpriority@0], 16), plan_id=4, stage_id=2, stage_resolved=true
+              AggregateExec: mode=Partial, gby=[o_orderpriority@0 as o_orderpriority], aggr=[count(Int64(1))]
+                HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(o_orderkey@0, l_orderkey@0)], projection=[o_orderpriority@1]
+                  ExchangeExec: partitioning=Hash([o_orderkey@0], 16), plan_id=1, stage_id=0, stage_resolved=true
+                    FilterExec: o_orderdate@1 >= 1993-07-01 AND o_orderdate@1 < 1993-10-01, projection=[o_orderkey@0, o_orderpriority@2]
+                      StatsExec: rows=150000000
+                  ExchangeExec: partitioning=Hash([l_orderkey@0], 16), plan_id=2, stage_id=1, stage_resolved=true
+                    FilterExec: l_receiptdate@2 > l_commitdate@1, projection=[l_orderkey@0]
+                      StatsExec: rows=600037902
