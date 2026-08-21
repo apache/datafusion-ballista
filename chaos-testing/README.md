@@ -201,7 +201,9 @@ or run the steps by hand: `dev/build-chaos-docker.sh`, then `kind create cluster
 ballista-chaos:test`, and `CHAOS_BACKEND=kind cargo test -p ballista-chaos
 --features k8s --test k8s -- --test-threads=1`. Behavior is tuned through
 `CHAOS_FIXTURE_DIR` (host dir shared into the pods, default
-`$HOME/.ballista-chaos-fixtures`), `CHAOS_KEEP_NS` (keep the namespace for
+`$HOME/.ballista-chaos-fixtures`; it is cleared on each run, so point it at a
+dedicated directory — the harness refuses to wipe one it did not create),
+`CHAOS_KEEP_NS` (keep the namespace for
 `kubectl` inspection), `CLUSTER_NAME`, `KEEP_CLUSTER`, and `KIND_NODE_IMAGE`.
 
 Because the harness runs outside the cluster, a few pieces bridge the gap:
