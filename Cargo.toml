@@ -135,13 +135,17 @@ debug = false
 debug-assertions = false
 incremental = false
 
-# Redirect the crates.io datafusion release to the pinned git tag. Bump the
-# tag here to advance DataFusion; the workspace-dep versions above stay put.
+# Redirect the crates.io datafusion release to a pinned git rev. Bump the rev
+# here to advance DataFusion; the workspace-dep versions above stay put.
+#
+# Currently apache/datafusion#24456 (cost-based join order enumeration), which
+# is not merged yet. Repoint at an apache/datafusion rev once it is; its merge
+# base with main is f1f0449a5327a03cc99817fcd0ac8531f0c015ec.
 [patch.crates-io]
-datafusion = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
+datafusion = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
+datafusion-cli = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
+datafusion-functions-aggregate-common = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
+datafusion-proto = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
+datafusion-proto-common = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
+datafusion-spark = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
+datafusion-substrait = { git = "https://github.com/Dandandan/arrow-datafusion.git", rev = "29c224d86b" }
