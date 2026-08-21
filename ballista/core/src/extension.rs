@@ -245,6 +245,9 @@ pub trait SessionConfigExt {
     /// Is adaptive query planner enabled
     fn ballista_adaptive_query_planner_enabled(&self) -> bool;
 
+    /// Does a sorted passthrough shuffle stage merge each task's partitions
+    fn ballista_shuffle_merge_ordered_passthrough(&self) -> bool;
+
     /// Enables or disables adaptive query planning (enabled by default).
     fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
 
@@ -629,6 +632,16 @@ impl SessionConfigExt for SessionConfig {
             .get::<BallistaConfig>()
             .map(|c| c.adaptive_query_planner_enabled())
             .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner_enabled())
+    }
+
+    fn ballista_shuffle_merge_ordered_passthrough(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_merge_ordered_passthrough())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().shuffle_merge_ordered_passthrough()
+            })
     }
 
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {

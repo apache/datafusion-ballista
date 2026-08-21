@@ -25,7 +25,9 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
-use crate::state::task_builder::restrict_plan_to_partitions;
+use crate::state::task_builder::{
+    merge_task_partitions_before_write, restrict_plan_to_partitions,
+};
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
@@ -175,6 +177,15 @@ pub struct UpdatedStages {
     pub rollback_running_stages: HashMap<usize, HashSet<String>>,
     /// Successful stages that need to be re-run due to lost outputs.
     pub resubmit_successful_stages: HashSet<usize>,
+}
+
+/// The per-task plan rewrites applied before encoding: restrict the plan's
+/// leaves to the task's partition slice, then merge the task's sorted
+/// partitions before its writer.
+fn rewrite_plan_for_task(task: &TaskDescription) -> Result<Arc<dyn ExecutionPlan>> {
+    let restricted =
+        restrict_plan_to_partitions(task.plan.clone(), &task.global_input_partition_ids)?;
+    Ok(merge_task_partitions_before_write(restricted)?)
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U> {
@@ -773,10 +784,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let stage_id = task.key.stage_id;
 
         if self.active_job_cache.get(&job_id).is_some() {
-            let restricted = restrict_plan_to_partitions(
-                task.plan.clone(),
-                &task.global_input_partition_ids,
-            )?;
+            let restricted = rewrite_plan_for_task(&task)?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(
                 restricted,
@@ -879,10 +887,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         let mut multi_tasks = Vec::with_capacity(tasks.len());
         for task in tasks {
-            let restricted = restrict_plan_to_partitions(
-                task.plan.clone(),
-                &task.global_input_partition_ids,
-            )?;
+            let restricted = rewrite_plan_for_task(&task)?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
             plan_proto.try_encode(&mut plan_buf)?;
