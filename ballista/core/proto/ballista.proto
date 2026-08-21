@@ -1097,8 +1097,12 @@ message LaunchTaskResult {
 }
 
 message LaunchMultiTaskResult {
-  bool success = 1;
-  // TODO when part of the task set are scheduled successfully
+  reserved 1;
+  reserved "success";
+  // Job IDs the executor could not decode/validate. These jobs are failed
+  // individually while the rest of the batch still runs; an empty list means
+  // the whole batch was accepted. A successful RPC does not imply every job ran.
+  repeated string failed_jobs = 2;
 }
 
 message CancelTasksParams {
