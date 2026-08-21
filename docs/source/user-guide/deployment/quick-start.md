@@ -19,128 +19,173 @@
 
 # Ballista Quickstart
 
-A simple way to start a local cluster for testing purposes is to use cargo to build the project and then run the scheduler and executor binaries directly.
+There are two ways to get a local Ballista cluster running. Choose based on your goal:
 
-Project Requirements:
+|                  | [Evaluate Ballista](#path-a-evaluate-with-docker) | [Build from source](#path-b-build-from-source) |
+| ---------------- | ------------------------------------------------- | ---------------------------------------------- |
+| Goal             | Try Ballista against the last stable release      | Develop or test against local code changes     |
+| Prerequisites    | Docker                                            | Rust, protoc                                   |
+| Cold start       | Image pull                                        | Full compile                                   |
+| Terminals needed | 1                                                 | 3                                              |
+
+> [!IMPORTANT]
+> Ballista and DataFusion are developed independently. A given Ballista release may not be compatible
+> with the latest DataFusion version. Check the [compatibility matrix](../configs.md) before integrating.
+
+---
+
+## Path A: Evaluate with Docker
+
+The only prerequisite is [Docker](https://docs.docker.com/get-docker/) with Compose v2.
+
+This uses pre-built images from GHCR that are published on each stable release. The `latest` tag
+tracks the most recent release, not the `main` branch.
+
+```shell
+docker compose -f docker-compose.quick.yml up
+```
+
+You should see output similar to:
+
+```
+ballista-scheduler-1  | Ballista Scheduler v53.0.0 listening on 0.0.0.0:50050
+ballista-executor-1   | Executor registration succeed
+ballista-executor-2   | Executor registration succeed
+```
+
+Two executors start by default. The scheduler listens on `localhost:50050`.
+
+**Connect from Rust:**
+
+```rust
+let ctx = SessionContext::remote("df://localhost:50050").await?;
+```
+
+**Connect from the CLI** (requires a local build — no pre-built CLI image is published):
+
+```shell
+cargo run -p ballista-cli -- --host localhost --port 50050
+```
+
+**To make local data available inside the executors**, uncomment and set the `volumes` block
+in `docker-compose.quick.yml`:
+
+```yaml
+ballista-executor:
+  volumes:
+    - /absolute/path/to/your/data:/absolute/path/to/your/data:ro
+```
+
+The container-side path must match exactly what you pass to `register_parquet` or
+`register_csv` — the scheduler stores that path and sends it to the executor as-is.
+
+**Tear down:**
+
+```shell
+docker compose -f docker-compose.quick.yml down
+```
+
+---
+
+## Path B: Build from source
+
+Use this path if you need to test local code changes or run against the `main` branch.
+
+**Prerequisites:**
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Protobuf Compiler](https://protobuf.dev/downloads/)
 
-## Build the project
-
-From the root of the project, build release binaries.
+**Step 1:** Build release binaries from the repository root:
 
 ```shell
 cargo build --release
 ```
 
-Start a Ballista scheduler process in a new terminal session.
+**Step 2:** Start the scheduler in a new terminal:
 
 ```shell
 RUST_LOG=info ./target/release/ballista-scheduler
 ```
 
-Start one or more Ballista executor processes in new terminal sessions. When starting more than one
-executor, a unique port number must be specified for each executor.
+**Step 3:** Start one or more executors, each in a new terminal. When running multiple
+executors, each needs a unique pair of ports:
 
 ```shell
 RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051 --bind-grpc-port 50052
+```
 
+```shell
 RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50053 --bind-grpc-port 50054
 ```
 
+> **Two-port model:** each executor exposes an Arrow Flight port (data, `-p`) and a gRPC
+> control port (`--bind-grpc-port`). Both must be reachable by the scheduler.
+
+---
+
 ## Running the examples
 
-The examples can be run using the `cargo run --bin` syntax. Open a new terminal session and run the following commands.
+Examples live in the `examples/` directory and connect to `localhost:50050` by default.
 
-### Distributed SQL Example
+### Distributed SQL example
+
+[Source](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-sql.rs)
 
 ```bash
 cd examples
 cargo run --release --example remote-sql
 ```
 
-#### Source code for distributed SQL example
+### Distributed DataFrame example
 
-```rust
-use ballista::prelude::*;
-use ballista_examples::test_util;
-use datafusion::{
-    execution::SessionStateBuilder,
-    prelude::{CsvReadOptions, SessionConfig, SessionContext},
-};
-
-/// This example demonstrates executing a simple query against an Arrow data source (CSV) and
-/// fetching results, using SQL
-#[tokio::main]
-async fn main() -> Result<()> {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(4)
-        .with_ballista_job_name("Remote SQL Example");
-
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
-
-    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
-
-    let test_data = test_util::examples_test_data();
-
-    ctx.register_csv(
-        "test",
-        &format!("{test_data}/aggregate_test_100.csv"),
-        CsvReadOptions::new(),
-    )
-    .await?;
-
-    let df = ctx
-        .sql(
-            "SELECT c1, MIN(c12), MAX(c12) \
-        FROM test \
-        WHERE c11 > 0.1 AND c11 < 0.9 \
-        GROUP BY c1",
-        )
-        .await?;
-
-    df.show().await?;
-
-    Ok(())
-}
-```
-
-### Distributed DataFrame Example
+[Source](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-dataframe.rs)
 
 ```bash
 cd examples
 cargo run --release --example remote-dataframe
 ```
 
-#### Source code for distributed DataFrame example
+### Standalone (single-process) example
 
-```rust
-use ballista::prelude::*;
-use ballista_examples::test_util;
-use datafusion::{
-    prelude::{col, lit, ParquetReadOptions, SessionContext},
-};
+No cluster needed — scheduler and executor run in the same process.
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // creating SessionContext with default settings
-    let ctx = SessionContext::remote("df://localhost:50050").await?;
+[Source](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-sql.rs)
 
-    let test_data = test_util::examples_test_data();
-    let filename = format!("{test_data}/alltypes_plain.parquet");
-
-    let df = ctx
-        .read_parquet(filename, ParquetReadOptions::default())
-        .await?
-        .select_columns(&["id", "bool_col", "timestamp_col"])?
-        .filter(col("id").gt(lit(1)))?;
-
-    df.show().await?;
-
-    Ok(())
-}
+```bash
+cd examples
+cargo run --release --example standalone-sql
 ```
+
+---
+
+## Troubleshooting
+
+**`protoc` not found during build**
+
+Install the protobuf compiler for your OS, then retry `cargo build --release`:
+
+```shell
+# Ubuntu / Debian
+sudo apt install protobuf-compiler
+
+# macOS
+brew install protobuf
+```
+
+**Executor can't reach the scheduler**
+
+The executor connects to the scheduler at startup. Make sure the scheduler is running before
+starting executors. Check that the scheduler address (`--scheduler-host`, default `localhost`)
+is reachable from the executor's network.
+
+**Port conflict**
+
+If port 50050 is already in use, start the scheduler with `--bind-port <port>` and update
+your client connection string accordingly.
+
+**Docker executor containers exit immediately**
+
+Check `docker compose logs`. The most common cause is the scheduler health check failing
+because the scheduler itself hasn't started yet — `depends_on: condition: service_healthy`
+handles this in `docker-compose.quick.yml`.
