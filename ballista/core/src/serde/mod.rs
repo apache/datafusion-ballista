@@ -56,11 +56,12 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, InputOrder,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
     OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
-    PerPartitionFilterExec, RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec,
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-    UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
+    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -68,6 +69,7 @@ use crate::serde::protobuf::{
 };
 use crate::serde::scheduler::PartitionLocation;
 use datafusion::arrow::compute::SortOptions;
+use datafusion::execution::FunctionRegistry;
 pub use generated::ballista as protobuf;
 
 /// Generated protobuf code from Ballista protocol definitions.
@@ -364,6 +366,191 @@ impl Default for BallistaPhysicalExtensionCodec {
         Self {
             default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
         }
+    }
+}
+
+/// Encode a `ScalarValue` list for the wire, naming what failed.
+fn encode_scalars(
+    values: &[datafusion::scalar::ScalarValue],
+    what: &str,
+) -> Result<Vec<datafusion_proto_common::ScalarValue>, DataFusionError> {
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        out.push(
+            datafusion_proto_common::ScalarValue::try_from(value).map_err(|e| {
+                DataFusionError::Internal(format!("failed to encode {what}: {e:?}"))
+            })?,
+        );
+    }
+    Ok(out)
+}
+
+/// Reverse of [`encode_scalars`].
+fn decode_scalars(
+    proto: &[datafusion_proto_common::ScalarValue],
+    what: &str,
+) -> Result<Vec<datafusion::scalar::ScalarValue>, DataFusionError> {
+    let mut out = Vec::with_capacity(proto.len());
+    for value in proto {
+        out.push(
+            datafusion::scalar::ScalarValue::try_from(value).map_err(|e| {
+                DataFusionError::Internal(format!("failed to decode {what}: {e:?}"))
+            })?,
+        );
+    }
+    Ok(out)
+}
+
+/// Encode `PrefixMergeExec`'s per-partition prefix state.
+///
+/// An absent slot stays absent: a window expression that published no state
+/// is not the same as one that published an empty state.
+fn encode_prefix_state(
+    state: &[FinalizedPartitionState],
+) -> Result<Vec<protobuf::FinalizedPartitionStateNode>, DataFusionError> {
+    let mut partitions = Vec::with_capacity(state.len());
+    for partition in state {
+        let mut slots = Vec::with_capacity(partition.len());
+        for slot in partition.slots() {
+            let state = match slot {
+                Some(values) => Some(protobuf::AggregateStateNode {
+                    values: encode_scalars(values, "prefix state")?,
+                }),
+                None => None,
+            };
+            slots.push(protobuf::AggregateStateSlotNode { state });
+        }
+        partitions.push(protobuf::FinalizedPartitionStateNode { slots });
+    }
+    Ok(partitions)
+}
+
+/// Reverse of [`encode_prefix_state`].
+fn decode_prefix_state(
+    proto: &[protobuf::FinalizedPartitionStateNode],
+) -> Result<Vec<FinalizedPartitionState>, DataFusionError> {
+    let mut partitions = Vec::with_capacity(proto.len());
+    for partition in proto {
+        let mut slots = Vec::with_capacity(partition.slots.len());
+        for slot in &partition.slots {
+            let state = match &slot.state {
+                Some(state) => Some(decode_scalars(&state.values, "prefix state")?),
+                None => None,
+            };
+            slots.push(state);
+        }
+        partitions.push(FinalizedPartitionState::new(slots));
+    }
+    Ok(partitions)
+}
+
+/// Encode `PrefixMergeExec`'s per-column apply descriptors.
+///
+/// The aggregate arm carries its UDAF by name, resolved from the executor's
+/// function registry on decode — the same way DataFusion moves UDFs
+/// generally.
+fn encode_window_applies(
+    applies: &[WindowApply],
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<Vec<protobuf::WindowApplyNode>, DataFusionError> {
+    let mut out = Vec::with_capacity(applies.len());
+    for apply in applies {
+        let apply = match apply {
+            WindowApply::Scalar {
+                op,
+                offset,
+                output_column,
+            } => protobuf::window_apply_node::Apply::Scalar(
+                protobuf::ScalarWindowApplyNode {
+                    op: encode_scalar_op(*op) as i32,
+                    offset: encode_scalars(offset, "scalar apply offset")?,
+                    output_column: *output_column as u32,
+                },
+            ),
+            WindowApply::Aggregate {
+                udf,
+                args,
+                output_column,
+                window_expr_index,
+            } => {
+                let mut encoded_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    encoded_args.push(
+                        datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                            arg, codec,
+                        )?,
+                    );
+                }
+                protobuf::window_apply_node::Apply::Aggregate(
+                    protobuf::AggregateWindowApplyNode {
+                        udf_name: udf.name().to_string(),
+                        args: encoded_args,
+                        output_column: *output_column as u32,
+                        window_expr_index: *window_expr_index as u32,
+                    },
+                )
+            }
+        };
+        out.push(protobuf::WindowApplyNode { apply: Some(apply) });
+    }
+    Ok(out)
+}
+
+/// Reverse of [`encode_window_applies`]. `schema` is the operator's input
+/// schema, which the aggregate arm's argument expressions resolve against.
+fn decode_window_applies(
+    proto: &[protobuf::WindowApplyNode],
+    ctx: &TaskContext,
+    schema: &datafusion::arrow::datatypes::Schema,
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<Vec<WindowApply>, DataFusionError> {
+    let mut out = Vec::with_capacity(proto.len());
+    for node in proto {
+        let apply = node.apply.as_ref().ok_or_else(|| {
+            DataFusionError::Internal("WindowApplyNode missing apply".into())
+        })?;
+        out.push(match apply {
+            protobuf::window_apply_node::Apply::Scalar(scalar) => WindowApply::Scalar {
+                op: decode_scalar_op(scalar.op()),
+                offset: decode_scalars(&scalar.offset, "scalar apply offset")?,
+                output_column: scalar.output_column as usize,
+            },
+            protobuf::window_apply_node::Apply::Aggregate(aggregate) => {
+                let mut args = Vec::with_capacity(aggregate.args.len());
+                for arg in &aggregate.args {
+                    args.push(
+                        datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+                            arg, ctx, schema, codec,
+                        )?,
+                    );
+                }
+                WindowApply::Aggregate {
+                    udf: ctx.udaf(&aggregate.udf_name)?,
+                    args,
+                    output_column: aggregate.output_column as usize,
+                    window_expr_index: aggregate.window_expr_index as usize,
+                }
+            }
+        });
+    }
+    Ok(out)
+}
+
+fn encode_scalar_op(op: ScalarOp) -> protobuf::ScalarOpNode {
+    match op {
+        ScalarOp::Add => protobuf::ScalarOpNode::Add,
+        ScalarOp::Min => protobuf::ScalarOpNode::Min,
+        ScalarOp::Max => protobuf::ScalarOpNode::Max,
+        ScalarOp::Overwrite => protobuf::ScalarOpNode::Overwrite,
+    }
+}
+
+fn decode_scalar_op(op: protobuf::ScalarOpNode) -> ScalarOp {
+    match op {
+        protobuf::ScalarOpNode::Add => ScalarOp::Add,
+        protobuf::ScalarOpNode::Min => ScalarOp::Min,
+        protobuf::ScalarOpNode::Max => ScalarOp::Max,
+        protobuf::ScalarOpNode::Overwrite => ScalarOp::Overwrite,
     }
 }
 
@@ -706,6 +893,20 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 Ok(Arc::new(PerPartitionFilterExec::try_new(
                     input.clone(),
                     predicates,
+                )?))
+            }
+            PhysicalPlanType::PrefixMerge(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PrefixMergeExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let schema = input.schema();
+                Ok(Arc::new(PrefixMergeExec::try_new_resolved(
+                    input.clone(),
+                    decode_window_applies(&node.applies, ctx, schema.as_ref(), self)?,
+                    decode_prefix_state(&node.per_partition_state)?,
                 )?))
             }
             PhysicalPlanType::RangeFilter(node) => {
@@ -1105,6 +1306,32 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 ))
             })?;
             Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PrefixMergeExec>() {
+            // An executor has no route to prefix state, so a plan reaching
+            // the wire unresolved could only emit partition-local aggregates.
+            // Refuse, the way RangeFilterExec refuses unresolved bounds.
+            let state = exec.per_partition_state().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "PrefixMergeExec: cannot serialize before resolve_state()".into(),
+                )
+            })?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PrefixMerge(
+                    protobuf::PrefixMergeExecNode {
+                        applies: encode_window_applies(
+                            exec.applies(),
+                            self.default_codec.as_ref(),
+                        )?,
+                        per_partition_state: encode_prefix_state(&state)?,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PrefixMergeExecNode: {e:?}"
+                ))
+            })?;
+            Ok(())
         } else if let Some(exec) = node.downcast_ref::<RangeFilterExec>() {
             let raw_bounds = exec.raw_bounds().ok_or_else(|| {
                 DataFusionError::Internal(
@@ -1441,6 +1668,92 @@ mod test {
     /// `RangeShuffleReaderExec` carries its merge ordering across the wire —
     /// the reader's k-way merge machinery is inert without it, and the
     /// scheduler side plants the reader with the child's declared ordering.
+    /// Both `WindowApply` shapes and the prefix state must survive the wire.
+    /// The aggregate arm is the interesting one: its UDAF crosses by name and
+    /// is resolved from the executor's registry, and its state is an opaque
+    /// `Vec<ScalarValue>` rather than a number.
+    #[tokio::test]
+    async fn test_prefix_merge_exec_roundtrip() {
+        use datafusion::functions_aggregate::sum::sum_udaf;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::scalar::ScalarValue;
+
+        let schema = create_test_schema();
+        let input = Arc::new(EmptyExec::new(schema.clone()));
+        let applies = vec![
+            WindowApply::Scalar {
+                op: ScalarOp::Overwrite,
+                offset: vec![ScalarValue::Float64(Some(1.5))],
+                output_column: 0,
+            },
+            WindowApply::Aggregate {
+                udf: sum_udaf(),
+                args: vec![col("id", schema.as_ref()).unwrap()],
+                output_column: 1,
+                window_expr_index: 3,
+            },
+        ];
+        // One partition; slot 0 carries state, slot 1 is a window function
+        // that published none. `None` and `Some(vec![])` must stay distinct.
+        let state = vec![FinalizedPartitionState::new(vec![
+            Some(vec![ScalarValue::Float64(Some(42.0))]),
+            None,
+        ])];
+        let original =
+            PrefixMergeExec::try_new_resolved(input, applies, state.clone()).unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec
+            .try_decode(
+                &buf,
+                &[Arc::new(EmptyExec::new(schema.clone()))],
+                &ctx,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<PrefixMergeExec>()
+            .expect("Expected PrefixMergeExec");
+
+        assert_eq!(decoded.per_partition_state(), Some(state));
+        match &decoded.applies()[0] {
+            WindowApply::Scalar {
+                op,
+                offset,
+                output_column,
+            } => {
+                assert!(matches!(op, ScalarOp::Overwrite));
+                assert_eq!(offset, &[ScalarValue::Float64(Some(1.5))]);
+                assert_eq!(*output_column, 0);
+            }
+            other => panic!("expected Scalar apply, got {other:?}"),
+        }
+        match &decoded.applies()[1] {
+            WindowApply::Aggregate {
+                udf,
+                args,
+                output_column,
+                window_expr_index,
+            } => {
+                assert_eq!(udf.name(), "sum");
+                assert_eq!(args.len(), 1);
+                assert_eq!(*output_column, 1);
+                assert_eq!(*window_expr_index, 3);
+            }
+            other => panic!("expected Aggregate apply, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_range_shuffle_reader_exec_roundtrip() {
         use datafusion::arrow::compute::SortOptions;

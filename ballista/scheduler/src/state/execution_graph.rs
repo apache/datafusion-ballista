@@ -956,10 +956,13 @@ impl ExecutionGraph for StaticExecutionGraph {
                             let SuccessfulTask {
                                 partitions,
                                 runtime_stats,
+                                window_state,
                                 ..
                             } = successful_task;
                             running_stage
                                 .append_runtime_stats_reports(task_id, runtime_stats);
+                            running_stage
+                                .append_window_state_reports(task_id, window_state);
 
                             locations.append(&mut partition_to_location(
                                 &job_id, task_id, stage_id, executor, partitions,

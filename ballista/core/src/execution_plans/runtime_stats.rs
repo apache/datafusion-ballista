@@ -955,29 +955,35 @@ pub fn cut_partitions(
                 );
             };
             let sub_part_id = file.partition_id.partition_id as u32;
-            // A file of NULLs has a null count but no value range, and it
-            // belongs wholly to the partition holding the run — which the
-            // `nulls_first` end names, not an overlap check.
             let entry = ranges.get(&(task_id as usize, sub_part_id));
-            let null_only = entry
-                .is_some_and(|entry| entry.null_count > 0 && entry.key_min.is_empty());
-            if null_only {
-                let run = if nulls_first { 0 } else { partition_count - 1 };
-                remapped[run].push(file);
-                continue;
-            }
+            // The NULL run belongs wholly to the partition the `nulls_first`
+            // end names. `key_min`/`key_max` are value extremes, so no
+            // overlap check on them can find that partition — a file whose
+            // values and NULLs belong to different consumers has to be
+            // delivered to both, and is below. Every producer routes its own
+            // NULLs to its own last slot, so without this only the one file
+            // whose values happen to land on the run's partition delivers
+            // them and the rest of the run is silently dropped.
+            let null_part_idx = entry
+                .is_some_and(|entry| entry.null_count > 0)
+                .then(|| if nulls_first { 0 } else { partition_count - 1 });
             let range = entry.and_then(|entry| {
                 let lo = entry.key_min.first()?;
                 let hi = entry.key_max.first()?;
                 Some((lo, hi))
             });
             let Some((min_proto, max_proto)) = range else {
-                // No routing info. Safe to skip only if the file has zero rows
-                if file.partition_stats.num_rows != Some(0) {
-                    return internal_err!(
-                        "range-repartition remap: file has num_rows={:?} but no usable key range (task_id={task_id}, sub_part_id={sub_part_id})",
-                        file.partition_stats.num_rows
-                    );
+                // No value range: an all-NULL file, or an empty one. Anything
+                // else has rows this remap cannot address.
+                match null_part_idx {
+                    Some(part_idx) => remapped[part_idx].push(file),
+                    None if file.partition_stats.num_rows != Some(0) => {
+                        return internal_err!(
+                            "range-repartition remap: file has num_rows={:?} but no usable key range (task_id={task_id}, sub_part_id={sub_part_id})",
+                            file.partition_stats.num_rows
+                        );
+                    }
+                    None => {}
                 }
                 continue;
             };
@@ -1003,6 +1009,13 @@ pub fn cut_partitions(
             let reach_hi = widen_above(&sketch_max, halo_lo)?;
             let b_lo = global_cuts.partition_point(|cut| cut <= &reach_lo);
             let b_hi = global_cuts.partition_point(|cut| cut <= &reach_hi);
+            // Delivered for its NULL run only when the value range didn't
+            // already reach that partition: two copies in one consumer would
+            // be read twice and counted twice.
+            if let Some(part) = null_part_idx.filter(|part| !(b_lo..=b_hi).contains(part))
+            {
+                remapped[part].push(file.clone());
+            }
             for bucket in &mut remapped[b_lo..=b_hi] {
                 bucket.push(file.clone());
             }
@@ -1969,6 +1982,123 @@ mod overlap_remap_tests {
         assert_eq!(remapped[0][0].file_id, Some(300));
         assert_eq!(remapped[1].len(), 1, "straddler in partition 1");
         assert_eq!(remapped[1][0].file_id, Some(300));
+    }
+
+    /// [`sketch_report`] with a NULL count per sub-part, taken as
+    /// `(values, nulls)` pairs so the two can't fall out of step.
+    fn sketch_report_with_nulls(
+        producer_task_id: usize,
+        per_sub_part: Vec<(Vec<f64>, u64)>,
+    ) -> TaskRuntimeStats {
+        let null_counts: Vec<u64> = per_sub_part.iter().map(|(_, n)| *n).collect();
+        let mut stats = sketch_report(
+            producer_task_id,
+            per_sub_part.into_iter().map(|(values, _)| values).collect(),
+        );
+        for (entry, nulls) in stats.report.partitions.iter_mut().zip(null_counts) {
+            entry.null_count = nulls;
+            entry.row_count += nulls;
+        }
+        stats
+    }
+
+    /// A file holding both values and NULLs belongs to two consumers: the one
+    /// its value range overlaps, and the one holding the NULL run. Reported
+    /// extremes are value extremes, so an overlap check alone never finds the
+    /// second — and every producer writes its own NULLs to its own last slot,
+    /// so dropping it loses all but one producer's share of the run.
+    #[test]
+    fn overlap_remap_mixed_file_reaches_both_its_range_and_the_null_run() {
+        // Values [1, 2] fall left of the cut; the run sorts last, so it
+        // belongs to partition 1.
+        let reports = vec![sketch_report_with_nulls(100, vec![(vec![1.0, 2.0], 2)])];
+        let cuts = cuts_f64([10.0]);
+        let original_partitions = vec![vec![location(0, 100)]];
+
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            false,
+        )
+        .unwrap();
+        assert_eq!(remapped[0].len(), 1, "values [1, 2] land left of the cut");
+        assert_eq!(remapped[1].len(), 1, "the NULL run sorts last");
+    }
+
+    /// Same, mirrored: `nulls_first` puts the run in partition 0 while the
+    /// values belong to the last partition.
+    #[test]
+    fn overlap_remap_mixed_file_reaches_the_null_run_at_the_front() {
+        let reports = vec![sketch_report_with_nulls(100, vec![(vec![20.0, 25.0], 2)])];
+        let cuts = cuts_f64([10.0]);
+        let original_partitions = vec![vec![location(0, 100)]];
+
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            true,
+        )
+        .unwrap();
+        assert_eq!(remapped[0].len(), 1, "the NULL run sorts first");
+        assert_eq!(
+            remapped[1].len(),
+            1,
+            "values [20, 25] land right of the cut"
+        );
+    }
+
+    /// When the value range already reaches the partition holding the run,
+    /// the file must be delivered once and not twice — a second copy in one
+    /// consumer is read twice and so counted twice.
+    #[test]
+    fn overlap_remap_mixed_file_in_the_run_partition_is_delivered_once() {
+        let reports = vec![sketch_report_with_nulls(100, vec![(vec![20.0, 25.0], 2)])];
+        let cuts = cuts_f64([10.0]);
+        let original_partitions = vec![vec![location(0, 100)]];
+
+        let remapped = cut_partitions(
+            original_partitions,
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            false,
+        )
+        .unwrap();
+        assert!(remapped[0].is_empty(), "no values left of the cut");
+        assert_eq!(
+            remapped[1].len(),
+            1,
+            "values and run share partition 1, so one delivery"
+        );
+    }
+
+    /// An all-NULL file has a row count but no value range, so the run is the
+    /// only thing placing it.
+    #[test]
+    fn overlap_remap_all_null_file_goes_only_to_the_null_run() {
+        let reports = vec![sketch_report_with_nulls(100, vec![(vec![], 3)])];
+        let cuts = cuts_f64([10.0]);
+        let mut only_nulls = location(0, 100);
+        only_nulls.partition_stats = PartitionStats::new(Some(3), None, None);
+
+        let remapped = cut_partitions(
+            vec![vec![only_nulls]],
+            &reports,
+            &cuts,
+            &ZERO_HALO,
+            &ZERO_HALO,
+            false,
+        )
+        .unwrap();
+        assert!(remapped[0].is_empty(), "no values to place");
+        assert_eq!(remapped[1].len(), 1, "the run sorts last");
     }
 
     /// A producer file without `file_id` means the writer that produced it

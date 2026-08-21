@@ -460,6 +460,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
                 let runtime_stats = exec.collect_runtime_stats_reports();
+                // Collect only when the task otherwise succeeded: a failed task's
+                // partial state is meaningless, and its own error is the useful one.
+                // A collection failure fails the task — these are load-bearing for the
+                // downstream stage's prefix merge, so continuing without them would
+                // ship a wrong answer that nothing later detects.
+                let (execution_result, window_state) = match execution_result {
+                    Ok(partitions) => match exec.collect_window_state_reports() {
+                        Ok(reports) => (Ok(partitions), reports),
+                        Err(e) => (Err(e.into()), Vec::new()),
+                    },
+                    Err(e) => (Err(e), Vec::new()),
+                };
                 let executor_id = &self.executor.metadata.id;
 
                 let end_exec_time = SystemTime::now()
@@ -481,6 +493,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     TaskCompletionExtras {
                         operator_metrics,
                         runtime_stats,
+                        window_state,
                     },
                 );
 

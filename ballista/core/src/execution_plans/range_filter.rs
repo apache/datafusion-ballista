@@ -81,6 +81,10 @@ use datafusion::scalar::ScalarValue;
 use futures::{Stream, StreamExt, ready};
 use parking_lot::Mutex;
 
+use crate::execution_plans::plan_algebra::{
+    PartitionSliceable, slice_by_global_partition,
+};
+
 /// Half-open `[lo, hi)` bound for one input partition. `None` on either side
 /// means unbounded (virtual ±∞).
 pub type RangeBound = (Option<ScalarValue>, Option<ScalarValue>);
@@ -154,7 +158,8 @@ impl RangeFilterExec {
     ///   `raw_bounds.len()`.
     /// * `filter_expr` - numeric physical expression each row is compared by.
     /// * `halo_lo`, `halo_hi` - non-negative widening amounts applied by
-    ///   [`RangeFilterExec::resolve_bounds`]. Both must be finite Float64 today.
+    ///   [`RangeFilterExec::resolve_bounds`], in `filter_expr`'s own type. A
+    ///   float halo must also be finite.
     /// * `input_order` - the order in which rows will arrive
     pub fn try_new_pending(
         input: Arc<dyn ExecutionPlan>,
@@ -324,6 +329,36 @@ impl DisplayAs for RangeFilterExec {
             }
             DisplayFormatType::TreeRender => write!(f, "RangeFilterExec"),
         }
+    }
+}
+
+impl PartitionSliceable for RangeFilterExec {
+    /// `raw_bounds` is indexed by input partition, so it slices parallel to
+    /// the input. Halos and routing carry over verbatim — the fresh operator
+    /// re-widens the unwidened bounds itself.
+    fn slice_to_partitions(
+        &self,
+        child: Arc<dyn ExecutionPlan>,
+        partitions: &[usize],
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let raw_bounds = self.raw_bounds().ok_or_else(|| {
+            datafusion::common::DataFusionError::Internal(
+                "RangeFilterExec: task-restriction before resolve_bounds()".into(),
+            )
+        })?;
+        Ok(Arc::new(Self::try_new_resolved(
+            child,
+            self.filter_expr().clone(),
+            self.halo_lo().clone(),
+            self.halo_hi().clone(),
+            self.input_order(),
+            slice_by_global_partition(
+                &raw_bounds,
+                partitions,
+                "RangeFilterExec",
+                "raw bounds",
+            )?,
+        )?))
     }
 }
 
