@@ -68,8 +68,6 @@ pub mod client;
 pub mod client_pool;
 /// Configuration options and settings for Ballista components.
 pub mod config;
-/// Utilities for generating execution plan diagrams.
-pub mod diagram;
 /// Error types and result definitions for Ballista operations.
 pub mod error;
 /// Event loop infrastructure for asynchronous message processing.
