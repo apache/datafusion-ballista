@@ -213,12 +213,13 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
         "cancelled stage must not remain running, running={:?}",
         graph.running_stages()
     );
+    // The cancelled stage must be gone from the stage map entirely.
+    // `is_successful()` requires every stage in the map to be Successful, so
+    // a cancelled stage kept as Failed would make the job hang forever once
+    // all real work completed (this hung the TPC-DS suite on CI).
     assert!(
-        matches!(
-            graph.stages.get(&held_stage_id),
-            Some(ExecutionStage::Failed(_)) | None
-        ),
-        "cancelled stage must be Failed or removed, found {:?}",
+        !graph.stages.contains_key(&held_stage_id),
+        "cancelled stage must be removed from the graph, found {:?}",
         graph.stages.get(&held_stage_id)
     );
 

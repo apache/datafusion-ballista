@@ -116,6 +116,12 @@ pub(crate) struct AdaptiveExecutionGraph {
     end_time: u64,
     /// Map from Stage ID -> ExecutionStage
     stages: HashMap<usize, ExecutionStage>,
+    /// Stages retired after an AQE replan made them redundant. Tracked
+    /// separately from `stages` because `is_successful()` requires every
+    /// stage in the map to be Successful: a cancelled stage left behind in
+    /// a non-Successful state would block job completion forever. Late
+    /// task statuses for these stage ids are discarded instead of erroring.
+    retired_stages: HashSet<usize>,
 
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
@@ -194,6 +200,7 @@ impl AdaptiveExecutionGraph {
             start_time: started_at,
             end_time: 0,
             stages,
+            retired_stages: HashSet::new(),
             output_locations: vec![],
             failed_stage_attempts: HashMap::new(),
             session_config,
@@ -454,31 +461,30 @@ impl AdaptiveExecutionGraph {
     }
 
     /// Retire a stage the replan cancelled. The stage is moved out of
-    /// `self.stages` so the job no longer waits on it. Any tasks still
-    /// running are cancelled; a late completion from one of those tasks is
-    /// then discarded as coming from a cancelled attempt.
+    /// `self.stages` so the job no longer waits on it: `is_successful()`
+    /// requires every stage in the map to be Successful, so a cancelled
+    /// stage left behind in a non-Successful state would wedge the job.
+    /// The id is remembered in `retired_stages` so a late completion from
+    /// one of its tasks is discarded as coming from a cancelled attempt.
     fn retire_cancelled_stage(&mut self, stage_id: usize) {
         match self.stages.remove(&stage_id) {
             Some(ExecutionStage::Running(running)) => {
                 let inflight = running.running_tasks().len();
-                let cancelled = running.to_failed(format!(
-                    "Stage {stage_id} was cancelled by an AQE replan that made it redundant"
-                ));
-                self.stages
-                    .insert(stage_id, ExecutionStage::Failed(cancelled));
+                self.retired_stages.insert(stage_id);
                 debug!(
                     "Job {} stage {stage_id} retired after AQE replan ({inflight} in-flight task(s) cancelled)",
                     self.job_id(),
                 );
             }
             Some(stage) => {
-                // Resolved/UnResolved stages have no in-flight tasks; drop
-                // them outright. Successful/Failed stages are already
+                // Resolved/UnResolved stages have no in-flight tasks; retire
+                // them the same way. Successful/Failed stages are already
                 // terminal and keep their outputs/history.
                 if matches!(
                     stage,
                     ExecutionStage::Resolved(_) | ExecutionStage::UnResolved(_)
                 ) {
+                    self.retired_stages.insert(stage_id);
                     debug!(
                         "Job {} stage {stage_id} dropped after AQE replan",
                         self.job_id(),
@@ -1017,32 +1023,30 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                         );
                     }
                 } else {
-                    // The stage was retired from the graph. A running stage is
-                    // only retired by an AQE replan that made it redundant, so a
-                    // late status from one of its tasks is stale: drop it instead
-                    // of failing the whole update (which would wedge the job).
-                    if matches!(stage, ExecutionStage::Failed(_)) {
-                        warn!(
-                            "Stage {}/{} was retired by an AQE replan; ignoring late status for task(s) {:?}",
-                            job_id,
-                            stage_id,
-                            stage_task_statuses
-                                .iter()
-                                .map(|task_status| task_status.task_id)
-                                .collect::<Vec<_>>(),
-                        );
-                    } else {
-                        warn!(
-                            "Stage {}/{} is not in running when updating the status of tasks {:?}",
-                            job_id,
-                            stage_id,
-                            stage_task_statuses
-                                .into_iter()
-                                .map(|task_status| task_status.task_id)
-                                .collect::<Vec<_>>(),
-                        );
-                    }
+                    warn!(
+                        "Stage {}/{} is not in running when updating the status of tasks {:?}",
+                        job_id,
+                        stage_id,
+                        stage_task_statuses
+                            .into_iter()
+                            .map(|task_status| task_status.task_id)
+                            .collect::<Vec<_>>(),
+                    );
                 }
+            } else if self.retired_stages.contains(&stage_id) {
+                // The stage was retired after an AQE replan made it
+                // redundant, so a late status from one of its tasks is
+                // stale: discard it instead of failing the whole update
+                // (which would wedge the job).
+                warn!(
+                    "Stage {}/{} was retired by an AQE replan; ignoring late status for task(s) {:?}",
+                    job_id,
+                    stage_id,
+                    stage_task_statuses
+                        .iter()
+                        .map(|task_status| task_status.task_id)
+                        .collect::<Vec<_>>(),
+                );
             } else {
                 return Err(BallistaError::Internal(format!(
                     "Invalid stage ID {stage_id} for job {job_id}"
