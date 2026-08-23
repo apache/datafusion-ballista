@@ -877,6 +877,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .as_millis() as u64;
         let codec = self.codec.physical_extension_codec();
 
+        let props = first_task.session_config.to_key_value_pairs();
         let mut multi_tasks = Vec::with_capacity(tasks.len());
         for task in tasks {
             let restricted = restrict_plan_to_partitions(
@@ -886,7 +887,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
             plan_proto.try_encode(&mut plan_buf)?;
-            let props = task.session_config.to_key_value_pairs();
             let task_ids = vec![TaskId {
                 task_id: task.key.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
@@ -907,7 +907,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 plan: plan_buf,
                 session_id: session_id.clone(),
                 launch_time,
-                props,
+                props: props.clone(),
             });
         }
         Ok(multi_tasks)
