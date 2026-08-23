@@ -607,6 +607,7 @@ impl SortShuffleWriterExec {
                     .register(&context.runtime_env().memory_pool);
 
             let mut hash_buffer: Vec<u64> = Vec::new();
+            let mut per_partition_rows: Vec<Vec<u32>> = Vec::new();
             let mut spill_events: u64 = 0;
             let mut spill_triggers = SpillTriggerCounts::default();
             // Absolute buffered-bytes counter, independent of the runtime
@@ -625,11 +626,12 @@ impl SortShuffleWriterExec {
 
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
-                let per_partition_rows = compute_partition_indices(
+                compute_partition_indices(
                     &input_batch,
                     &exprs,
                     num_output_partitions,
                     &mut hash_buffer,
+                    &mut per_partition_rows,
                 )?;
                 timer.done();
 
@@ -1250,18 +1252,21 @@ impl std::fmt::Display for SortShuffleWriterExec {
 
 /// Computes per-row output partition assignments for hash partitioning.
 ///
-/// Returns a `Vec` of length `num_partitions`, where entry `p` lists the
+/// Fills `out` with `num_partitions` entries, where entry `p` lists the
 /// row indices in `batch` that hash to partition `p`. Hash semantics are
 /// byte-identical to `datafusion::physical_plan::repartition::BatchPartitioner::Hash`.
 ///
-/// `hash_buffer` is reused across calls to amortize allocations; it is
-/// cleared and resized internally.
+/// `hash_buffer` and `out` are reused across calls to amortize allocations;
+/// both are cleared and resized internally. `out`'s inner `Vec`s are cleared
+/// rather than dropped, so their capacity survives into the next batch and
+/// the steady state allocates nothing.
 fn compute_partition_indices(
     batch: &RecordBatch,
     exprs: &[Arc<dyn PhysicalExpr>],
     num_partitions: usize,
     hash_buffer: &mut Vec<u64>,
-) -> Result<Vec<Vec<u32>>> {
+    out: &mut Vec<Vec<u32>>,
+) -> Result<()> {
     let arrays = evaluate_expressions_to_arrays(exprs, batch)?;
     hash_buffer.clear();
     hash_buffer.resize(batch.num_rows(), 0);
@@ -1271,11 +1276,14 @@ fn compute_partition_indices(
         hash_buffer,
     )?;
 
-    let mut out: Vec<Vec<u32>> = (0..num_partitions).map(|_| Vec::new()).collect();
+    out.resize_with(num_partitions, Vec::new);
+    for rows in out.iter_mut() {
+        rows.clear();
+    }
     for (row, &h) in hash_buffer.iter().enumerate() {
         out[(h % num_partitions as u64) as usize].push(row as u32);
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1380,8 +1388,9 @@ mod tests {
             )];
 
         let mut hash_buffer: Vec<u64> = Vec::new();
-        let result =
-            compute_partition_indices(&batch, &exprs, 8, &mut hash_buffer).unwrap();
+        let mut result: Vec<Vec<u32>> = Vec::new();
+        compute_partition_indices(&batch, &exprs, 8, &mut hash_buffer, &mut result)
+            .unwrap();
 
         // 8 partition slots
         assert_eq!(result.len(), 8);
@@ -1988,8 +1997,9 @@ mod tests {
 
         // Our implementation
         let mut hash_buffer: Vec<u64> = Vec::new();
-        let ours =
-            compute_partition_indices(&batch, &exprs, 4, &mut hash_buffer).unwrap();
+        let mut ours: Vec<Vec<u32>> = Vec::new();
+        compute_partition_indices(&batch, &exprs, 4, &mut hash_buffer, &mut ours)
+            .unwrap();
 
         // Reference: DataFusion's BatchPartitioner::new_hash_partitioner
         let mut ref_partitioner =
