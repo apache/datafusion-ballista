@@ -38,6 +38,7 @@ mod sort_shuffle_tests {
         BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT,
         BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
     };
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::execution::SessionStateBuilder;
@@ -198,6 +199,94 @@ mod sort_shuffle_tests {
         assert!(!results.is_empty());
         let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
         assert!(total_rows > 0);
+        Ok(())
+    }
+
+    /// Shuffles a variable-width column. Every other query here groups on a
+    /// fixed-width primitive, so no offsets buffer otherwise crosses a shuffle.
+    /// Offset buffers are part of what the skipped validation covers.
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_block_io(ReadMode::RemoteBlockIo)]
+    #[tokio::test]
+    async fn test_sort_shuffle_group_by_binary_column(
+        #[case] read_mode: ReadMode,
+    ) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
+        register_test_data(&ctx).await;
+
+        let df = ctx
+            .sql(
+                "SELECT date_string_col, COUNT(*) as cnt
+                 FROM test
+                 GROUP BY date_string_col
+                 ORDER BY date_string_col",
+            )
+            .await?;
+        let results = df.collect().await?;
+
+        // `date_string_col` is `Binary` (no UTF8 annotation in the fixture), so
+        // it renders as hex: these are "01/01/09" .. "04/01/09".
+        let expected = vec![
+            "+------------------+-----+",
+            "| date_string_col  | cnt |",
+            "+------------------+-----+",
+            "| 30312f30312f3039 | 2   |",
+            "| 30322f30312f3039 | 2   |",
+            "| 30332f30312f3039 | 2   |",
+            "| 30342f30312f3039 | 2   |",
+            "+------------------+-----+",
+        ];
+        assert_result_eq(expected, &results);
+        Ok(())
+    }
+
+    /// Shuffles view-typed keys. Validating those bounds-checks each view's
+    /// buffer index and offset, a separate path from walking offsets. Keys of
+    /// 12 bytes or fewer live inside the view; longer ones reference a data
+    /// buffer, so one of each is grouped on. No fixture column is a view type,
+    /// hence `arrow_cast`.
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_block_io(ReadMode::RemoteBlockIo)]
+    #[tokio::test]
+    async fn test_sort_shuffle_group_by_view_columns(
+        #[case] read_mode: ReadMode,
+    ) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
+        register_test_data(&ctx).await;
+
+        let df = ctx
+            .sql(
+                "SELECT arrow_cast(CAST(date_string_col AS VARCHAR), 'Utf8View') AS inline_key,
+                        arrow_cast(
+                            CAST(date_string_col AS VARCHAR) || ' well past the inline limit',
+                            'Utf8View'
+                        ) AS spilled_key,
+                        COUNT(*) as cnt
+                 FROM test
+                 GROUP BY inline_key, spilled_key
+                 ORDER BY inline_key",
+            )
+            .await?;
+        let results = df.collect().await?;
+        let schema = results[0].schema();
+        assert_eq!(schema.field(0).data_type(), &DataType::Utf8View);
+        assert_eq!(schema.field(1).data_type(), &DataType::Utf8View);
+
+        let expected = vec![
+            "+------------+-------------------------------------+-----+",
+            "| inline_key | spilled_key                         | cnt |",
+            "+------------+-------------------------------------+-----+",
+            "| 01/01/09   | 01/01/09 well past the inline limit | 2   |",
+            "| 02/01/09   | 02/01/09 well past the inline limit | 2   |",
+            "| 03/01/09   | 03/01/09 well past the inline limit | 2   |",
+            "| 04/01/09   | 04/01/09 well past the inline limit | 2   |",
+            "+------------+-------------------------------------+-----+",
+        ];
+        assert_result_eq(expected, &results);
         Ok(())
     }
 

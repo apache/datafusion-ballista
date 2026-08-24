@@ -441,6 +441,19 @@ impl RecordBatchStream for FlightDataStream {
         self.schema.clone()
     }
 }
+
+/// Decoder for shuffle bytes streamed by [`BlockDataStream`].
+///
+/// The producing executor wrote these from arrays Arrow had already validated,
+/// so re-validating on the consumer only costs a scan.
+fn new_decoder() -> StreamDecoder {
+    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+    unsafe {
+        StreamDecoder::new()
+            .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
+    }
+}
+
 #[allow(rustdoc::private_intra_doc_links)]
 /// [BlockDataStream] facilitates the transfer of original shuffle files in a block-by-block manner.
 /// This implementation utilizes a custom `do_action` method on the Arrow Flight server.
@@ -487,7 +500,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
                     match try_schema_from_ipc_buffer(state_buffer.as_slice()) {
                         Ok(schema) => {
                             return Ok(Self {
-                                decoder: StreamDecoder::new(),
+                                decoder: new_decoder(),
                                 transmitted: state_buffer.len(),
                                 state_buffer,
                                 ipc_stream,
@@ -567,7 +580,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                     // stream followed by the requested partition's streams).
                     // Reset the decoder; the schema captured at construction
                     // time stays authoritative for downstream consumers.
-                    self.decoder = StreamDecoder::new();
+                    self.decoder = new_decoder();
                     continue;
                 }
                 Err(e) => {
