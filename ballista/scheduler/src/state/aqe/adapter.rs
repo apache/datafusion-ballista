@@ -23,7 +23,8 @@ use crate::state::aqe::planner::AdaptiveStageInfo;
 use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
 use ballista_core::execution_plans::{
-    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec,
+    RangeFilterExec, RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec,
+    ShuffleWriter, ShuffleWriterExec,
 };
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
@@ -39,6 +40,47 @@ use datafusion::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Swap a passthrough writer for one that emits the seekable Arrow IPC file
+/// format, when this stage's output is read back in value-range order.
+///
+/// Gated on the same condition as [`BallistaAdapter::build_reader`]'s choice of
+/// `RangeShuffleReaderExec` — the stage's child declares an output ordering —
+/// because the two have to agree: the range reader is the only consumer taught
+/// to open the file format. This is the only place that sees both sides, which
+/// is also why the static planner never produces the pair. It plants the
+/// arrival-order reader, which would be handed a format it cannot decode.
+///
+/// No configuration decides this. What a reader may do with a source is a fact
+/// about the source, and the reader establishes it by opening the file; a flag
+/// would be a second answer to the same question, free to disagree.
+fn use_range_shuffle_writer(
+    writer: Arc<dyn ShuffleWriter>,
+    exchange: &ExchangeExec,
+) -> datafusion::error::Result<Arc<dyn ShuffleWriter>> {
+    if exchange.broadcast || exchange.input().output_ordering().is_none() {
+        return Ok(writer);
+    }
+    let as_plan: &dyn ExecutionPlan = writer.as_ref();
+    let Some(passthrough) = as_plan.downcast_ref::<ShuffleWriterExec>() else {
+        // A hash-repartition stage writes its own consolidated format and is
+        // never read back by the range reader.
+        return Ok(writer);
+    };
+    let children = passthrough.children();
+    let [input] = children.as_slice() else {
+        return Err(DataFusionError::Internal(format!(
+            "ShuffleWriterExec must have exactly 1 child, got {}",
+            children.len()
+        )));
+    };
+    Ok(Arc::new(RangeShuffleWriterExec::try_new(
+        passthrough.job_id().clone(),
+        passthrough.stage_id(),
+        Arc::clone(input),
+        passthrough.work_dir().to_owned(),
+    )?))
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BallistaAdapter {
@@ -183,6 +225,7 @@ impl BallistaAdapter {
                 .clone()
                 .transform_down(|e| adapter.transform_children(e))?
                 .data;
+            let plan = attach_reader_bounds(plan)?;
             let stage_id = root.stage_id().ok_or_else(|| {
                 DataFusionError::Execution(
                     "shuffle partitions have to be resolved at this point".to_string(),
@@ -198,6 +241,7 @@ impl BallistaAdapter {
                 config,
             )
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            let writer = use_range_shuffle_writer(writer, root)?;
 
             Ok(AdaptiveStageInfo {
                 plan: writer,
@@ -211,6 +255,7 @@ impl BallistaAdapter {
                 .clone()
                 .transform_down(|e| adapter.transform_children(e))?
                 .data;
+            let plan = attach_reader_bounds(plan)?;
             let stage_id = root.stage_id().ok_or_else(|| {
                 DataFusionError::Execution(
                     "shuffle partitions have to be resolved at this point".to_string(),
@@ -231,6 +276,48 @@ impl BallistaAdapter {
             )
         }
     }
+}
+
+/// Hand every [`RangeShuffleReaderExec`] the value range its output
+/// partitions cover, taken from the [`RangeFilterExec`] above it.
+///
+/// The filter has already widened the cuts by its own halos, and those widened
+/// ranges are exactly what the reader may narrow its reads to: anything inside
+/// them the filter might keep, anything outside it would drop anyway. Reading
+/// them off the filter rather than recomputing from cuts is what stops the two
+/// from disagreeing about halo width.
+///
+/// Runs after [`resolve_range_filter_cuts`], which is what puts the bounds on
+/// the filter in the first place. A filter with no reader beneath it, or a
+/// reader with no filter above it, is left alone — the reader then reads its
+/// sources whole, which is the answer it gave before it could narrow at all.
+fn attach_reader_bounds(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    plan.transform_down(|node| {
+        let Some(range_filter) = node.downcast_ref::<RangeFilterExec>() else {
+            return Ok(Transformed::no(node));
+        };
+        let Some(bounds) = range_filter.widened_bounds() else {
+            return Ok(Transformed::no(node));
+        };
+        let children = node.children();
+        let [child] = children.as_slice() else {
+            return Ok(Transformed::no(node));
+        };
+        let Some(reader) = child.downcast_ref::<RangeShuffleReaderExec>() else {
+            return Ok(Transformed::no(node));
+        };
+        if bounds.len() != reader.partition.len() {
+            return Ok(Transformed::no(node));
+        }
+        let reader = Arc::new(reader.clone().with_bounds(bounds)?);
+        Ok(Transformed::yes(replace_children_if_necessary(
+            node,
+            vec![reader],
+        )?))
+    })
+    .map(|transformed| transformed.data)
 }
 
 /// Walk `plan` and resolve every pending [`RangeFilterExec`]'s bounds from

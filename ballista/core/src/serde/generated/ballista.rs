@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -69,6 +69,8 @@ pub mod ballista_physical_plan_node {
         RangeFilter(super::RangeFilterExecNode),
         #[prost(message, tag = "14")]
         PrefixMerge(super::PrefixMergeExecNode),
+        #[prost(message, tag = "15")]
+        RangeShuffleWriter(super::RangeShuffleWriterExecNode),
     }
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
@@ -398,6 +400,18 @@ pub struct SortShuffleWriterExecNode {
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
 }
+/// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
+/// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
+/// case it writes its input's partitioning through, one file per partition.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeShuffleWriterExecNode {
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub stage_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnresolvedShuffleExecNode {
     #[prost(uint32, tag = "1")]
@@ -459,6 +473,12 @@ pub struct RangeShuffleReaderExecNode {
     /// Row limit pushed down by a consuming merge. Absent means read everything.
     #[prost(uint64, optional, tag = "5")]
     pub fetch: ::core::option::Option<u64>,
+    /// Half-open value range each output partition covers, halo already applied.
+    /// One per output partition, or empty when the scheduler had no cuts. Lets
+    /// the reader skip the parts of an indexed source that cannot hold a row the
+    /// partition wants; the consuming RangeFilterExec still does the exact trim.
+    #[prost(message, repeated, tag = "6")]
+    pub bounds: ::prost::alloc::vec::Vec<RangeBound>,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).
@@ -677,7 +697,7 @@ pub struct Action {
 }
 /// Nested message and enum types in `Action`.
 pub mod action {
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum ActionType {
         /// Fetch a partition from an executor
         #[prost(message, tag = "3")]
@@ -703,7 +723,15 @@ pub struct ExecutePartition {
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+/// A half-open byte range of a file: `[offset, offset + length)`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ByteRange {
+    #[prost(uint64, tag = "1")]
+    pub offset: u64,
+    #[prost(uint64, tag = "2")]
+    pub length: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchPartition {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
@@ -717,8 +745,27 @@ pub struct FetchPartition {
     pub port: u32,
     #[prost(uint64, optional, tag = "7")]
     pub file_id: ::core::option::Option<u64>,
-    #[prost(bool, tag = "8")]
-    pub is_sort_shuffle: bool,
+    /// How the producing writer laid its output out, which is what turns the
+    /// identifiers above into a path.
+    #[prost(enumeration = "ShuffleLayout", tag = "9")]
+    pub layout: i32,
+    /// Which file beside that partition to serve.
+    #[prost(enumeration = "ShuffleFileKind", tag = "10")]
+    pub file_kind: i32,
+    /// Ranges to return, concatenated in request order, as absolute offsets into
+    /// the file.
+    ///
+    /// Empty asks for whatever the identifiers above address. Under the sort
+    /// layout that is the named partition's slice, which the executor resolves
+    /// through its own index — one round trip, as it has always been. Under the
+    /// passthrough layout it is the whole file.
+    ///
+    /// With ranges given the executor serves bytes and nothing else: no index
+    /// read, no comparison, no notion of what a range means. That is what a
+    /// consumer needs against object storage, where there is no executor to ask,
+    /// and it is why the range shuffle's index carries byte offsets at all.
+    #[prost(message, repeated, tag = "11")]
+    pub byte_ranges: ::prost::alloc::vec::Vec<ByteRange>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
@@ -1790,6 +1837,68 @@ impl ScalarOpNode {
             "SCALAR_OP_NODE_MIN" => Some(Self::Min),
             "SCALAR_OP_NODE_MAX" => Some(Self::Max),
             "SCALAR_OP_NODE_OVERWRITE" => Some(Self::Overwrite),
+            _ => None,
+        }
+    }
+}
+/// How a shuffle writer laid its output out on disk. Selects the path shape,
+/// and with it how a client parses the index beside the data. It says nothing
+/// about the framing of the bytes inside the data file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ShuffleLayout {
+    /// {stage_id}/{partition_id}/data-{file_id}.arrow — one file per output
+    /// partition, written by the passthrough and range writers.
+    Passthrough = 0,
+    /// {stage_id}/{file_id}/data.arrow — one file per task holding every
+    /// partition, written by the sort-based writer.
+    Sort = 1,
+}
+impl ShuffleLayout {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Passthrough => "SHUFFLE_LAYOUT_PASSTHROUGH",
+            Self::Sort => "SHUFFLE_LAYOUT_SORT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SHUFFLE_LAYOUT_PASSTHROUGH" => Some(Self::Passthrough),
+            "SHUFFLE_LAYOUT_SORT" => Some(Self::Sort),
+            _ => None,
+        }
+    }
+}
+/// Which of the files making up a shuffle output is being asked for. Which
+/// index sits beside the data, and how to read it, follows from the layout, so
+/// it is not spelled out here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ShuffleFileKind {
+    Data = 0,
+    Index = 1,
+}
+impl ShuffleFileKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Data => "SHUFFLE_FILE_KIND_DATA",
+            Self::Index => "SHUFFLE_FILE_KIND_INDEX",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SHUFFLE_FILE_KIND_DATA" => Some(Self::Data),
+            "SHUFFLE_FILE_KIND_INDEX" => Some(Self::Index),
             _ => None,
         }
     }

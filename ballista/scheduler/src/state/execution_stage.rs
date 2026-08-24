@@ -33,7 +33,8 @@ use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats, TaskWindowState,
+    RangeShuffleWriterExec, ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats,
+    TaskWindowState,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
@@ -1331,6 +1332,7 @@ impl Debug for FailedStage {
 /// scheduling unit.
 fn stage_input_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
     if plan.downcast_ref::<ShuffleWriterExec>().is_some()
+        || plan.downcast_ref::<RangeShuffleWriterExec>().is_some()
         || plan.downcast_ref::<SortShuffleWriterExec>().is_some()
     {
         plan.children()[0]

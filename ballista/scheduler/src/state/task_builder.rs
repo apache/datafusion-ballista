@@ -314,7 +314,24 @@ fn select_output_partitions(
         ) else {
             return Ok(None);
         };
-        return Ok(Some(Arc::new(restricted.with_fetch_limit(reader.fetch()))));
+        let restricted = restricted.with_fetch_limit(reader.fetch());
+        // Bounds are per output partition, so they follow the same slice the
+        // locations did. Dropping them here would leave the task reading its
+        // sources whole — right answer, none of the saving.
+        let restricted = match reader.bounds() {
+            Some(bounds) => {
+                let kept = indices
+                    .iter()
+                    .filter_map(|&p| bounds.get(p).cloned())
+                    .collect();
+                let Ok(restricted) = restricted.with_bounds(kept) else {
+                    return Ok(None);
+                };
+                restricted
+            }
+            None => restricted,
+        };
+        return Ok(Some(Arc::new(restricted)));
     }
 
     // DataSourceExec: file-backed or in-memory scans.

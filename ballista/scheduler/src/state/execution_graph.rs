@@ -30,7 +30,8 @@ use log::{debug, error, info, warn};
 use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    RangeShuffleWriterExec, ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec,
+    UnresolvedShuffleExec,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -1689,6 +1690,9 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     ) -> std::result::Result<bool, Self::Error> {
         // Handle both ShuffleWriterExec and SortShuffleWriterExec
         if let Some(shuffle_write) = plan.downcast_ref::<ShuffleWriterExec>() {
+            self.current_stage_id = shuffle_write.stage_id();
+        } else if let Some(shuffle_write) = plan.downcast_ref::<RangeShuffleWriterExec>()
+        {
             self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(shuffle_write) = plan.downcast_ref::<SortShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
