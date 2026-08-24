@@ -451,6 +451,14 @@ impl SortShuffleWriterExec {
     ) -> Result<Self> {
         // Sort shuffle only supports hash partitioning
         match &shuffle_output_partitioning {
+            // Zero would leave the partition reducer with a zero divisor and
+            // `handoffs` empty.
+            Partitioning::Hash(_, 0) => {
+                return Err(DataFusionError::Plan(
+                    "SortShuffleWriterExec requires at least one output partition"
+                        .to_string(),
+                ));
+            }
             Partitioning::Hash(_, _) => {}
             other => {
                 return Err(DataFusionError::Plan(format!(
@@ -608,6 +616,9 @@ impl SortShuffleWriterExec {
 
             let mut hash_buffer: Vec<u64> = Vec::new();
             let mut per_partition_rows: Vec<Vec<u32>> = Vec::new();
+            // Fixed for the whole task, so the reducer is built once here
+            // rather than re-derived per batch.
+            let partition_reducer = StrengthReducedU64::new(num_output_partitions as u64);
             let mut spill_events: u64 = 0;
             let mut spill_triggers = SpillTriggerCounts::default();
             // Absolute buffered-bytes counter, independent of the runtime
@@ -629,7 +640,7 @@ impl SortShuffleWriterExec {
                 compute_partition_indices(
                     &input_batch,
                     &exprs,
-                    num_output_partitions,
+                    partition_reducer,
                     &mut hash_buffer,
                     &mut per_partition_rows,
                 )?;
@@ -1250,9 +1261,94 @@ impl std::fmt::Display for SortShuffleWriterExec {
     }
 }
 
+/// Computes `value % divisor` without a division in the hot loop, for a divisor
+/// that is fixed across many values.
+///
+/// The output partition count is only known at runtime, so the compiler must
+/// emit a real 64-bit `div` for every row. Precomputing the divisor's reduced
+/// form turns that into a mask (powers of two) or a reciprocal multiply.
+///
+/// Ported from DataFusion's `BatchPartitioner`, where the type is private; see
+/// apache/datafusion#21900 (up to 1.16x on TPC-H sf10).
+#[derive(Debug, Clone, Copy)]
+enum StrengthReducedU64 {
+    PowerOfTwo { mask: u64 },
+    Reciprocal { divisor: u64, reciprocal: u128 },
+}
+
+impl StrengthReducedU64 {
+    fn new(divisor: u64) -> Self {
+        debug_assert!(divisor > 0);
+
+        if divisor.is_power_of_two() {
+            Self::PowerOfTwo { mask: divisor - 1 }
+        } else {
+            Self::Reciprocal {
+                divisor,
+                // ceil(2^128 / divisor), computed without representing 2^128
+                reciprocal: u128::MAX / u128::from(divisor) + 1,
+            }
+        }
+    }
+
+    fn divisor(self) -> u64 {
+        match self {
+            Self::PowerOfTwo { mask } => mask + 1,
+            Self::Reciprocal { divisor, .. } => divisor,
+        }
+    }
+
+    /// Pushes each row index onto the `out` entry its hash maps to.
+    ///
+    /// The divisor form is matched once, outside the per-row loop, so the loop
+    /// body stays a mask or a multiply rather than a branch plus a `div`.
+    fn partition_indices(self, hash_buffer: &[u64], out: &mut [Vec<u32>]) {
+        match self {
+            Self::PowerOfTwo { mask } => {
+                for (row, &h) in hash_buffer.iter().enumerate() {
+                    out[(h & mask) as usize].push(row as u32);
+                }
+            }
+            Self::Reciprocal {
+                divisor,
+                reciprocal,
+            } => {
+                for (row, &h) in hash_buffer.iter().enumerate() {
+                    let quotient = Self::quotient(h, reciprocal);
+                    out[(h - quotient * divisor) as usize].push(row as u32);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn remainder(self, value: u64) -> u64 {
+        match self {
+            Self::PowerOfTwo { mask } => value & mask,
+            Self::Reciprocal {
+                divisor,
+                reciprocal,
+            } => value - Self::quotient(value, reciprocal) * divisor,
+        }
+    }
+
+    /// `value / divisor`, recovered from the precomputed reciprocal as the high
+    /// 128 bits of a 192-bit product.
+    #[inline]
+    fn quotient(value: u64, reciprocal: u128) -> u64 {
+        let reciprocal_low = reciprocal as u64;
+        let reciprocal_high = (reciprocal >> 64) as u64;
+        let low_product = u128::from(value) * u128::from(reciprocal_low);
+        let high_product = u128::from(value) * u128::from(reciprocal_high);
+        let carry = ((high_product & u128::from(u64::MAX)) + (low_product >> 64)) >> 64;
+
+        ((high_product >> 64) + carry) as u64
+    }
+}
+
 /// Computes per-row output partition assignments for hash partitioning.
 ///
-/// Fills `out` with `num_partitions` entries, where entry `p` lists the
+/// Fills `out` with `reducer.divisor()` entries, where entry `p` lists the
 /// row indices in `batch` that hash to partition `p`. Hash semantics are
 /// byte-identical to `datafusion::physical_plan::repartition::BatchPartitioner::Hash`.
 ///
@@ -1263,7 +1359,7 @@ impl std::fmt::Display for SortShuffleWriterExec {
 fn compute_partition_indices(
     batch: &RecordBatch,
     exprs: &[Arc<dyn PhysicalExpr>],
-    num_partitions: usize,
+    reducer: StrengthReducedU64,
     hash_buffer: &mut Vec<u64>,
     out: &mut Vec<Vec<u32>>,
 ) -> Result<()> {
@@ -1276,13 +1372,11 @@ fn compute_partition_indices(
         hash_buffer,
     )?;
 
-    out.resize_with(num_partitions, Vec::new);
+    out.resize_with(reducer.divisor() as usize, Vec::new);
     for rows in out.iter_mut() {
         rows.clear();
     }
-    for (row, &h) in hash_buffer.iter().enumerate() {
-        out[(h % num_partitions as u64) as usize].push(row as u32);
-    }
+    reducer.partition_indices(hash_buffer, out);
     Ok(())
 }
 
@@ -1363,6 +1457,139 @@ mod tests {
     }
 
     #[test]
+    fn sort_shuffle_writer_requires_nonzero_partitions() -> Result<()> {
+        let work_dir = TempDir::new()?;
+
+        let err = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            create_test_input()?,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 0),
+            SortShuffleConfig::default(),
+        )
+        .expect_err("zero output partitions should fail")
+        .to_string();
+
+        assert!(
+            err.contains("requires at least one output partition"),
+            "actual: {err}"
+        );
+
+        Ok(())
+    }
+
+    /// The reciprocal-multiply path must agree with `%` exactly, including at
+    /// the u64 boundaries where a mis-derived reciprocal would drift by one.
+    #[test]
+    fn strength_reduced_u64_remainder_matches_modulo() {
+        // Powers of two take the mask path; the rest take the reciprocal path.
+        let divisors = [
+            1u64,
+            2,
+            3,
+            4,
+            5,
+            7,
+            8,
+            10,
+            16,
+            31,
+            32,
+            63,
+            64,
+            65,
+            97,
+            // Realistic Ballista output partition counts.
+            200,
+            400,
+            800,
+            (1 << 32) - 1,
+            1 << 32,
+            (1 << 32) + 1,
+            (1u64 << 63) - 1,
+            1u64 << 63,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        let values = [
+            0u64,
+            1,
+            2,
+            3,
+            4,
+            5,
+            31,
+            32,
+            33,
+            63,
+            64,
+            65,
+            (1 << 32) - 2,
+            (1 << 32) - 1,
+            1 << 32,
+            (1 << 32) + 1,
+            (1u64 << 63) - 1,
+            1u64 << 63,
+            (1u64 << 63) + 1,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+
+        for divisor in divisors {
+            let reducer = StrengthReducedU64::new(divisor);
+            assert_eq!(reducer.divisor(), divisor);
+
+            for value in values {
+                assert_eq!(
+                    reducer.remainder(value),
+                    value % divisor,
+                    "value={value} divisor={divisor}"
+                );
+            }
+
+            // Also sweep pseudo-random values, not just hand-picked boundaries.
+            let mut value = 0x1234_5678_9abc_def0_u64 ^ divisor;
+            for _ in 0..10_000 {
+                value = value
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                assert_eq!(
+                    reducer.remainder(value),
+                    value % divisor,
+                    "value={value} divisor={divisor}"
+                );
+            }
+        }
+    }
+
+    /// `partition_indices` must place rows exactly where `%` would, on both the
+    /// mask and reciprocal paths.
+    #[test]
+    fn strength_reduced_u64_partition_indices_matches_modulo() {
+        let hashes: Vec<u64> = (0..500u64)
+            .map(|i| {
+                i.wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407)
+            })
+            .collect();
+
+        for num_partitions in [1u64, 2, 8, 16, 64, 97, 200, 400] {
+            let reducer = StrengthReducedU64::new(num_partitions);
+
+            let mut actual: Vec<Vec<u32>> = vec![Vec::new(); num_partitions as usize];
+            reducer.partition_indices(&hashes, &mut actual);
+
+            let mut expected: Vec<Vec<u32>> = vec![Vec::new(); num_partitions as usize];
+            for (row, &h) in hashes.iter().enumerate() {
+                expected[(h % num_partitions) as usize].push(row as u32);
+            }
+
+            assert_eq!(actual, expected, "num_partitions={num_partitions}");
+        }
+    }
+
+    #[test]
     fn compute_partition_indices_distributes_rows_by_hash() {
         use datafusion::arrow::array::{Int64Array, StringArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1389,8 +1616,14 @@ mod tests {
 
         let mut hash_buffer: Vec<u64> = Vec::new();
         let mut result: Vec<Vec<u32>> = Vec::new();
-        compute_partition_indices(&batch, &exprs, 8, &mut hash_buffer, &mut result)
-            .unwrap();
+        compute_partition_indices(
+            &batch,
+            &exprs,
+            StrengthReducedU64::new(8),
+            &mut hash_buffer,
+            &mut result,
+        )
+        .unwrap();
 
         // 8 partition slots
         assert_eq!(result.len(), 8);
@@ -1998,8 +2231,14 @@ mod tests {
         // Our implementation
         let mut hash_buffer: Vec<u64> = Vec::new();
         let mut ours: Vec<Vec<u32>> = Vec::new();
-        compute_partition_indices(&batch, &exprs, 4, &mut hash_buffer, &mut ours)
-            .unwrap();
+        compute_partition_indices(
+            &batch,
+            &exprs,
+            StrengthReducedU64::new(4),
+            &mut hash_buffer,
+            &mut ours,
+        )
+        .unwrap();
 
         // Reference: DataFusion's BatchPartitioner::new_hash_partitioner
         let mut ref_partitioner =
