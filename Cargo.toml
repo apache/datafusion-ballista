@@ -42,16 +42,16 @@ arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
 ballista-api-types = { path = "ballista/api-types", version = "54.0.0" }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
-# DataFusion crates are pinned to the 55.0.0-rc3 tag via `[patch.crates-io]`
-# below. Workspace deps reference the crates.io version so the patch table is
-# the single place to bump when advancing to a newer DataFusion release.
-datafusion = { version = "55" }
-datafusion-cli = { version = "55" }
-datafusion-functions-aggregate-common = { version = "55" }
-datafusion-proto = { version = "55" }
-datafusion-proto-common = { version = "55" }
-datafusion-spark = { version = "55" }
-datafusion-substrait = { version = "55" }
+# Keep these as minor-version requirements rather than exact patch pins so a
+# DataFusion patch release can be picked up with a lockfile bump alone.
+# Cargo.lock records the exact patch version CI builds against.
+datafusion = "55"
+datafusion-cli = "55"
+datafusion-functions-aggregate-common = "55"
+datafusion-proto = "55"
+datafusion-proto-common = "55"
+datafusion-spark = "55"
+datafusion-substrait = "55"
 
 ctor = { version = "1.0" }
 insta = "1.47"
@@ -134,14 +134,3 @@ lto = false
 debug = false
 debug-assertions = false
 incremental = false
-
-# Redirect the crates.io datafusion release to the pinned git tag. Bump the
-# tag here to advance DataFusion; the workspace-dep versions above stay put.
-[patch.crates-io]
-datafusion = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion.git", tag = "55.0.0-rc3" }
