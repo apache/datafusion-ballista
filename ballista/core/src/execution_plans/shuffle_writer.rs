@@ -356,6 +356,11 @@ pub struct ShuffleWriterExec {
     /// → 0..K) the writer detects that at path-build time and uses `local`
     /// directly instead of `global_output_partition_ids[local]`.
     global_output_partition_ids: Vec<usize>,
+    /// Whether the scheduler should merge this task's sorted partitions into one
+    /// before the write. Scheduler-side only: `task_builder` consumes it to
+    /// rewrite the per-task plan, after which the executor just runs the plan it
+    /// is handed, so it is deliberately not carried over the wire.
+    merge_per_task: bool,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties
@@ -375,6 +380,7 @@ impl Clone for ShuffleWriterExec {
             work_dir: self.work_dir.clone(),
             task_id: self.task_id,
             global_output_partition_ids: self.global_output_partition_ids.clone(),
+            merge_per_task: self.merge_per_task,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
@@ -461,6 +467,7 @@ impl ShuffleWriterExec {
             work_dir,
             task_id: 0,
             global_output_partition_ids: default_partition_slice,
+            merge_per_task: false,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             state: Arc::new(Mutex::new(WriterState {
@@ -476,6 +483,18 @@ impl ShuffleWriterExec {
     pub fn with_task_id(mut self, task_id: usize) -> Self {
         self.task_id = task_id;
         self
+    }
+
+    /// Only sound when the consumer merges a partition's locations on the same
+    /// key, so only the caller that plants the consumer's reader may set this.
+    pub fn with_merge_per_task(mut self, merge_per_task: bool) -> Self {
+        self.merge_per_task = merge_per_task;
+        self
+    }
+
+    /// See [`Self::with_merge_per_task`].
+    pub fn merge_per_task(&self) -> bool {
+        self.merge_per_task
     }
 
     /// Task id (append-order slot within the stage) this writer instance
@@ -688,6 +707,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.work_dir.clone(),
                 )?
                 .with_task_id(self.task_id)
+                .with_merge_per_task(self.merge_per_task)
                 .with_global_output_partition_ids(
                     self.global_output_partition_ids.clone(),
                 ),

@@ -22,8 +22,10 @@ use crate::state::aqe::execution_plan::{
 use crate::state::aqe::planner::AdaptiveStageInfo;
 use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
+use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
-    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec,
+    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriter,
+    ShuffleWriterExec,
 };
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
@@ -39,6 +41,32 @@ use datafusion::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Mark the stage's writer when its output will be read back by an
+/// ordering-preserving reader, so each task can merge its partitions before
+/// writing and leave the consumer one source per task.
+///
+/// Only place that knows both sides: `build_reader` plants
+/// `RangeShuffleReaderExec` for this same exchange under the conditions checked
+/// here. The static planner never calls it, so it is never marked.
+fn mark_merge_per_task(
+    writer: Arc<dyn ShuffleWriter>,
+    exchange: &ExchangeExec,
+    config: &ConfigOptions,
+) -> Arc<dyn ShuffleWriter> {
+    let ballista = config.extensions.get::<BallistaConfig>();
+    let enabled = ballista
+        .map(|c| c.shuffle_merge_ordered_passthrough() && !c.coalesce_enabled())
+        .unwrap_or(false);
+    if !enabled || exchange.broadcast || exchange.input().output_ordering().is_none() {
+        return writer;
+    }
+    let as_plan: &dyn ExecutionPlan = writer.as_ref();
+    match as_plan.downcast_ref::<ShuffleWriterExec>() {
+        Some(w) => Arc::new(w.clone().with_merge_per_task(true)),
+        None => writer,
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BallistaAdapter {
@@ -198,6 +226,7 @@ impl BallistaAdapter {
                 config,
             )
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            let writer = mark_merge_per_task(writer, root, config);
 
             Ok(AdaptiveStageInfo {
                 plan: writer,

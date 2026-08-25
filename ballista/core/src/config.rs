@@ -172,6 +172,11 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
 
+/// Configuration key for merging a task's sorted partitions into one output
+/// partition in the passthrough shuffle writer.
+pub const BALLISTA_SHUFFLE_MERGE_ORDERED_PASSTHROUGH: &str =
+    "ballista.shuffle.merge_ordered_passthrough";
+
 /// Configuration key for the scheduler's per-task partition-slice cap.
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
     "ballista.scheduler.max_partitions_per_task";
@@ -414,6 +419,16 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             DataType::Utf8,
             Some("lz4".to_string()),
         ),
+        ConfigEntry::new(BALLISTA_SHUFFLE_MERGE_ORDERED_PASSTHROUGH.to_string(),
+                         "Merge each task's sorted partitions into one output partition \
+                          instead of writing one file per partition, where the consumer \
+                          reads the stage back with an ordering-preserving merge. Cuts that \
+                          consumer's fan-in from the stage's partition count to its task \
+                          count, which bounds the merge's working set, at the cost of the \
+                          parallel single-source reads it replaces. Applies to adaptive \
+                          query planning only.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
@@ -675,6 +690,12 @@ impl BallistaConfig {
     /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
     pub fn shuffle_writer_channel_capacity(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY)
+    }
+
+    /// Whether a passthrough shuffle stage with a sorted input merges the
+    /// task's partitions into one.
+    pub fn shuffle_merge_ordered_passthrough(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_MERGE_ORDERED_PASSTHROUGH)
     }
 
     /// Returns the per-task buffered-bytes budget at which the sort shuffle
