@@ -27,10 +27,6 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Extension;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
-use datafusion_proto::logical_plan::file_formats::{
-    ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
-    JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
-};
 use datafusion_proto::physical_plan::from_proto::parse_physical_sort_exprs;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
@@ -192,49 +188,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
 #[derive(Debug)]
 pub struct BallistaLogicalExtensionCodec {
     default_codec: Arc<dyn LogicalExtensionCodec>,
-    file_format_codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
-}
-
-impl BallistaLogicalExtensionCodec {
-    /// looks for a codec which can operate on this node
-    /// returns a position of codec in the list and result.
-    ///
-    /// position is important with encoding process
-    /// as position of used codecs is needed
-    /// so the same codec can be used for decoding
-    fn try_any<R>(
-        &self,
-        mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<R>,
-    ) -> Result<(u32, R)> {
-        let mut last_err = None;
-        for (position, codec) in self.file_format_codecs.iter().enumerate() {
-            match f(codec.as_ref()) {
-                Ok(result) => return Ok((position as u32, result)),
-                Err(err) => last_err = Some(err),
-            }
-        }
-
-        Err(last_err.unwrap_or_else(|| {
-            DataFusionError::Internal(
-                "List of provided extended logical codecs is empty".to_owned(),
-            )
-        }))
-    }
 }
 
 impl Default for BallistaLogicalExtensionCodec {
     fn default() -> Self {
         Self {
             default_codec: Arc::new(DefaultLogicalExtensionCodec {}),
-            // Position in this list is important as it will be used for decoding.
-            // If new codec is added it should go to last position.
-            file_format_codecs: vec![
-                Arc::new(ParquetLogicalExtensionCodec {}),
-                Arc::new(CsvLogicalExtensionCodec {}),
-                Arc::new(JsonLogicalExtensionCodec {}),
-                Arc::new(ArrowLogicalExtensionCodec {}),
-                Arc::new(AvroLogicalExtensionCodec {}),
-            ],
         }
     }
 }
@@ -323,17 +282,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &[u8],
         ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
-        let proto = FileFormatProto::decode(buf)
-            .map_err(|e| DataFusionError::Internal(e.to_string()))?;
-
-        let codec = self
-            .file_format_codecs
-            .get(proto.encoder_position as usize)
-            .ok_or(DataFusionError::Internal(
-                "Can't find required codec in file codec list".to_owned(),
-            ))?;
-
-        codec.try_decode_file_format(&proto.blob, ctx)
+        self.default_codec.try_decode_file_format(buf, ctx)
     }
 
     fn try_encode_file_format(
@@ -341,17 +290,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &mut Vec<u8>,
         node: Arc<dyn datafusion::datasource::file_format::FileFormatFactory>,
     ) -> Result<()> {
-        let mut blob = vec![];
-        let (encoder_position, _) =
-            self.try_any(|codec| codec.try_encode_file_format(&mut blob, node.clone()))?;
-
-        let proto = FileFormatProto {
-            encoder_position,
-            blob,
-        };
-        proto
-            .encode(buf)
-            .map_err(|e| DataFusionError::Internal(e.to_string()))
+        self.default_codec.try_encode_file_format(buf, node)
     }
 }
 
@@ -1421,25 +1360,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             )))
         }
     }
-}
-
-/// FileFormatProto captures data encoded by file format codecs
-///
-/// it captures position of codec used to encode FileFormat
-/// and actual encoded value.
-///
-/// capturing codec position is required, as same codec can decode
-/// blobs encoded by different encoders (probability is low but  it
-/// happened in the past)
-///
-#[derive(Clone, PartialEq, prost::Message)]
-struct FileFormatProto {
-    /// encoder id used to encode blob
-    /// (to be used for decoding)
-    #[prost(uint32, tag = 1)]
-    pub encoder_position: u32,
-    #[prost(bytes, tag = 2)]
-    pub blob: Vec<u8>,
 }
 
 #[cfg(test)]
