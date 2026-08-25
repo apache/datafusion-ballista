@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -67,6 +67,8 @@ pub mod ballista_physical_plan_node {
         RangeShuffleReader(super::RangeShuffleReaderExecNode),
         #[prost(message, tag = "13")]
         RangeFilter(super::RangeFilterExecNode),
+        #[prost(message, tag = "14")]
+        PrefixMerge(super::PrefixMergeExecNode),
     }
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
@@ -258,6 +260,83 @@ pub struct RangeBound {
     pub lo: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
     #[prost(message, optional, tag = "2")]
     pub hi: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+}
+/// Applies scheduler-computed prefix state to a window-aggregate column, so
+/// each range-disjoint task's local running aggregate becomes a global one.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PrefixMergeExecNode {
+    /// One entry per output column needing correction. Empty makes the operator
+    /// a passthrough.
+    #[prost(message, repeated, tag = "1")]
+    pub applies: ::prost::alloc::vec::Vec<WindowApplyNode>,
+    /// Resolved prefix state, one entry per input partition, `\[k\]` summarising
+    /// every partition before `k`. Encoding refuses while unresolved — an
+    /// over-the-wire plan always ships with state bound, since an executor has
+    /// no way to obtain it.
+    #[prost(message, repeated, tag = "2")]
+    pub per_partition_state: ::prost::alloc::vec::Vec<FinalizedPartitionStateNode>,
+}
+/// How to correct one window-function output column.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WindowApplyNode {
+    #[prost(oneof = "window_apply_node::Apply", tags = "1, 2")]
+    pub apply: ::core::option::Option<window_apply_node::Apply>,
+}
+/// Nested message and enum types in `WindowApplyNode`.
+pub mod window_apply_node {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Apply {
+        #[prost(message, tag = "1")]
+        Scalar(super::ScalarWindowApplyNode),
+        #[prost(message, tag = "2")]
+        Aggregate(super::AggregateWindowApplyNode),
+    }
+}
+/// Fast path: combine each row's value with a per-partition scalar.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ScalarWindowApplyNode {
+    #[prost(enumeration = "ScalarOpNode", tag = "1")]
+    pub op: i32,
+    /// One scalar per input partition.
+    #[prost(message, repeated, tag = "2")]
+    pub offset: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    #[prost(uint32, tag = "3")]
+    pub output_column: u32,
+}
+/// Fallback path: seed a fresh accumulator from the prefix state and replay
+/// each row through it. Needed where a row's output is not itself a valid
+/// partial state — AVG, and sketch-backed aggregates like approx_distinct.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AggregateWindowApplyNode {
+    /// Resolved from the executor's function registry on decode.
+    #[prost(string, tag = "1")]
+    pub udf_name: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub args: ::prost::alloc::vec::Vec<::datafusion_proto::protobuf::PhysicalExprNode>,
+    #[prost(uint32, tag = "3")]
+    pub output_column: u32,
+    /// Position in the upstream window operator's `window_expr()` list, which
+    /// is what indexes into each FinalizedPartitionStateNode.
+    #[prost(uint32, tag = "4")]
+    pub window_expr_index: u32,
+}
+/// Prefix state for one input partition: one slot per window expression.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FinalizedPartitionStateNode {
+    #[prost(message, repeated, tag = "1")]
+    pub slots: ::prost::alloc::vec::Vec<AggregateStateSlotNode>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AggregateStateSlotNode {
+    /// Unset when that window expression published no state — a non-aggregate
+    /// window function. Distinct from a present-but-empty state.
+    #[prost(message, optional, tag = "1")]
+    pub state: ::core::option::Option<AggregateStateNode>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AggregateStateNode {
+    #[prost(message, repeated, tag = "1")]
+    pub values: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
 }
 /// Wrapper for `BoundedWindowAggExec` that overrides
 /// `required_input_distribution` to `Unspecified` — see the module doc on
@@ -1040,6 +1119,47 @@ pub struct SuccessfulTask {
     /// to combine reports across tasks/executors.
     #[prost(message, repeated, tag = "3")]
     pub runtime_stats: ::prost::alloc::vec::Vec<RuntimeStatsReport>,
+    /// Finalized window-aggregate state captured during this task, one entry
+    /// per (output partition, window expression, PARTITION BY group) that
+    /// closed. Empty unless the plan contains an ever-expanding-frame window
+    /// (`UNBOUNDED PRECEDING`), which is the only shape DataFusion will
+    /// publish accumulator state for. The scheduler prefix-merges these across
+    /// tasks and bakes the result into a downstream `PrefixMergeExec`.
+    ///
+    /// TODO: watch the size of this. Task completion is a hot, frequent
+    /// message, and sketch-backed aggregates make the payload unbounded in a
+    /// way row counts and quantile sketches are not — an HLL or KLL state is
+    /// kilobytes per window expression per partition, and a task covering a
+    /// wide partition slice carries one of each. If it stops being small,
+    /// write the state as a sidecar next to the shuffle files instead, the way
+    /// sort-shuffle already writes `<data>.arrow.index` beside its data
+    /// (`sort_shuffle::get_index_path`), and send only a reference here. That
+    /// keeps the completion message fixed-size regardless of aggregate.
+    #[prost(message, repeated, tag = "4")]
+    pub window_state: ::prost::alloc::vec::Vec<WindowStateReport>,
+}
+/// One finalized window-aggregate state from a task's
+/// `BoundedWindowAggExec`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WindowStateReport {
+    /// The stage's *global* output partition this state belongs to.
+    #[prost(uint32, tag = "1")]
+    pub global_partition_id: u32,
+    /// Position in the window operator's `window_expr()` list. Indexes window
+    /// expressions, not partitions.
+    #[prost(uint32, tag = "2")]
+    pub window_expr_index: u32,
+    /// The PARTITION BY tuple that closed. Empty for a window with no
+    /// PARTITION BY, which is the only shape the prefix rewrite plants today.
+    #[prost(message, repeated, tag = "3")]
+    pub partition_key: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
+    /// `Accumulator::state` for the closed group: one element for SUM / COUNT /
+    /// MIN / MAX, two for AVG's (sum, count), one opaque Binary for
+    /// sketch-backed aggregates like approx_distinct. Carried as ScalarValue
+    /// rather than a numeric field so non-decomposable aggregates work
+    /// unchanged.
+    #[prost(message, repeated, tag = "4")]
+    pub state: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
 }
 /// One report per `RuntimeStatsExec` in the executed plan.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1636,6 +1756,40 @@ impl BufferMode {
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "BUFFER_MODE_DAM" => Some(Self::Dam),
+            _ => None,
+        }
+    }
+}
+/// How a scalar offset combines with a row's existing value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ScalarOpNode {
+    Add = 0,
+    Min = 1,
+    Max = 2,
+    /// Ignores the row's value entirely.
+    Overwrite = 3,
+}
+impl ScalarOpNode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Add => "SCALAR_OP_NODE_ADD",
+            Self::Min => "SCALAR_OP_NODE_MIN",
+            Self::Max => "SCALAR_OP_NODE_MAX",
+            Self::Overwrite => "SCALAR_OP_NODE_OVERWRITE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SCALAR_OP_NODE_ADD" => Some(Self::Add),
+            "SCALAR_OP_NODE_MIN" => Some(Self::Min),
+            "SCALAR_OP_NODE_MAX" => Some(Self::Max),
+            "SCALAR_OP_NODE_OVERWRITE" => Some(Self::Overwrite),
             _ => None,
         }
     }

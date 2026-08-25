@@ -870,6 +870,7 @@ mod tests {
                         })
                         .collect(),
                     runtime_stats: vec![],
+                    window_state: vec![],
                 })),
             })
             .collect();

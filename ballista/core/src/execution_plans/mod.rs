@@ -26,6 +26,7 @@ mod ordered_range_repartition;
 mod partitioned_bounded_window_agg;
 mod per_partition_filter;
 pub mod plan_algebra;
+mod prefix_merge;
 mod range_filter;
 mod range_repartition_common;
 mod range_shuffle_reader;
@@ -36,6 +37,7 @@ mod shuffle_writer_trait;
 pub mod sort_shuffle;
 mod unordered_range_repartition;
 mod unresolved_shuffle;
+pub mod window_state;
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +50,7 @@ pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
 pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
 pub use plan_algebra::{preserves_distribution, preserves_partitioning};
+pub use prefix_merge::{FinalizedPartitionState, PrefixMergeExec, ScalarOp, WindowApply};
 pub use range_filter::{InputOrder, RangeBound, RangeFilterExec, WidenedBound};
 pub use range_shuffle_reader::RangeShuffleReaderExec;
 pub use runtime_stats::{
@@ -65,6 +68,10 @@ pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
 pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
+pub use window_state::{
+    ObservedWindowState, TaskWindowState, WindowStateCollector,
+    prefix_merge_window_state, window_state_from_proto, window_state_to_proto,
+};
 
 use crate::JobId;
 

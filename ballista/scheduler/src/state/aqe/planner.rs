@@ -23,7 +23,7 @@ use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
-    PropagateEmptyExecRule, SelectJoinRule,
+    PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -572,6 +572,13 @@ impl AdaptivePlanner {
         // before DistributedExchangeRule — the rule emits an ORRE that DE
         // picks up as the shuffle-boundary K-space source.
         physical_optimizers.push(Arc::new(ParallelWindowRule));
+
+        // Sibling of ParallelWindowRule for UNBOUNDED PRECEDING frames. Same
+        // chain position: the two gate on complementary frame shapes, so
+        // their relative order is irrelevant. Shares the plan-id generator
+        // because it plants its own state-sync ExchangeExec.
+        physical_optimizers
+            .push(Arc::new(PrefixWindowRule::new(plan_id_generator.clone())));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers

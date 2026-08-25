@@ -33,12 +33,12 @@ use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats,
+    ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats, TaskWindowState,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
     FailedTask, OperatorMetricsSet, ResultLost, RuntimeStatsReport, SuccessfulTask,
-    TaskKilled, TaskStatus,
+    TaskKilled, TaskStatus, WindowStateReport,
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
@@ -228,6 +228,18 @@ pub struct RunningStage {
     /// `partition_id` field is producer-local. Merged and logged once the
     /// stage finalizes; dropped when the stage transitions to Successful.
     pub runtime_stats_reports: Vec<TaskRuntimeStats>,
+    /// Finalized window-aggregate state reported by tasks in this stage
+    /// attempt.
+    ///
+    /// Each report already carries the stage-global partition it belongs to,
+    /// translated by the producing `ShuffleWriterExec` from the task-local
+    /// index DataFusion reports — so unlike `runtime_stats_reports` the tag
+    /// is not needed to address a producer file. It is still needed to purge
+    /// on reset: a retried task reports the same global partitions again, and
+    /// two states for one partition would make the prefix merge double-count.
+    /// Prefix-merged in global partition order to seed a downstream
+    /// `PrefixMergeExec`; dropped when the stage transitions to Successful.
+    pub window_state_reports: Vec<TaskWindowState>,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -641,6 +653,7 @@ impl RunningStage {
             stage_metrics: None,
             session_config,
             runtime_stats_reports: Vec::new(),
+            window_state_reports: Vec::new(),
         }
     }
 
@@ -858,6 +871,30 @@ impl RunningStage {
             }));
     }
 
+    /// Accumulate window-state reports as tasks in this stage attempt
+    /// complete. No producer tag: each report is already addressed by its
+    /// stage-global partition id.
+    pub fn append_window_state_reports(
+        &mut self,
+        producer_task_id: usize,
+        reports: Vec<WindowStateReport>,
+    ) {
+        for report in &reports {
+            debug!(
+                "stage {} window state arrived: global partition {} expr {} state {:?}",
+                self.stage_id,
+                report.global_partition_id,
+                report.window_expr_index,
+                report.state,
+            );
+        }
+        self.window_state_reports
+            .extend(reports.into_iter().map(|report| TaskWindowState {
+                producer_task_id,
+                report,
+            }));
+    }
+
     /// update and upsert the task metrics to the stage metrics
     pub fn update_task_metrics(
         &mut self,
@@ -1040,6 +1077,8 @@ impl RunningStage {
         self.pending.reschedule(partitions);
         self.runtime_stats_reports
             .retain(|s| s.producer_task_id != task_id);
+        self.window_state_reports
+            .retain(|s| s.producer_task_id != task_id);
     }
 
     /// Reset the running and completed tasks on a given executor by
@@ -1078,6 +1117,8 @@ impl RunningStage {
         }
         self.pending.reschedule(to_reschedule);
         self.runtime_stats_reports
+            .retain(|s| !reset_task_ids.contains(&s.producer_task_id));
+        self.window_state_reports
             .retain(|s| !reset_task_ids.contains(&s.producer_task_id));
         reset
     }
@@ -1185,6 +1226,7 @@ impl SuccessfulStage {
             // Fresh attempt: previous attempt's stats are irrelevant.
             // Merged-cut logging fires per-attempt on final success.
             runtime_stats_reports: Vec::new(),
+            window_state_reports: Vec::new(),
         }
     }
 
@@ -1405,6 +1447,7 @@ mod tests {
                 executor_id: "executor-1".to_string(),
                 partitions: vec![],
                 runtime_stats: vec![],
+                window_state: vec![],
             })),
             metrics: vec![],
         }
@@ -1783,6 +1826,41 @@ mod tests {
         );
     }
 
+    /// A reset task's window-state reports must go with it. The retry
+    /// re-runs the same partition slice and reports the same global
+    /// partitions again, so leaving the original attempt's entries behind
+    /// would give the prefix merge two states for one partition and
+    /// double-count them — a wrong running aggregate, not a degraded one.
+    #[test]
+    fn test_reset_task_info_purges_window_state_reports() {
+        let mut stage = make_running_stage(2);
+        append_running_task(&mut stage, 0, "executor-1", vec![0]);
+        append_running_task(&mut stage, 1, "executor-1", vec![1]);
+
+        stage.append_window_state_reports(0, vec![make_window_state(0)]);
+        stage.append_window_state_reports(1, vec![make_window_state(1)]);
+        assert_eq!(stage.window_state_reports.len(), 2);
+
+        stage.reset_task_info(0);
+
+        assert_eq!(stage.window_state_reports.len(), 1);
+        assert_eq!(stage.window_state_reports[0].producer_task_id, 1);
+        assert_eq!(
+            stage.window_state_reports[0].report.global_partition_id, 1,
+            "the surviving task's partition must be the one left"
+        );
+    }
+
+    /// One window-state report for `global_partition_id`.
+    fn make_window_state(global_partition_id: u32) -> WindowStateReport {
+        WindowStateReport {
+            global_partition_id,
+            window_expr_index: 0,
+            partition_key: vec![],
+            state: vec![],
+        }
+    }
+
     /// Executor loss resets every task the executor was hosting; the
     /// runtime-stats reports those (previously-Successful) producers had
     /// already contributed must be purged along with the task status.
@@ -1805,6 +1883,7 @@ mod tests {
                     executor_id: executor.to_string(),
                     partitions: vec![],
                     runtime_stats: vec![],
+                    window_state: vec![],
                 });
             stage.append_runtime_stats_reports(
                 task_id,
