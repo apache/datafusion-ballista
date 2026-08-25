@@ -1023,6 +1023,15 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TaskColumnStats {
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    #[prost(uint64, tag = "2")]
+    pub null_count: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub hll_sketch: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
     #[prost(string, tag = "1")]
@@ -1040,6 +1049,8 @@ pub struct SuccessfulTask {
     /// to combine reports across tasks/executors.
     #[prost(message, repeated, tag = "3")]
     pub runtime_stats: ::prost::alloc::vec::Vec<RuntimeStatsReport>,
+    #[prost(message, repeated, tag = "4")]
+    pub task_column_stats: ::prost::alloc::vec::Vec<TaskColumnStats>,
 }
 /// One report per `RuntimeStatsExec` in the executed plan.
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -700,6 +700,12 @@ message FailedTask {
   }
 }
 
+message TaskColumnStats {
+  uint32 column      = 1;
+  uint64 null_count  = 2;
+  bytes  hll_sketch  = 3;
+}
+
 message SuccessfulTask {
   string executor_id = 1;
   // TODO tasks are currently always shuffle writes but this will not always be the case
@@ -713,6 +719,7 @@ message SuccessfulTask {
   // executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
   // to combine reports across tasks/executors.
   repeated RuntimeStatsReport runtime_stats = 3;
+  repeated TaskColumnStats taskColumnStats = 4;
 }
 
 // One report per `RuntimeStatsExec` in the executed plan.

@@ -67,6 +67,19 @@ pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
 
 use crate::JobId;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
+
+/// Result of a completed shuffle-write task, returned from the executor to
+/// the scheduler: per-partition file summaries plus per-column statistics
+/// folded across the task's output.
+#[derive(Debug, Clone)]
+pub struct ShuffleWriteResult {
+    /// Per-output-partition file summaries (location, row/batch/byte counts).
+    pub partitions: Vec<ShuffleWritePartition>,
+    /// Per-column statistics aggregated over this task's output. Empty until
+    /// collection is wired into the shuffle writers.
+    pub column_stats: Vec<TaskColumnStats>,
+}
 
 /// Creates the file path for a shuffle output partition.
 ///

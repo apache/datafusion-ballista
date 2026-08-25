@@ -24,7 +24,7 @@
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriterExec,
+    RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriteResult, ShuffleWriterExec,
 };
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::serde::scheduler::PartitionStats;
@@ -84,7 +84,7 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         &self,
         task_id: usize,
         context: Arc<TaskContext>,
-    ) -> Result<Vec<ShuffleWritePartition>>;
+    ) -> Result<ShuffleWriteResult>;
 
     /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
@@ -279,7 +279,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
         task_id: usize,
         context: Arc<TaskContext>,
-    ) -> Result<Vec<ShuffleWritePartition>> {
+    ) -> Result<ShuffleWriteResult> {
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
             match &self.shuffle_writer {
                 ShuffleWriterVariant::Passthrough(writer) => {
@@ -304,7 +304,10 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
         );
-        result
+        result.map(|partitions| ShuffleWriteResult {
+            partitions,
+            column_stats: vec![],
+        })
     }
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {

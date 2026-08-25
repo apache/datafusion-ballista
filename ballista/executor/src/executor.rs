@@ -28,8 +28,8 @@ use ballista_core::ConfigProducer;
 use ballista_core::JobId;
 use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::registry::BallistaFunctionRegistry;
-use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::TaskKey;
 use dashmap::DashMap;
@@ -228,7 +228,7 @@ impl Executor {
         key: TaskKey,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
-    ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
+    ) -> Result<ShuffleWriteResult, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
             query_stage_exec.execute_query_stage(key.task_id, task_ctx),
         );
