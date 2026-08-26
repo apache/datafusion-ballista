@@ -224,6 +224,7 @@ impl TestClusterBuilder {
             temp,
             log_dir,
             builder: self,
+            client: crate::rest::build_client(),
             _cluster_lock: cluster_lock,
             _machine_lock: machine_lock,
         };
@@ -253,6 +254,9 @@ pub struct TestCluster {
     temp: tempfile::TempDir,
     log_dir: PathBuf,
     builder: TestClusterBuilder,
+    /// REST-polling client, owned per cluster so its connection pool lives on
+    /// this test's runtime (see `crate::rest`).
+    client: reqwest::Client,
     /// Serializes clusters across the whole test process; see
     /// [`TestClusterBuilder::start`]. `Drop for TestCluster` reaps every child
     /// before this field is dropped, so the next cluster never starts until the
@@ -467,67 +471,23 @@ impl TestCluster {
     /// actually reaping it (rather than just transiently over-counting) needs
     /// to wait for the count to come down to `n` exactly, not merely reach it.
     pub async fn await_executor_count(&self, n: usize) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            if let Ok(count) = self.registered_executors().await
-                && count == n
-            {
-                return Ok(());
-            }
-            if Instant::now() > deadline {
-                return Err(format!(
-                    "timed out waiting for exactly {n} registered executors"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        crate::rest::await_executor_count(&self.client, &self.rest_url(), n).await
     }
 
     /// How many executors the scheduler currently considers registered.
     pub async fn registered_executors(&self) -> Result<usize, String> {
-        let body: serde_json::Value =
-            reqwest::get(format!("{}/api/executors", self.rest_url()))
-                .await
-                .map_err(|e| e.to_string())?
-                .json()
-                .await
-                .map_err(|e| e.to_string())?;
-        Ok(body.as_array().map(|a| a.len()).unwrap_or(0))
+        crate::rest::registered_executors(&self.client, &self.rest_url()).await
     }
 
     /// The id of the single job the scheduler currently knows about.
     ///
     /// The harness runs one query at a time, so "the running job" is unambiguous.
     pub async fn running_job_id(&self) -> Result<String, String> {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let body: serde_json::Value =
-                reqwest::get(format!("{}/api/jobs", self.rest_url()))
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .json()
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-            if let Some(job) = body.as_array().and_then(|jobs| jobs.first())
-                && let Some(id) = job.get("job_id").and_then(|v| v.as_str())
-            {
-                return Ok(id.to_string());
-            }
-            if Instant::now() > deadline {
-                return Err("timed out waiting for a job to appear".to_string());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        crate::rest::running_job_id(&self.client, &self.rest_url()).await
     }
 
     async fn stages(&self, job_id: &str) -> Result<serde_json::Value, String> {
-        reqwest::get(format!("{}/api/job/{job_id}/stages", self.rest_url()))
-            .await
-            .map_err(|e| e.to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())
+        crate::rest::stages(&self.client, &self.rest_url(), job_id).await
     }
 
     /// Block until `stage_id` has at least one task in state Running.
@@ -550,35 +510,7 @@ impl TestCluster {
     /// specific stage id we wait until the job is genuinely executing a task
     /// somewhere. Used where the scenario only needs a kill to land mid-flight.
     pub async fn await_any_stage_running(&self, job_id: &str) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let stages = self.stages(job_id).await?;
-            let running =
-                stages
-                    .get("stages")
-                    .and_then(|s| s.as_array())
-                    .is_some_and(|stages| {
-                        stages.iter().any(|stage| {
-                            stage.get("tasks").and_then(|t| t.as_array()).is_some_and(
-                                |tasks| {
-                                    tasks.iter().any(|t| {
-                                        t.get("status").and_then(|s| s.as_str())
-                                            == Some("Running")
-                                    })
-                                },
-                            )
-                        })
-                    });
-            if running {
-                return Ok(());
-            }
-            if Instant::now() > deadline {
-                return Err(
-                    "timed out waiting for any stage to start running".to_string()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        crate::rest::await_any_stage_running(&self.client, &self.rest_url(), job_id).await
     }
 
     /// Block until every task in `stage_id` is Successful.
