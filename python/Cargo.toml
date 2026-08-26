@@ -17,7 +17,7 @@
 
 [package]
 name = "pyballista"
-version = "54.0.0"
+version = "55.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -31,21 +31,21 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.89"
-# ballista = { path = "../ballista/client", version = "54.0.0" }
-# ballista-core = { path = "../ballista/core", version = "54.0.0" }
-# ballista-executor = { path = "../ballista/executor", version = "54.0.0", default-features = false }
-# ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
+# The crates.io ballista 54.0.0 release is built against DataFusion 54, so it
+# cannot be combined with a DataFusion 55 build of datafusion-python. Until
+# ballista 55.0.0 is released, build the client against the workspace crates.
+ballista = { path = "../ballista/client", version = "54.0.0" }
+ballista-core = { path = "../ballista/core", version = "54.0.0" }
+ballista-executor = { path = "../ballista/executor", version = "54.0.0", default-features = false }
+ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
 
-ballista = { version = "=54.0.0" }
-ballista-core = { version = "=54.0.0" }
-ballista-executor = { version = "=54.0.0", default-features = false }
-ballista-scheduler = { version = "=54.0.0", default-features = false }
-
-datafusion = { version = "=54.0.0", features = ["avro"] }
-datafusion-proto = { version = "=54.0.0" }
-datafusion-python = { version = "=54.0.0", default-features = false }
+datafusion = { version = "=55.0.0", features = ["avro"] }
+datafusion-proto = { version = "=55.0.0" }
+# datafusion-python has not published a DataFusion 55 release yet. Track the
+# bump branch until 55.0.0 is on crates.io, then pin the release here.
+datafusion-python = { git = "https://github.com/andygrove/datafusion-python.git", branch = "bump-datafusion-55.0.0", default-features = false }
 log = { version = "0.4" }
-pyo3 = { version = "0.28", features = ["extension-module", "abi3", "abi3-py310"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3", "abi3-py310"] }
 pyo3-log = "0.13"
 tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 tonic = { version = "0.14" }
