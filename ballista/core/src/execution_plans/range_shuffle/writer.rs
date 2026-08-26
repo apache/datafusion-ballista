@@ -83,10 +83,10 @@ use super::ipc_file::write_stream_to_ipc_file;
 /// # Message layout
 ///
 /// Each drain reads back its file's footer, so it knows the byte range of
-/// every record batch and every dictionary. Nothing consumes that layout yet
-/// — it is logged — but it is what the value index is built from, so having
-/// it here makes the index a matter of writing a sidecar rather than of
-/// re-plumbing the writer.
+/// every record batch and every dictionary. That layout is what the sidecar
+/// index is written from: each block is paired with the first key the
+/// `KeyCollector` saw in it, giving a consumer the two halves it needs to turn
+/// a value range into byte ranges without opening the data file.
 ///
 /// [`ShuffleWriterExec`]: crate::execution_plans::ShuffleWriterExec
 #[derive(Debug)]
