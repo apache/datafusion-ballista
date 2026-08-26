@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 LABEL org.opencontainers.image.source="https://github.com/apache/datafusion-ballista"
 LABEL org.opencontainers.image.description="Apache DataFusion Ballista Distributed SQL Query Engine"
