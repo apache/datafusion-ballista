@@ -39,6 +39,7 @@ use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::join_enumeration::JoinEnumeration;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
 use log::debug;
@@ -605,6 +606,14 @@ impl AdaptivePlanner {
                 // `r_name = EUROPE` in q2 — and every copy is evaluated per row
                 // and again in the row-group pruning predicate.
                 "FilterPushdown" => vec![],
+                // Enumeration runs once, from `plan_preparation_optimizers`.
+                // AQE re-optimizes after every stage completion, and each
+                // replan would search the join order again against the stats
+                // of whatever has finished so far, so the order churns
+                // mid-flight: on TPC-H SF=10 q5 the replanned order built a
+                // hash join over a side that exhausted the whole memory pool.
+                // The order is a plan-time decision -- make it once, up front.
+                "join_enumeration" => vec![],
                 // `join_selection` promotes a small build side to `CollectLeft`
                 // without restricting by join type -- safe in one process, but
                 // Ballista runs one task per probe partition. Demote the unsafe
@@ -625,6 +634,11 @@ impl AdaptivePlanner {
     ) -> Vec<PhysicalOptimizerRuleRef> {
         vec![
             Arc::new(FilterPushdown::new()),
+            // After FilterPushdown, so the search costs each input with its
+            // filters already on the scan, and before DelayJoinSelectionRule,
+            // which rewrites joins into `DynamicJoinSelectionExec` nodes the
+            // search would no longer recognise as joins.
+            Arc::new(JoinEnumeration::new()),
             Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
         ]

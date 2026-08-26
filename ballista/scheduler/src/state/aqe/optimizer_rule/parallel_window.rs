@@ -392,6 +392,7 @@ mod tests {
             Field::new("id3", DataType::Int64, false),
             Field::new("v2", DataType::Float64, false),
             Field::new("name", DataType::Utf8, false),
+            Field::new("price", DataType::Decimal128(20, 4), false),
         ]));
         let ctx = SessionContext::new();
         ctx.register_table("large", Arc::new(EmptyTable::new(schema)))?;
@@ -558,10 +559,16 @@ mod tests {
 
     /// A key the sketch cannot encode declines the rewrite rather than
     /// failing: the query still runs, just not in parallel.
+    ///
+    /// Ordered by a decimal rather than a string: `SortKeyCodec` covers the
+    /// integer, float, date, time, timestamp and duration types and nothing
+    /// else, so a decimal exercises the missing-encoding path while still
+    /// accepting a numeric `RANGE` offset. A `Utf8` key used to serve here,
+    /// but DataFusion now rejects an offset frame over one at type coercion.
     #[tokio::test]
     async fn no_rewrite_on_a_key_without_an_encoding() -> datafusion::common::Result<()> {
         let plan = plan(
-            "SELECT sum(v2) OVER (ORDER BY name \
+            "SELECT sum(v2) OVER (ORDER BY price \
                 RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) \
              FROM large",
         )
@@ -570,7 +577,7 @@ mod tests {
         let rendered = format!("{}", displayable(rewritten.as_ref()).indent(true));
         assert!(
             !rendered.contains("OrderedRangeRepartitionExec"),
-            "a Utf8 order key has no sort-key encoding:\n{rendered}"
+            "a Decimal128 order key has no sort-key encoding:\n{rendered}"
         );
         Ok(())
     }

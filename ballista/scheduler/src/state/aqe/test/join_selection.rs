@@ -386,13 +386,13 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
-      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
+      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@1]
         ExchangeExec: partitioning=None, plan_id=4, stage_id=1, stage_resolved=false, broadcast=true
-          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-            ExchangeExec: partitioning=None, plan_id=2, stage_id=0, stage_resolved=true, broadcast=true
-              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
+          ExchangeExec: partitioning=None, plan_id=2, stage_id=0, stage_resolved=true, broadcast=true
             DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-        DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
     Ok(())
