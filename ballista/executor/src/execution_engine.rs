@@ -213,8 +213,7 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 plan.children()[0].clone(),
                 work_dir.to_string(),
             )?
-            .with_task_id(task_id)
-            .with_global_output_partition_ids(global_output_partition_ids);
+            .with_task_id(task_id);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Range(exec),
             )))
@@ -402,7 +401,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         // never plants.
         let captured = match &self.shuffle_writer {
             ShuffleWriterVariant::Passthrough(writer) => writer.collect_window_state()?,
-            ShuffleWriterVariant::Range(writer) => writer.collect_window_state()?,
+            ShuffleWriterVariant::Range(writer) => writer.collect_window_state(),
             ShuffleWriterVariant::Sort(_) => return Ok(Vec::new()),
         };
         captured

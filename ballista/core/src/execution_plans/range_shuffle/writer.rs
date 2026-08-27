@@ -42,13 +42,13 @@ use tokio::task::JoinSet;
 
 use crate::JobId;
 use crate::error::BallistaError;
-use crate::execution_plans::ObservedWindowState;
 use crate::execution_plans::create_shuffle_path;
 use crate::execution_plans::shuffle_writer::{
-    ShuffleWriteMetrics, WriterState, collect_window_state_against_slice, result_schema,
-    run_coordinator, summaries_to_batch, walk_child_partition_mapping,
+    ShuffleWriteMetrics, WriterState, collect_window_state_operators, result_schema,
+    run_coordinator, summaries_to_batch,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
+use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::ShuffleWritePartition;
 
@@ -76,9 +76,8 @@ use super::ipc_file::write_stream_to_ipc_file;
 /// type that only the readers taught to recognise it will open.
 ///
 /// This is planted only where the consumer is a
-/// [`RangeShuffleReaderExec`](crate::execution_plans::RangeShuffleReaderExec),
-/// which is the same condition the reader is chosen under: the stage's child
-/// declares an output ordering.
+/// [`RangeShuffleReaderExec`](crate::execution_plans::RangeShuffleReaderExec)
+/// an the child is range-repartitioned.
 ///
 /// # Message layout
 ///
@@ -107,10 +106,6 @@ pub struct RangeShuffleWriterExec {
     /// tasks (including retries) don't collide. Stamped by the executor's
     /// `create_query_stage_exec`.
     task_id: usize,
-    /// Global partition ids this task's restricted plan covers, in slice
-    /// order. Position `i` in the child plan corresponds to
-    /// `global_output_partition_ids[i]` globally.
-    global_output_partition_ids: Vec<usize>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     /// Shared coordinator handoff state. Clones share the same Arc, so a
@@ -128,7 +123,6 @@ impl Clone for RangeShuffleWriterExec {
             ordering: self.ordering.clone(),
             work_dir: self.work_dir.clone(),
             task_id: self.task_id,
-            global_output_partition_ids: self.global_output_partition_ids.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
@@ -187,7 +181,6 @@ impl RangeShuffleWriterExec {
             ordering,
             work_dir,
             task_id: 0,
-            global_output_partition_ids: (0..output_partition_count).collect(),
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             state: Arc::new(Mutex::new(WriterState {
@@ -209,34 +202,21 @@ impl RangeShuffleWriterExec {
         self.task_id
     }
 
-    /// Bind this writer to the task's assigned global partition slice.
-    pub fn with_global_output_partition_ids(
-        mut self,
-        global_output_partition_ids: Vec<usize>,
-    ) -> Self {
-        self.global_output_partition_ids = global_output_partition_ids;
-        self
-    }
-
-    /// Global partition slice this writer instance is bound to.
-    pub fn global_output_partition_ids(&self) -> &[usize] {
-        &self.global_output_partition_ids
-    }
-
-    /// Drain every window-state collector in this stage, translating each
-    /// capture's task-local partition index to its global one.
+    /// Drain every window-state collector in this stage, keyed by the global
+    /// output partition each capture belongs to.
     ///
-    /// Shares `ShuffleWriterExec::collect_window_state`'s body: this writer
-    /// preserves its input partitioning too, so a window can sit under it and
-    /// its captures must reach the downstream prefix merge. Silently returning
-    /// none would make that merge arithmetically wrong with nothing later to
-    /// catch it.
-    pub fn collect_window_state(&self) -> Result<Vec<(usize, ObservedWindowState)>> {
-        collect_window_state_against_slice(
-            &self.plan,
-            &self.global_output_partition_ids,
-            "RangeShuffleWriterExec",
-        )
+    /// A window can sit under this writer, and its captures must reach the
+    /// downstream prefix merge or that merge is arithmetically wrong with
+    /// nothing later to catch it. The capture's partition index is already
+    /// global here, for the reason given on `execute_shuffle_write`.
+    pub fn collect_window_state(&self) -> Vec<(usize, ObservedWindowState)> {
+        let mut found: Vec<&PartitionedBoundedWindowAggExec> = Vec::new();
+        collect_window_state_operators(&self.plan, &mut found);
+        found
+            .into_iter()
+            .flat_map(|op| op.observed_window_state())
+            .map(|observation| (observation.partition_idx, observation))
+            .collect()
     }
 
     /// Get the Job ID for this query stage
@@ -258,7 +238,10 @@ impl RangeShuffleWriterExec {
     /// partitions concurrently.
     ///
     /// Returns `(handoff_idx, summary)` pairs, where `summary.partition_id` is
-    /// the **global** output partition id downstream will address.
+    /// the **global** output partition id downstream will address. Local index
+    /// *is* that id: this writer is planted only above a range repartition,
+    /// which numbers its K outputs afresh by value range. `file_id` is what
+    /// separates one producer's partition k from another's.
     ///
     /// All K must drain concurrently rather than one at a time:
     /// `OrderedRangeRepartitionExec` below pushes to all K senders from shared
@@ -270,8 +253,6 @@ impl RangeShuffleWriterExec {
     ) -> impl Future<Output = Result<Vec<(usize, ShuffleWritePartition)>>> {
         let task_id = self.task_id;
         let plan = self.plan.clone();
-        let partition_map =
-            walk_child_partition_mapping(&plan, &self.global_output_partition_ids);
         let metrics = self.metrics.clone();
 
         async move {
@@ -289,11 +270,8 @@ impl RangeShuffleWriterExec {
                 .map_err(BallistaError::into_datafusion)?;
 
             let mut handles = JoinSet::new();
-            for local_input_partition in 0..num_partitions {
-                let write_metrics =
-                    ShuffleWriteMetrics::new(local_input_partition, &metrics);
-                let global_partition =
-                    partition_map.resolve(local_input_partition) as usize;
+            for global_partition in 0..num_partitions {
+                let write_metrics = ShuffleWriteMetrics::new(global_partition, &metrics);
                 let path = create_shuffle_path(
                     &self.work_dir,
                     &self.job_id,
@@ -309,7 +287,7 @@ impl RangeShuffleWriterExec {
 
                 debug!("Writing range shuffle results to {path:?}");
 
-                let stream = plan.execute(local_input_partition, context.clone())?;
+                let stream = plan.execute(global_partition, context.clone())?;
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
                 handles.spawn(async move {
@@ -346,24 +324,19 @@ impl RangeShuffleWriterExec {
                         layout.record_batches.len(),
                         layout.dictionaries.len(),
                     );
-                    Ok::<_, DataFusionError>((
-                        local_input_partition,
-                        global_partition,
-                        stats,
-                    ))
+                    Ok::<_, DataFusionError>((global_partition, stats))
                 });
             }
 
             let mut results = Vec::with_capacity(num_partitions);
             while let Some(joined) = handles.join_next().await {
-                let (local_input_partition, global_partition, stats) =
-                    joined.map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "range shuffle-write drain task panicked: {e}"
-                        ))
-                    })??;
+                let (global_partition, stats) = joined.map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "range shuffle-write drain task panicked: {e}"
+                    ))
+                })??;
                 results.push((
-                    local_input_partition,
+                    global_partition,
                     ShuffleWritePartition {
                         partition_id: global_partition as u64,
                         num_batches: stats.num_batches.unwrap_or(0),
@@ -449,8 +422,7 @@ impl ExecutionPlan for RangeShuffleWriterExec {
                 input,
                 self.work_dir.clone(),
             )?
-            .with_task_id(self.task_id)
-            .with_global_output_partition_ids(self.global_output_partition_ids.clone()),
+            .with_task_id(self.task_id),
         ))
     }
 

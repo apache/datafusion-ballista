@@ -74,7 +74,7 @@ use super::shuffle_writer_trait::ShuffleWriter;
 /// id — the thing that ends up in `ShuffleWritePartition.partition_id` and
 /// keys `PartitionLocation`s downstream.
 #[derive(Debug, Clone)]
-pub(crate) enum GlobalPartitionMap {
+enum GlobalPartitionMap {
     /// The plan collapses to a single output partition (e.g.
     /// `SortPreservingMergeExec`). Every local index → global partition 0.
     Collapsed,
@@ -94,7 +94,7 @@ pub(crate) enum GlobalPartitionMap {
 }
 
 impl GlobalPartitionMap {
-    pub(crate) fn resolve(&self, local: usize) -> u64 {
+    fn resolve(&self, local: usize) -> u64 {
         match self {
             GlobalPartitionMap::Collapsed => 0,
             GlobalPartitionMap::KSpace => local as u64,
@@ -121,7 +121,7 @@ impl GlobalPartitionMap {
 ///   partitioning-preserving passthroughs).
 /// - If we hit a leaf or a fan-in without recognising it, treat it as
 ///   passthrough (the caller passes `global_output_partition_ids`).
-pub(crate) fn walk_child_partition_mapping(
+fn walk_child_partition_mapping(
     plan: &Arc<dyn ExecutionPlan>,
     global_output_partition_ids: &[usize],
 ) -> GlobalPartitionMap {
@@ -995,7 +995,7 @@ pub(crate) fn summaries_to_batch(
 /// Walks the whole subtree rather than a partition-preserving spine: an
 /// operator holding window state is worth draining wherever it sits, and the
 /// writer translates indices against its own slice regardless of depth.
-fn collect_window_state_operators<'a>(
+pub(crate) fn collect_window_state_operators<'a>(
     plan: &'a Arc<dyn ExecutionPlan>,
     out: &mut Vec<&'a PartitionedBoundedWindowAggExec>,
 ) {
@@ -1013,7 +1013,7 @@ fn collect_window_state_operators<'a>(
 ///
 /// `writer` names the caller in the error, since the failure is a plan/slice
 /// mismatch and which writer produced it is the first thing worth knowing.
-pub(crate) fn collect_window_state_against_slice(
+fn collect_window_state_against_slice(
     plan: &Arc<dyn ExecutionPlan>,
     global_output_partition_ids: &[usize],
     writer: &str,
