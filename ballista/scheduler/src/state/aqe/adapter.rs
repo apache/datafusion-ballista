@@ -182,7 +182,14 @@ impl BallistaAdapter {
                             schema,
                             ordering.clone(),
                         )?
-                        .with_fetch_limit(fetch),
+                        .with_fetch_limit(fetch)
+                        // A rank halo widened this reader's bounds per file;
+                        // the count is what lets it re-walk per message.
+                        .with_halo_rows(
+                            exchange
+                                .range_repartition_routing()
+                                .and_then(|routing| routing.preceding_rows),
+                        ),
                     )
                 } else {
                     Arc::new(ShuffleReaderExec::try_new(

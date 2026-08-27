@@ -374,6 +374,10 @@ message RangeShuffleReaderExecNode {
   // the reader skip the parts of an indexed source that cannot hold a row the
   // partition wants; the consuming RangeFilterExec still does the exact trim.
   repeated RangeBound bounds = 6;
+  // The consuming ROWS frame's PRECEDING count. Present only when a rank halo
+  // widened `bounds`, and what lets the reader re-run the scheduler's walk
+  // against its sources' indexes, which are per message rather than per file.
+  optional uint64 halo_rows = 7;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.

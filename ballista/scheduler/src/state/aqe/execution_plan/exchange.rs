@@ -65,6 +65,11 @@ pub struct RangeRepartitionRouting {
     /// context as a value delta and widens with the filter's own halos
     /// instead.
     pub widened_lower: Vec<Option<ScalarValue>>,
+    /// The `PRECEDING` row count `widened_lower` was walked to, so the read
+    /// side can walk the same rank against its sources' per-message indexes
+    /// and start higher than per-file stats allowed. `None` alongside an empty
+    /// `widened_lower`.
+    pub preceding_rows: Option<u64>,
 }
 
 /// Execution plan representing an exchange/shuffle boundary used by the
@@ -563,6 +568,7 @@ mod range_repartition_routing_tests {
             nulls_first: true,
             routing_expr: v_routing_expr(),
             widened_lower: Vec::new(),
+            preceding_rows: None,
         }
     }
 
@@ -592,6 +598,7 @@ mod range_repartition_routing_tests {
             nulls_first: true,
             routing_expr: v_routing_expr(),
             widened_lower: Vec::new(),
+            preceding_rows: None,
         });
         let recovered = exchange.range_repartition_routing().unwrap();
         assert_eq!(recovered.cuts, cuts_f64([100.0]), "second resolve wins");

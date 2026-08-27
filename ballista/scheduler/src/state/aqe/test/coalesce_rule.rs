@@ -248,6 +248,7 @@ async fn should_skip_coalesce_when_leaf_has_range_repartition_routing()
             nulls_first: true,
             routing_expr: Arc::new(Column::new("c", 0)),
             widened_lower: Vec::new(),
+            preceding_rows: None,
         },
     )?;
 

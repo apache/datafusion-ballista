@@ -314,7 +314,9 @@ fn select_output_partitions(
         ) else {
             return Ok(None);
         };
-        let restricted = restricted.with_fetch_limit(reader.fetch());
+        let restricted = restricted
+            .with_fetch_limit(reader.fetch())
+            .with_halo_rows(reader.halo_rows());
         // Bounds are per output partition, so they follow the same slice the
         // locations did. Dropping them here would leave the task reading its
         // sources whole — right answer, none of the saving.

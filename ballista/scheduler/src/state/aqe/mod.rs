@@ -363,6 +363,7 @@ impl AdaptiveExecutionGraph {
             // Filled in by the caller, which is where the consuming window's
             // frame is reachable.
             widened_lower: Vec::new(),
+            preceding_rows: None,
         }))
     }
 
@@ -478,6 +479,7 @@ impl AdaptiveExecutionGraph {
                             "range-repartition stage {stage_id}: rank halo walk failed: {err}"
                         ))
                     })?;
+                    routing.preceding_rows = Some(preceding_rows);
                     rank_cut_partitions(
                         partitions,
                         reports,

@@ -764,7 +764,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     schema,
                     merge_ordering,
                 )?
-                .with_fetch_limit(range_reader.fetch.map(|f| f as usize));
+                .with_fetch_limit(range_reader.fetch.map(|f| f as usize))
+                .with_halo_rows(range_reader.halo_rows);
 
                 // Empty means the scheduler had no cuts to give, which is a
                 // reader that reads its sources whole — not a reader whose
@@ -1222,6 +1223,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                                 Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                             })
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
+                        halo_rows: exec.halo_rows(),
                     },
                 )),
             };

@@ -179,6 +179,7 @@ async fn routing_parks_when_range_repartition_is_plan_root()
         nulls_first: true,
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
         widened_lower: Vec::new(),
+        preceding_rows: None,
     };
     planner.set_repartition_routing(stage_id, routing)?;
 
@@ -225,6 +226,7 @@ async fn set_repartition_routing_errs_when_stage_has_no_exchange()
         nulls_first: true,
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
         widened_lower: Vec::new(),
+        preceding_rows: None,
     };
     let result = planner.set_repartition_routing(stage_id, routing);
     assert!(
@@ -262,6 +264,7 @@ async fn routing_parks_when_range_repartition_has_a_parent()
         nulls_first: true,
         routing_expr: col("v", v_schema().as_ref()).unwrap(),
         widened_lower: Vec::new(),
+        preceding_rows: None,
     };
     planner.set_repartition_routing(stage_id, routing)?;
 
