@@ -27,6 +27,7 @@ use crate::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
+use crate::serde::scheduler::ShuffleLayout;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -877,7 +878,11 @@ async fn fetch_partition(
             &metadata.id,
             &partition_id.into(),
             location.file_id,
-            location.is_sort_shuffle,
+            if location.is_sort_shuffle {
+                ShuffleLayout::Sort
+            } else {
+                ShuffleLayout::Passthrough
+            },
             host,
             port,
             flight_transport,

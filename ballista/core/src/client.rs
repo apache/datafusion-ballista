@@ -20,7 +20,9 @@
 use crate::error::{BallistaError, Result as BResult};
 use crate::extension::BallistaConfigGrpcEndpoint;
 use crate::serde::protobuf;
-use crate::serde::scheduler::{Action, PartitionId};
+use crate::serde::scheduler::{
+    Action, ByteRange, PartitionId, ShuffleFileKind, ShuffleLayout,
+};
 use crate::utils::create_grpc_client_endpoint;
 use arrow_flight;
 use arrow_flight::Ticket;
@@ -157,7 +159,7 @@ impl BallistaClient {
         executor_id: &str,
         partition_id: &PartitionId,
         file_id: Option<u64>,
-        is_sort_shuffle: bool,
+        layout: ShuffleLayout,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
         let host = self.host.to_owned();
@@ -166,12 +168,48 @@ impl BallistaClient {
             executor_id,
             partition_id,
             file_id,
-            is_sort_shuffle,
+            layout,
             &host,
             port,
             flight_transport,
         )
         .await
+    }
+
+    /// Fetch byte ranges of a shuffle file, as absolute offsets into it.
+    ///
+    /// The executor returns exactly those bytes concatenated in request order,
+    /// having resolved nothing: a caller that knows which bytes it wants — from
+    /// an index it fetched itself — gets them without the executor reading an
+    /// index or comparing a value. Block transport only, since decoding is the
+    /// caller's business.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_byte_ranges(
+        &mut self,
+        executor_id: &str,
+        partition_id: &PartitionId,
+        file_id: Option<u64>,
+        layout: ShuffleLayout,
+        file_kind: ShuffleFileKind,
+        byte_ranges: Vec<ByteRange>,
+        header: Option<Vec<u8>>,
+    ) -> BResult<SendableRecordBatchStream> {
+        let host = self.host.to_owned();
+        let port = self.port;
+        let action = Action::FetchPartition {
+            job_id: partition_id.job_id.clone(),
+            stage_id: partition_id.stage_id,
+            partition_id: partition_id.partition_id,
+            host,
+            port,
+            file_id,
+            layout,
+            file_kind,
+            byte_ranges,
+        };
+        self.execute_do_action_with_header(&action, header)
+            .await
+            .map_err(|error| Self::as_fetch_failed(executor_id, partition_id, error))
     }
 
     /// Retrieves a partition from an executor.
@@ -187,11 +225,14 @@ impl BallistaClient {
         executor_id: &str,
         partition_id: &PartitionId,
         file_id: Option<u64>,
-        is_sort_shuffle: bool,
+        layout: ShuffleLayout,
         host: &str,
         port: u16,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
+        // No ranges: asks for whatever these identifiers address, which under
+        // the sort layout is the named partition's slice and under passthrough
+        // is the whole file.
         let action = Action::FetchPartition {
             job_id: partition_id.job_id.clone(),
             stage_id: partition_id.stage_id,
@@ -199,7 +240,9 @@ impl BallistaClient {
             host: host.to_owned(),
             port,
             file_id,
-            is_sort_shuffle,
+            layout,
+            file_kind: ShuffleFileKind::Data,
+            byte_ranges: vec![],
         };
 
         let result = if flight_transport {
@@ -208,27 +251,36 @@ impl BallistaClient {
             self.execute_do_action(&action).await
         };
 
-        result
-            .map_err(|error| match error {
-                // map grpc connection error to partition fetch error.
-                BallistaError::GrpcActionError(msg) => {
-                    log::warn!(
-                        "grpc client failed to fetch partition: {partition_id:?} , message: {msg:?}"
-                    );
-                    BallistaError::FetchFailed(
-                        executor_id.to_owned(),
-                        partition_id.stage_id,
-                        partition_id.partition_id,
-                        msg,
-                    )
-                }
-                error => {
-                    log::warn!(
-                        "grpc client failed to fetch partition: {partition_id:?} , error: {error:?}"
-                    );
-                    error
-                }
-            })
+        result.map_err(|error| Self::as_fetch_failed(executor_id, partition_id, error))
+    }
+
+    /// Report a transport failure as a partition fetch failure, which is what
+    /// lets the scheduler retry the task rather than fail the query.
+    fn as_fetch_failed(
+        executor_id: &str,
+        partition_id: &PartitionId,
+        error: BallistaError,
+    ) -> BallistaError {
+        match error {
+            // map grpc connection error to partition fetch error.
+            BallistaError::GrpcActionError(msg) => {
+                log::warn!(
+                    "grpc client failed to fetch partition: {partition_id:?} , message: {msg:?}"
+                );
+                BallistaError::FetchFailed(
+                    executor_id.to_owned(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    msg,
+                )
+            }
+            error => {
+                log::warn!(
+                    "grpc client failed to fetch partition: {partition_id:?} , error: {error:?}"
+                );
+                error
+            }
+        }
     }
 
     #[allow(rustdoc::private_intra_doc_links)]
@@ -322,6 +374,23 @@ impl BallistaClient {
         &mut self,
         action: &Action,
     ) -> BResult<SendableRecordBatchStream> {
+        self.execute_do_action_with_header(action, None).await
+    }
+
+    /// [`execute_do_action`](Self::execute_do_action), prefixing the returned
+    /// block stream with a caller-supplied IPC message.
+    ///
+    /// # Arguments
+    ///
+    /// * `header` - an encoded IPC schema message to prepend. A caller fetching
+    ///   byte ranges receives batch messages with no schema ahead of them,
+    ///   because the schema does not lie inside the bytes it asked for, and
+    ///   supplies the one it already knows.
+    pub async fn execute_do_action_with_header(
+        &mut self,
+        action: &Action,
+        header: Option<Vec<u8>>,
+    ) -> BResult<SendableRecordBatchStream> {
         let serialized_action: protobuf::Action = action.to_owned().try_into()?;
 
         let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
@@ -374,6 +443,19 @@ impl BallistaClient {
                     )
                 })
             });
+
+            // A caller fetching byte ranges gets batch messages with no schema
+            // ahead of them, because the schema is not in the bytes it asked
+            // for. It supplies the header it already knows.
+            let stream =
+                match header.clone() {
+                    Some(header) => futures::stream::once(async move {
+                        Ok(prost::bytes::Bytes::from(header))
+                    })
+                    .chain(stream)
+                    .boxed(),
+                    None => stream.boxed(),
+                };
 
             return Ok(Box::pin(BlockDataStream::try_new(stream).await?));
         }
