@@ -581,8 +581,14 @@ impl BallistaConfig {
     }
 
     /// Returns the standalone processing parallelism level.
-    pub fn default_standalone_parallelism(&self) -> usize {
+    pub fn standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
+    /// Deprecated alias for [`Self::standalone_parallelism`].
+    #[deprecated(note = "renamed to `standalone_parallelism`")]
+    pub fn default_standalone_parallelism(&self) -> usize {
+        self.standalone_parallelism()
     }
 
     /// Returns the maximum number of concurrent shuffle reader requests.
@@ -798,8 +804,14 @@ impl BallistaConfig {
     }
 
     /// should client use TLS to communicate with ballista cluster
-    pub fn client_use_tls(&self) -> bool {
+    pub fn use_tls(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
+    }
+
+    /// Deprecated alias for [`Self::use_tls`].
+    #[deprecated(note = "renamed to `use_tls`")]
+    pub fn client_use_tls(&self) -> bool {
+        self.use_tls()
     }
 
     /// Returns the number of retries for IO operations in the Ballista client.
