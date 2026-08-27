@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
@@ -406,7 +406,7 @@ collect the results back in Python.</p>
 <p><strong>Remote cluster</strong> — connect to an already-running scheduler:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
 
-<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">"df://localhost:50050"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p><strong>In-process cluster</strong> — start a scheduler and executor in the current Python process.
@@ -414,7 +414,7 @@ Useful for development, testing, and notebooks:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span><span class="p">,</span> <span class="n">setup_test_cluster</span>
 
 <span class="n">host</span><span class="p">,</span> <span class="n">port</span> <span class="o">=</span> <span class="n">setup_test_cluster</span><span class="p">()</span>
-<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;df://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="sa">f</span><span class="s2">"df://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -433,9 +433,9 @@ count, which is far too low for distributed execution:</p>
 <span class="n">target_partitions</span> <span class="o">=</span> <span class="n">executors</span> <span class="o">*</span> <span class="n">vcores</span>
 
 <span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
-    <span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">,</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
     <span class="n">cluster_config</span><span class="o">=</span><span class="p">{</span>
-        <span class="s2">&quot;datafusion.execution.target_partitions&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">target_partitions</span><span class="p">),</span>
+        <span class="s2">"datafusion.execution.target_partitions"</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">target_partitions</span><span class="p">),</span>
     <span class="p">},</span>
 <span class="p">)</span>
 </pre></div>
@@ -455,10 +455,10 @@ overhead.</p>
 <h3>Registering Tables<a class="headerlink" href="#registering-tables" title="Link to this heading">#</a></h3>
 <p>Before running SQL queries, register tables with the context using a <code class="docutils literal notranslate"><span class="pre">register_*</span></code>
 method or a <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">EXTERNAL</span> <span class="pre">TABLE</span></code> statement:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;trips&quot;</span><span class="p">,</span> <span class="s2">&quot;/mnt/bigdata/trips&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">"trips"</span><span class="p">,</span> <span class="s2">"/mnt/bigdata/trips"</span><span class="p">)</span>
 </pre></div>
 </div>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION &#39;/mnt/bigdata/trips&#39;&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION '/mnt/bigdata/trips'"</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -466,7 +466,7 @@ method or a <code class="docutils literal notranslate"><span class="pre">CREATE<
 <h3>Executing Queries<a class="headerlink" href="#executing-queries" title="Link to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">sql</span></code> method returns a <code class="docutils literal notranslate"><span class="pre">DataFrame</span></code>. The query runs when you call an action like
 <code class="docutils literal notranslate"><span class="pre">show</span></code> or <code class="docutils literal notranslate"><span class="pre">collect</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT count(*) FROM trips&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SELECT count(*) FROM trips"</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -518,17 +518,17 @@ method or a <code class="docutils literal notranslate"><span class="pre">CREATE<
 <span class="kn">import</span><span class="w"> </span><span class="nn">pyarrow</span>
 
 <span class="n">host</span><span class="p">,</span> <span class="n">port</span> <span class="o">=</span> <span class="n">setup_test_cluster</span><span class="p">()</span>
-<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;df://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="sa">f</span><span class="s2">"df://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
 <span class="n">batch</span> <span class="o">=</span> <span class="n">pyarrow</span><span class="o">.</span><span class="n">RecordBatch</span><span class="o">.</span><span class="n">from_arrays</span><span class="p">(</span>
     <span class="p">[</span><span class="n">pyarrow</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]),</span> <span class="n">pyarrow</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">])],</span>
-    <span class="n">names</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">],</span>
+    <span class="n">names</span><span class="o">=</span><span class="p">[</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">],</span>
 <span class="p">)</span>
 <span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">create_dataframe</span><span class="p">([[</span><span class="n">batch</span><span class="p">]])</span>
 
 <span class="n">df</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">select</span><span class="p">(</span>
-    <span class="n">col</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">)</span> <span class="o">+</span> <span class="n">col</span><span class="p">(</span><span class="s2">&quot;b&quot;</span><span class="p">),</span>
-    <span class="n">col</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">)</span> <span class="o">-</span> <span class="n">col</span><span class="p">(</span><span class="s2">&quot;b&quot;</span><span class="p">),</span>
+    <span class="n">col</span><span class="p">(</span><span class="s2">"a"</span><span class="p">)</span> <span class="o">+</span> <span class="n">col</span><span class="p">(</span><span class="s2">"b"</span><span class="p">),</span>
+    <span class="n">col</span><span class="p">(</span><span class="s2">"a"</span><span class="p">)</span> <span class="o">-</span> <span class="n">col</span><span class="p">(</span><span class="s2">"b"</span><span class="p">),</span>
 <span class="p">)</span>
 
 <span class="n">result</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">collect</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
@@ -649,8 +649,8 @@ implemented in Ballista. It is planned for a future release. See
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -402,14 +402,14 @@
 
 <span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">&quot;Remote SQL Example&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">"Remote SQL Example"</span><span class="p">);</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
 
-<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>For testing purposes, standalone, in process cluster could be started with:</p>
@@ -443,16 +443,16 @@
 <span class="cp">#[tokio::main]</span>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// creating SessionContext with default settings</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">test_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">test_util</span><span class="p">::</span><span class="n">examples_test_data</span><span class="p">();</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{test_data}/alltypes_plain.parquet&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">"{test_data}/alltypes_plain.parquet"</span><span class="p">);</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
 <span class="w">        </span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span><span class="w"> </span><span class="n">ParquetReadOptions</span><span class="p">::</span><span class="n">default</span><span class="p">())</span>
 <span class="w">        </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
-<span class="w">        </span><span class="p">.</span><span class="n">select_columns</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">&quot;id&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;bool_col&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;timestamp_col&quot;</span><span class="p">])</span><span class="o">?</span>
-<span class="w">        </span><span class="p">.</span><span class="n">filter</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s">&quot;id&quot;</span><span class="p">).</span><span class="n">gt</span><span class="p">(</span><span class="n">lit</span><span class="p">(</span><span class="mi">1</span><span class="p">)))</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="p">.</span><span class="n">select_columns</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">"id"</span><span class="p">,</span><span class="w"> </span><span class="s">"bool_col"</span><span class="p">,</span><span class="w"> </span><span class="s">"timestamp_col"</span><span class="p">])</span><span class="o">?</span>
+<span class="w">        </span><span class="p">.</span><span class="n">filter</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s">"id"</span><span class="p">).</span><span class="n">gt</span><span class="p">(</span><span class="n">lit</span><span class="p">(</span><span class="mi">1</span><span class="p">)))</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="n">df</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
@@ -474,30 +474,30 @@
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
-<span class="w">        </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">&quot;Remote SQL Example&quot;</span><span class="p">);</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">"Remote SQL Example"</span><span class="p">);</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
 <span class="w">        </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
 
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">test_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">test_util</span><span class="p">::</span><span class="n">examples_test_data</span><span class="p">();</span>
 
 <span class="w">    </span><span class="n">ctx</span><span class="p">.</span><span class="n">register_csv</span><span class="p">(</span>
-<span class="w">        </span><span class="s">&quot;test&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{test_data}/aggregate_test_100.csv&quot;</span><span class="p">),</span>
+<span class="w">        </span><span class="s">"test"</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">"{test_data}/aggregate_test_100.csv"</span><span class="p">),</span>
 <span class="w">        </span><span class="n">CsvReadOptions</span><span class="p">::</span><span class="n">new</span><span class="p">(),</span>
 <span class="w">    </span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
 <span class="w">        </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span>
-<span class="w">            </span><span class="s">&quot;SELECT c1, MIN(c12), MAX(c12) \</span>
+<span class="w">            </span><span class="s">"SELECT c1, MIN(c12), MAX(c12) \</span>
 <span class="s">        FROM test \</span>
 <span class="s">        WHERE c11 &gt; 0.1 AND c11 &lt; 0.9 \</span>
-<span class="s">        GROUP BY c1&quot;</span><span class="p">,</span>
+<span class="s">        GROUP BY c1"</span><span class="p">,</span>
 <span class="w">        </span><span class="p">)</span>
 <span class="w">        </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
@@ -586,8 +586,8 @@
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

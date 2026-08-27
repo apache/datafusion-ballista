@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
@@ -459,13 +459,13 @@ the client to read Parquet metadata for schema inference during table registrati
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">datafusion.object_store</span><span class="w"> </span><span class="kn">import</span> <span class="n">AmazonS3</span>
 
-<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">"df://localhost:50050"</span><span class="p">)</span>
 
-<span class="c1"># IMPORTANT: The scheme parameter must include &quot;://&quot; — DataFusion concatenates</span>
-<span class="c1"># scheme + host directly, so &quot;s3&quot; alone would produce an invalid URL.</span>
-<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">&quot;s3://&quot;</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span>
-    <span class="n">bucket_name</span><span class="o">=</span><span class="s2">&quot;my-bucket&quot;</span><span class="p">,</span>
-    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-west-2&quot;</span><span class="p">,</span>
+<span class="c1"># IMPORTANT: The scheme parameter must include "://" — DataFusion concatenates</span>
+<span class="c1"># scheme + host directly, so "s3" alone would produce an invalid URL.</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">"s3://"</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span>
+    <span class="n">bucket_name</span><span class="o">=</span><span class="s2">"my-bucket"</span><span class="p">,</span>
+    <span class="n">region</span><span class="o">=</span><span class="s2">"us-west-2"</span><span class="p">,</span>
 <span class="p">))</span>
 </pre></div>
 </div>
@@ -478,11 +478,11 @@ parameter if the environment is already configured.</p>
 <section id="creating-external-tables">
 <h2>Creating External Tables<a class="headerlink" href="#creating-external-tables" title="Link to this heading">#</a></h2>
 <p>Once the object store is registered, create external tables pointing to your S3 data:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;&quot;&quot;</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"""</span>
 <span class="s2">    CREATE EXTERNAL TABLE lineitem</span>
 <span class="s2">    STORED AS PARQUET</span>
-<span class="s2">    LOCATION &#39;s3://my-bucket/tpch/lineitem/&#39;</span>
-<span class="s2">&quot;&quot;&quot;</span><span class="p">)</span>
+<span class="s2">    LOCATION 's3://my-bucket/tpch/lineitem/'</span>
+<span class="s2">"""</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -491,21 +491,21 @@ parameter if the environment is already configured.</p>
 <p>After registering tables, run queries as usual. The client sends the query plan to the
 Ballista scheduler, which distributes execution across executors:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Verify table registration</span>
-<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SHOW TABLES&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SHOW TABLES"</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 
 <span class="c1"># Inspect table schema</span>
-<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;DESCRIBE lineitem&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"DESCRIBE lineitem"</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 
 <span class="c1"># Run a query</span>
-<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;&quot;&quot;</span>
+<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"""</span>
 <span class="s2">    SELECT l_returnflag, l_linestatus,</span>
 <span class="s2">           SUM(l_quantity) as sum_qty,</span>
 <span class="s2">           SUM(l_extendedprice) as sum_base_price</span>
 <span class="s2">    FROM lineitem</span>
-<span class="s2">    WHERE l_shipdate &lt;= &#39;1998-09-02&#39;</span>
+<span class="s2">    WHERE l_shipdate &lt;= '1998-09-02'</span>
 <span class="s2">    GROUP BY l_returnflag, l_linestatus</span>
 <span class="s2">    ORDER BY l_returnflag, l_linestatus</span>
-<span class="s2">&quot;&quot;&quot;</span><span class="p">)</span>
+<span class="s2">"""</span><span class="p">)</span>
 <span class="n">df</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
@@ -516,28 +516,28 @@ Ballista scheduler, which distributes execution across executors:</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">datafusion.object_store</span><span class="w"> </span><span class="kn">import</span> <span class="n">AmazonS3</span>
 
-<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">&quot;AWS_REGION&quot;</span><span class="p">,</span> <span class="s2">&quot;us-west-2&quot;</span><span class="p">)</span>
+<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">"AWS_REGION"</span><span class="p">,</span> <span class="s2">"us-west-2"</span><span class="p">)</span>
 
-<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">"df://localhost:50050"</span><span class="p">)</span>
 
-<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">&quot;s3://&quot;</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span>
-    <span class="n">bucket_name</span><span class="o">=</span><span class="s2">&quot;my-data-bucket&quot;</span><span class="p">,</span>
-    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-west-2&quot;</span><span class="p">,</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">"s3://"</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span>
+    <span class="n">bucket_name</span><span class="o">=</span><span class="s2">"my-data-bucket"</span><span class="p">,</span>
+    <span class="n">region</span><span class="o">=</span><span class="s2">"us-west-2"</span><span class="p">,</span>
 <span class="p">))</span>
 
-<span class="n">tables</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;lineitem&quot;</span><span class="p">,</span> <span class="s2">&quot;orders&quot;</span><span class="p">,</span> <span class="s2">&quot;customer&quot;</span><span class="p">,</span> <span class="s2">&quot;nation&quot;</span><span class="p">,</span> <span class="s2">&quot;region&quot;</span><span class="p">,</span>
-          <span class="s2">&quot;part&quot;</span><span class="p">,</span> <span class="s2">&quot;supplier&quot;</span><span class="p">,</span> <span class="s2">&quot;partsupp&quot;</span><span class="p">]</span>
+<span class="n">tables</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"lineitem"</span><span class="p">,</span> <span class="s2">"orders"</span><span class="p">,</span> <span class="s2">"customer"</span><span class="p">,</span> <span class="s2">"nation"</span><span class="p">,</span> <span class="s2">"region"</span><span class="p">,</span>
+          <span class="s2">"part"</span><span class="p">,</span> <span class="s2">"supplier"</span><span class="p">,</span> <span class="s2">"partsupp"</span><span class="p">]</span>
 
 <span class="k">for</span> <span class="n">table</span> <span class="ow">in</span> <span class="n">tables</span><span class="p">:</span>
-    <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;&quot;&quot;</span>
+    <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="sa">f</span><span class="s2">"""</span>
 <span class="s2">        CREATE EXTERNAL TABLE </span><span class="si">{</span><span class="n">table</span><span class="si">}</span>
 <span class="s2">        STORED AS PARQUET</span>
-<span class="s2">        LOCATION &#39;s3://my-data-bucket/tpch/</span><span class="si">{</span><span class="n">table</span><span class="si">}</span><span class="s2">/&#39;</span>
-<span class="s2">    &quot;&quot;&quot;</span><span class="p">)</span>
+<span class="s2">        LOCATION 's3://my-data-bucket/tpch/</span><span class="si">{</span><span class="n">table</span><span class="si">}</span><span class="s2">/'</span>
+<span class="s2">    """</span><span class="p">)</span>
 
-<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SHOW TABLES&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SHOW TABLES"</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 
-<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT count(*) FROM lineitem&quot;</span><span class="p">)</span>
+<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SELECT count(*) FROM lineitem"</span><span class="p">)</span>
 <span class="n">df</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
@@ -547,10 +547,10 @@ Ballista scheduler, which distributes execution across executors:</p>
 <p>Ballista also supports configuring S3 credentials and endpoints through SQL <code class="docutils literal notranslate"><span class="pre">SET</span></code>
 commands. This configures the <strong>scheduler and executor</strong> session state and propagates
 across the cluster:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">region</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;us-west-2&#39;</span><span class="p">;</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">access_key_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;******&#39;</span><span class="p">;</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">secret_access_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;******&#39;</span><span class="p">;</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;https://s3.us-west-2.amazonaws.com&#39;</span><span class="p">;</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">region</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'us-west-2'</span><span class="p">;</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">access_key_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'******'</span><span class="p">;</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">secret_access_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'******'</span><span class="p">;</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'https://s3.us-west-2.amazonaws.com'</span><span class="p">;</span>
 <span class="k">SET</span><span class="w"> </span><span class="n">s3</span><span class="p">.</span><span class="n">allow_http</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">false</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -566,9 +566,9 @@ during <code class="docutils literal notranslate"><span class="pre">CREATE</span
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># scheduler and executor containers</span>
 <span class="nt">env</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS_REGION</span>
-<span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;us-west-2&quot;</span>
+<span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">"us-west-2"</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS_DEFAULT_REGION</span>
-<span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;us-west-2&quot;</span>
+<span class="w">    </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">"us-west-2"</span>
 </pre></div>
 </div>
 <p>On EKS with <a class="reference external" href="https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html">IAM Roles for Service Accounts (IRSA)</a>,
@@ -582,18 +582,18 @@ credential chain will automatically pick up the projected token.</p>
 <p>The client context does not have an S3 object store registered. Call
 <code class="docutils literal notranslate"><span class="pre">register_object_store()</span></code> before creating external tables:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">datafusion.object_store</span><span class="w"> </span><span class="kn">import</span> <span class="n">AmazonS3</span>
-<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">&quot;s3://&quot;</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span><span class="n">bucket_name</span><span class="o">=</span><span class="s2">&quot;my-bucket&quot;</span><span class="p">))</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">"s3://"</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span><span class="n">bucket_name</span><span class="o">=</span><span class="s2">"my-bucket"</span><span class="p">))</span>
 </pre></div>
 </div>
 </section>
 <section id="relativeurlwithoutbase-panic">
 <h3>“RelativeUrlWithoutBase” panic<a class="headerlink" href="#relativeurlwithoutbase-panic" title="Link to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">scheme</span></code> parameter in <code class="docutils literal notranslate"><span class="pre">register_object_store()</span></code> must include <code class="docutils literal notranslate"><span class="pre">://</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Wrong — produces invalid URL &quot;s3my-bucket&quot;</span>
-<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">&quot;s3&quot;</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Wrong — produces invalid URL "s3my-bucket"</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">"s3"</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
 
 <span class="c1"># Correct</span>
-<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">&quot;s3://&quot;</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">"s3://"</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -708,8 +708,8 @@ credentials are available via environment variables, instance profiles, or IRSA.
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

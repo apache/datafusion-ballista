@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -423,7 +423,7 @@ OPTIONS:
 <section id="example">
 <h2>Example<a class="headerlink" href="#example" title="Link to this heading">#</a></h2>
 <p>Create a CSV file to query.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;1,2&quot;</span><span class="w"> </span>&gt;<span class="w"> </span>data.csv
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"1,2"</span><span class="w"> </span>&gt;<span class="w"> </span>data.csv
 </pre></div>
 </div>
 </section>
@@ -441,7 +441,7 @@ OPTIONS:
 
 Ballista<span class="w"> </span>CLI<span class="w"> </span>v52.0.0
 
-&gt;<span class="w"> </span>CREATE<span class="w"> </span>EXTERNAL<span class="w"> </span>TABLE<span class="w"> </span>foo<span class="w"> </span><span class="o">(</span>a<span class="w"> </span>INT,<span class="w"> </span>b<span class="w"> </span>INT<span class="o">)</span><span class="w"> </span>STORED<span class="w"> </span>AS<span class="w"> </span>CSV<span class="w"> </span>LOCATION<span class="w"> </span><span class="s1">&#39;data.csv&#39;</span><span class="p">;</span>
+&gt;<span class="w"> </span>CREATE<span class="w"> </span>EXTERNAL<span class="w"> </span>TABLE<span class="w"> </span>foo<span class="w"> </span><span class="o">(</span>a<span class="w"> </span>INT,<span class="w"> </span>b<span class="w"> </span>INT<span class="o">)</span><span class="w"> </span>STORED<span class="w"> </span>AS<span class="w"> </span>CSV<span class="w"> </span>LOCATION<span class="w"> </span><span class="s1">'data.csv'</span><span class="p">;</span>
 <span class="m">0</span><span class="w"> </span>rows<span class="w"> </span><span class="k">in</span><span class="w"> </span>set.<span class="w"> </span>Query<span class="w"> </span>took<span class="w"> </span><span class="m">0</span>.001<span class="w"> </span>seconds.
 
 &gt;<span class="w"> </span>SELECT<span class="w"> </span>*<span class="w"> </span>FROM<span class="w"> </span>foo<span class="p">;</span>
@@ -815,21 +815,21 @@ stage execution plan.</p></li>
 <span class="nt">repaint_interval_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
 
 <span class="nt">scheduler</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://localhost:50050&quot;</span>
+<span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://localhost:50050"</span>
 
 <span class="nt">http</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
 
 <span class="nt">theme</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;dark&quot;</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">"dark"</span>
 <span class="w">  </span><span class="nt">overrides</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">table_header</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">fg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;DarkBlue&quot;</span>
-<span class="w">      </span><span class="nt">bg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;White&quot;</span>
-<span class="w">      </span><span class="nt">add_modifier</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;UNDERLINED|ITALIC&quot;</span>
+<span class="w">      </span><span class="nt">fg</span><span class="p">:</span><span class="w"> </span><span class="s">"DarkBlue"</span>
+<span class="w">      </span><span class="nt">bg</span><span class="p">:</span><span class="w"> </span><span class="s">"White"</span>
+<span class="w">      </span><span class="nt">add_modifier</span><span class="p">:</span><span class="w"> </span><span class="s">"UNDERLINED|ITALIC"</span>
 <span class="w">    </span><span class="nt">status_running</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">fg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;#ff00aa&quot;</span>
-<span class="w">      </span><span class="nt">bg</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;108&quot;</span>
+<span class="w">      </span><span class="nt">fg</span><span class="p">:</span><span class="w"> </span><span class="s">"#ff00aa"</span>
+<span class="w">      </span><span class="nt">bg</span><span class="p">:</span><span class="w"> </span><span class="s">"108"</span>
 </pre></div>
 </div>
 <ul class="simple">
@@ -1018,8 +1018,8 @@ trunk<span class="w"> </span>serve<span class="w"> </span>--no-default-features<
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

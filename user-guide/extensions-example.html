@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -399,8 +399,8 @@ utilities, and integration tools to support additional data processing workflows
 <p>This example will implement <a class="reference external" href="https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.sample.html">
 <code class="docutils literal notranslate"><span class="pre">sample()</span></code></a>
 operator which will return a sampled subset of original <code class="docutils literal notranslate"><span class="pre">DataFrame</span></code>:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="s">&quot;data/&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="s">"data/"</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="c1">// The `sample` operator, defined in this project,</span>
 <span class="c1">// samples 30% of the data and displays the result.</span>
@@ -462,7 +462,7 @@ Please do not use implemented sampling operator for production, statisticians wo
 
 <span class="k">impl</span><span class="w"> </span><span class="n">UserDefinedLogicalNodeCore</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Sample</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="s">&quot;Sample&quot;</span>
+<span class="w">        </span><span class="s">"Sample"</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">inputs</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;&amp;</span><span class="n">LogicalPlan</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
@@ -479,7 +479,7 @@ Please do not use implemented sampling operator for production, statisticians wo
 
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">fmt_for_explain</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">f</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">fmt</span><span class="p">::</span><span class="n">Formatter</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">std</span><span class="p">::</span><span class="n">fmt</span><span class="p">::</span><span class="nb">Result</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="n">f</span><span class="p">.</span><span class="n">write_fmt</span><span class="p">(</span><span class="fm">format_args!</span><span class="p">(</span>
-<span class="w">            </span><span class="s">&quot;Sample: fraction: {}, seed: {:?}&quot;</span><span class="p">,</span>
+<span class="w">            </span><span class="s">"Sample: fraction: {}, seed: {:?}"</span><span class="p">,</span>
 <span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">fraction</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">seed</span>
 <span class="w">        </span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
 <span class="w">        </span><span class="nb">Ok</span><span class="p">(())</span>
@@ -495,7 +495,7 @@ Please do not use implemented sampling operator for production, statisticians wo
 <span class="w">            </span><span class="n">fraction</span><span class="p">:</span><span class="w"> </span><span class="nc">self</span><span class="p">.</span><span class="n">fraction</span><span class="p">,</span>
 <span class="w">            </span><span class="n">input</span><span class="p">:</span><span class="w"> </span><span class="nc">inputs</span>
 <span class="w">                </span><span class="p">.</span><span class="n">first</span><span class="p">()</span>
-<span class="w">                </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">&quot;expected single input&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
+<span class="w">                </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">"expected single input"</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
 <span class="w">                </span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
 <span class="w">        </span><span class="p">})</span>
 <span class="w">    </span><span class="p">}</span>
@@ -536,13 +536,13 @@ Please do not use implemented sampling operator for production, statisticians wo
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">sample</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">fraction</span><span class="p">:</span><span class="w"> </span><span class="kt">f32</span><span class="p">,</span><span class="w"> </span><span class="n">seed</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="kt">i64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">datafusion</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">DataFrame</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="p">(</span><span class="n">fraction</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">fraction</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mf">1.0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="nb">Err</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Configuration</span><span class="p">(</span>
-<span class="w">                </span><span class="s">&quot;fraction should be in 0 ..= 1 range&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">                </span><span class="s">"fraction should be in 0 ..= 1 range"</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
 <span class="w">            </span><span class="p">))</span><span class="o">?</span>
 <span class="w">        </span><span class="p">}</span>
 
 <span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">seed</span><span class="p">.</span><span class="n">unwrap_or</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="nb">Err</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Configuration</span><span class="p">(</span>
-<span class="w">                </span><span class="s">&quot;seed should be positive number&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">                </span><span class="s">"seed should be positive number"</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
 <span class="w">            </span><span class="p">))</span><span class="o">?</span>
 <span class="w">        </span><span class="p">}</span>
 
@@ -562,8 +562,8 @@ Please do not use implemented sampling operator for production, statisticians wo
 </pre></div>
 </div>
 <p>This approach enables the addition of new methods to the DataFusion DataFrame implementation:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="s">&quot;data/&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="s">"data/"</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="c1">// The DataFrame extension provides the `sample` method</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">df</span><span class="p">.</span><span class="n">sample</span><span class="p">(</span><span class="mf">0.30</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">)</span><span class="w"> </span><span class="o">?</span><span class="p">;</span>
@@ -576,12 +576,12 @@ Please do not use implemented sampling operator for production, statisticians wo
 <p>With the extension in place, a custom logical extension codec is required to transmit the client logical plan to the
 scheduler.</p>
 <p>The logical extension codec typically consists of two components: Google Protocol Buffer definitions:</p>
-<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="k">syntax</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;proto3&quot;</span><span class="p">;</span>
+<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="k">syntax</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"proto3"</span><span class="p">;</span>
 
 <span class="kn">package</span><span class="w"> </span><span class="nn">extension.ballista</span><span class="p">;</span>
 
 <span class="c1">// used in building the codecs and compiled to Rust at build time.</span>
-<span class="k">import</span><span class="w"> </span><span class="s">&quot;datafusion_common.proto&quot;</span><span class="p">;</span>
+<span class="k">import</span><span class="w"> </span><span class="s">"datafusion_common.proto"</span><span class="p">;</span>
 <span class="c1">//</span>
 <span class="c1">// message naming convention</span>
 <span class="c1">//</span>
@@ -655,7 +655,7 @@ scheduler.</p>
 <span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">Sample</span><span class="w"> </span><span class="p">{</span>
 <span class="w">                    </span><span class="n">input</span><span class="p">:</span><span class="w"> </span><span class="nc">inputs</span>
 <span class="w">                        </span><span class="p">.</span><span class="n">first</span><span class="p">()</span>
-<span class="w">                        </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">&quot;expected input&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
+<span class="w">                        </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">"expected input"</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
 <span class="w">                        </span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
 <span class="w">                    </span><span class="n">seed</span><span class="p">:</span><span class="w"> </span><span class="nc">sample</span><span class="p">.</span><span class="n">seed</span><span class="p">,</span>
 <span class="w">                    </span><span class="n">fraction</span><span class="p">:</span><span class="w"> </span><span class="nc">sample</span><span class="p">.</span><span class="n">fraction</span><span class="p">,</span>
@@ -663,7 +663,7 @@ scheduler.</p>
 
 <span class="w">                </span><span class="nb">Ok</span><span class="p">(</span><span class="n">datafusion</span><span class="p">::</span><span class="n">logical_expr</span><span class="p">::</span><span class="n">Extension</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">node</span><span class="w"> </span><span class="p">})</span>
 <span class="w">            </span><span class="p">}</span>
-<span class="w">            </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">plan_err</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;Can&#39;t cast logical extension &quot;</span><span class="p">),</span>
+<span class="w">            </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">plan_err</span><span class="o">!</span><span class="p">(</span><span class="s">"Can't cast logical extension "</span><span class="p">),</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">}</span>
 
@@ -717,7 +717,7 @@ transformation is performed using implementing <code class="docutils literal not
 <span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">Sample</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">fraction</span><span class="p">,</span><span class="w"> </span><span class="n">seed</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="w"> </span><span class="p">})</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">node</span><span class="p">.</span><span class="n">as_any</span><span class="p">().</span><span class="n">downcast_ref</span><span class="p">::</span><span class="o">&lt;</span><span class="n">Sample</span><span class="o">&gt;</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">physical_inputs</span>
 <span class="w">                </span><span class="p">.</span><span class="n">first</span><span class="p">()</span>
-<span class="w">                </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">&quot;expected single input&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
+<span class="w">                </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">"expected single input"</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
 <span class="w">                </span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
 <span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SampleExec</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="o">*</span><span class="n">fraction</span><span class="p">,</span><span class="w"> </span><span class="o">*</span><span class="n">seed</span><span class="p">,</span><span class="w"> </span><span class="n">input</span><span class="p">);</span>
 <span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">node</span><span class="p">);</span>
@@ -763,7 +763,7 @@ transmitted to the executor(s). Implementation is an extension of <code class="d
 <span class="w">                                                               </span><span class="p">}))</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">inputs</span>
 <span class="w">                    </span><span class="p">.</span><span class="n">first</span><span class="p">()</span>
-<span class="w">                    </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">&quot;expected input&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
+<span class="w">                    </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Plan</span><span class="p">(</span><span class="s">"expected input"</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
 <span class="w">                    </span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
 
 <span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">SampleExec</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">fraction</span><span class="p">,</span><span class="w"> </span><span class="n">seed</span><span class="p">,</span><span class="w"> </span><span class="n">input</span><span class="p">));</span>
@@ -774,7 +774,7 @@ transmitted to the executor(s). Implementation is an extension of <code class="d
 <span class="w">            </span><span class="nb">Some</span><span class="p">(</span><span class="k">super</span><span class="p">::</span><span class="n">messages</span><span class="p">::</span><span class="n">p_message</span><span class="p">::</span><span class="n">Extension</span><span class="p">::</span><span class="n">Opaque</span><span class="p">(</span><span class="n">opaque</span><span class="p">))</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">                </span><span class="bp">self</span><span class="p">.</span><span class="n">inner</span><span class="p">.</span><span class="n">try_decode</span><span class="p">(</span><span class="o">&amp;</span><span class="n">opaque</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">,</span><span class="w"> </span><span class="n">registry</span><span class="p">)</span>
 <span class="w">            </span><span class="p">}</span>
-<span class="w">            </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">plan_err</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;Can&#39;t cast physical extension &quot;</span><span class="p">),</span>
+<span class="w">            </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">plan_err</span><span class="o">!</span><span class="p">(</span><span class="s">"Can't cast physical extension "</span><span class="p">),</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">}</span>
 
@@ -827,7 +827,7 @@ configure scheduler and executor to use new features.</p>
 <span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="w"> </span><span class="p">()</span>
 <span class="p">};</span>
 
-<span class="kd">let</span><span class="w"> </span><span class="n">address</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{}:{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">config</span><span class="p">.</span><span class="n">bind_host</span><span class="p">,</span><span class="w"> </span><span class="n">config</span><span class="p">.</span><span class="n">bind_port</span><span class="p">);</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">address</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">"{}:{}"</span><span class="p">,</span><span class="w"> </span><span class="n">config</span><span class="p">.</span><span class="n">bind_host</span><span class="p">,</span><span class="w"> </span><span class="n">config</span><span class="p">.</span><span class="n">bind_port</span><span class="p">);</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">address</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">address</span>
 <span class="p">.</span><span class="n">parse</span><span class="p">()</span>
 <span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">AddrParseError</span><span class="o">|</span><span class="w"> </span><span class="n">BallistaError</span><span class="p">::</span><span class="n">Configuration</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="n">to_string</span><span class="p">()))</span><span class="w"> </span><span class="o">?</span><span class="p">;</span>
@@ -971,8 +971,8 @@ distributed query lifecycle.</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

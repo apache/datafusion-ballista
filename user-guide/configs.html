@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -408,7 +408,7 @@ generated sections is hand-written and safe to edit normally.</p>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_information_schema</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">&quot;Super Cool Ballista App&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">"Super Cool Ballista App"</span><span class="p">);</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
@@ -421,22 +421,22 @@ generated sections is hand-written and safe to edit normally.</p>
 <p><code class="docutils literal notranslate"><span class="pre">SessionConfig::new_with_ballista()</span></code> will setup <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code> for use with ballista. This is not required, <code class="docutils literal notranslate"><span class="pre">SessionConfig::new</span></code> could be used, but it’s advised as it will set up some sensible configuration defaults .</p>
 <p><code class="docutils literal notranslate"><span class="pre">SessionConfigExt</span></code> expose set of <code class="docutils literal notranslate"><span class="pre">SessionConfigExt::with_ballista_</span></code> and <code class="docutils literal notranslate"><span class="pre">SessionConfigExt::ballista_</span></code> methods which can tune retrieve ballista specific options.</p>
 <p>Notable <code class="docutils literal notranslate"><span class="pre">SessionConfigExt</span></code> configuration methods would be:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// Overrides ballista&#39;s [LogicalExtensionCodec]</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// Overrides ballista's [LogicalExtensionCodec]</span>
 <span class="k">fn</span><span class="w"> </span><span class="nf">with_ballista_logical_extension_codec</span><span class="p">(</span>
 <span class="w">    </span><span class="bp">self</span><span class="p">,</span>
 <span class="w">    </span><span class="n">codec</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">LogicalExtensionCodec</span><span class="o">&gt;</span><span class="p">,</span>
 <span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">SessionConfig</span><span class="p">;</span>
 
-<span class="sd">/// Overrides ballista&#39;s [PhysicalExtensionCodec]</span>
+<span class="sd">/// Overrides ballista's [PhysicalExtensionCodec]</span>
 <span class="k">fn</span><span class="w"> </span><span class="nf">with_ballista_physical_extension_codec</span><span class="p">(</span>
 <span class="w">    </span><span class="bp">self</span><span class="p">,</span>
 <span class="w">    </span><span class="n">codec</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">PhysicalExtensionCodec</span><span class="o">&gt;</span><span class="p">,</span>
 <span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">SessionConfig</span><span class="p">;</span>
 
-<span class="sd">/// Overrides ballista&#39;s [QueryPlanner]</span>
+<span class="sd">/// Overrides ballista's [QueryPlanner]</span>
 <span class="k">fn</span><span class="w"> </span><span class="nf">with_ballista_query_planner</span><span class="p">(</span>
 <span class="w">    </span><span class="bp">self</span><span class="p">,</span>
-<span class="w">    </span><span class="n">planner</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">QueryPlanner</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">planner</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">QueryPlanner</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">'</span><span class="nb">static</span><span class="o">&gt;</span><span class="p">,</span>
 <span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">SessionConfig</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -445,17 +445,17 @@ generated sections is hand-written and safe to edit normally.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="p">:</span><span class="w"> </span><span class="nc">SessionContext</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="o">&amp;</span><span class="n">url</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
-<span class="w">    </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;select name, value from information_schema.df_settings where name like &#39;ballista&#39;&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"select name, value from information_schema.df_settings where name like 'ballista'"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">    </span><span class="p">.</span><span class="n">collect</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">expected</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="s">&quot;+-------------------+-------------------------+&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;| name              | value                   |&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;+-------------------+-------------------------+&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;| ballista.job.name | Super Cool Ballista App |&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;+-------------------+-------------------------+&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"+-------------------+-------------------------+"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"| name              | value                   |"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"+-------------------+-------------------------+"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"| ballista.job.name | Super Cool Ballista App |"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"+-------------------+-------------------------+"</span><span class="p">,</span>
 <span class="p">];</span>
 </pre></div>
 </div>
@@ -869,8 +869,8 @@ manage the whole cluster are also needed to be taken care of.</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

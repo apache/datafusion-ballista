@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
@@ -446,7 +446,7 @@ located so that Ballista can execute queries against it.</p>
 <span class="w">  </span><span class="nt">accessModes</span><span class="p">:</span>
 <span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ReadWriteOnce</span>
 <span class="w">  </span><span class="nt">hostPath</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/mnt&quot;</span>
+<span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">"/mnt"</span>
 <span class="nn">---</span>
 <span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
 <span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PersistentVolumeClaim</span>
@@ -477,12 +477,12 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Two Services front the same scheduler pod:</span>
 <span class="c1">#   - `ballista-scheduler-registration` sets `publishNotReadyAddresses: true`</span>
 <span class="c1">#     so executors can dial the scheduler for registration BEFORE its</span>
-<span class="c1">#     /readyz gate flips green. Without this, the scheduler&#39;s /readyz</span>
+<span class="c1">#     /readyz gate flips green. Without this, the scheduler's /readyz</span>
 <span class="c1">#     defaults to blocking on 1+ registered executor, which keeps its</span>
-<span class="c1">#     Endpoints empty — executors can&#39;t reach it to register in the first</span>
+<span class="c1">#     Endpoints empty — executors can't reach it to register in the first</span>
 <span class="c1">#     place. Chicken-and-egg; cluster never converges.</span>
 <span class="c1">#   - `ballista-scheduler` is the client-facing Service (respects /readyz)</span>
-<span class="c1">#     so clients don&#39;t submit queries to a scheduler with 0 executors mid</span>
+<span class="c1">#     so clients don't submit queries to a scheduler with 0 executors mid</span>
 <span class="c1">#     rolling upgrade.</span>
 <span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
 <span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Service</span>
@@ -539,7 +539,7 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
 <span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-scheduler:latest</span>
-<span class="w">          </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;--bind-port=50050&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">          </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"--bind-port=50050"</span><span class="p p-Indicator">]</span>
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
@@ -589,13 +589,13 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-executor</span>
 <span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-executor:latest</span>
 <span class="w">          </span><span class="nt">args</span><span class="p">:</span>
-<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--bind-port=50051&quot;</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--bind-port=50051"</span>
 <span class="w">            </span><span class="c1"># Registration Service, not the client-facing one: the client-facing</span>
 <span class="w">            </span><span class="c1"># `ballista-scheduler` respects /readyz, which stays 503 until an</span>
 <span class="w">            </span><span class="c1"># executor registers, so its Endpoints are empty and executors can</span>
 <span class="w">            </span><span class="c1"># never reach it to register in the first place.</span>
-<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--scheduler-host=ballista-scheduler-registration&quot;</span>
-<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--scheduler-port=50050&quot;</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--scheduler-host=ballista-scheduler-registration"</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--scheduler-port=50050"</span>
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50051</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
@@ -642,8 +642,8 @@ ballista-scheduler-879f874c5-rnbd6<span class="w">   </span><span class="m">0</s
 <p>You can view the scheduler logs with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span> <span class="pre">ballista-scheduler-&lt;pod-id&gt;</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl logs ballista-scheduler-&lt;pod-id&gt;
 INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: &quot;b5e81711-1c5c-46ec-8522-d8b359793188&quot;, host: &quot;10.1.23.149&quot;, port: 50051 }
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: &quot;816e4502-a876-4ed8-b33f-86d243dcf63f&quot;, host: &quot;10.1.23.150&quot;, port: 50051 }
+INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
+INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
 </pre></div>
 </div>
 </section>
@@ -788,7 +788,7 @@ which will let Keda know how to scale your executors. In order to do that, copy 
 <span class="w">  </span><span class="nt">triggers</span><span class="p">:</span>
 <span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">external</span>
 <span class="w">      </span><span class="nt">metadata</span><span class="p">:</span>
-<span class="w">        </span><span class="c1"># Change this DNS if the scheduler isn&#39;t deployed in the &quot;default&quot; namespace</span>
+<span class="w">        </span><span class="c1"># Change this DNS if the scheduler isn't deployed in the "default" namespace</span>
 <span class="w">        </span><span class="nt">scalerAddress</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler.default.svc.cluster.local:50050</span>
 </pre></div>
 </div>
@@ -904,8 +904,8 @@ scale the executors.</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

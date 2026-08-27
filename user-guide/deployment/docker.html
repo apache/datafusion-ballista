@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
@@ -430,7 +430,7 @@
 <p>Run <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">ps</span></code> to check that the process is running:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-a756055576f3   apache/datafusion-ballista-scheduler:latest   &quot;/root/scheduler-ent…&quot;   8 seconds ago   Up 8 seconds             xenodochial_carson
+a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 </pre></div>
 </div>
 <p>Run <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the process:</p>
@@ -453,8 +453,8 @@ INFO ballista_core::event_loop: Starting the event loop query_stage
 <p>Use <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">ps</span></code> to check that both the scheduler and executor(s) are now running:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-fb8b530cee6d   apache/datafusion-ballista-executor:latest    &quot;/root/executor-entr…&quot;   2 seconds ago   Up 1 second              gallant_galois
-a756055576f3   apache/datafusion-ballista-scheduler:latest   &quot;/root/scheduler-ent…&quot;   8 seconds ago   Up 8 seconds             xenodochial_carson
+fb8b530cee6d   apache/datafusion-ballista-executor:latest    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
+a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 </pre></div>
 </div>
 <p>Use <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the executor(s):</p>
@@ -571,8 +571,8 @@ INFO ballista_executor::execution_loop: Starting poll work loop with scheduler
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

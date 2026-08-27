@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -464,9 +464,88 @@ behavior. If you relied on it being <code class="docutils literal notranslate"><
 into the non-spilling hash join for <em>all</em> joins in the session, not only the small
 ones.</p>
 </section>
+<section id="schedulers-and-executors-must-be-upgraded-together">
+<h4>Schedulers and executors must be upgraded together<a class="headerlink" href="#schedulers-and-executors-must-be-upgraded-together" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">55.0.0</span></code> introduces <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code>, a strict-equality check on the
+executor↔scheduler wire format. The scheduler compares its own compiled-in value
+against <code class="docutils literal notranslate"><span class="pre">ExecutorRegistration.ballista_protocol_version</span></code> on every registration,
+heartbeat, and <code class="docutils literal notranslate"><span class="pre">poll_work</span></code>, and rejects a mismatch with
+<code class="docutils literal notranslate"><span class="pre">Status::failed_precondition</span></code>:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>protocol version mismatch: scheduler=3, executor=2
+</pre></div>
+</div>
+<p>A rejected executor never receives work. A <code class="docutils literal notranslate"><span class="pre">54.x</span></code> executor sends no version at
+all, which arrives as the proto default <code class="docutils literal notranslate"><span class="pre">0</span></code> and never matches a real scheduler,
+so a <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code> scheduler rejects every <code class="docutils literal notranslate"><span class="pre">54.x</span></code> executor on this same path. This
+prevents schedulers and executors from exchanging information they think is
+correct, but silently produces incorrect results.</p>
+<p><strong>This does not preclude rolling upgrades.</strong> A Ballista generation is
+internally consistent and is replaced as a unit: bump the scheduler and executor
+image tags in the same change and apply them together, and each rolls under its
+own strategy while the fleet keeps serving. See
+<a class="reference internal" href="../user-guide/deployment/kubernetes.html#rolling-both-deployments-together"><span class="std std-ref">Rolling both Deployments together</span></a>
+for the two strategies and why they differ — in particular why the scheduler
+wants <code class="docutils literal notranslate"><span class="pre">maxUnavailable:</span> <span class="pre">1</span></code> so the outgoing pod goes first, and why the
+client-facing Service gates on <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> so no query is submitted to a scheduler
+whose executors have not yet caught up.</p>
+<p>Note also that the version has already moved twice within the <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>
+development cycle (<code class="docutils literal notranslate"><span class="pre">1</span></code> → <code class="docutils literal notranslate"><span class="pre">2</span></code> when the statistics sketch changed, <code class="docutils literal notranslate"><span class="pre">2</span></code> → <code class="docutils literal notranslate"><span class="pre">3</span></code> when
+the shuffle fetch action gained byte-range addressing). If you track <code class="docutils literal notranslate"><span class="pre">main</span></code>
+rather than releases, expect to move both halves together more than once.</p>
+<p>The failure is loud on both ends. The scheduler logs each rejection at <code class="docutils literal notranslate"><span class="pre">info</span></code>
+and, with the <code class="docutils literal notranslate"><span class="pre">prometheus</span></code> feature enabled, increments
+<code class="docutils literal notranslate"><span class="pre">ballista_scheduler_rejected_by_protocol_version_total</span></code>. The executor treats a
+rejected heartbeat as a heartbeat failure and shuts itself down after five
+consecutive ones, so a stale executor is restarted by its orchestrator until its
+image is bumped to match rather than sitting idle in a ready state.</p>
+</section>
 </section>
 <section id="api-changes">
 <h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
+<section id="shuffle-fetch-addresses-byte-ranges-not-just-partitions">
+<h4>Shuffle fetch addresses byte ranges, not just partitions<a class="headerlink" href="#shuffle-fetch-addresses-byte-ranges-not-just-partitions" title="Link to this heading">#</a></h4>
+<p>The shuffle fetch action carried a bool saying whether the producer used the
+sort-based writer. It now carries which layout the producer wrote, which of that
+output’s files is wanted, and optionally which bytes of it — enough for a reader
+that has fetched an index to ask for the bytes its own value range covers.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_core::serde::scheduler::Action::FetchPartition</span></code> loses
+<code class="docutils literal notranslate"><span class="pre">is_sort_shuffle:</span> <span class="pre">bool</span></code> and gains three fields:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">layout:</span> <span class="pre">ShuffleLayout</span></code> — <code class="docutils literal notranslate"><span class="pre">Passthrough</span></code> or <code class="docutils literal notranslate"><span class="pre">Sort</span></code>, how the writer laid its
+output out on disk. Replaces the bool: <code class="docutils literal notranslate"><span class="pre">false</span></code> becomes
+<code class="docutils literal notranslate"><span class="pre">ShuffleLayout::Passthrough</span></code>, <code class="docutils literal notranslate"><span class="pre">true</span></code> becomes <code class="docutils literal notranslate"><span class="pre">ShuffleLayout::Sort</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">file_kind:</span> <span class="pre">ShuffleFileKind</span></code> — <code class="docutils literal notranslate"><span class="pre">Data</span></code> or the <code class="docutils literal notranslate"><span class="pre">Index</span></code> beside it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">byte_ranges:</span> <span class="pre">Vec&lt;ByteRange&gt;</span></code> — absolute half-open ranges of that file,
+returned concatenated in request order. Empty asks for whatever the
+identifiers above address, which is the previous behavior.</p></li>
+</ul>
+<p>All three types are new in <code class="docutils literal notranslate"><span class="pre">ballista_core::serde::scheduler</span></code>. On the wire,
+<code class="docutils literal notranslate"><span class="pre">ballista.FetchPartition.is_sort_shuffle</span></code> is removed and its field number
+reserved; <code class="docutils literal notranslate"><span class="pre">layout</span></code> takes a fresh number, so no old message decodes as a new one.</p>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaClient::fetch_partition</span></code> and <code class="docutils literal notranslate"><span class="pre">BallistaClient::fetch_partition_proxied</span></code>
+take a <code class="docutils literal notranslate"><span class="pre">ShuffleLayout</span></code> where they took <code class="docutils literal notranslate"><span class="pre">is_sort_shuffle:</span> <span class="pre">bool</span></code>, in the same
+position. Pass <code class="docutils literal notranslate"><span class="pre">ShuffleLayout::Sort</span></code> where you passed <code class="docutils literal notranslate"><span class="pre">true</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ShuffleLayout::Passthrough</span></code> where you passed <code class="docutils literal notranslate"><span class="pre">false</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista_core</span><span class="p">::</span><span class="n">serde</span><span class="p">::</span><span class="n">scheduler</span><span class="p">::</span><span class="n">ShuffleLayout</span><span class="p">;</span>
+
+<span class="n">client</span>
+<span class="w">    </span><span class="p">.</span><span class="n">fetch_partition</span><span class="p">(</span>
+<span class="w">        </span><span class="n">executor_id</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="n">partition_id</span><span class="p">,</span>
+<span class="w">        </span><span class="n">file_id</span><span class="p">,</span>
+<span class="w">        </span><span class="n">ShuffleLayout</span><span class="p">::</span><span class="n">Passthrough</span><span class="p">,</span><span class="w"> </span><span class="c1">// was `false`</span>
+<span class="w">        </span><span class="n">flight_transport</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaClient::fetch_byte_ranges</span></code> is the new entry point for a reader that
+knows which bytes it wants.</p>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaClient::execute_do_action</span></code> is unchanged. Prefixing the returned block
+stream with a caller-supplied IPC schema message — which a byte-range fetch
+needs, since the schema does not lie within the bytes it asked for — is a
+separate <code class="docutils literal notranslate"><span class="pre">execute_do_action_with_header(action,</span> <span class="pre">header)</span></code>.</p>
+</section>
 <section id="ballista-executor-as-task-status-signature-reshaped">
 <h4><code class="docutils literal notranslate"><span class="pre">ballista_executor::as_task_status</span></code> signature reshaped<a class="headerlink" href="#ballista-executor-as-task-status-signature-reshaped" title="Link to this heading">#</a></h4>
 <p><code class="docutils literal notranslate"><span class="pre">as_task_status</span></code> now takes a <code class="docutils literal notranslate"><span class="pre">TaskCompletionExtras</span></code> struct in place of the
@@ -560,9 +639,11 @@ struct.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-scheduler-max-partitions-per-task-now-defaults-to-0-unbounded"><code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> now defaults to <code class="docutils literal notranslate"><span class="pre">0</span></code> (unbounded)</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-optimizer-broadcast-join-threshold-bytes-now-defaults-to-128-mb"><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> now defaults to 128 MB</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join"><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#schedulers-and-executors-must-be-upgraded-together">Schedulers and executors must be upgraded together</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-fetch-addresses-byte-ranges-not-just-partitions">Shuffle fetch addresses byte ranges, not just partitions</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-executor-as-task-status-signature-reshaped"><code class="docutils literal notranslate"><span class="pre">ballista_executor::as_task_status</span></code> signature reshaped</a></li>
 </ul>
 </li>
@@ -609,8 +690,8 @@ struct.</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">

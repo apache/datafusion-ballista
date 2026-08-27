@@ -27,17 +27,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -435,7 +435,7 @@ new configuration extensions, object stores, logical and physical codecs …</p>
 <span class="w">        </span><span class="p">.</span><span class="n">extensions</span>
 <span class="w">        </span><span class="p">.</span><span class="n">get</span><span class="p">::</span><span class="o">&lt;</span><span class="n">S3Options</span><span class="o">&gt;</span><span class="p">()</span>
 <span class="w">        </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">DataFusionError</span><span class="p">::</span><span class="n">Configuration</span><span class="p">(</span>
-<span class="w">            </span><span class="s">&quot;S3 Options not set&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">            </span><span class="s">"S3 Options not set"</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
 <span class="w">        </span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">RuntimeConfig</span><span class="p">::</span><span class="n">new</span><span class="p">().</span><span class="n">with_object_store_registry</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
@@ -469,10 +469,10 @@ new configuration extensions, object stores, logical and physical codecs …</p>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="c1">// parse CLI options (default options which Ballista scheduler exposes)</span>
 <span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">opt</span><span class="p">,</span><span class="w"> </span><span class="n">_remaining_args</span><span class="p">)</span><span class="w"> </span><span class="o">=</span>
-<span class="w">      </span><span class="n">Config</span><span class="p">::</span><span class="n">including_optional_config_files</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">&quot;/etc/ballista/scheduler.toml&quot;</span><span class="p">])</span>
+<span class="w">      </span><span class="n">Config</span><span class="p">::</span><span class="n">including_optional_config_files</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">"/etc/ballista/scheduler.toml"</span><span class="p">])</span>
 <span class="w">          </span><span class="p">.</span><span class="n">unwrap_or_exit</span><span class="p">();</span>
 
-<span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="n">addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{}:{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">opt</span><span class="p">.</span><span class="n">bind_host</span><span class="p">,</span><span class="w"> </span><span class="n">opt</span><span class="p">.</span><span class="n">bind_port</span><span class="p">);</span>
+<span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="n">addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">"{}:{}"</span><span class="p">,</span><span class="w"> </span><span class="n">opt</span><span class="p">.</span><span class="n">bind_host</span><span class="p">,</span><span class="w"> </span><span class="n">opt</span><span class="p">.</span><span class="n">bind_port</span><span class="p">);</span>
 <span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="n">addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">addr</span><span class="p">.</span><span class="n">parse</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">  </span><span class="c1">// converting CLI options to SchedulerConfig</span>
@@ -501,7 +501,7 @@ new configuration extensions, object stores, logical and physical codecs …</p>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="c1">// parse CLI options (default options which Ballista executor exposes)</span>
 <span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">opt</span><span class="p">,</span><span class="w"> </span><span class="n">_remaining_args</span><span class="p">)</span><span class="w"> </span><span class="o">=</span>
-<span class="w">      </span><span class="n">Config</span><span class="p">::</span><span class="n">including_optional_config_files</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">&quot;/etc/ballista/executor.toml&quot;</span><span class="p">])</span>
+<span class="w">      </span><span class="n">Config</span><span class="p">::</span><span class="n">including_optional_config_files</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">"/etc/ballista/executor.toml"</span><span class="p">])</span>
 <span class="w">          </span><span class="p">.</span><span class="n">unwrap_or_exit</span><span class="p">();</span>
 
 <span class="w">  </span><span class="c1">// Converting CLI options to executor configuration</span>
@@ -534,62 +534,62 @@ new configuration extensions, object stores, logical and physical codecs …</p>
 <span class="w">    </span><span class="n">custom_session_state_with_s3_support</span><span class="p">(</span><span class="n">custom_session_config_with_s3_options</span><span class="p">());</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="p">:</span><span class="w"> </span><span class="nc">SessionContext</span><span class="w"> </span><span class="o">=</span>
-<span class="w">    </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="c1">// once we have it all setup we can configure object store</span>
 <span class="c1">//</span>
 <span class="c1">// as session config has relevant S3 options registered and exposed,</span>
 <span class="c1">// S3 configuration options can be changed using SQL `SET` statement.</span>
 
-<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SET s3.allow_http = true&quot;</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SET s3.allow_http = true"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;SET s3.access_key_id = &#39;{}&#39;&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">S3_ACCESS_KEY_ID</span><span class="p">))</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">"SET s3.access_key_id = '{}'"</span><span class="p">,</span><span class="w"> </span><span class="n">S3_ACCESS_KEY_ID</span><span class="p">))</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">    </span><span class="p">.</span><span class="n">show</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;SET s3.secret_access_key = &#39;{}&#39;&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">S3_SECRET_KEY</span><span class="p">))</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">"SET s3.secret_access_key = '{}'"</span><span class="p">,</span><span class="w"> </span><span class="n">S3_SECRET_KEY</span><span class="p">))</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">    </span><span class="p">.</span><span class="n">show</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SET s3.endpoint = &#39;http://localhost:9000&#39;&quot;</span><span class="p">)</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SET s3.endpoint = 'http://localhost:9000'"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">    </span><span class="p">.</span><span class="n">show</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SET s3.allow_http = true&quot;</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SET s3.allow_http = true"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="n">ctx</span><span class="p">.</span><span class="n">register_parquet</span><span class="p">(</span>
-<span class="w">    </span><span class="s">&quot;test&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{test_data}/alltypes_plain.parquet&quot;</span><span class="p">),</span>
+<span class="w">    </span><span class="s">"test"</span><span class="p">,</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">"{test_data}/alltypes_plain.parquet"</span><span class="p">),</span>
 <span class="w">    </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
 <span class="p">)</span>
 <span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="kd">let</span><span class="w"> </span><span class="n">write_dir_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;s3://{}/write_test.parquet&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">S3_BUCKET</span><span class="p">);</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">write_dir_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">"s3://{}/write_test.parquet"</span><span class="p">,</span><span class="w"> </span><span class="n">S3_BUCKET</span><span class="p">);</span>
 
-<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;select * from test&quot;</span><span class="p">)</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"select * from test"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">    </span><span class="p">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="n">write_dir_path</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">())</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="n">ctx</span><span class="p">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s">&quot;written_table&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">write_dir_path</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">())</span>
+<span class="n">ctx</span><span class="p">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s">"written_table"</span><span class="p">,</span><span class="w"> </span><span class="n">write_dir_path</span><span class="p">,</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">())</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
-<span class="w">    </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;select id, string_col, timestamp_col from written_table where id &gt; 4&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"select id, string_col, timestamp_col from written_table where id &gt; 4"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">    </span><span class="p">.</span><span class="n">collect</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">expected</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="s">&quot;+----+------------+---------------------+&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;| id | string_col | timestamp_col       |&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;+----+------------+---------------------+&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;| 5  | 31         | 2009-03-01T00:01:00 |&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;| 6  | 30         | 2009-04-01T00:00:00 |&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;| 7  | 31         | 2009-04-01T00:01:00 |&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;+----+------------+---------------------+&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"+----+------------+---------------------+"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"| id | string_col | timestamp_col       |"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"+----+------------+---------------------+"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"| 5  | 31         | 2009-03-01T00:01:00 |"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"| 6  | 30         | 2009-04-01T00:00:00 |"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"| 7  | 31         | 2009-04-01T00:01:00 |"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"+----+------------+---------------------+"</span><span class="p">,</span>
 <span class="p">];</span>
 
 <span class="n">assert_batches_eq</span><span class="o">!</span><span class="p">(</span><span class="n">expected</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">result</span><span class="p">);</span>
@@ -693,8 +693,8 @@ new configuration extensions, object stores, logical and physical codecs …</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">
