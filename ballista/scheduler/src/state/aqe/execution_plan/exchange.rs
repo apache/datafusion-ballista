@@ -55,6 +55,16 @@ pub struct RangeRepartitionRouting {
     /// the file router and the read-side filter cannot disagree about it.
     pub nulls_first: bool,
     pub routing_expr: Arc<dyn PhysicalExpr>,
+    /// Where consumer `k` starts reading, when a bounded-`ROWS` window below
+    /// needs rows from before its own cut: `[widened_lower[k], cuts[k])`
+    /// instead of `[cuts[k-1], cuts[k])`. An inner `None` reads everything
+    /// below the cut.
+    ///
+    /// Empty when no such window consumes this boundary, which is every
+    /// boundary but a `HaloRowRule` one: a bounded-`RANGE` window states its
+    /// context as a value delta and widens with the filter's own halos
+    /// instead.
+    pub widened_lower: Vec<Option<ScalarValue>>,
 }
 
 /// Execution plan representing an exchange/shuffle boundary used by the
@@ -552,6 +562,7 @@ mod range_repartition_routing_tests {
             cuts: cuts_f64([10.0, 20.0, 30.0]),
             nulls_first: true,
             routing_expr: v_routing_expr(),
+            widened_lower: Vec::new(),
         }
     }
 
@@ -580,6 +591,7 @@ mod range_repartition_routing_tests {
             cuts: cuts_f64([100.0]),
             nulls_first: true,
             routing_expr: v_routing_expr(),
+            widened_lower: Vec::new(),
         });
         let recovered = exchange.range_repartition_routing().unwrap();
         assert_eq!(recovered.cuts, cuts_f64([100.0]), "second resolve wins");

@@ -121,6 +121,11 @@ mod halo_row {
     #[rstest]
     #[case::halo_none("CURRENT ROW AND CURRENT ROW")]
     #[case::halo_lower("5 PRECEDING AND CURRENT ROW")]
+    #[case::halo_lower_wide("20 PRECEDING AND CURRENT ROW")]
+    // A frame reaching past the current row is gated to the serial path: the
+    // walk widens the lower edge only. This case asserts the gate leaves the
+    // answer alone rather than that the rewrite fired.
+    #[case::following_stays_serial("5 PRECEDING AND 5 FOLLOWING")]
     #[tokio::test]
     async fn halo_row_agrees_with_datafusion(#[case] frame: &str) {
         let case = frame.replace(' ', "_");

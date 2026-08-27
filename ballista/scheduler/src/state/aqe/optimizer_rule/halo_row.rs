@@ -266,6 +266,13 @@ fn maybe_rewrite_bwag(
     if !is_finite(&frame.start_bound) || !is_finite(&frame.end_bound) {
         return Ok(None);
     }
+    // The walk widens a consumer's lower edge only. An end bound reaching past
+    // the current row wants the mirror of it above the upper cut, so until
+    // that exists such a frame stays on the serial path rather than being
+    // answered from a frame that stops at the cut.
+    if matches!(frame.end_bound, WindowFrameBound::Following(_)) {
+        return Ok(None);
+    }
     // AQE re-fires the optimizer chain per stage; without this the second
     // pass wraps another ORRE around the first pass's output.
     if subtree_contains_our_rewrite(window.children().as_slice()) {
