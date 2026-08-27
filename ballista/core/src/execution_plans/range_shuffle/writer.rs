@@ -77,7 +77,7 @@ use super::ipc_file::write_stream_to_ipc_file;
 ///
 /// This is planted only where the consumer is a
 /// [`RangeShuffleReaderExec`](crate::execution_plans::RangeShuffleReaderExec)
-/// an the child is range-repartitioned.
+/// and the child is range-repartitioned.
 ///
 /// # Message layout
 ///

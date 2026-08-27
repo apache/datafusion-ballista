@@ -47,7 +47,7 @@ use std::sync::Arc;
 /// repartition rather than by hashing, round-robin, or whatever partitioning
 /// the leaves happened to produce.
 ///
-/// Hopefully unnecessary after https://github.com/apache/datafusion/issues/24712
+/// Hopefully unnecessary after <https://github.com/apache/datafusion/issues/24712>
 fn is_range_repartitioned(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.is::<UnorderedRangeRepartitionExec>()
         || plan.is::<OrderedRangeRepartitionExec>()
