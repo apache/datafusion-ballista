@@ -1107,16 +1107,16 @@ mod test {
             .with_ballista_coalesce_small_partition_factor(1.5)
             .with_ballista_coalesce_merged_partition_factor(2.5);
 
+        assert!(plain.ballista_shuffle_reader_force_remote_read());
+        assert!(plain.ballista_shuffle_reader_remote_prefer_flight());
+        assert!(plain.ballista_use_tls());
+        assert!(plain.ballista_coalesce_enabled());
         assert_eq!(plain.ballista_standalone_parallelism(), 123);
         assert_eq!(plain.ballista_grpc_client_max_message_size(), 456);
         assert_eq!(plain.ballista_broadcast_join_threshold_bytes(), 789);
         assert_eq!(plain.ballista_broadcast_join_threshold_rows(), 42);
         assert_eq!(plain.ballista_hash_join_max_build_partition_bytes(), 999);
         assert_eq!(plain.ballista_coalesce_target_partition_bytes(), 2048);
-        assert_eq!(plain.ballista_shuffle_reader_force_remote_read(), true);
-        assert_eq!(plain.ballista_shuffle_reader_remote_prefer_flight(), true);
-        assert_eq!(plain.ballista_use_tls(), true);
-        assert_eq!(plain.ballista_coalesce_enabled(), true);
         assert_eq!(plain.ballista_coalesce_small_partition_factor(), 1.5);
         assert_eq!(plain.ballista_coalesce_merged_partition_factor(), 2.5);
         assert_eq!(
