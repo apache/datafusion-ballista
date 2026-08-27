@@ -333,6 +333,18 @@ fn select_output_partitions(
             }
             None => restricted,
         };
+        // The cut ranges follow the same slice. Losing them would leave a
+        // task's partitions with no rank to walk back from, which is the
+        // coarse bound and the whole halo along with it.
+        let kept_cut_bounds = reader.cut_bounds().map(|cut_bounds| {
+            indices
+                .iter()
+                .filter_map(|&p| cut_bounds.get(p).cloned())
+                .collect()
+        });
+        let Ok(restricted) = restricted.with_cut_bounds(kept_cut_bounds) else {
+            return Ok(None);
+        };
         return Ok(Some(Arc::new(restricted)));
     }
 

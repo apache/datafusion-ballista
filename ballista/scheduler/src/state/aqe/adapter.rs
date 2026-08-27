@@ -139,6 +139,14 @@ impl BallistaAdapter {
         self.inputs.insert(stage_id, stage_output);
         let partitioning = exchange.properties().partitioning.clone();
 
+        // Set together or not at all: the walk needs both the count and the
+        // cut it counts back from.
+        let rank_halo = exchange.range_repartition_routing().and_then(|routing| {
+            routing
+                .preceding_rows
+                .map(|rows| (rows, raw_bounds_from_cuts(&routing.cuts)))
+        });
+
         Ok(match (exchange.coalesce(), exchange.broadcast) {
             (Some(cp), false) => {
                 // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
@@ -183,13 +191,11 @@ impl BallistaAdapter {
                             ordering.clone(),
                         )?
                         .with_fetch_limit(fetch)
-                        // A rank halo widened this reader's bounds per file;
-                        // the count is what lets it re-walk per message.
-                        .with_halo_rows(
-                            exchange
-                                .range_repartition_routing()
-                                .and_then(|routing| routing.preceding_rows),
-                        ),
+                        // A rank halo widened this reader's bounds per file.
+                        // The count is what lets it re-walk them per message,
+                        // and the cut ranges are what it walks back from.
+                        .with_halo_rows(rank_halo.as_ref().map(|(rows, _)| *rows))
+                        .with_cut_bounds(rank_halo.map(|(_, cut_bounds)| cut_bounds))?,
                     )
                 } else {
                     Arc::new(ShuffleReaderExec::try_new(

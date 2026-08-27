@@ -132,6 +132,12 @@ pub struct RangeShuffleReaderExec {
     /// the same thing per message, so the reader re-runs the walk and starts
     /// higher — never lower, and never outside what was routed to it.
     halo_rows: Option<u64>,
+    /// Each output partition's own cut range, before `bounds` widened it.
+    ///
+    /// The rank walk counts back from the lower end of this, and a task holding
+    /// a slice of the partitions cannot take that from a neighbour's upper
+    /// edge — the neighbour is in another task. Set with `halo_rows`.
+    cut_bounds: Option<Vec<WidenedBound>>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
@@ -168,6 +174,7 @@ impl RangeShuffleReaderExec {
             fetch: None,
             bounds: None,
             halo_rows: None,
+            cut_bounds: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,
@@ -211,6 +218,30 @@ impl RangeShuffleReaderExec {
         self.halo_rows
     }
 
+    /// Bind each output partition's own cut range, the one the rank walk
+    /// measures back from. One entry per output partition.
+    pub fn with_cut_bounds(
+        mut self,
+        cut_bounds: Option<Vec<WidenedBound>>,
+    ) -> Result<Self> {
+        if let Some(cut_bounds) = &cut_bounds
+            && cut_bounds.len() != self.partition.len()
+        {
+            return internal_err!(
+                "RangeShuffleReaderExec got {} cut bounds for {} output partitions",
+                cut_bounds.len(),
+                self.partition.len()
+            );
+        }
+        self.cut_bounds = cut_bounds;
+        Ok(self)
+    }
+
+    /// Per-output-partition cut ranges, before any halo widening.
+    pub fn cut_bounds(&self) -> Option<&[WidenedBound]> {
+        self.cut_bounds.as_deref()
+    }
+
     /// Re-run the scheduler's rank walk against the indexes of the sources
     /// this partition can read without a fetch, and start from the tighter of
     /// the two bounds.
@@ -238,17 +269,15 @@ impl RangeShuffleReaderExec {
             bound,
             locations.len()
         );
-        let (Some(halo_rows), Some(bounds), Some((lower, upper))) =
-            (self.halo_rows, self.bounds.as_ref(), bound.clone())
+        let (Some(halo_rows), Some(cut_bounds), Some((lower, upper))) =
+            (self.halo_rows, self.cut_bounds.as_ref(), bound.clone())
         else {
             return Ok(bound);
         };
-        // This consumer's own cut is the previous partition's upper edge. The
-        // first partition has nothing below it to reach into.
-        let Some(lower_cut) = output_partition
-            .checked_sub(1)
-            .and_then(|below| bounds.get(below))
-            .and_then(|(_, cut)| cut.clone())
+        // The lowest consumer has nothing below it to reach into.
+        let Some(lower_cut) = cut_bounds
+            .get(output_partition)
+            .and_then(|(cut, _)| cut.clone())
         else {
             return Ok(bound);
         };

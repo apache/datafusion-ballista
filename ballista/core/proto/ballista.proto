@@ -378,6 +378,11 @@ message RangeShuffleReaderExecNode {
   // widened `bounds`, and what lets the reader re-run the scheduler's walk
   // against its sources' indexes, which are per message rather than per file.
   optional uint64 halo_rows = 7;
+  // Each output partition's own cut range, before any halo widened it. One
+  // per output partition, alongside `bounds`, and present only with
+  // `halo_rows`: the rank walk counts back from the lower end, and a task
+  // holding a slice of the partitions cannot read it off a neighbour.
+  repeated RangeBound cut_bounds = 8;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
