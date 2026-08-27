@@ -752,8 +752,8 @@ impl BallistaConfig {
 
     /// Returns the target post-coalesce partition byte size in bytes
     /// (Spark's `advisoryPartitionSizeInBytes`).
-    pub fn coalesce_target_partition_bytes(&self) -> u64 {
-        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES) as u64
+    pub fn coalesce_target_partition_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES)
     }
 
     /// Returns the small-partition merge factor (Spark legacy).
