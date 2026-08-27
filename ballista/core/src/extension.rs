@@ -483,6 +483,16 @@ impl SessionConfigExt for SessionConfig {
             .cloned()
             .unwrap_or_else(BallistaConfig::default)
     }
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_JOB_NAME, job_name)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_JOB_NAME, job_name)
+        }
+    }
+
     fn with_ballista_logical_extension_codec(
         self,
         codec: Arc<dyn LogicalExtensionCodec>,
@@ -524,6 +534,34 @@ impl SessionConfigExt for SessionConfig {
             .map(|c| c.planner())
     }
 
+    fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {
+        let extension = BallistaGrpcMetadataInterceptor::new(metadata);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn ballista_grpc_interceptor(&self) -> Arc<BallistaGrpcMetadataInterceptor> {
+        self.get_extension::<BallistaGrpcMetadataInterceptor>()
+            .unwrap_or_default()
+    }
+
+    fn with_ballista_override_create_grpc_client_endpoint(
+        self,
+        override_f: Arc<
+            dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>>
+                + Send
+                + Sync,
+        >,
+    ) -> Self {
+        let extension = BallistaConfigGrpcEndpoint::new(override_f);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn ballista_override_create_grpc_client_endpoint(
+        &self,
+    ) -> Option<Arc<BallistaConfigGrpcEndpoint>> {
+        self.get_extension::<BallistaConfigGrpcEndpoint>()
+    }
+
     ballista_config_option!(
         usize,
         standalone_parallelism,
@@ -539,15 +577,6 @@ impl SessionConfigExt for SessionConfig {
         BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
         max_size
     );
-
-    fn with_ballista_job_name(self, job_name: &str) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_str(BALLISTA_JOB_NAME, job_name)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_str(BALLISTA_JOB_NAME, job_name)
-        }
-    }
 
     ballista_config_option!(
         usize,
@@ -641,34 +670,6 @@ impl SessionConfigExt for SessionConfig {
         BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
         factor => &factor.to_string()
     );
-
-    fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {
-        let extension = BallistaGrpcMetadataInterceptor::new(metadata);
-        self.with_extension(Arc::new(extension))
-    }
-
-    fn ballista_grpc_interceptor(&self) -> Arc<BallistaGrpcMetadataInterceptor> {
-        self.get_extension::<BallistaGrpcMetadataInterceptor>()
-            .unwrap_or_default()
-    }
-
-    fn with_ballista_override_create_grpc_client_endpoint(
-        self,
-        override_f: Arc<
-            dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>>
-                + Send
-                + Sync,
-        >,
-    ) -> Self {
-        let extension = BallistaConfigGrpcEndpoint::new(override_f);
-        self.with_extension(Arc::new(extension))
-    }
-
-    fn ballista_override_create_grpc_client_endpoint(
-        &self,
-    ) -> Option<Arc<BallistaConfigGrpcEndpoint>> {
-        self.get_extension::<BallistaConfigGrpcEndpoint>()
-    }
 }
 
 impl SessionConfigHelperExt for SessionConfig {
