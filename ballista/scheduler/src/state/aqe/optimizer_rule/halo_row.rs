@@ -161,14 +161,26 @@
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
+use ballista_core::execution_plans::{
+    InputOrder, OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec,
+    RangeFilterExec, RuntimeStatsExec,
+};
+use ballista_core::sort_key::SortKeyCodec;
+use datafusion::arrow::compute::SortOptions;
 use datafusion::common::config::ConfigOptions;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::logical_expr::{WindowFrameBound, WindowFrameUnits};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::windows::BoundedWindowAggExec;
+use datafusion::scalar::ScalarValue;
 use log::debug;
 
-/// Physical optimizer pass for bounded-`ROWS` windows. Returns the plan
-/// unchanged; the rewrite to the module docs' target shape goes in
-/// `maybe_rewrite_bwag`, alongside the rank-bound index walk.
+/// Physical optimizer pass for bounded-`ROWS` windows.
 #[derive(Default, Debug)]
 pub struct HaloRowRule;
 
@@ -193,7 +205,14 @@ impl PhysicalOptimizerRule for HaloRowRule {
             "HaloRowRule input:\n{}",
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true)
         );
-        Ok(plan)
+        // Same K as [`super::parallel_window`]: the config knob the later
+        // AQE rules target, since the source width isn't settled yet.
+        let output_partitions = config.execution.target_partitions.max(2);
+        plan.transform_up(|node| match maybe_rewrite_bwag(&node, output_partitions)? {
+            Some(rewritten) => Ok(Transformed::yes(rewritten)),
+            None => Ok(Transformed::no(node)),
+        })
+        .map(|t| t.data)
     }
 
     fn name(&self) -> &str {
@@ -202,6 +221,179 @@ impl PhysicalOptimizerRule for HaloRowRule {
 
     fn schema_check(&self) -> bool {
         true
+    }
+}
+
+/// Match a bounded-`ROWS` BWAG rooted at `node` and splice the module docs'
+/// target shape in place of the `BWAG → SPM → SortExec → <source>` subtree
+/// DataFusion planted.
+///
+/// - `Ok(None)`: a shape gate missed — not a BWAG, more than one window expr,
+///   PARTITION BY present, DESC or multi-column or unsketchable ORDER BY, a
+///   non-`ROWS` frame, an UNBOUNDED bound, or a subtree already rewritten.
+/// - `Ok(Some(_))`: rewrite happened.
+/// - `Err(_)`: an invariant the gates should have upheld didn't.
+fn maybe_rewrite_bwag(
+    node: &Arc<dyn ExecutionPlan>,
+    output_partitions: usize,
+) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
+    let Some(window) = node.downcast_ref::<BoundedWindowAggExec>() else {
+        return Ok(None);
+    };
+    let [expr] = window.window_expr() else {
+        return Ok(None);
+    };
+    let [] = expr.partition_by() else {
+        return Ok(None);
+    };
+    let [order] = expr.order_by() else {
+        return Ok(None);
+    };
+    let Some(column) = order.expr.downcast_ref::<Column>() else {
+        return Ok(None);
+    };
+    // A ROWS frame's `n PRECEDING` counts rows in ORDER BY order either way,
+    // so DESC needs no mirrored halo the way RANGE does. It still needs an
+    // ORRE and a `RangeFilterExec` that accept descending input, which they
+    // don't today — same gate, different reason.
+    if order.options.descending {
+        return Ok(None);
+    }
+    let frame = expr.get_window_frame();
+    let WindowFrameUnits::Rows = frame.units else {
+        return Ok(None);
+    };
+    if !is_finite(&frame.start_bound) || !is_finite(&frame.end_bound) {
+        return Ok(None);
+    }
+    // AQE re-fires the optimizer chain per stage; without this the second
+    // pass wraps another ORRE around the first pass's output.
+    if subtree_contains_our_rewrite(window.children().as_slice()) {
+        return Ok(None);
+    }
+    let node_children = node.children();
+    let [immediate] = node_children.as_slice() else {
+        return datafusion::common::internal_err!(
+            "HaloRowRule: BWAG must have exactly 1 child"
+        );
+    };
+    let mut base_source: Arc<dyn ExecutionPlan> = (*immediate).clone();
+    while base_source.is::<SortPreservingMergeExec>() || base_source.is::<SortExec>() {
+        let children = base_source.children();
+        let [inner] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "HaloRowRule: SPM/SortExec must have exactly 1 child"
+            );
+        };
+        base_source = (*inner).clone();
+    }
+    let source_schema = base_source.schema();
+
+    let routing_type = order.expr.data_type(&source_schema)?;
+    if SortKeyCodec::try_new(&routing_type, order.options).is_none() {
+        return Ok(None);
+    }
+
+    let sort_expr = normalize_sort_expr(order);
+    let rse1: Arc<dyn ExecutionPlan> = Arc::new(RuntimeStatsExec::try_new(
+        base_source,
+        Some(vec![sort_expr.clone()]),
+    )?);
+    // Sort is the pipeline break that lets RSE#1's sketch finish reporting
+    // before ORRE routes a single row against its cuts.
+    let sort_lex = LexOrdering::new(vec![sort_expr.clone()]).ok_or_else(|| {
+        datafusion::common::DataFusionError::Internal(
+            "HaloRowRule: could not build LexOrdering from ORDER BY".into(),
+        )
+    })?;
+    let sorted_over_rse1: Arc<dyn ExecutionPlan> =
+        Arc::new(SortExec::new(sort_lex, rse1).with_preserve_partitioning(true));
+    let orre: Arc<dyn ExecutionPlan> = Arc::new(OrderedRangeRepartitionExec::try_new(
+        sorted_over_rse1,
+        vec![sort_expr.clone()],
+        output_partitions,
+    )?);
+    let rse2: Arc<dyn ExecutionPlan> = Arc::new(RuntimeStatsExec::try_new(
+        orre,
+        Some(vec![sort_expr.clone()]),
+    )?);
+    // A ROWS halo is a rank, and a `ScalarValue` halo is a value delta, so
+    // there is no scalar to widen by: the widened lower bound arrives as a
+    // resolved bound instead, from the index walk above. Until it does, both
+    // filters keep `[cuts[k-1], cuts[k])` and each task's first rows see only
+    // the predecessors that landed in its own partition.
+    let zero = ScalarValue::Float64(Some(0.0));
+    let wide_filter: Arc<dyn ExecutionPlan> = Arc::new(RangeFilterExec::try_new_pending(
+        rse2,
+        sort_expr.expr.clone(),
+        zero.clone(),
+        zero.clone(),
+        Some(InputOrder::Ordered(sort_expr.options)),
+    )?);
+
+    let partitioned_bwag: Arc<dyn ExecutionPlan> =
+        Arc::new(PartitionedBoundedWindowAggExec::try_new(
+            window.window_expr().to_vec(),
+            wide_filter,
+        )?);
+    // Above the window, the filter that drops whatever the wide one let in
+    // for frame context. Always exactly task k's own range.
+    let narrow_filter: Arc<dyn ExecutionPlan> =
+        Arc::new(RangeFilterExec::try_new_pending(
+            partitioned_bwag,
+            sort_expr.expr.clone(),
+            zero.clone(),
+            zero,
+            Some(InputOrder::Ordered(sort_expr.options)),
+        )?);
+
+    debug!(
+        "HaloRowRule: rewrote BWAG on `{}` (ROWS {} - {})",
+        column.name(),
+        fmt_bound(&frame.start_bound),
+        fmt_bound(&frame.end_bound),
+    );
+    Ok(Some(narrow_filter))
+}
+
+/// True if any descendant of `nodes` is one of the operators this rewrite
+/// plants, i.e. the subtree has already been through it.
+fn subtree_contains_our_rewrite(nodes: &[&Arc<dyn ExecutionPlan>]) -> bool {
+    nodes.iter().any(|node| {
+        node.is::<OrderedRangeRepartitionExec>()
+            || node.is::<RangeFilterExec>()
+            || subtree_contains_our_rewrite(node.children().as_slice())
+    })
+}
+
+/// True when the bound is `CurrentRow` or a non-null row count.
+/// `UNBOUNDED PRECEDING/FOLLOWING` is a typed-null scalar and returns `false`.
+fn is_finite(bound: &WindowFrameBound) -> bool {
+    match bound {
+        WindowFrameBound::CurrentRow => true,
+        WindowFrameBound::Preceding(scalar) | WindowFrameBound::Following(scalar) => {
+            !scalar.is_null()
+        }
+    }
+}
+
+fn fmt_bound(bound: &WindowFrameBound) -> String {
+    match bound {
+        WindowFrameBound::CurrentRow => "CURRENT ROW".to_string(),
+        WindowFrameBound::Preceding(scalar) => format!("{scalar} PRECEDING"),
+        WindowFrameBound::Following(scalar) => format!("{scalar} FOLLOWING"),
+    }
+}
+
+/// ORRE requires `nulls_first == false`; BWAG's `NULLS LAST` expressions
+/// arrive that way already, and sanitizing keeps the invariant visible.
+fn normalize_sort_expr(expr: &PhysicalSortExpr) -> PhysicalSortExpr {
+    PhysicalSortExpr {
+        expr: expr.expr.clone(),
+        options: SortOptions {
+            descending: expr.options.descending,
+            nulls_first: false,
+        },
     }
 }
 
