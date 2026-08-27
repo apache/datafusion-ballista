@@ -207,7 +207,7 @@ impl BallistaClient {
             file_kind,
             byte_ranges,
         };
-        self.execute_do_action(&action, header)
+        self.execute_do_action_with_header(&action, header)
             .await
             .map_err(|error| Self::as_fetch_failed(executor_id, partition_id, error))
     }
@@ -248,7 +248,7 @@ impl BallistaClient {
         let result = if flight_transport {
             self.execute_do_get(&action).await
         } else {
-            self.execute_do_action(&action, None).await
+            self.execute_do_action(&action).await
         };
 
         result.map_err(|error| Self::as_fetch_failed(executor_id, partition_id, error))
@@ -371,6 +371,22 @@ impl BallistaClient {
     /// [BlockDataStream] to facilitate efficient transmission of data blocks, reducing
     /// computational overhead and improving performance compared to flight protocols.
     pub async fn execute_do_action(
+        &mut self,
+        action: &Action,
+    ) -> BResult<SendableRecordBatchStream> {
+        self.execute_do_action_with_header(action, None).await
+    }
+
+    /// [`execute_do_action`](Self::execute_do_action), prefixing the returned
+    /// block stream with a caller-supplied IPC message.
+    ///
+    /// # Arguments
+    ///
+    /// * `header` - an encoded IPC schema message to prepend. A caller fetching
+    ///   byte ranges receives batch messages with no schema ahead of them,
+    ///   because the schema does not lie inside the bytes it asked for, and
+    ///   supplies the one it already knows.
+    pub async fn execute_do_action_with_header(
         &mut self,
         action: &Action,
         header: Option<Vec<u8>>,
