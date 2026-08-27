@@ -403,7 +403,7 @@ macro_rules! ballista_set_scalar {
 /// the `with_ballista_<config_method>` convention.
 macro_rules! ballista_config_option {
     ($ty:ident, $config_method:ident as $setter:ident, $const:expr) => {
-        paste::paste! {
+        pastey::paste! {
             fn [<ballista_ $config_method>](&self) -> $ty {
                 self.options()
                     .extensions
@@ -425,7 +425,7 @@ macro_rules! ballista_config_option {
     };
 
     ($ty:ident, $config_method:ident, $const:expr) => {
-        paste::paste! {
+        pastey::paste! {
             fn [<ballista_ $config_method>](&self) -> $ty {
                 self.options()
                     .extensions
