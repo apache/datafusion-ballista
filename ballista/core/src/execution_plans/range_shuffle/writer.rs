@@ -287,6 +287,7 @@ impl RangeShuffleWriterExec {
             // same type resolution.
             let index_schema = index_schema(&self.ordering, plan.schema().as_ref())
                 .map_err(BallistaError::into_datafusion)?;
+
             let mut handles = JoinSet::new();
             for local_input_partition in 0..num_partitions {
                 let write_metrics =
@@ -345,21 +346,26 @@ impl RangeShuffleWriterExec {
                         layout.record_batches.len(),
                         layout.dictionaries.len(),
                     );
-                    Ok::<_, DataFusionError>((local_input_partition, stats))
+                    Ok::<_, DataFusionError>((
+                        local_input_partition,
+                        global_partition,
+                        stats,
+                    ))
                 });
             }
 
             let mut results = Vec::with_capacity(num_partitions);
             while let Some(joined) = handles.join_next().await {
-                let (local_input_partition, stats) = joined.map_err(|e| {
-                    DataFusionError::Execution(format!(
-                        "range shuffle-write drain task panicked: {e}"
-                    ))
-                })??;
+                let (local_input_partition, global_partition, stats) =
+                    joined.map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "range shuffle-write drain task panicked: {e}"
+                        ))
+                    })??;
                 results.push((
                     local_input_partition,
                     ShuffleWritePartition {
-                        partition_id: partition_map.resolve(local_input_partition),
+                        partition_id: global_partition as u64,
                         num_batches: stats.num_batches.unwrap_or(0),
                         num_rows: stats.num_rows.unwrap_or(0),
                         num_bytes: stats.num_bytes.unwrap_or(0),

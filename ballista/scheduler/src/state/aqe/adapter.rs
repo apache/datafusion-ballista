@@ -23,12 +23,14 @@ use crate::state::aqe::planner::AdaptiveStageInfo;
 use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
 use ballista_core::execution_plans::{
-    RangeFilterExec, RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec,
-    ShuffleWriter, ShuffleWriterExec,
+    OrderedRangeRepartitionExec, RangeFilterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriter, ShuffleWriterExec,
+    UnorderedRangeRepartitionExec,
 };
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
     ExecutionPlanProperties, Partitioning, replace_children_if_necessary,
@@ -41,24 +43,40 @@ use datafusion::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Whether `plan`'s output partitions are value ranges, established by a range
+/// repartition rather than by hashing, round-robin, or whatever partitioning
+/// the leaves happened to produce.
+///
+/// Hopefully unnecessary after https://github.com/apache/datafusion/issues/24712
+fn is_range_repartitioned(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if plan.is::<UnorderedRangeRepartitionExec>()
+        || plan.is::<OrderedRangeRepartitionExec>()
+    {
+        return true;
+    }
+    if plan.is::<RepartitionExec>()
+        || plan.is::<SortPreservingMergeExec>()
+        || plan.is::<ExchangeExec>()
+    {
+        return false;
+    }
+    match plan.children().as_slice() {
+        [child] => is_range_repartitioned(child),
+        _ => false,
+    }
+}
+
 /// Swap a passthrough writer for one that emits the seekable Arrow IPC file
 /// format, when this stage's output is read back in value-range order.
-///
-/// Gated on the same condition as [`BallistaAdapter::build_reader`]'s choice of
-/// `RangeShuffleReaderExec` — the stage's child declares an output ordering —
-/// because the two have to agree: the range reader is the only consumer taught
-/// to open the file format. This is the only place that sees both sides, which
-/// is also why the static planner never produces the pair. It plants the
-/// arrival-order reader, which would be handed a format it cannot decode.
-///
-/// No configuration decides this. What a reader may do with a source is a fact
-/// about the source, and the reader establishes it by opening the file; a flag
-/// would be a second answer to the same question, free to disagree.
+/// Predicated upon being sorted & range repartitioned
 fn use_range_shuffle_writer(
     writer: Arc<dyn ShuffleWriter>,
     exchange: &ExchangeExec,
 ) -> datafusion::error::Result<Arc<dyn ShuffleWriter>> {
-    if exchange.broadcast || exchange.input().output_ordering().is_none() {
+    if exchange.broadcast
+        || exchange.input().output_ordering().is_none()
+        || !is_range_repartitioned(exchange.input())
+    {
         return Ok(writer);
     }
     let as_plan: &dyn ExecutionPlan = writer.as_ref();
@@ -437,6 +455,7 @@ mod tests {
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::sorts::sort::SortExec;
+    use tempfile::TempDir;
 
     fn f64_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
@@ -531,5 +550,73 @@ mod tests {
                 panic!("expected a range reader, got {}", children[0].name())
             });
         assert_eq!(reader.fetch(), Some(7));
+    }
+
+    /// Wrap `input` in the passthrough writer and run the swap the way
+    /// `adapt_to_ballista` does, returning the writer that came back.
+    fn writer_for(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ShuffleWriter> {
+        let work_dir = TempDir::new().unwrap();
+        let exchange = ExchangeExec::new(Arc::clone(&input), None, 0);
+        exchange.set_stage_id(1);
+        exchange.resolve_shuffle_partitions(vec![vec![]]);
+        let writer = Arc::new(
+            ShuffleWriterExec::try_new(
+                JobId::from("job"),
+                1,
+                input,
+                work_dir.path().to_string_lossy().into_owned(),
+            )
+            .unwrap(),
+        );
+        use_range_shuffle_writer(writer, &exchange).unwrap()
+    }
+
+    /// A sort above a shuffle boundary declares an ordering but leaves every
+    /// consumer wanting every byte, so the seekable format must not be planted.
+    /// This is the TPC-DS q23 shape, where planting it wrote a file the stage's
+    /// own reader then failed to open.
+    #[test]
+    fn keeps_passthrough_writer_when_only_sorted() {
+        let schema = f64_schema();
+        let empty: Vec<Vec<RecordBatch>> = vec![vec![]];
+        let source =
+            MemorySourceConfig::try_new_exec(&empty, schema.clone(), None).unwrap();
+        let sort_lex = LexOrdering::new(vec![asc(&schema, "v")]).unwrap();
+        let sorted =
+            Arc::new(SortExec::new(sort_lex, source).with_preserve_partitioning(true))
+                as Arc<dyn ExecutionPlan>;
+
+        let writer = writer_for(sorted);
+        let as_plan: &dyn ExecutionPlan = writer.as_ref();
+        assert!(
+            as_plan.downcast_ref::<ShuffleWriterExec>().is_some(),
+            "expected the passthrough writer but got {}",
+            as_plan.name()
+        );
+    }
+
+    /// Range-repartitioned output is what the seekable format exists for: each
+    /// consumer owns a value range and can seek to the bytes covering it.
+    #[test]
+    fn plants_range_writer_when_range_repartitioned() {
+        let schema = f64_schema();
+        let empty: Vec<Vec<RecordBatch>> = vec![vec![]];
+        let source =
+            MemorySourceConfig::try_new_exec(&empty, schema.clone(), None).unwrap();
+        let sort_lex = LexOrdering::new(vec![asc(&schema, "v")]).unwrap();
+        let sorted =
+            Arc::new(SortExec::new(sort_lex, source).with_preserve_partitioning(true));
+        let repartitioned = Arc::new(
+            OrderedRangeRepartitionExec::try_new(sorted, vec![asc(&schema, "v")], 4)
+                .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let writer = writer_for(repartitioned);
+        let as_plan: &dyn ExecutionPlan = writer.as_ref();
+        assert!(
+            as_plan.downcast_ref::<RangeShuffleWriterExec>().is_some(),
+            "expected RangeShuffleWriterExec but got {}",
+            as_plan.name()
+        );
     }
 }

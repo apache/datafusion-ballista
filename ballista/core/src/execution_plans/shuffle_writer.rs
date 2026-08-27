@@ -615,21 +615,26 @@ impl ShuffleWriterExec {
                     let rows = stats.num_rows.unwrap_or(0) as usize;
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
-                    Ok::<_, DataFusionError>((local_input_partition, stats))
+                    Ok::<_, DataFusionError>((
+                        local_input_partition,
+                        global_partition,
+                        stats,
+                    ))
                 });
             }
 
             let mut results = Vec::with_capacity(num_partitions);
             while let Some(joined) = handles.join_next().await {
-                let (local_input_partition, stats) = joined.map_err(|e| {
-                    DataFusionError::Execution(format!(
-                        "shuffle-write drain task panicked: {e}"
-                    ))
-                })??;
+                let (local_input_partition, global_partition, stats) =
+                    joined.map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "shuffle-write drain task panicked: {e}"
+                        ))
+                    })??;
                 results.push((
                     local_input_partition,
                     ShuffleWritePartition {
-                        partition_id: partition_map.resolve(local_input_partition),
+                        partition_id: global_partition as u64,
                         num_batches: stats.num_batches.unwrap_or(0),
                         num_rows: stats.num_rows.unwrap_or(0),
                         num_bytes: stats.num_bytes.unwrap_or(0),
