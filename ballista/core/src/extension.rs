@@ -1091,6 +1091,57 @@ mod test {
     }
 
     #[test]
+    fn should_round_trip_all_macro_generated_options() {
+        let plain = SessionConfig::new_with_ballista();
+
+        let plain = plain.with_ballista_standalone_parallelism(123);
+        assert_eq!(plain.ballista_standalone_parallelism(), 123);
+
+        let plain = plain.with_ballista_grpc_client_max_message_size(456);
+        assert_eq!(plain.ballista_grpc_client_max_message_size(), 456);
+
+        let plain = plain.with_ballista_broadcast_join_threshold_bytes(789);
+        assert_eq!(plain.ballista_broadcast_join_threshold_bytes(), 789);
+
+        let plain = plain.with_ballista_broadcast_join_threshold_rows(42);
+        assert_eq!(plain.ballista_broadcast_join_threshold_rows(), 42);
+
+        let plain = plain.with_ballista_hash_join_max_build_partition_bytes(999);
+        assert_eq!(plain.ballista_hash_join_max_build_partition_bytes(), 999);
+
+        let plain = plain.with_ballista_shuffle_reader_maximum_concurrent_requests(7);
+        assert_eq!(
+            plain.ballista_shuffle_reader_maximum_concurrent_requests(),
+            7
+        );
+
+        let plain = plain.with_ballista_coalesce_target_partition_bytes(2048);
+        assert_eq!(plain.ballista_coalesce_target_partition_bytes(), 2048);
+
+        let plain = plain.with_ballista_shuffle_reader_force_remote_read(true);
+        assert_eq!(plain.ballista_shuffle_reader_force_remote_read(), true);
+
+        let plain = plain.with_ballista_shuffle_reader_remote_prefer_flight(true);
+        assert_eq!(plain.ballista_shuffle_reader_remote_prefer_flight(), true);
+
+        let plain = plain.with_ballista_use_tls(true);
+        assert_eq!(plain.ballista_use_tls(), true);
+
+        let plain = plain.with_ballista_coalesce_enabled(true);
+        assert_eq!(plain.ballista_coalesce_enabled(), true);
+
+        // Covers the `as`-aliased macro arm: setter name diverges from `with_<getter>`.
+        let plain = plain.with_ballista_adaptive_query_planner(false);
+        assert_eq!(plain.ballista_adaptive_query_planner_enabled(), false);
+
+        let plain = plain.with_ballista_coalesce_small_partition_factor(1.5);
+        assert_eq!(plain.ballista_coalesce_small_partition_factor(), 1.5);
+
+        let plain = plain.with_ballista_coalesce_merged_partition_factor(2.5);
+        assert_eq!(plain.ballista_coalesce_merged_partition_factor(), 2.5);
+    }
+
+    #[test]
     fn test_ballista_grpc_metadata_interceptor() {
         use std::collections::HashMap;
         use tonic::Request;
