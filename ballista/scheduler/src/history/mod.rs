@@ -162,8 +162,8 @@ impl HistoryStore {
     /// Rescan the event-log directory and fold what changed into the index.
     ///
     /// This is what makes a job that finished after the server started
-    /// visible. Only logs whose [`FileStamp`] has moved are opened, so a pass
-    /// over a directory that has not changed reads no files at all; logs that
+    /// visible. Only logs whose size or modification time has moved are
+    /// opened, so a pass over an unchanged directory reads no files; logs that
     /// have gone are dropped from the index, so deleting one no longer leaves
     /// an entry that fails when opened.
     ///
