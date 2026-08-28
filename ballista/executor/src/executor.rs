@@ -306,10 +306,12 @@ mod test {
     use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::tree_node::TreeNodeRecursion;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
     use datafusion::execution::runtime_env::RuntimeEnv;
 
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream,
@@ -395,6 +397,13 @@ mod test {
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
             vec![]
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn with_new_children(

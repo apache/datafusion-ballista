@@ -407,9 +407,9 @@ checksum = "f4de21c0feef7e5a556e51af767c953f0501f7f300ba785cc99c47bdc8081a50"
 
 [[package]]
 name = "async-trait"
-version = "0.1.91"
+version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -492,6 +492,8 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e317fc86983a7914549f930dea98b56ea77771a837880896495a09c71e1bf4"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -506,12 +508,13 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cb77c44dde3d4a1a4a7c415707f78399627d96e4f1a62cb94ac81cacff8a389"
 dependencies = [
  "arrow-flight",
  "async-trait",
  "chrono",
  "datafusion",
- "datafusion-functions-aggregate-common",
  "datafusion-proto",
  "datafusion-proto-common",
  "futures",
@@ -537,6 +540,8 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16060c35ab004ffdf81173f71f2e54a2dc128cd627b8d4f9a9c20da9d7e0a02c"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -565,6 +570,8 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "54.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8789717042777ccbe9f255de073030ceedc74bb2fc4c8a86ac2b1854e5a6f3b"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -588,7 +595,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tower-http 0.7.0",
- "url-escape",
  "uuid",
 ]
 
@@ -2599,9 +2605,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lru"
@@ -3120,7 +3126,7 @@ dependencies = [
  "datafusion-python",
  "log",
  "pyo3",
- "pyo3-build-config 0.29.1",
+ "pyo3-build-config 0.29.2",
  "pyo3-log",
  "tokio",
  "tonic",
@@ -3166,9 +3172,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.29.1"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb77d9aa6d647507b55c69ee714d266d84c526c78ff0bc6dd8757f58591e64d1"
+checksum = "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9"
 dependencies = [
  "target-lexicon",
 ]
@@ -4343,15 +4349,6 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
-]
-
-[[package]]
-name = "url-escape"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd4105a4fc511f6b1c9616a372a1313ae7c15afcaac839617c1c7cf25ce0a965"
-dependencies = [
- "percent-encoding",
 ]
 
 [[package]]

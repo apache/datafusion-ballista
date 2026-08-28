@@ -33,13 +33,13 @@ than for data science.
 ### Arrow-native
 
 Ballista uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
-shuffle files and for exchanging data between executors. Queries can be submitted using the Arrow Flight SQL API
-and the Arrow Flight SQL JDBC Driver.
+shuffle files and for exchanging data between executors. Queries can be submitted from Rust and Python clients
+or the Ballista CLI.
 
 ### Language Agnostic
 
 Although most of the implementation code is written in Rust, the scheduler and executor APIs are based on open
-standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight SQL.
+standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight.
 
 This language agnostic approach will allow Ballista to eventually support UDFs in languages other than Rust,
 including Wasm.
@@ -72,7 +72,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 The scheduler provides the following interfaces:
 
 - gRPC service for submitting and managing jobs
-- Flight SQL API
 - REST API for monitoring jobs
 
 Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
@@ -96,8 +95,6 @@ There are multiple clients available for submitting jobs to a Ballista cluster:
   context with support for SQL and DataFrame operations.
 - The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for
   SQL and DataFrame operations.
-- The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from
-  popular SQL tools to execute SQL queries against a cluster.
 
 ## Distributed Query Scheduling
 
@@ -196,6 +193,13 @@ can be performed.
 Each executor will re-partition the output of the stage it is running so that it can be consumed by the next
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
+
+The shuffle is _blocking_: a stage materializes its output to local storage, and today a downstream stage waits
+for the whole upstream stage to complete before it starts. Waiting on the whole stage is a property of the current
+scheduler rather than of the design — the output of a finished task is readable as soon as its files are closed,
+so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See
+[Shuffle Design](shuffle.md) for why Ballista materializes shuffle output at all, what that costs, and how it
+compares to the pipelined shuffle used by engines such as DataFusion Distributed and Sail.
 
 [shufflewriterexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
 [shufflereaderexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs

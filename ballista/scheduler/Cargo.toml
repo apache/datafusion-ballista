@@ -54,7 +54,7 @@ substrait = ["dep:datafusion-substrait"]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.9"
-ballista-api-types = { path = "../api-types", version = "54.0.0", optional = true }
+ballista-api-types = { workspace = true, optional = true }
 ballista-core = { path = "../core", version = "54.0.0" }
 ballista-history = { path = "../history", version = "54.0.0", optional = true }
 clap = { workspace = true, optional = true }
@@ -62,6 +62,7 @@ dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-substrait = { workspace = true, optional = true }
+ferroid = { version = "2.0", features = ["alloc", "std", "snowflake", "atomic", "base32", "async-tokio"] }
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
@@ -93,7 +94,6 @@ name = "tpch_plan_stability"
 path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
-datafusion-functions-aggregate-common = { workspace = true }
 regex = "1"
 rstest = { workspace = true }
 serde_json = "1"

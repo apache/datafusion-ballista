@@ -23,7 +23,9 @@
 
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
+use ballista_core::execution_plans::{
+    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
+};
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::serde::scheduler::PartitionStats;
 use ballista_core::{JobId, utils};
@@ -98,6 +100,25 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
         Vec::new()
     }
+
+    /// Drain finalized window-aggregate state captured during this task,
+    /// already stamped with the global partition each capture belongs to.
+    /// Called at task completion, like
+    /// [`Self::collect_runtime_stats_reports`], and rides the same
+    /// `SuccessfulTask` message.
+    ///
+    /// Empty for every plan without an ever-expanding-frame window, which is
+    /// nearly all of them. Default returns empty — implementers with real
+    /// plans override to drain their writer.
+    ///
+    /// Errors fail the task. This state is load-bearing for the downstream
+    /// stage's prefix merge, so losing a report yields a wrong answer rather
+    /// than a degraded one.
+    fn collect_window_state_reports(
+        &self,
+    ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Default execution engine using DataFusion's ShuffleWriterExec.
@@ -135,11 +156,18 @@ impl ExecutionEngine for DefaultExecutionEngine {
     ) -> Result<Arc<dyn QueryStageExecutor>> {
         let plan = plan
             .transform(|p| {
-                // TODO: RangeShuffleReaderExec needs the same late-bind
-                // (with_work_dir + with_client_pool) once a planner rule
-                // plants it; without it, the first task carrying one will
-                // fail with "work dir should have been set by executor".
                 if let Some(reader) = p.downcast_ref::<ShuffleReaderExec>() {
+                    match &self.client_pool {
+                        Some(client_pool) => Ok(Transformed::yes(Arc::new(
+                            reader
+                                .with_work_dir(work_dir.to_string())
+                                .with_client_pool(client_pool.clone()),
+                        ))),
+                        None => Ok(Transformed::yes(Arc::new(
+                            reader.with_work_dir(work_dir.to_string()),
+                        ))),
+                    }
+                } else if let Some(reader) = p.downcast_ref::<RangeShuffleReaderExec>() {
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
                             reader
@@ -163,8 +191,9 @@ impl ExecutionEngine for DefaultExecutionEngine {
             })?
             .data;
 
-        // the query plan created by the scheduler always starts with a shuffle writer
-        // (either ShuffleWriterExec or SortShuffleWriterExec)
+        // the query plan created by the scheduler always starts with a shuffle
+        // writer (ShuffleWriterExec, RangeShuffleWriterExec, or
+        // SortShuffleWriterExec)
         if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
             let exec = ShuffleWriterExec::try_new(
                 job_id,
@@ -176,6 +205,17 @@ impl ExecutionEngine for DefaultExecutionEngine {
             .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Passthrough(exec),
+            )))
+        } else if plan.downcast_ref::<RangeShuffleWriterExec>().is_some() {
+            let exec = RangeShuffleWriterExec::try_new(
+                job_id,
+                stage_id,
+                plan.children()[0].clone(),
+                work_dir.to_string(),
+            )?
+            .with_task_id(task_id);
+            Ok(Arc::new(DefaultQueryStageExec::new(
+                ShuffleWriterVariant::Range(exec),
             )))
         } else if let Some(sort_shuffle_writer) =
             plan.downcast_ref::<SortShuffleWriterExec>()
@@ -195,7 +235,8 @@ impl ExecutionEngine for DefaultExecutionEngine {
             )))
         } else {
             Err(DataFusionError::Internal(
-                "Plan passed to new_query_stage_exec is not a ShuffleWriterExec or SortShuffleWriterExec"
+                "Plan passed to new_query_stage_exec is not a ShuffleWriterExec, \
+                 RangeShuffleWriterExec, or SortShuffleWriterExec"
                     .to_string(),
             ))
         }
@@ -208,6 +249,9 @@ pub enum ShuffleWriterVariant {
     /// Passthrough shuffle writer: preserves its input partitioning,
     /// one file per output partition.
     Passthrough(ShuffleWriterExec),
+    /// Passthrough shuffle writer emitting the seekable Arrow IPC file
+    /// format, for stages read back in value-range order.
+    Range(RangeShuffleWriterExec),
     /// Sort-based shuffle writer.
     Sort(SortShuffleWriterExec),
 }
@@ -246,6 +290,20 @@ impl Display for DefaultQueryStageExec {
                     writer
                 )
             }
+            ShuffleWriterVariant::Range(writer) => {
+                let stage_metrics: Vec<String> = writer
+                    .metrics()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect();
+                write!(
+                    f,
+                    "DefaultQueryStageExec(Range): ({})\n{}",
+                    stage_metrics.join(", "),
+                    writer
+                )
+            }
             ShuffleWriterVariant::Sort(writer) => {
                 let stage_metrics: Vec<String> = writer
                     .metrics()
@@ -276,6 +334,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 ShuffleWriterVariant::Passthrough(writer) => {
                     (Arc::new(writer.clone()), false)
                 }
+                ShuffleWriterVariant::Range(writer) => (Arc::new(writer.clone()), false),
                 ShuffleWriterVariant::Sort(writer) => (Arc::new(writer.clone()), true),
             };
         debug!(
@@ -303,6 +362,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             ShuffleWriterVariant::Passthrough(writer) => {
                 utils::collect_plan_metrics(writer)
             }
+            ShuffleWriterVariant::Range(writer) => utils::collect_plan_metrics(writer),
             ShuffleWriterVariant::Sort(writer) => utils::collect_plan_metrics(writer),
         }
     }
@@ -319,6 +379,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         // the query.
         let plan: Arc<dyn ExecutionPlan> = match &self.shuffle_writer {
             ShuffleWriterVariant::Passthrough(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Range(writer) => Arc::new(writer.clone()),
             ShuffleWriterVariant::Sort(writer) => Arc::new(writer.clone()),
         };
         match ballista_core::execution_plans::collect_runtime_stats_reports(&plan) {
@@ -330,6 +391,28 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 Vec::new()
             }
         }
+    }
+
+    fn collect_window_state_reports(
+        &self,
+    ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
+        // Both partitioning-preserving writers can sit over a window; the sort
+        // writer is Hash-partitioned by construction, which the prefix rewrite
+        // never plants.
+        let captured = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => writer.collect_window_state()?,
+            ShuffleWriterVariant::Range(writer) => writer.collect_window_state(),
+            ShuffleWriterVariant::Sort(_) => return Ok(Vec::new()),
+        };
+        captured
+            .iter()
+            .map(|(global_partition, observed)| {
+                ballista_core::execution_plans::window_state_to_proto(
+                    *global_partition,
+                    observed,
+                )
+            })
+            .collect()
     }
 }
 

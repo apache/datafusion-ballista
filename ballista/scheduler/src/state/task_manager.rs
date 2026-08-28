@@ -45,8 +45,6 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::{debug, error, info, trace, warn};
-use rand::distr::Alphanumeric;
-use rand::{RngExt, rng};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::ops::Deref;
@@ -271,9 +269,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             SubmitPlan::Logical(logical_plan) => {
                 if session_config.ballista_adaptive_query_planner_enabled() {
                     debug!("Using adaptive query planner (AQE) for job planning");
-                    warn!(
-                        "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
-                    );
                     Box::new(
                         AdaptiveExecutionGraph::try_new(
                             &self.scheduler_id,
@@ -309,11 +304,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             SubmitPlan::Physical(physical_plan) => {
-                if session_config.ballista_adaptive_query_planner_enabled() {
-                    return Err(BallistaError::NotImplemented(
-                        "Adaptive query planning (AQE) does not support jobs submitted as an already-built physical plan; disable AQE for this session or submit a logical plan instead.".to_string(),
-                    ));
-                }
+                // AQE plans from the logical plan, so an already-built
+                // physical plan always uses the static planner, including when
+                // AQE is on (the default).
                 debug!("Using static query planner for physical-plan job submission");
                 let session_config = Arc::new(ctx.copied_config());
 
@@ -884,6 +877,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .as_millis() as u64;
         let codec = self.codec.physical_extension_codec();
 
+        let props = first_task.session_config.to_key_value_pairs();
         let mut multi_tasks = Vec::with_capacity(tasks.len());
         for task in tasks {
             let restricted = restrict_plan_to_partitions(
@@ -893,7 +887,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
             plan_proto.try_encode(&mut plan_buf)?;
-            let props = task.session_config.to_key_value_pairs();
             let task_ids = vec![TaskId {
                 task_id: task.key.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
@@ -914,7 +907,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 plan: plan_buf,
                 session_id: session_id.clone(),
                 launch_time,
-                props,
+                props: props.clone(),
             });
         }
         Ok(multi_tasks)
@@ -939,17 +932,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         self.active_job_cache
             .remove(job_id)
             .map(|value| value.1.execution_graph)
-    }
-
-    /// Generates a new random 7-character alphanumeric job ID.
-    pub fn generate_job_id(&self) -> JobId {
-        let mut rng = rng();
-        std::iter::repeat(())
-            .map(|()| rng.sample(Alphanumeric))
-            .map(char::from)
-            .take(7)
-            .collect::<String>()
-            .into()
     }
 
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
@@ -1025,15 +1007,17 @@ fn log_runtime_stats_arrival(
         let non_empty_partitions =
             report.partitions.iter().filter(|p| p.row_count > 0).count();
         let total_rows: u64 = report.partitions.iter().map(|p| p.row_count).sum();
-        let sketch_count = report
+        let ranged_partitions = report
             .partitions
             .iter()
-            .filter(|p| p.sketch.is_some())
+            .filter(|p| !p.key_min.is_empty() && !p.key_max.is_empty())
             .count();
+        // Counted rather than assumed: an entry whose range never got filled
+        // in would route no files, and nothing else here would say so.
         debug!(
             "RuntimeStats arrival: executor={} job={} stage={} task={} \
              report[{}] order_by_len={} partitions={} non_empty={} \
-             total_rows={} sketches={}",
+             total_rows={} key_ranges={}/{} sort_key_sketch={}",
             executor.id,
             status.job_id,
             status.stage_id,
@@ -1043,8 +1027,50 @@ fn log_runtime_stats_arrival(
             report.partitions.len(),
             non_empty_partitions,
             total_rows,
-            sketch_count,
+            ranged_partitions,
+            report.partitions.len(),
+            describe_sort_key_sketch(report),
         );
+    }
+}
+
+/// Decode the report's merged [`SortKeySketch`] far enough to say what
+/// arrived. Rebuilding it here is the point: a byte count proves the field
+/// crossed, where a decoded count and range prove it survived.
+///
+/// Any failure is described rather than propagated — this is a log line, and
+/// the query's data was already produced correctly.
+///
+/// [`SortKeySketch`]: ballista_core::sort_key::SortKeySketch
+fn describe_sort_key_sketch(
+    report: &ballista_core::serde::protobuf::RuntimeStatsReport,
+) -> String {
+    use ballista_core::sort_key::SortKeySketch;
+    use datafusion::arrow::compute::SortOptions;
+
+    let Some(state) = report.sketch.as_ref() else {
+        return "none".to_string();
+    };
+    // The key's direction and NULL placement are not in the sketch — they
+    // live once here, in the tag that says which expression it describes.
+    let Some(first) = report.order_by.first() else {
+        return "undescribable (sketch present with an empty order_by tag)".to_string();
+    };
+    let options = SortOptions {
+        descending: !first.asc,
+        nulls_first: first.nulls_first,
+    };
+    match SortKeySketch::try_from_proto(state, options) {
+        Ok(sketch) => format!(
+            "{{bytes={} k={} count={} nulls={} min={:?} max={:?}}}",
+            state.levels.len(),
+            state.k,
+            sketch.count(),
+            sketch.null_count(),
+            sketch.value_min(),
+            sketch.value_max(),
+        ),
+        Err(e) => format!("undecodable ({e})"),
     }
 }
 

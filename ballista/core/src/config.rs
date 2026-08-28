@@ -136,6 +136,11 @@ pub const BALLISTA_COALESCE_ENABLED: &str = "ballista.planner.coalesce.enabled";
 /// This could benefit the workload by injecting EmptyExec in the plan (i.e during joins)
 pub const BALLISTA_PROPAGATE_EMPTY_ENABLED: &str =
     "ballista.planner.propagate_empty.enabled";
+/// Configuration key to enable the AQE `ParallelWindowRule`, which rewrites
+/// bounded-RANGE-frame windows into a distributed range-shuffle so BWAG's
+/// single-partition constraint isn't a serial bottleneck. Opt-in.
+pub const BALLISTA_PARALLEL_WINDOW_ENABLED: &str =
+    "ballista.planner.parallel_window.enabled";
 /// Configuration key for the target post-coalesce partition byte size (bytes).
 /// Mirrors Spark's `spark.sql.adaptive.advisoryPartitionSizeInBytes`.
 pub const BALLISTA_COALESCE_TARGET_PARTITION_BYTES: &str =
@@ -241,9 +246,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt64,
                          Some((300).to_string())),
         ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
-                         "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
+                         "Enables Adaptive Query Planning: joins and partition counts are \
+                         chosen from measured runtime statistics instead of planning-time \
+                         estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -271,7 +278,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           single-task CollectLeft execution. Set to 0 to disable promotion \
                           and reject null-aware anti joins.".to_string(),
                          DataType::UInt64,
-                         Some((10 * 1024 * 1024).to_string())),
+                         Some((128 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
                          "Row-count threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern, \
@@ -323,6 +330,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                         of a join, allowing downstream work to be skipped.".to_string(),
                         DataType::Boolean,
                         Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_PARALLEL_WINDOW_ENABLED.to_string(),
+                        "Enables the AQE parallel-window rule (ParallelWindowRule), which \
+                        rewrites bounded-RANGE-frame windows into a distributed range-shuffle \
+                        so BoundedWindowAggExec's single-partition constraint is not a serial \
+                        bottleneck. Disabled by default — opt in when the workload contains \
+                        matching window shapes.".to_string(),
+                        DataType::Boolean,
+                        Some(false.to_string())),
         ConfigEntry::new(
             BALLISTA_COALESCE_TARGET_PARTITION_BYTES.to_string(),
             "Target post-coalesce partition size in bytes. Mirrors Spark's \
@@ -402,15 +417,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
-             task's `partition_slice`. `1` (default) means one task per input \
-             partition. Raise to enable multi-partition tasks (fewer tasks, \
-             parallel-sort / parallel-join wins); `0` means unbounded — the \
+             task's `partition_slice`. `0` (default) means unbounded — the \
              scheduler fills each task up to the executor's free vcore count. \
-             Does not apply to collapse stages, which must pack their full \
-             pending queue into a single task for correctness."
+             `1` means one task per input partition. Does not apply to collapse \
+             stages, which must pack their full pending queue into a single \
+             task for correctness."
                 .to_string(),
             DataType::UInt64,
-            Some(1.to_string()),
+            Some(0.to_string()),
         ),
     ];
     entries
@@ -704,6 +718,11 @@ impl BallistaConfig {
     /// Returns whether the AQE propagate empty rule is enabled.
     pub fn propagate_empty_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_PROPAGATE_EMPTY_ENABLED)
+    }
+
+    /// Returns whether the AQE parallel-window rule is enabled.
+    pub fn parallel_window_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_PARALLEL_WINDOW_ENABLED)
     }
 
     /// Returns compression codec that will be used during write stage of shuffle

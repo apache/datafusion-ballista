@@ -62,23 +62,27 @@ use std::fmt;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Distribution, OrderingRequirements};
+use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{CardinalityEffect, InputOrderMode};
 use datafusion::physical_plan::metrics::MetricsSet;
-use datafusion::physical_plan::windows::BoundedWindowAggExec;
-use datafusion::physical_plan::windows::WindowExpr;
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-    SendableRecordBatchStream,
+use datafusion::physical_plan::windows::{
+    BoundedWindowAggExec, WindowExpr, WindowStateObserver,
 };
 
-// The rule's `as_candidate` gates guarantee no PARTITION BY + single Column
-// ORDER BY over a sorted source, so `BWAG::try_new` is always invoked with
-// `InputOrderMode::Sorted` and `can_repartition=false` (partition_keys() is
-// empty either way when there's no PARTITION BY). Hardcode both to keep the
-// wire and the type small.
+use crate::execution_plans::window_state::{ObservedWindowState, WindowStateCollector};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    SendableRecordBatchStream, StatisticsArgs, statistics::ChildStats,
+};
+
+// `maybe_rewrite_bwag`'s shape gates guarantee no PARTITION BY + single
+// Column ORDER BY over a sorted source, so `BWAG::try_new` is always invoked
+// with `InputOrderMode::Sorted` and `can_repartition=false` (partition_keys()
+// is empty either way when there's no PARTITION BY). Hardcode both to keep
+// the wire and the type small.
 const BWAG_INPUT_ORDER_MODE: InputOrderMode = InputOrderMode::Sorted;
 const BWAG_CAN_REPARTITION: bool = false;
 
@@ -92,6 +96,10 @@ pub struct PartitionedBoundedWindowAggExec {
     inner_bwag: Arc<BoundedWindowAggExec>,
     /// Multi-partition input; same `Arc` `inner_bwag.input()` holds.
     input: Arc<dyn ExecutionPlan>,
+    /// Installed on `inner_bwag` when every frame permits it; see
+    /// [`Self::try_new`]. `None` for the halo shape, whose sliding frames
+    /// DataFusion refuses to observe.
+    state_collector: Option<Arc<WindowStateCollector>>,
 }
 
 impl PartitionedBoundedWindowAggExec {
@@ -103,13 +111,56 @@ impl PartitionedBoundedWindowAggExec {
         window_expr: Vec<Arc<dyn WindowExpr>>,
         input: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
-        let inner_bwag = Arc::new(BoundedWindowAggExec::try_new(
+        let bwag = BoundedWindowAggExec::try_new(
             window_expr,
             input.clone(),
             BWAG_INPUT_ORDER_MODE,
             BWAG_CAN_REPARTITION,
-        )?);
-        Ok(Self { inner_bwag, input })
+        )?;
+        // Install a collector exactly when DataFusion will accept one: every
+        // frame ever-expanding, i.e. `UNBOUNDED PRECEDING`. A sliding frame's
+        // accumulator retracts as the frame advances, so at partition close
+        // it holds the last frame rather than the partition aggregate, and
+        // `with_state_observer` refuses it.
+        let state_collector = bwag
+            .window_expr()
+            .iter()
+            .all(|expr| expr.get_window_frame().is_ever_expanding())
+            .then(|| Arc::new(WindowStateCollector::new(bwag.window_expr().to_vec())));
+        let bwag = match &state_collector {
+            Some(collector) => bwag.with_state_observer(Some(
+                Arc::clone(collector) as Arc<dyn WindowStateObserver>
+            ))?,
+            None => bwag,
+        };
+        Ok(Self {
+            inner_bwag: Arc::new(bwag),
+            input,
+            state_collector,
+        })
+    }
+
+    /// The installed collector, or `None` when the frames don't permit one.
+    ///
+    /// Drained after the task completes to recover this task's contribution
+    /// to the cross-task prefix scan.
+    pub fn state_collector(&self) -> Option<&Arc<WindowStateCollector>> {
+        self.state_collector.as_ref()
+    }
+
+    /// Everything the collector captured, or empty when no collector was
+    /// installed.
+    ///
+    /// Each entry's `partition_idx` is **task-local** — it indexes this
+    /// task's partition slice, not the stage's global partitions. This
+    /// operator has no way to know otherwise, and shouldn't: the writer at
+    /// the stage root is handed the slice-to-global mapping by the scheduler
+    /// and does the translation.
+    pub fn observed_window_state(&self) -> Vec<ObservedWindowState> {
+        self.state_collector
+            .as_ref()
+            .map(|collector| collector.observed())
+            .unwrap_or_default()
     }
 
     /// The wrapped `BoundedWindowAggExec` — for accessors that don't exist
@@ -149,6 +200,15 @@ impl ExecutionPlan for PartitionedBoundedWindowAggExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    /// The window expressions live on `inner_bwag`, which is not a plan-tree
+    /// child, so this wrapper must report them as its own.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.inner_bwag.apply_expressions(f)
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -192,8 +252,18 @@ impl ExecutionPlan for PartitionedBoundedWindowAggExec {
         self.inner_bwag.metrics()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.inner_bwag.partition_statistics(partition)
+    /// Stats are whatever the inner BWAG computes from the input's stats —
+    /// this wrapper only changes distribution requirements, not row content.
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        self.inner_bwag.statistics_from_inputs(input_stats, args)
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 
     fn cardinality_effect(&self) -> CardinalityEffect {
@@ -285,8 +355,10 @@ mod tests {
             "PBWAG must not collapse partitions"
         );
         assert!(matches!(
-            pbwag.required_input_distribution().as_slice(),
-            [Distribution::UnspecifiedDistribution]
+            pbwag
+                .input_distribution_requirements()
+                .child_distribution(0),
+            Some(Distribution::UnspecifiedDistribution)
         ));
         assert_eq!(
             pbwag.children().len(),

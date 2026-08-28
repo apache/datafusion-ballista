@@ -36,7 +36,7 @@ use crate::error::BallistaError;
 use crate::extension::SessionConfigHelperExt;
 use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
-    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
+    Action, BallistaFunctionRegistry, ByteRange, ExecutorData, ExecutorMetadata,
     ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
     PartitionLocation, PartitionStats, TaskDefinition,
 };
@@ -58,7 +58,30 @@ impl TryInto<Action> for protobuf::Action {
                     file_id: fetch.file_id,
                     host: fetch.host,
                     port: fetch.port as u16,
-                    is_sort_shuffle: fetch.is_sort_shuffle,
+                    layout: protobuf::ShuffleLayout::try_from(fetch.layout)
+                        .map_err(|_| {
+                            BallistaError::General(format!(
+                                "unknown shuffle layout {} on FetchPartition",
+                                fetch.layout
+                            ))
+                        })?
+                        .into(),
+                    file_kind: protobuf::ShuffleFileKind::try_from(fetch.file_kind)
+                        .map_err(|_| {
+                            BallistaError::General(format!(
+                                "unknown shuffle file kind {} on FetchPartition",
+                                fetch.file_kind
+                            ))
+                        })?
+                        .into(),
+                    byte_ranges: fetch
+                        .byte_ranges
+                        .into_iter()
+                        .map(|range| ByteRange {
+                            offset: range.offset,
+                            length: range.length,
+                        })
+                        .collect(),
                 })
             }
             _ => Err(BallistaError::General(
@@ -480,10 +503,12 @@ pub fn get_task_definition_vec<
 fn reset_metrics_for_execution_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
+    // `reset_state` rebuilds each node around its existing children, which is
+    // what drops the decoded metrics sets. Its default implementation is
+    // `replace_children(.., Keep)` — the children are unchanged here, so there
+    // is nothing to recompute.
     plan.transform(&|plan: Arc<dyn ExecutionPlan>| {
-        let children: Vec<Arc<dyn ExecutionPlan>> =
-            plan.children().into_iter().cloned().collect();
-        plan.with_new_children(children).map(Transformed::yes)
+        plan.reset_state().map(Transformed::yes)
     })
     .data()
     .map_err(|e| BallistaError::DataFusionError(Box::new(e)))

@@ -18,7 +18,7 @@
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
-use crate::state::aqe::execution_plan::RangeRepartitionRouting;
+use crate::state::aqe::execution_plan::{ExchangeExec, RangeRepartitionRouting};
 use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
@@ -29,7 +29,8 @@ use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::{
-    cut_partitions, merge_runtime_stats_reports, repartition_routing_expr,
+    PartitionedBoundedWindowAggExec, PrefixMergeExec, RangeFilterExec, cut_partitions,
+    merge_runtime_stats_reports, prefix_merge_window_state, repartition_routing_expr,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -38,10 +39,14 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::common::DataFusionError;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::prelude::SessionConfig;
+use datafusion::scalar::ScalarValue;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -142,7 +147,7 @@ impl AdaptiveExecutionGraph {
         let session_id = ctx.session_id();
 
         let mut planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_name.to_owned()).await?;
+            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone()).await?;
 
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
@@ -291,11 +296,16 @@ impl AdaptiveExecutionGraph {
     /// have already established via `range_repartition_routing_expr` that
     /// the stage's plan warrants routing, and passes the recovered expr in.
     ///
-    /// `Ok(None)` means the stage produced no rows (nothing to route
-    /// through — passthrough is safe). `Err` means the stage's plan says
-    /// it should route but something went wrong recovering the cuts —
-    /// an invariant break, not a soft fallback (would misroute real data
+    /// `Ok(None)` means the stage has a single output partition, so there is
+    /// no boundary to route across. `Err` means the stage's plan says it
+    /// should route but something went wrong recovering the cuts — an
+    /// invariant break, not a soft fallback (would misroute real data
     /// downstream).
+    ///
+    /// Every other stage gets routing back even when its cuts are empty. A
+    /// boundary always has a consuming `RangeFilterExec`, which resolves its
+    /// bounds from the routing parked on that boundary, so declining to park
+    /// leaves the filter unresolvable rather than saving anyone work.
     fn repartition_routing(
         running_stage: &RunningStage,
         routing_expr: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
@@ -327,10 +337,6 @@ impl AdaptiveExecutionGraph {
                 )));
             }
         };
-        if entry.total_rows == 0 {
-            debug!("range-repartition stage {stage_id}: no rows produced, passthrough");
-            return Ok(None);
-        }
         if entry.partition_count < 2 {
             // K=1: single output partition — no cuts needed, no routing to
             // recover. Everything flows to the one downstream partition.
@@ -340,16 +346,78 @@ impl AdaptiveExecutionGraph {
             );
             return Ok(None);
         }
-        if entry.cuts.is_empty() {
+        if entry.cuts.is_empty() && entry.null_count != entry.total_rows {
+            // entirely NULL or empty are valid but degenerate cases
             return Err(BallistaError::General(format!(
-                "range-repartition stage {stage_id}: {} rows, K={}, but no cuts (sketch missed)",
-                entry.total_rows, entry.partition_count
+                "range-repartition stage {stage_id}: {} rows ({} NULL), K={}, \
+                 but no cuts (sketch missed)",
+                entry.total_rows, entry.null_count, entry.partition_count
             )));
         }
         Ok(Some(RangeRepartitionRouting {
             cuts: entry.cuts.clone(),
+            nulls_first: entry.nulls_first,
             routing_expr,
         }))
+    }
+
+    /// Prefix-merge the window state a completed stage reported, and bind the
+    /// result to the `PrefixMergeExec` waiting on it downstream.
+    ///
+    /// No-op for the overwhelming majority of stages, which report no window
+    /// state at all. When a stage did report, failing to find its consumer is
+    /// an error rather than a skip: the state exists precisely because a
+    /// `PrefixMergeExec` downstream cannot produce correct values without it.
+    fn resolve_prefix_merge_state(
+        &self,
+        stage_id: usize,
+    ) -> ballista_core::error::Result<()> {
+        let Some(ExecutionStage::Running(stage)) = self.stages.get(&stage_id) else {
+            return Ok(());
+        };
+        if stage.window_state_reports.is_empty() {
+            return Ok(());
+        }
+        let reports = stage.window_state_reports.clone();
+        let mut resolved = 0usize;
+        self.planner
+            .plan
+            .apply(|node| {
+                let Some(prefix_merge) = node.downcast_ref::<PrefixMergeExec>() else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                // Each PrefixMergeExec consumes exactly one upstream stage —
+                // the one behind the state-sync boundary directly below it.
+                if descend_to_boundary_stage_id(prefix_merge.input()) != Some(stage_id) {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                let window_expr = descend_to_window_expr(prefix_merge.input())
+                    .ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "PrefixMergeExec over stage {stage_id} has no window \
+                             operator below it to interpret its state against"
+                        ))
+                    })?;
+                let partition_count = prefix_merge
+                    .input()
+                    .properties()
+                    .output_partitioning()
+                    .partition_count();
+                let prefixes =
+                    prefix_merge_window_state(&reports, &window_expr, partition_count)?;
+                prefix_merge.resolve_state(prefixes)?;
+                resolved += 1;
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .map_err(|e| BallistaError::General(e.to_string()))?;
+        if resolved == 0 {
+            return Err(BallistaError::General(format!(
+                "stage {stage_id} reported {} window-state entries but no \
+                 PrefixMergeExec consumes them; the correction would be dropped",
+                reports.len()
+            )));
+        }
+        Ok(())
     }
 
     /// Return a Vec of stages to cancel
@@ -363,6 +431,15 @@ impl AdaptiveExecutionGraph {
             .update_exchange_locations(stage_id, locations)?;
 
         if is_completed {
+            // A replan can drop a stage that still has tasks in flight. Its
+            // output is no longer part of the plan, and erroring here fails the
+            // whole task-status update, which the caller only logs — hanging
+            // the job.
+            if !self.planner.is_stage_active(stage_id) {
+                debug!("ignoring completion for superseded stage {stage_id}");
+                return Ok(HashSet::new());
+            }
+            self.resolve_prefix_merge_state(stage_id)?;
             let partitions = self.planner.take_stage_output_partitions(stage_id)?;
 
             // Range-repartition stages need overlap-based remap of their partitions
@@ -372,12 +449,32 @@ impl AdaptiveExecutionGraph {
                 && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
             {
                 let reports = &stage.runtime_stats_reports;
-                let remapped = cut_partitions(partitions, reports, &routing.cuts)
+                // Reader-side halos widen each partition's effective
+                // range to `[cuts[k-1] - halo_lo, cuts[k] + halo_hi)`;
+                // files straddling that band must route to both sides.
+                // Range-repartition boundaries always have a consuming
+                // RFE (writer produces straddler duplicates that only
+                // the reader-side filter can trim), so the walker errors
+                // if none is found.
+                let (halo_lo, halo_hi) = downstream_halos(&self.planner.plan, stage_id)
                     .map_err(|err| {
-                        BallistaError::General(format!(
-                            "range-repartition stage {stage_id}: overlap remap failed: {err}"
-                        ))
-                    })?;
+                    BallistaError::General(format!(
+                        "range-repartition stage {stage_id}: halo lookup failed: {err}"
+                    ))
+                })?;
+                let remapped = cut_partitions(
+                    partitions,
+                    reports,
+                    &routing.cuts,
+                    &halo_lo,
+                    &halo_hi,
+                    routing.nulls_first,
+                )
+                .map_err(|err| {
+                    BallistaError::General(format!(
+                        "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                    ))
+                })?;
                 // Save boundaries to ExchangeExec so they are there for resolve_stage_partitions
                 self.planner.set_repartition_routing(stage_id, routing)?;
                 remapped
@@ -878,6 +975,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             let ballista_core::serde::protobuf::SuccessfulTask {
                                 partitions,
                                 runtime_stats,
+                                window_state,
                                 ..
                             } = successful_task;
                             debug!(
@@ -889,6 +987,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             );
                             running_stage
                                 .append_runtime_stats_reports(task_id, runtime_stats);
+                            running_stage
+                                .append_window_state_reports(task_id, window_state);
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
@@ -1429,14 +1529,105 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
     }
 }
 
-/// Checks is the plan same as expected string representation
-#[cfg(test)]
-#[macro_export]
-macro_rules! assert_plan {
-    ($PLAN: expr, @ $EXPECTED_LINES: literal $(,)?) => {
-        let plan = datafusion::physical_plan::displayable($PLAN).indent(true).to_string();
-        let actual_lines = plan.trim();
+/// Find the halos of the downstream `RangeFilterExec` planted directly on
+/// the boundary `ExchangeExec` produced by `producer_stage_id`. A
+/// range-repartition boundary always has a consuming RFE — the writer
+/// produces straddler duplicates that only the reader-side filter can
+/// trim — so absence is a shape bug, not a runtime default.
+///
+/// Boundaries are disambiguated by `ExchangeExec::stage_id()` (the id
+/// of the stage that produces to the exchange), not by routing
+/// expression: two range-repartition stages could share the same
+/// `Column(name, index)` shape after independent projections, so
+/// `PhysicalExpr::eq` isn't unique across stages. The producer stage id
+/// is.
+///
+/// The rule may plant multiple RFEs (e.g. wide directly on the boundary
+/// and narrow above the window operator). Only the one whose immediate
+/// child is the boundary `ExchangeExec` describes the reader-visible
+/// halo band and matters for straddler routing.
+///
+/// # Arguments
+///
+/// * `full_plan` — the AdaptivePlanner's current plan tree; the walker
+///   descends the whole tree looking for the RFE on this boundary.
+/// * `producer_stage_id` — the id of the completing upstream stage;
+///   matches `ExchangeExec::stage_id()` on the boundary exchange.
+fn downstream_halos(
+    full_plan: &Arc<dyn ExecutionPlan>,
+    producer_stage_id: usize,
+) -> datafusion::common::Result<(ScalarValue, ScalarValue)> {
+    let mut result: Option<(ScalarValue, ScalarValue)> = None;
+    full_plan.apply(|node| {
+        let Some(rf) = node.downcast_ref::<RangeFilterExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let children = rf.children();
+        let [child] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "RangeFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        // RFE above the window op (narrow, halo=[0,0]) has a
+        // `PartitionedBoundedWindowAggExec` child, not the boundary
+        // exchange — keep looking for the wide RFE below.
+        let Some(exchange) = child.downcast_ref::<ExchangeExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        if exchange.stage_id() != Some(producer_stage_id) {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        result = Some((rf.halo_lo().clone(), rf.halo_hi().clone()));
+        Ok(TreeNodeRecursion::Stop)
+    })?;
+    result.ok_or_else(|| {
+        datafusion::common::DataFusionError::Internal(format!(
+            "range-repartition boundary for producer stage {producer_stage_id} has \
+             no consuming RangeFilterExec — straddler files would corrupt \
+             downstream partial aggregates. Check the rule that planted this ORRE."
+        ))
+    })
+}
 
-        insta::assert_snapshot!(actual_lines, @ $EXPECTED_LINES);
-    };
+/// Descend the single-child spine below a `PrefixMergeExec` to its
+/// state-sync `ExchangeExec` and return that boundary's stage id.
+///
+/// `None` when the boundary has no stage id yet (the upstream stage has not
+/// been assigned one), or when the spine forks before reaching it — a
+/// prefix merge only pairs with a single upstream stage.
+fn descend_to_boundary_stage_id(start: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    let mut node = Arc::clone(start);
+    loop {
+        if let Some(exchange) = node.downcast_ref::<ExchangeExec>() {
+            return exchange.stage_id();
+        }
+        let children = node.children();
+        let [child] = children.as_slice() else {
+            return None;
+        };
+        node = Arc::clone(*child);
+    }
+}
+
+/// Find the window operator below a `PrefixMergeExec` and return its window
+/// expressions, which the reported state is indexed against.
+///
+/// Walks the whole subtree rather than the spine: the operator sits below the
+/// state-sync boundary, whose input subtree the exchange retains even once
+/// resolved.
+fn descend_to_window_expr(
+    start: &Arc<dyn ExecutionPlan>,
+) -> Option<Vec<Arc<dyn WindowExpr>>> {
+    let mut found = None;
+    start
+        .apply(|node| {
+            if let Some(op) = node.downcast_ref::<PartitionedBoundedWindowAggExec>() {
+                found = Some(op.window_expr().to_vec());
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .ok()?;
+    found
 }

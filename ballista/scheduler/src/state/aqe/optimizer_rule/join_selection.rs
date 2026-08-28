@@ -16,13 +16,15 @@
 // under the License.
 
 use ballista_core::config::BallistaConfig;
+use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode},
     error::DataFusionError,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ExecutionPlan,
+        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
         joins::{HashJoinExec, PartitionMode, SortMergeJoinExec},
     },
 };
@@ -110,8 +112,10 @@ impl SelectJoinRule {
         // Get the left and right table's total bytes
         // If both the left and right tables contain total_byte_size statistics,
         // use `total_byte_size` to determine `should_swap_join_order`, else use `num_rows`
-        let left_stats = left.partition_statistics(None)?;
-        let right_stats = right.partition_statistics(None)?;
+        let left_stats =
+            StatisticsContext::new().compute(left, &StatisticsArgs::new())?;
+        let right_stats =
+            StatisticsContext::new().compute(right, &StatisticsArgs::new())?;
         // First compare `total_byte_size` of left and right side,
         // if information in this field is insufficient fallback to the `num_rows`
         match (
@@ -128,6 +132,15 @@ impl SelectJoinRule {
             },
         }
     }
+}
+
+/// Whether giving the build side its own broadcast stage is worth it.
+fn broadcast_build_side_pays_off(
+    build: &dyn ExecutionPlan,
+    probe: &dyn ExecutionPlan,
+) -> bool {
+    build.properties().partitioning.partition_count() > 1
+        && probe.properties().partitioning.partition_count() > 1
 }
 
 impl PhysicalOptimizerRule for SelectJoinRule {
@@ -169,8 +182,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     .to_broadcast(self.plan_id());
                                     let right = Arc::new(right);
 
-                                    let join = hash_join_exec
-                                        .with_new_children(vec![left, right])?;
+                                    let join = hash_join_exec.replace_children(
+                                        vec![left, right],
+                                        ReplaceChildrenOptions::new(
+                                            ChildrenPropertiesMode::Recompute,
+                                        ),
+                                    )?;
 
                                     let join = join
                                         .downcast_ref::<HashJoinExec>()
@@ -194,8 +211,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
 
                                     let right = hash_join_exec.right.clone();
 
-                                    let join = hash_join_exec
-                                        .with_new_children(vec![left, right])?;
+                                    let join = hash_join_exec.replace_children(
+                                        vec![left, right],
+                                        ReplaceChildrenOptions::new(
+                                            ChildrenPropertiesMode::Recompute,
+                                        ),
+                                    )?;
                                     Ok(Transformed::yes(join))
                                 }
                             }
@@ -227,16 +248,20 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                             data_source.repartitioned(1, config)
                                         {
                                             let right = hash_join.right.clone();
-                                            let p =
-                                                p.with_new_children(vec![left, right])?;
+                                            let p = p.replace_children(
+                                                vec![left, right],
+                                                ReplaceChildrenOptions::new(
+                                                    ChildrenPropertiesMode::Recompute,
+                                                ),
+                                            )?;
                                             Ok(Transformed::yes(p))
-                                        } else if hash_join
-                                            .left
-                                            .properties()
-                                            .partitioning
-                                            .partition_count()
-                                            > 1
-                                        {
+                                        } else if broadcast_build_side_pays_off(
+                                            hash_join.left.as_ref(),
+                                            hash_join.right.as_ref(),
+                                        ) {
+                                            // Broadcasting the build side buys
+                                            // nothing when the probe has a single
+                                            // partition.
                                             let left = if let Some(exchange) = hash_join
                                                 .left
                                                 .downcast_ref::<ExchangeExec>()
@@ -252,8 +277,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                                 ))
                                             };
                                             let right = hash_join.right.clone();
-                                            let p =
-                                                p.with_new_children(vec![left, right])?;
+                                            let p = p.replace_children(
+                                                vec![left, right],
+                                                ReplaceChildrenOptions::new(
+                                                    ChildrenPropertiesMode::Recompute,
+                                                ),
+                                            )?;
                                             Ok(Transformed::yes(p))
                                         } else {
                                             Ok(Transformed::no(p))
@@ -290,8 +319,12 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     self.plan_id(),
                                 ));
 
-                                let dynamic_join =
-                                    dynamic_join.with_new_children(vec![left, right])?;
+                                let dynamic_join = dynamic_join.replace_children(
+                                    vec![left, right],
+                                    ReplaceChildrenOptions::new(
+                                        ChildrenPropertiesMode::Recompute,
+                                    ),
+                                )?;
 
                                 Ok(Transformed::yes(dynamic_join))
                             }
@@ -341,8 +374,9 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::assert_plan;
+    use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::{
         arrow::{
             array::{Int32Array, RecordBatch},
@@ -709,8 +743,9 @@ mod tests {
             ))
         }
 
+        // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
         let join = HashJoinExec::try_new(
-            stats_exec("big_key", 20 * 1024 * 1024),
+            stats_exec("big_key", 256 * 1024 * 1024),
             stats_exec("small_key", 1024),
             vec![(
                 Arc::new(Column::new("big_key", 0)) as _,
@@ -812,5 +847,25 @@ mod tests {
             DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
+    }
+    #[test]
+    fn broadcast_pays_off_only_when_both_sides_are_partitioned() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let one = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
+        let many = Arc::new(EmptyExec::new(Arc::clone(&schema)).with_partitions(4))
+            as Arc<dyn ExecutionPlan>;
+
+        assert!(
+            broadcast_build_side_pays_off(many.as_ref(), many.as_ref()),
+            "both sides partitioned: the build is worth its own stage"
+        );
+        assert!(
+            !broadcast_build_side_pays_off(many.as_ref(), one.as_ref()),
+            "single-partition probe pins the join to one task either way"
+        );
+        assert!(
+            !broadcast_build_side_pays_off(one.as_ref(), many.as_ref()),
+            "single-partition build needs no stage of its own"
+        );
     }
 }
