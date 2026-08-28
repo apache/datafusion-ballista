@@ -38,7 +38,9 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 
 use crate::stats_table::{StatsExec, TpchStatsTable};
@@ -258,15 +260,16 @@ impl PhysicalExtensionCodec for FixtureReuseCodec {
         &self,
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> datafusion::error::Result<()> {
         if let Some(stats) = node.downcast_ref::<StatsExec>() {
-            let rows = stats.partition_statistics(None)?.num_rows;
+            let rows = stats.num_rows();
             buf.extend_from_slice(
-                format!("StatsExec|schema={:?}|rows={rows:?}", stats.schema()).as_bytes(),
+                format!("StatsExec|schema={:?}|rows={rows}", stats.schema()).as_bytes(),
             );
             Ok(())
         } else {
-            self.inner.try_encode(node, buf)
+            self.inner.try_encode(node, buf, proto_converter)
         }
     }
 
@@ -275,8 +278,9 @@ impl PhysicalExtensionCodec for FixtureReuseCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        self.inner.try_decode(buf, inputs, ctx)
+        self.inner.try_decode(buf, inputs, ctx, proto_converter)
     }
 }
 

@@ -27,7 +27,7 @@ use std::sync::Arc;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::{ShuffleWriter, UnresolvedShuffleExec};
 use datafusion::config::ConfigOptions;
-use datafusion::physical_plan::{ExecutionPlan, with_new_children_if_necessary};
+use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use log::debug;
 
@@ -170,14 +170,13 @@ fn rewrite_shuffle_refs(
         .into_iter()
         .map(|c| rewrite_shuffle_refs(c.clone(), remap))
         .collect::<Result<Vec<_>>>()?;
-    Ok(with_new_children_if_necessary(plan, new_children)?)
+    Ok(replace_children_if_necessary(plan, new_children)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ballista_core::JobId;
-    use ballista_core::execution_plans::ShuffleWriterExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::empty::EmptyExec;
@@ -205,21 +204,22 @@ mod tests {
         Arc::new(UnresolvedShuffleExec::new(stage_id, schema(), hash(4)))
     }
 
+    /// Built through the same constructor the planner uses, so the stages
+    /// these tests key on are the ones production would produce for the same
+    /// partitioning.
     fn writer(
         stage_id: usize,
         input: Arc<dyn ExecutionPlan>,
         partitioning: Option<Partitioning>,
     ) -> Arc<dyn ShuffleWriter> {
-        Arc::new(
-            ShuffleWriterExec::try_new(
-                job(),
-                stage_id,
-                input,
-                "".to_owned(),
-                partitioning,
-            )
-            .unwrap(),
+        create_shuffle_writer_with_config(
+            &job(),
+            stage_id,
+            input,
+            partitioning,
+            &ConfigOptions::default(),
         )
+        .unwrap()
     }
 
     fn collect_unresolved_ids(p: &Arc<dyn ExecutionPlan>, out: &mut Vec<usize>) {

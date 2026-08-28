@@ -64,6 +64,14 @@ impl StatsExec {
     }
 }
 
+impl StatsExec {
+    /// The row count this scan reports, used by the plan-stability fixture to
+    /// fingerprint the leaf without going through `Statistics`.
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
+}
+
 impl DisplayAs for StatsExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         match t {
